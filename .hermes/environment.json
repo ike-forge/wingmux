@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "recipe": {
+    "name": "Rust project",
+    "kind": "rust",
+    "bootstrap": [],
+    "build": [
+      "cargo build"
+    ],
+    "test": [
+      "cargo test"
+    ],
+    "start": "cargo run",
+    "port": null,
+    "readinessPath": "/",
+    "evidence": [
+      "Detected Cargo.toml"
+    ]
+  },
+  "updatedAt": "2026-08-14T22:27:45.205248+00:00"
+}
