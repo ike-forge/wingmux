@@ -7,6 +7,7 @@
 mod app;
 mod config;
 mod error;
+mod git;
 mod logging;
 mod theme;
 mod util;
