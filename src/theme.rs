@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crossterm::style::Color;
+use ratatui::style::Color;
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
@@ -167,13 +167,13 @@ impl Spec {
             Spec::Ansi(c) => c.to_color(),
             Spec::Hex(rgb) => {
                 if truecolor {
-                    Color::Rgb {
-                        r: ((rgb >> 16) & 0xff) as u8,
-                        g: ((rgb >> 8) & 0xff) as u8,
-                        b: (rgb & 0xff) as u8,
-                    }
+                    Color::Rgb(
+                        ((rgb >> 16) & 0xff) as u8,
+                        ((rgb >> 8) & 0xff) as u8,
+                        (rgb & 0xff) as u8,
+                    )
                 } else {
-                    Color::AnsiValue(quantize_256(
+                    Color::Indexed(quantize_256(
                         ((rgb >> 16) & 0xff) as u8,
                         ((rgb >> 8) & 0xff) as u8,
                         (rgb & 0xff) as u8,
@@ -196,13 +196,13 @@ impl AnsiColor {
             Magenta => Color::Magenta,
             Cyan => Color::Cyan,
             White => Color::White,
-            Gray | BrightBlack => Color::DarkGrey,
-            BrightRed => Color::DarkRed,
-            BrightGreen => Color::DarkGreen,
-            BrightYellow => Color::DarkYellow,
-            BrightBlue => Color::DarkBlue,
-            BrightMagenta => Color::DarkMagenta,
-            BrightCyan => Color::DarkCyan,
+            Gray | BrightBlack => Color::DarkGray,
+            BrightRed => Color::LightRed,
+            BrightGreen => Color::LightGreen,
+            BrightYellow => Color::LightYellow,
+            BrightBlue => Color::LightBlue,
+            BrightMagenta => Color::LightMagenta,
+            BrightCyan => Color::LightCyan,
         }
     }
 }
@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn truecolor_resolution() {
         let s = Spec::parse("#ff0000").unwrap();
-        assert_eq!(s.resolve(true), Color::Rgb { r: 255, g: 0, b: 0 });
+        assert_eq!(s.resolve(true), Color::Rgb(255, 0, 0));
     }
 
     #[test]
@@ -381,7 +381,7 @@ mod tests {
         let expected: u8 = 232 + (128u16 * 23 / 255) as u8;
         assert_eq!(quantize_256(128, 128, 128), expected);
         let s = Spec::parse("#bd93f9").unwrap();
-        assert!(matches!(s.resolve(false), Color::AnsiValue(_)));
+        assert!(matches!(s.resolve(false), Color::Indexed(_)));
         // ansi theme ignores truecolor
         assert_eq!(Spec::Ansi(AnsiColor::Cyan).resolve(false), Color::Cyan);
     }

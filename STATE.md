@@ -5,9 +5,21 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M4 — tmux layer** (complete, committed)
+**M6 — Actions wired** (complete, committed) — M7 HARDEN & VERIFY next
 
 ## Progress log
+
+### M5+M6 — TUI + actions (committed)
+- [x] ratatui 0.30 (rewritten crate: ratatui-core/widgets/crossterm split; Color::Rgb is tuple, Indexed not AnsiValue; Layout::vertical/horizontal).
+- [x] Layout: left tree (projects/features/shells), right detail + live capture-pane preview, status bar.
+- [x] Modes: Normal / Input (import, new feature, quick-send) / Confirm (delete y/n/f) / Help overlay.
+- [x] Keys: j/k/h/l/Enter/i/n/a/s/d/x/r/?/q.
+- [x] Actions: import (state+config merge), create feature (worktree add + window + agent cmd), add shell, attach (select-window), quick-send (send-keys), delete (kill windows + worktree remove + optional branch delete), remove project (kill windows, keep worktrees).
+- [x] Status polling: list-panes -a + capture-pane per shell → classify (dead>ended>failed>waiting>working>idle).
+- [x] Persistence: state.json, reconcile+prune on startup/refresh, window rediscovery + feature reconstruction from pane cwd.
+- [x] Back-key binding C-o → dashboard window (configurable).
+- [x] Smoke test: TUI renders inside tmux, in-tmux detection works.
+- [ ] M7: acceptance loop end-to-end + README + clippy/fmt clean.
 
 ### M4 — tmux layer (committed)
 - [x] Tmux::detect() (in-tmux detection via TMUX/TMUX_PANE + display-message -t pane).

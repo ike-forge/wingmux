@@ -225,6 +225,14 @@ impl Git {
         let out = Self::run_ok(wt_path, &["status", "--porcelain"])?;
         Ok(!out.stdout.trim().is_empty())
     }
+
+    /// Delete a local branch (`-D`, force — the branch is orphaned once its
+    /// worktree is gone and the feature is done).
+    pub fn branch_delete(&self, dir: &Path, branch: &str) -> Result<()> {
+        log::info!("deleting branch {branch} in {}", dir.display());
+        Self::run_ok(dir, &["branch", "-D", branch])?;
+        Ok(())
+    }
 }
 
 /// Parse `git worktree list --porcelain` output.
@@ -267,7 +275,7 @@ pub fn is_linked_worktree(dir: &Path, candidate: &Path) -> Result<bool> {
 
 /// Main repo of a linked worktree, discovered via the worktree's `.git` file
 /// (`gitdir: <main>/.git/worktrees/<id>`).
-fn main_repo_of_worktree(wt_path: &Path) -> Option<PathBuf> {
+pub(crate) fn main_repo_of_worktree(wt_path: &Path) -> Option<PathBuf> {
     let gitfile = wt_path.join(".git");
     if !gitfile.is_file() {
         return None;

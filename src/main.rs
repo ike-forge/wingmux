@@ -9,8 +9,11 @@ mod config;
 mod error;
 mod git;
 mod logging;
+mod state;
+mod status;
 mod theme;
 mod tmux;
+mod ui;
 mod util;
 
 use error::Result;
@@ -38,11 +41,29 @@ fn real_main() -> Result<()> {
         cfg.projects.len(),
         truecolor
     );
-    log::info!("theme '{}' resolved", theme.name);
-    let res = app::run();
-    match &res {
-        Ok(()) => log::info!("lazywingman exited cleanly"),
-        Err(e) => log::error!("lazywingman exited with error: {e}"),
-    }
-    res
+    let tmux = match tmux::Tmux::detect()? {
+        Some(t) => {
+            log::info!(
+                "inside tmux: session='{}' window={} pane={}",
+                t.session_name,
+                t.window_id,
+                t.pane_id
+            );
+            Some(t)
+        }
+        None => {
+            if std::env::var_os("LAZYWINGMAN_NO_TMUX").is_some() {
+                log::warn!("not inside tmux — running in no-tmux mode (tmux actions disabled)");
+                None
+            } else {
+                return Err(error::Error::Tmux(
+                    "LazyWingman must run inside tmux (TMUX env var not set). \
+                     Start it from a tmux pane, or set LAZYWINGMAN_NO_TMUX=1 to \
+                     run without tmux (tmux actions will fail)."
+                        .into(),
+                ));
+            }
+        }
+    };
+    app::run(cfg, theme, tmux)
 }

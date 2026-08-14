@@ -120,6 +120,12 @@ impl Tmux {
         run_tmux(&socket_override(), args)
     }
 
+    /// Run a raw tmux command and return stdout (used by state.rs for
+    /// pane-cwd lookups).
+    pub fn run_raw(&self, args: &[&str]) -> Result<String> {
+        self.run(args)
+    }
+
     /// Sanitise a window-name component: no colons, spaces or control chars.
     fn sanitize(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
