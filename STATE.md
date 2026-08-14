@@ -5,11 +5,22 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M2 — Config + themes** (complete, committed)
+**M4 — tmux layer** (complete, committed)
 
 ## Progress log
 
-### M2 — Config + themes (committed 0aa6da5+)
+### M4 — tmux layer (committed)
+- [x] Tmux::detect() (in-tmux detection via TMUX/TMUX_PANE + display-message -t pane).
+- [x] Window spawn (new-window -d -P -F), send-keys -l, capture-pane, select-window, kill-window, bind-key -n back-key.
+- [x] list-panes -a (NOT -t session — that only lists the active window!) filtered by session_id.
+- [x] Deterministic window names lw:<proj>/<feat>/<n>, sanitised.
+- [x] Real-tmux integration tests (5), with the pitfalls documented:
+  * Fake TMUX env breaks window creation (nested-client behavior) — keep unset in tests.
+  * `new-window` right after `new-session -d` races tmux server startup
+    ("index 0 in use") — new_window now retries 3x; test harness sleeps 150ms.
+  * static Mutex inside a GENERIC fn is per-monomorphization → put at module level.
+
+### M2 — Config + themes (committed)
 - [x] XDG config loading, commented defaults written on first run.
 - [x] Three built-in themes (dracula, gruvbox, ansi) embedded + copied to themes/.
 - [x] Truecolor detection + xterm-256 quantisation fallback; ansi theme uses only ANSI-16.

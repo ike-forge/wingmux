@@ -10,6 +10,7 @@ mod error;
 mod git;
 mod logging;
 mod theme;
+mod tmux;
 mod util;
 
 use error::Result;

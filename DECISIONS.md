@@ -8,6 +8,15 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
 - Delivery: Telegram send is impossible from this TUI session (no
   send_message tool) → zip lands in `/opt/data/`, path reported in final
   message and STATE.md.
+- **Continuation ownership**: this build runs multi-day under a rolling
+  token window. A Hermes cron job named "LazyWingman continuation"
+  (job 4807eb670450, every 6h) OWNS resumption: it reads STATE.md, continues
+  the current milestone, updates STATE.md, commits to git. If this TUI
+  session is still alive the cron stays silent and lets it work — do NOT
+  create duplicate schedulers or long-running loops; just keep STATE.md
+  current so any tick can resume cleanly. When finished, write a
+  completion marker at the top of STATE.md ("COMPLETE") so the cron goes
+  permanently silent.
 
 ## Architecture
 - Single binary crate, no lib.rs; modules: `error`, `util`, `logging`,
