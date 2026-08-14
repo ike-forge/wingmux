@@ -5,8 +5,10 @@
 //! spawns, polls, and tears down.
 
 mod app;
+mod config;
 mod error;
 mod logging;
+mod theme;
 mod util;
 
 use error::Result;
@@ -24,6 +26,17 @@ fn real_main() -> Result<()> {
         eprintln!("lazywingman: warning: cannot open log file: {e}");
     }
     log::info!("lazywingman starting (pid {})", std::process::id());
+    let cfg = config::Config::load()?;
+    let truecolor = theme::supports_truecolor();
+    let theme = theme::load(&cfg.theme, truecolor)?;
+    log::info!(
+        "config loaded: theme={} poll={}ms projects={} truecolor={}",
+        cfg.theme,
+        cfg.poll_interval_ms,
+        cfg.projects.len(),
+        truecolor
+    );
+    log::info!("theme '{}' resolved", theme.name);
     let res = app::run();
     match &res {
         Ok(()) => log::info!("lazywingman exited cleanly"),

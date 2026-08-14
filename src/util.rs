@@ -10,7 +10,7 @@
 //! per the XDG Base Directory specification.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn home() -> PathBuf {
     env::var_os("HOME")
@@ -69,27 +69,81 @@ pub fn log_path() -> PathBuf {
     state_dir().join("lazywingman.log")
 }
 
+/// Lexically resolve `.` and `..` in a path without touching the filesystem.
+/// `/a/b/../c` → `/a/c`; relative `../wt` stays relative.
+pub fn normalize_path(path: &Path) -> PathBuf {
+    use std::ffi::OsStr;
+    use std::path::Component;
+    let absolute = path.is_absolute();
+    let mut out: Vec<std::ffi::OsString> = Vec::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if out.is_empty() {
+                    if !absolute {
+                        out.push(OsStr::new("..").to_os_string());
+                    }
+                } else if out.last().map(|c| c == OsStr::new("..")).unwrap_or(false) {
+                    out.push(OsStr::new("..").to_os_string());
+                } else {
+                    out.pop();
+                }
+            }
+            Component::Normal(c) => out.push(c.to_os_string()),
+            Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    let mut p = PathBuf::new();
+    if absolute {
+        p.push(std::path::MAIN_SEPARATOR.to_string());
+    }
+    for c in out {
+        p.push(c);
+    }
+    p
+}
+
+#[cfg(test)]
+pub mod testutil {
+    //! Shared helper so env-mutating tests don't race each other. All tests
+    //! that touch XDG env vars must go through [`with_fresh_xdg`].
+    use std::sync::Mutex;
+
+    static XDG_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Run `f` with XDG dirs pointed at fresh temp directories.
+    pub fn with_fresh_xdg<R>(f: impl FnOnce() -> R) -> R {
+        let _guard = XDG_LOCK.lock().unwrap();
+        let base = std::env::temp_dir().join(format!("lwtest-{}", std::process::id()));
+        let cfg = base.join("config");
+        let state = base.join("state");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &cfg);
+            std::env::set_var("XDG_STATE_HOME", &state);
+        }
+        let r = f();
+        let _ = std::fs::remove_dir_all(&base);
+        r
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn xdg_defaults_used_when_env_unset() {
-        // We can't easily unset env vars in parallel tests; instead verify the
-        // env-var branch wins when set.
-        let tmp = std::env::temp_dir();
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", &tmp);
-            std::env::set_var("XDG_STATE_HOME", &tmp);
-        }
-        assert_eq!(config_home(), tmp);
-        assert_eq!(state_home(), tmp);
-        assert_eq!(config_path(), tmp.join("lazywingman/config.toml"));
-        assert_eq!(state_path(), tmp.join("lazywingman/state.json"));
-        unsafe {
-            std::env::remove_var("XDG_CONFIG_HOME");
-            std::env::remove_var("XDG_STATE_HOME");
-        }
+        testutil::with_fresh_xdg(|| {
+            let tmp = std::env::temp_dir().join(format!("lwtest-{}", std::process::id()));
+            assert_eq!(config_home(), tmp.join("config"));
+            assert_eq!(state_home(), tmp.join("state"));
+            assert_eq!(config_path(), tmp.join("config/lazywingman/config.toml"));
+            assert_eq!(state_path(), tmp.join("state/lazywingman/state.json"));
+        });
     }
 
     #[test]
@@ -97,5 +151,20 @@ mod tests {
         let cfg = config_path();
         assert_eq!(cfg.file_name().unwrap(), "config.toml");
         assert_eq!(cfg.parent().unwrap().file_name().unwrap(), "lazywingman");
+    }
+
+    #[test]
+    fn normalize_lexically_resolves_dotdots() {
+        assert_eq!(
+            normalize_path(Path::new("/work/projects/../wt")),
+            PathBuf::from("/work/wt")
+        );
+        assert_eq!(
+            normalize_path(Path::new("/a/./b/../c")),
+            PathBuf::from("/a/c")
+        );
+        assert_eq!(normalize_path(Path::new("../wt")), PathBuf::from("../wt"));
+        assert_eq!(normalize_path(Path::new("/a/../../b")), PathBuf::from("/b"));
+        assert_eq!(normalize_path(Path::new(".")), PathBuf::from(""));
     }
 }

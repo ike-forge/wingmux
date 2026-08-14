@@ -1,0 +1,30 @@
+# LazyWingman theme — ansi (terminal palette only)
+#
+# Uses nothing but the terminal's ANSI-16 colours, so the UI inherits
+# whatever palette your terminal emulator applies (including custom
+# colour schemes). "default" leaves the terminal's own colours untouched.
+name = "ansi"
+
+[colors]
+background = "default"
+foreground = "default"
+dim = "bright_black"
+accent = "cyan"
+selection_bg = "blue"
+selection_fg = "white"
+border = "bright_black"
+border_focused = "cyan"
+tree_project = "cyan"
+tree_feature = "green"
+tree_shell = "yellow"
+status_working = "green"
+status_waiting = "yellow"
+status_idle = "bright_black"
+status_failed = "red"
+status_dead = "bright_black"
+status_ended = "magenta"
+title_bg = "cyan"
+title_fg = "black"
+popup_bg = "black"
+popup_fg = "white"
+popup_border = "cyan"

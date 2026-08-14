@@ -5,11 +5,19 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M1 — Scaffold** (in progress)
+**M2 — Config + themes** (complete, committed)
 
 ## Progress log
 
-### M1 — Scaffold (in progress)
+### M2 — Config + themes (committed 0aa6da5+)
+- [x] XDG config loading, commented defaults written on first run.
+- [x] Three built-in themes (dracula, gruvbox, ansi) embedded + copied to themes/.
+- [x] Truecolor detection + xterm-256 quantisation fallback; ansi theme uses only ANSI-16.
+- [x] Agent presets (claude/codex) with per-agent status regexes; per-project overrides; generic fallback.
+- [x] 21 unit tests green (config parse, theme load, colour parse/quantise, path normalisation).
+- [x] First-run smoke test: config.toml + themes + log file all written, exit clean.
+
+### M1 — Scaffold (done)
 - [x] Rust toolchain installed (`~/.cargo`, rustc 1.97.1) — container had none.
 - [x] tmux 3.5a installed as non-root: `apt-get download` + `dpkg -x` into
       `~/.local/tmux-prefix`; run with
