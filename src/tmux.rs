@@ -20,7 +20,6 @@ pub struct Tmux {
     pub session_name: String,
     pub session_id: String,
     pub window_id: String,
-    pub window_name: String,
     pub pane_id: String,
 }
 
@@ -28,8 +27,6 @@ pub struct Tmux {
 #[derive(Debug, Clone)]
 pub struct PaneInfo {
     pub pane_id: String,
-    pub window_id: String,
-    pub window_name: String,
     pub current_command: String,
     pub dead: bool,
     pub width: u32,
@@ -95,11 +92,10 @@ impl Tmux {
                 "inside tmux but TMUX_PANE is unset".to_string(),
             ));
         }
-        let fmt = "#{session_name}|#{session_id}|#{window_id}|#{window_name}";
+        let fmt = "#{session_name}|#{session_id}|#{window_id}";
         let out = run_tmux(&socket, &["display-message", "-p", "-t", &pane_id, fmt])?;
-        let mut parts = out.trim().splitn(4, '|');
-        let (session_name, session_id, window_id, window_name) = (
-            parts.next().unwrap_or("").to_string(),
+        let mut parts = out.trim().splitn(3, '|');
+        let (session_name, session_id, window_id) = (
             parts.next().unwrap_or("").to_string(),
             parts.next().unwrap_or("").to_string(),
             parts.next().unwrap_or("").to_string(),
@@ -111,7 +107,6 @@ impl Tmux {
             session_name,
             session_id,
             window_id,
-            window_name,
             pane_id,
         }))
     }
@@ -155,13 +150,13 @@ impl Tmux {
     /// All panes of our session (one tmux call per poll). Uses `-a` because
     /// `list-panes -t <session>` only reports the session's *active* window.
     pub fn list_panes(&self) -> Result<Vec<PaneInfo>> {
-        let fmt = "#{pane_id}|#{window_id}|#{window_name}|#{pane_current_command}|#{pane_dead}|#{pane_width}|#{pane_height}|#{session_id}";
+        let fmt = "#{pane_id}|#{pane_current_command}|#{pane_dead}|#{pane_width}|#{pane_height}|#{session_id}";
         let out = self.run(&["list-panes", "-a", "-F", fmt])?;
         let want = format!("|{}", self.session_id);
         Ok(out
             .lines()
             .filter(|line| line.ends_with(&want))
-            .filter_map(|line| parse_pane_line(line))
+            .filter_map(parse_pane_line)
             .collect())
     }
 
@@ -296,11 +291,9 @@ impl Tmux {
 }
 
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
-    let mut it = line.splitn(8, '|');
+    let mut it = line.splitn(6, '|');
     Some(PaneInfo {
         pane_id: it.next()?.to_string(),
-        window_id: it.next()?.to_string(),
-        window_name: it.next()?.to_string(),
         current_command: it.next()?.to_string(),
         dead: it.next()? == "1",
         width: it.next()?.parse().unwrap_or(0),
@@ -336,15 +329,13 @@ mod tests {
 
     #[test]
     fn pane_line_parsing() {
-        let line = "%3|@5|lw:p/f/0|claude|0|120|40|$0";
+        let line = "%3|claude|0|120|40|$0";
         let p = parse_pane_line(line).unwrap();
         assert_eq!(p.pane_id, "%3");
-        assert_eq!(p.window_id, "@5");
-        assert_eq!(p.window_name, "lw:p/f/0");
         assert_eq!(p.current_command, "claude");
         assert!(!p.dead);
         assert_eq!(p.width, 120);
-        let dead = parse_pane_line("%9|@1|sh|sh|1|80|24|$0").unwrap();
+        let dead = parse_pane_line("%9|sh|1|80|24|$0").unwrap();
         assert!(dead.dead);
     }
 
@@ -415,7 +406,6 @@ mod tests {
             session_name: "t".into(),
             session_id: "$0".into(),
             window_id: "@0".into(),
-            window_name: "sh".into(),
             pane_id: "%0".into(),
         };
         // Guarantee the server is torn down even if the test body panics.

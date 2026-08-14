@@ -174,11 +174,9 @@ impl State {
     /// given, shells whose window has vanished are dropped too.
     pub fn prune(&mut self, tmux: Option<&Tmux>) -> Result<()> {
         let git = Git;
-        let live_windows: Option<std::collections::HashSet<String>> =
-            match tmux.and_then(|t| t.list_windows().ok()) {
-                Some(ws) => Some(ws.into_iter().map(|w| w.window_id).collect()),
-                None => None,
-            };
+        let live_windows: Option<std::collections::HashSet<String>> = tmux
+            .and_then(|t| t.list_windows().ok())
+            .map(|ws| ws.into_iter().map(|w| w.window_id).collect());
         let mut removed_projects = 0;
         let mut removed_features = 0;
         let mut removed_shells = 0;

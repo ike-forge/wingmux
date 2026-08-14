@@ -34,6 +34,11 @@ fn status_color(theme: &ResolvedColors, st: Status) -> Color {
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    // theme background
+    f.render_widget(
+        Block::default().style(Style::default().bg(app.theme.colors.background)),
+        area,
+    );
     let [main, statusbar] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
     let [tree, right] =
@@ -390,13 +395,13 @@ fn draw_statusbar(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn centered_rect(area: Rect, w_pct: u16, h_pct: u16) -> Rect {
-    let [v] = Layout::vertical([
+    let [_, v, _] = Layout::vertical([
         Constraint::Percentage((100 - h_pct) / 2),
         Constraint::Percentage(h_pct),
         Constraint::Percentage((100 - h_pct) / 2),
     ])
     .areas(area);
-    let [h] = Layout::horizontal([
+    let [_, h, _] = Layout::horizontal([
         Constraint::Percentage((100 - w_pct) / 2),
         Constraint::Percentage(w_pct),
         Constraint::Percentage((100 - w_pct) / 2),
@@ -497,7 +502,13 @@ fn draw_input(f: &mut Frame, app: &App) {
         "Enter to submit · Esc to cancel",
         fg(theme.dim),
     )));
-    f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    let popup_style = on(theme.popup_fg, theme.popup_bg);
+    f.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .style(popup_style),
+        area,
+    );
     // cursor after the typed text
     let cursor_x = inner.x + label.chars().count() as u16 + text.chars().count() as u16;
     let cursor_y = area.y + 3;
@@ -532,5 +543,60 @@ fn draw_confirm(f: &mut Frame, app: &App) {
             format!(" {} ", confirm.title),
             on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
         ));
-    f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    let popup_style = on(theme.popup_fg, theme.popup_bg);
+    f.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .style(popup_style),
+        area,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{App, Confirm, ConfirmAction, InputKind};
+    use crate::config::Config;
+    use crate::theme;
+
+    /// Render the full UI headless in every mode; must never panic.
+    #[test]
+    fn render_all_modes_headless() {
+        let cfg = Config::default();
+        let theme = theme::load("ansi", false).unwrap();
+        let mut app = App::new(cfg, theme, None);
+        app.startup().unwrap();
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        for mode in [
+            Mode::Normal,
+            Mode::Help,
+            Mode::Input {
+                kind: InputKind::ImportProject,
+                text: "/tmp/some/path".into(),
+            },
+            Mode::Confirm {
+                confirm: Confirm {
+                    title: "delete feature".into(),
+                    body: "delete 'x'?\nworktree is dirty — force will discard".into(),
+                    force_label: Some("force".into()),
+                    action: ConfirmAction::DeleteFeature {
+                        project: 0,
+                        feature: 0,
+                    },
+                },
+            },
+        ] {
+            app.mode = mode;
+            terminal
+                .draw(|f| draw(f, &mut app))
+                .expect("draw must not fail");
+        }
+        // small terminals must not panic either
+        let backend = ratatui::backend::TestBackend::new(30, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+    }
 }

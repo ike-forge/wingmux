@@ -32,13 +32,6 @@ pub fn state_home() -> PathBuf {
         .unwrap_or_else(|| home().join(".local/state"))
 }
 
-/// `$XDG_DATA_HOME` or `~/.local/share`.
-pub fn data_home() -> PathBuf {
-    env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".local/share"))
-}
-
 /// LazyWingman config directory: `$XDG_CONFIG_HOME/lazywingman`.
 pub fn config_dir() -> PathBuf {
     config_home().join("lazywingman")

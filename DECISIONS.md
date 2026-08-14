@@ -49,3 +49,19 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   ansi) embedded via `include_str!` and copied to the config dir on first run
   so the user can edit them. Truecolor when `COLORTERM` says so, else 24-bit
   values quantize to xterm-256; `ansi.toml` uses only ANSI-16 colours.
+- ratatui 0.30 was used (the crate was rewritten around ratatui-core /
+  ratatui-widgets / ratatui-crossterm): Color::Rgb is a tuple, 256-colour is
+  Color::Indexed, ANSI colors render as `38;5;0..15` through the crossterm
+  backend (still the terminal palette).
+- Status classification order settled empirically during acceptance:
+  dead > failed > working > waiting(last-line-priority) > ended > idle;
+  tail is checked before the shell-foreground heuristic because agents are
+  often launched FROM a shell.
+- tmux quirks hit & fixed: `list-panes -t <session>` only lists the active
+  window (use `-a` + filter by session_id); `new-window` right after
+  `new-session -d` races window index 0 (retry 3x); a fake TMUX env var makes
+  tmux behave as a nested client and breaks window creation; `capture-pane`
+  pads blank lines.
+- Back-key interactive fire could not be simulated in this environment (pty
+  byte-injection blocked by host guardrail) — binding registration and
+  select-window both verified separately.

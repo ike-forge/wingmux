@@ -28,45 +28,4 @@ pub enum Error {
 
     #[error("regex error: {0}")]
     Regex(#[from] regex::Error),
-
-    #[error("{context}: {source}")]
-    Wrapped {
-        context: String,
-        #[source]
-        source: Box<Error>,
-    },
-}
-
-impl Error {
-    /// Add context to an existing error (boxed to keep the enum small).
-    pub fn context(self, context: impl Into<String>) -> Error {
-        Error::Wrapped {
-            context: context.into(),
-            source: Box::new(self),
-        }
-    }
-}
-
-/// Convenience trait to attach context to any [`Result`].
-pub trait ResultContext<T> {
-    fn ctx(self, context: impl Into<String>) -> Result<T>;
-}
-
-impl<T, E> ResultContext<T> for std::result::Result<T, E>
-where
-    Error: From<E>,
-{
-    fn ctx(self, context: impl Into<String>) -> Result<T> {
-        self.map_err(|e| Error::from(e).context(context))
-    }
-}
-
-/// Helper for building stringly-typed errors (git/tmux output messages).
-pub fn err<T>(message: impl Into<String>) -> Result<T> {
-    Err(Error::Git(message.into()))
-}
-
-/// Used by tests to assert on error kinds.
-pub fn tmux_err<T>(message: impl Into<String>) -> Result<T> {
-    Err(Error::Tmux(message.into()))
 }

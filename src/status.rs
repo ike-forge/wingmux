@@ -3,10 +3,16 @@
 //! Heuristics only — the pane preview in the dashboard lets the user confirm
 //! what the classifier guessed. Order of checks:
 //!
-//! `dead` (tmux says the pane's process died) → `ended` (foreground command is
-//! a login shell, i.e. the agent exited) → `failed` (tail matches a failure
-//! pattern) → `waiting` (tail matches a prompt pattern) → `working` (tail
-//! matches a busy pattern) → `idle`.
+//! `dead` (tmux says the pane's process died) → `failed` (any line matches a
+//! failure pattern) → `waiting` if the *last* line matches a prompt pattern
+//! (the freshest signal) → `working` (any line matches a busy pattern) →
+//! `waiting` (any line) → `ended` (foreground command is a login shell *and*
+//! the tail shows no agent activity) → `idle`.
+//!
+//! The tail is checked before the shell heuristic because agents are often
+//! launched *from* a shell (e.g. `bash` running a script): the tail carries
+//! the agent's real state, the foreground command only says "a shell is in
+//! charge".
 
 use regex::Regex;
 
@@ -71,17 +77,23 @@ pub fn classify(patterns: &Compiled, tail: &str, current_command: &str, dead: bo
     if dead {
         return Status::Dead;
     }
-    if is_shell_command(current_command) {
-        return Status::Ended;
-    }
     if any_match(&patterns.failed, tail) {
         return Status::Failed;
     }
-    if any_match(&patterns.waiting, tail) {
+    // The last line is the freshest state: an agent parked at its prompt is
+    // waiting even if older lines still show busy markers.
+    let last_line = tail.lines().last().unwrap_or("");
+    if any_match(&patterns.waiting, last_line) {
         return Status::Waiting;
     }
     if any_match(&patterns.working, tail) {
         return Status::Working;
+    }
+    if any_match(&patterns.waiting, tail) {
+        return Status::Waiting;
+    }
+    if is_shell_command(current_command) {
+        return Status::Ended;
     }
     Status::Idle
 }
@@ -112,24 +124,60 @@ mod tests {
     }
 
     #[test]
-    fn ended_when_shell_is_foreground() {
+    fn shell_foreground_with_agent_tail_is_not_ended() {
+        // bash running an agent script: the tail carries the agent's state
         let p = c(&["Thinking"], &["❯"], &["Error"]);
-        assert_eq!(classify(&p, "anything", "bash", false), Status::Ended);
-        assert_eq!(classify(&p, "anything", "zsh", false), Status::Ended);
+        assert_eq!(classify(&p, "Thinking...", "bash", false), Status::Working);
+        assert_eq!(
+            classify(&p, "What would you like to do? ❯", "bash", false),
+            Status::Waiting
+        );
+        assert_eq!(classify(&p, "✖ Error: boom", "zsh", false), Status::Failed);
+        // ... but a bare shell with no agent signal is Ended
+        assert_eq!(
+            classify(&p, "nothing matches", "bash", false),
+            Status::Ended
+        );
     }
 
     #[test]
-    fn failed_beats_waiting_beats_working() {
+    fn last_line_prompt_beats_stale_busy_lines() {
+        let p = c(
+            &["Thinking", "Working"],
+            &["What would you like to do"],
+            &["Error"],
+        );
+        // banner says "Thinking" but the agent is parked at its prompt now
+        assert_eq!(
+            classify(
+                &p,
+                "Thinking about the task...\nDone.\nWhat would you like to do? ❯",
+                "bash",
+                false
+            ),
+            Status::Waiting
+        );
+        // mid-task: the busy line is on the bottom → working
+        assert_eq!(
+            classify(
+                &p,
+                "What would you like to do? ❯ busy 2\nWorking on it (2)...",
+                "bash",
+                false
+            ),
+            Status::Working
+        );
+    }
+
+    #[test]
+    fn failed_beats_working_beats_waiting() {
         let p = c(&["Thinking"], &["❯"], &["Error:"]);
         assert_eq!(classify(&p, "Error: boom", "claude", false), Status::Failed);
         assert_eq!(
-            classify(&p, "Thinking... ❯", "claude", false),
+            classify(&p, "Thinking...\n❯", "claude", false),
             Status::Waiting
         );
-        assert_eq!(
-            classify(&p, "Thinking...", "claude", false),
-            Status::Working
-        );
+        assert_eq!(classify(&p, "❯", "claude", false), Status::Waiting);
     }
 
     #[test]
@@ -139,14 +187,6 @@ mod tests {
             classify(&p, "nothing matches", "claude", false),
             Status::Idle
         );
-    }
-
-    #[test]
-    fn agent_process_name_beats_tail() {
-        // an agent binary in the foreground is never "ended" even if the
-        // tail shows a shell prompt
-        let p = c(&[], &["\\$"], &[]);
-        assert_eq!(classify(&p, "$ ", "claude", false), Status::Waiting);
     }
 
     #[test]

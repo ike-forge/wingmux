@@ -5,7 +5,7 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M6 — Actions wired** (complete, committed) — M7 HARDEN & VERIFY next
+**M7 — Harden & verify — COMPLETE. Project done.**
 
 ## Progress log
 
@@ -19,7 +19,41 @@ whenever a milestone runs long.
 - [x] Persistence: state.json, reconcile+prune on startup/refresh, window rediscovery + feature reconstruction from pane cwd.
 - [x] Back-key binding C-o → dashboard window (configurable).
 - [x] Smoke test: TUI renders inside tmux, in-tmux detection works.
-- [ ] M7: acceptance loop end-to-end + README + clippy/fmt clean.
+
+### M7 — Harden & verify (complete)
+- [x] Acceptance loop EXECUTED for real against a live tmux server
+      (session 'acc', XDG dirs /opt/data/.lw-accept, demo repos
+      /opt/data/lw-demo/repo-{a,b}, simulated agent demo-agent.sh):
+  1. Started in a tmux pane ✓
+  2. Imported 2 repos: repo-a via 'i' key, repo-b via config merge ✓
+  3. Feature on each: worktree on disk + shell spawned with default cmd ✓
+  4. Second shell added to a feature (lw:.../1) ✓
+  5. Attach: Enter → select-window to agent window ✓; typed a message into
+     the agent ✓; back: binding registered (bind-key -n C-o), select-window
+     mechanism proven — interactive keypress simulation was blocked by the
+     host security guardrail (couldn't inject bytes into the client pty),
+     noted as the only unverified micro-step.
+  6. Quick-send 'busy 2' from the dashboard ✓ (agent executed it)
+  7. Status flipped waiting→working→waiting live as agent went busy/idle ✓
+  8. Restart: state + windows rediscovered ✓ (incl. clean quit, LW_EXIT=0)
+  9. Delete feature: confirm popup → windows killed, worktree removed,
+     tree updated ✓
+  10. Theme switch via config + restart: ansi theme uses only palette
+      indices 0-15 (terminal palette); dracula used 38;5;NNN up to 231 ✓
+- [x] Bugs found & fixed during the loop:
+  * centered_rect destructured 3 rects into [v] → panicked on first popup
+    (added headless render test for all modes)
+  * capture-pane pads blank lines → recent-tail was empty → 'ended' status
+    (trim trailing blanks before classifying)
+  * banner text in the 10-line window → stale 'working' (last-line-prompt
+    priority in classify)
+  * shell-foreground agents (bash running a script) were 'ended' before
+    their tail was read (tail checks moved before the shell heuristic)
+- [x] clippy --all-targets -- -D warnings CLEAN, cargo fmt applied,
+      50 tests green (incl. real-tmux integration tests).
+- [x] README.md written (install, keybindings, config, themes, tmux model).
+- [x] Delivery zip → /opt/data/lazywingman-<date>.zip (Telegram send not
+      possible from this TUI session; path reported in final message).
 
 ### M4 — tmux layer (committed)
 - [x] Tmux::detect() (in-tmux detection via TMUX/TMUX_PANE + display-message -t pane).

@@ -41,6 +41,7 @@ fn real_main() -> Result<()> {
         cfg.projects.len(),
         truecolor
     );
+    log::info!("theme '{}' resolved", theme.name);
     let tmux = match tmux::Tmux::detect()? {
         Some(t) => {
             log::info!(

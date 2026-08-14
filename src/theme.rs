@@ -13,7 +13,7 @@
 //! The `ansi` theme uses only ANSI-16 colours, so it always inherits the
 //! terminal's palette.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ratatui::style::Color;
 use serde::Deserialize;
@@ -333,11 +333,6 @@ fn resolve_theme(file: ThemeFile, truecolor: bool) -> Result<Theme> {
             popup_border: c.popup_border.resolve(truecolor),
         },
     })
-}
-
-/// Where user themes live (used by the UI to hint at customisation).
-pub fn themes_dir() -> PathBuf {
-    crate::util::themes_dir()
 }
 
 #[cfg(test)]

@@ -14,6 +14,9 @@ use crate::status::{self, Compiled, Status};
 use crate::theme::Theme;
 use crate::tmux::{PaneInfo, Tmux};
 
+/// Lines of the capture used for status classification.
+const RECENT_TAIL_LINES: usize = 10;
+
 /// A node in the projects/features/shells tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sel {
@@ -233,10 +236,10 @@ impl App {
     fn collapse_or_up(&mut self) {
         match self.sel {
             Sel::Project(pi) => {
-                if let Some(e) = self.proj_expanded.get_mut(pi) {
-                    if *e {
-                        *e = false;
-                    }
+                if let Some(e) = self.proj_expanded.get_mut(pi)
+                    && *e
+                {
+                    *e = false;
                 }
             }
             Sel::Feature(pi, fi) => {
@@ -383,7 +386,9 @@ impl App {
                 pane_id: Some(w.pane_id),
             }],
         });
-        self.feat_expanded.get_mut(pi).map(|v| v.push(false));
+        if let Some(v) = self.feat_expanded.get_mut(pi) {
+            v.push(false);
+        }
         self.sel = Sel::Feature(pi, self.state.projects[pi].features.len() - 1);
         self.clamp_sel();
         self.save_state()?;
@@ -492,7 +497,9 @@ impl App {
             }
         }
         self.state.projects[pi].features.remove(fi);
-        self.feat_expanded.get_mut(pi).map(|v| v.remove(fi));
+        if let Some(v) = self.feat_expanded.get_mut(pi) {
+            v.remove(fi);
+        }
         self.clamp_sel();
         self.save_state()?;
         self.message = Some(format!("feature '{}' deleted", feat.name));
@@ -660,8 +667,22 @@ impl App {
                     continue;
                 }
             };
+            // Classify on the *recent* tail only — stale lines from the
+            // banner would otherwise keep a waiting agent "working".
+            // capture-pane pads the pane's empty area with blank lines, so
+            // trailing blanks are trimmed first.
+            let mut tail_lines: Vec<&str> = tail.lines().collect();
+            while tail_lines
+                .last()
+                .map(|l| l.trim().is_empty())
+                .unwrap_or(false)
+            {
+                tail_lines.pop();
+            }
+            let start = tail_lines.len().saturating_sub(RECENT_TAIL_LINES);
+            let recent = tail_lines[start..].join("\n");
             let pat = self.patterns_for(&path, &cmd);
-            let st = status::classify(&pat, &tail, &current_cmd, dead);
+            let st = status::classify(&pat, &recent, &current_cmd, dead);
             self.statuses.insert(pid.clone(), st);
             if Some(&pid) == sel_pane.as_ref() {
                 self.captures.insert(pid.clone(), tail);
@@ -881,10 +902,10 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
         let since = app.last_poll.elapsed();
         let until_poll = Duration::from_millis(app.cfg.poll_interval_ms).saturating_sub(since);
         let timeout = until_poll.min(Duration::from_millis(100));
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                app.on_key(key);
-            }
+        if event::poll(timeout)?
+            && let Event::Key(key) = event::read()?
+        {
+            app.on_key(key);
         }
     }
     Ok(())

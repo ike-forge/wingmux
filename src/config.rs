@@ -120,7 +120,7 @@ pub struct DefaultsConfig {
     pub agent_shell: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct AgentConfig {
     pub name: String,
@@ -137,7 +137,7 @@ pub struct StatusPatterns {
     pub failed: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ProjectConfig {
     pub path: String,
@@ -208,28 +208,6 @@ impl Default for DefaultsConfig {
         DefaultsConfig {
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-        }
-    }
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        AgentConfig {
-            name: String::new(),
-            command: String::new(),
-            shell: None,
-            patterns: StatusPatterns::default(),
-        }
-    }
-}
-
-impl Default for ProjectConfig {
-    fn default() -> Self {
-        ProjectConfig {
-            path: String::new(),
-            base_branch: None,
-            agent: None,
-            agent_command: None,
         }
     }
 }
@@ -349,6 +327,8 @@ pub fn generic_patterns() -> StatusPatterns {
 pub struct EffectiveAgent {
     pub command: String,
     pub shell: String,
+    /// Status patterns resolved for this agent (asserted in tests).
+    #[allow(dead_code)]
     pub patterns: StatusPatterns,
 }
 
@@ -370,6 +350,7 @@ impl Config {
     }
 
     /// Load from an explicit string (tests / previews).
+    #[allow(dead_code)]
     pub fn from_str(text: &str) -> Result<Config> {
         let cfg: Config =
             toml::from_str(text).map_err(|e| Error::Config(format!("config parse: {e}")))?;
@@ -439,20 +420,31 @@ impl Config {
     }
 
     /// Status patterns for a raw command string: matches the preset whose
-    /// command is a prefix of it (e.g. `codex exec` → codex preset), else
-    /// built-in defaults by command word, else generic.
+    /// command is a prefix of it (e.g. `codex exec` → codex preset) or its
+    /// file name (e.g. `/opt/bin/demo-agent.sh` → `demo-agent.sh` preset),
+    /// else built-in defaults by command word, else generic.
     pub fn patterns_for(&self, command: &str) -> Option<StatusPatterns> {
+        let file_name = Path::new(command)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
         for a in &self.agents {
             if !a.command.is_empty()
                 && a.patterns.is_nonempty()
                 && (command == a.command
                     || command.starts_with(&format!("{} ", a.command))
-                    || command.contains(&format!(" {} ", a.command)))
+                    || command.contains(&format!(" {} ", a.command))
+                    || file_name == a.command
+                    || file_name.starts_with(&format!("{} ", a.command)))
             {
                 return Some(a.patterns.clone());
             }
         }
-        let first_word = command.split_whitespace().next().unwrap_or("");
+        let first_word = if file_name.is_empty() {
+            command.split_whitespace().next().unwrap_or("")
+        } else {
+            &file_name
+        };
         builtin_patterns(first_word).filter(|p| p.is_nonempty())
     }
 

@@ -13,7 +13,6 @@ use crate::error::{Error, Result};
 #[derive(Debug)]
 pub struct GitOutput {
     pub stdout: String,
-    pub stderr: String,
 }
 
 /// A worktree as reported by `git worktree list --porcelain`.
@@ -26,6 +25,8 @@ pub struct WorktreeInfo {
 }
 
 impl WorktreeInfo {
+    /// Short branch name (`refs/heads/x` → `x`).
+    #[allow(dead_code)] // used by tests
     pub fn branch_short(&self) -> Option<&str> {
         self.branch
             .as_deref()
@@ -83,7 +84,6 @@ impl Git {
         let out = Self::command(dir, args).output()?;
         Ok(GitOutput {
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         })
     }
 
@@ -99,7 +99,6 @@ impl Git {
         }
         Ok(GitOutput {
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         })
     }
 
@@ -261,16 +260,6 @@ pub fn parse_worktree_porcelain(text: &str) -> Vec<WorktreeInfo> {
         }
     }
     out
-}
-
-/// Is the path a linked worktree of `dir`? (Used by state reconciliation.)
-pub fn is_linked_worktree(dir: &Path, candidate: &Path) -> Result<bool> {
-    for wt in Git.worktree_list(dir)? {
-        if wt.path == candidate {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 /// Main repo of a linked worktree, discovered via the worktree's `.git` file
