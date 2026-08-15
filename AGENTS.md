@@ -54,8 +54,9 @@ global TUI rules on purpose, say so here with the reason.
 - Conventional-ish commits; milestone-prefixed for milestones (`M7: …`,
   `chore: …`)
 - Identity: `LazyWingman Builder <builder@lazywingman.local>`
-- Commit freely; **never push, never force, never rewrite history** without
-  an explicit user instruction
+- Commit freely; **push at the end of every finished unit of work**
+  (feature/change). Doc/planning commits may be pushed midway (optional).
+  Never force-push or rewrite history.
 - Remote: `origin` → `git@github.com:ikempf/lazywingman.git` (deploy key)
 
 ## Links out
