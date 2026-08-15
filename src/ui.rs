@@ -481,7 +481,7 @@ fn draw_input(f: &mut Frame, app: &App) {
     };
     let inner = Rect {
         x: area.x + 1,
-        y: area.y + 2,
+        y: area.y + 1,
         width: area.width.saturating_sub(2),
         height: area.height.saturating_sub(2),
     };
@@ -509,9 +509,10 @@ fn draw_input(f: &mut Frame, app: &App) {
             .style(popup_style),
         area,
     );
-    // cursor after the typed text
+    // cursor after the typed text, on the input row (the second content
+    // line below the border: one spacer line, then label + text)
     let cursor_x = inner.x + label.chars().count() as u16 + text.chars().count() as u16;
-    let cursor_y = area.y + 3;
+    let cursor_y = inner.y + 1;
     f.set_cursor_position(Position::new(cursor_x, cursor_y));
 }
 
@@ -598,5 +599,49 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(30, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
+    }
+
+    /// The input popup's block cursor must sit on the input text row, right
+    /// after the typed text. Regression: it used to be drawn one row low
+    /// (area.y + 3 instead of area.y + 2), making the caret appear below
+    /// the text in every input popup (new feature, quick-send, import).
+    #[test]
+    fn input_popup_cursor_sits_on_input_row() {
+        let cfg = Config::default();
+        let theme = theme::load("ansi", false).unwrap();
+        let mut app = App::new(cfg, theme, None);
+        app.startup().unwrap();
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        for (kind, label, text) in [
+            (
+                InputKind::ImportProject,
+                "repo path (absolute): ",
+                "/tmp/repo",
+            ),
+            (InputKind::NewFeature, "feature name: ", "foo"),
+            (InputKind::QuickSend, "send to agent: ", "busy 2"),
+        ] {
+            app.mode = Mode::Input {
+                kind,
+                text: text.into(),
+            };
+            terminal
+                .draw(|f| draw(f, &mut app))
+                .expect("draw must not fail");
+
+            // popup area for this backend size, same math as draw_input
+            let area = centered_rect(terminal.size().unwrap().into(), 60, 18);
+            let expected_x =
+                area.x + 1 + label.chars().count() as u16 + text.chars().count() as u16;
+            let expected_y = area.y + 2; // input row = second content line below the border
+            assert_eq!(
+                terminal.get_cursor_position().unwrap(),
+                Position::new(expected_x, expected_y),
+                "cursor must sit on the input row after the typed text ({label:?})",
+            );
+        }
     }
 }

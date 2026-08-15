@@ -6,8 +6,25 @@ whenever a milestone runs long.
 ## Current milestone
 
 **M7 — Harden & verify — COMPLETE. Project done.**
+**M7.1 — Feedback fix (input popup cursor) — COMPLETE.**
 
 ## Progress log
+
+### M7.1 — Feedback fix: input popup cursor offset (committed)
+- [x] Bug: the block cursor in the input popups (new feature, quick-send,
+      import) was drawn one row BELOW the typed text — `cursor_y =
+      area.y + 3` while the input line (`lines[1]`, after the border +
+      one spacer line) renders at `area.y + 2`. The caret visually
+      belonged to the empty spacer row under the text.
+- [x] Fix: `inner` rect's `y` corrected to `area.y + 1` (content starts
+      below the border) and `cursor_y = inner.y + 1` (the input row).
+      One shared code path (`draw_input`) served all three popup kinds,
+      so a single fix covers new feature / quick-send / import.
+- [x] Regression test `ui::tests::input_popup_cursor_sits_on_input_row`:
+      renders all three input kinds headless and asserts the exact cursor
+      position. Verified it FAILS on the old offset and passes on the fix.
+- [x] Gating green: fmt clean, clippy --all-targets -D warnings,
+      51 tests (50 + 1 new).
 
 ### M5+M6 — TUI + actions (committed)
 - [x] ratatui 0.30 (rewritten crate: ratatui-core/widgets/crossterm split; Color::Rgb is tuple, Indexed not AnsiValue; Layout::vertical/horizontal).
