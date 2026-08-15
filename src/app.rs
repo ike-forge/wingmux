@@ -71,6 +71,9 @@ pub struct App {
     pattern_cache: HashMap<String, Compiled>,
     pub last_poll: Instant,
     pub message: Option<String>,
+    /// Set by `attach` when the dashboard runs standalone: the event loop
+    /// hands the terminal over to `tmux attach -t <session>` and resumes.
+    pub pending_attach: Option<String>,
     pub quit: bool,
 }
 
@@ -91,29 +94,55 @@ impl App {
             pattern_cache: HashMap::new(),
             last_poll: Instant::now(),
             message: None,
+            pending_attach: None,
             quit: false,
         }
     }
 
     // ---------------------------------------------------------- lifecycle
 
-    /// Load state, reconcile against reality, bind the back key.
+    /// Load state, reconcile against reality, bind the back keys.
     pub fn startup(&mut self) -> Result<()> {
         self.state = State::load()?;
         self.merge_config_projects()?;
         if let Some(tmux) = &self.tmux {
             self.state.reconcile(tmux)?;
             self.state.prune(Some(tmux))?;
-            tmux.bind_back_key(&self.cfg.tmux.back_key)?;
-            log::info!(
-                "back key {} → dashboard window {}",
-                self.cfg.tmux.back_key,
-                tmux.window_id
-            );
+            self.bind_back_keys(tmux)?;
         }
         self.build_tree_flags();
         self.clamp_sel();
         self.save_state()?;
+        Ok(())
+    }
+
+    /// Bind the back-key in every live agent session so the user can jump
+    /// back to the dashboard from any agent window. Only meaningful when
+    /// the dashboard itself runs inside tmux.
+    fn bind_back_keys(&self, tmux: &Tmux) -> Result<()> {
+        let Some(inside) = &tmux.inside else {
+            return Ok(());
+        };
+        let mut bound = 0;
+        for proj in &self.state.projects {
+            if let Some(sess) = &proj.session_name
+                && tmux.session_exists(sess)
+            {
+                tmux.bind_back_key(
+                    &self.cfg.tmux.back_key,
+                    &inside.session_name,
+                    &inside.window_id,
+                )?;
+                bound += 1;
+            }
+        }
+        if bound > 0 {
+            log::info!(
+                "back key {} bound in {bound} agent session(s) → dashboard {}",
+                self.cfg.tmux.back_key,
+                inside.window_id
+            );
+        }
         Ok(())
     }
 
@@ -146,6 +175,7 @@ impl App {
                 base_branch: base,
                 agent_command: agent.command,
                 agent_shell: agent.shell,
+                session_name: None,
                 features: Vec::new(),
             });
             imported += 1;
@@ -282,7 +312,58 @@ impl App {
     fn require_tmux(&self) -> Result<Tmux> {
         self.tmux
             .clone()
-            .ok_or_else(|| Error::Tmux("not running inside tmux (LAZYWINGMAN_NO_TMUX mode)".into()))
+            .ok_or_else(|| Error::Tmux("no tmux server available".into()))
+    }
+
+    /// The dedicated agent-session name for a project. Deterministic:
+    /// `wingman-session-<slug>`, suffixed with a stable hash of the path
+    /// when another project already owns that name or a foreign session
+    /// occupies it.
+    fn agent_session_name(&self, tmux: &Tmux, proj: &crate::state::Project) -> String {
+        let base = Tmux::session_name(&proj.name);
+        let taken_by_other = self
+            .state
+            .projects
+            .iter()
+            .any(|p| p.path != proj.path && p.session_name.as_deref() == Some(&base));
+        if taken_by_other || tmux.session_exists(&base) {
+            format!("{base}-{}", Tmux::hash_suffix(&proj.path))
+        } else {
+            base
+        }
+    }
+
+    /// Make sure the project's agent session exists, creating it if needed.
+    /// Returns the session name and, when a NEW session was created, its
+    /// first window (already running `shell` in `cwd`).
+    fn ensure_agent_session(
+        &mut self,
+        tmux: &Tmux,
+        proj: &crate::state::Project,
+        first_window: &str,
+        cwd: &std::path::Path,
+        shell: &str,
+    ) -> Result<(String, Option<crate::tmux::WindowRef>)> {
+        let name = match &proj.session_name {
+            Some(n) if tmux.session_exists(n) => n.clone(),
+            _ => self.agent_session_name(tmux, proj),
+        };
+        if tmux.session_exists(&name) {
+            return Ok((name, None));
+        }
+        let w = tmux.new_session(&name, first_window, cwd, shell)?;
+        if let Some(inside) = &tmux.inside {
+            let _ = tmux.bind_back_key(
+                &self.cfg.tmux.back_key,
+                &inside.session_name,
+                &inside.window_id,
+            );
+        }
+        log::info!(
+            "created agent session {name} (first window {})",
+            w.window_id
+        );
+        Ok((name, Some(w)))
     }
 
     pub fn import_project(&mut self, path: &str) -> Result<()> {
@@ -318,6 +399,7 @@ impl App {
             base_branch: base,
             agent_command: agent.command,
             agent_shell: agent.shell,
+            session_name: None,
             features: Vec::new(),
         });
         self.build_tree_flags();
@@ -369,11 +451,18 @@ impl App {
         }
         Git.worktree_add(&proj.path, &root, &slug, &base)?;
 
-        // spawn the agent shell in the new worktree
-        let wname = Tmux::window_name(&proj.name, &slug, 0);
-        let w = tmux.new_window(&wname, &root, &proj.agent_shell)?;
+        // spawn the agent shell in the project's dedicated session (created
+        // on demand; never touches the dashboard's own session)
+        let wname = Tmux::window_name(&slug, 0);
+        let (session_name, window) =
+            self.ensure_agent_session(&tmux, &proj, &wname, &root, &proj.agent_shell)?;
+        let w = match window {
+            Some(w) => w,
+            None => tmux.new_window(&session_name, &wname, &root, &proj.agent_shell)?,
+        };
         tmux.send_keys(&w.pane_id, &proj.agent_command, true)?;
 
+        self.state.projects[pi].session_name = Some(session_name.clone());
         self.state.projects[pi].features.push(Feature {
             name: name.to_string(),
             branch: slug,
@@ -410,9 +499,25 @@ impl App {
             .cloned()
             .ok_or_else(|| Error::State(format!("feature index {fi} out of range")))?;
         let idx = feat.shells.len();
-        let wname = Tmux::window_name(&proj.name, &feat.branch, idx);
-        let w = tmux.new_window(&wname, &feat.worktree_path, &proj.agent_shell)?;
+        let wname = Tmux::window_name(&feat.branch, idx);
+        let (session_name, window) = self.ensure_agent_session(
+            &tmux,
+            &proj,
+            &wname,
+            &feat.worktree_path,
+            &proj.agent_shell,
+        )?;
+        let w = match window {
+            Some(w) => w,
+            None => tmux.new_window(
+                &session_name,
+                &wname,
+                &feat.worktree_path,
+                &proj.agent_shell,
+            )?,
+        };
         tmux.send_keys(&w.pane_id, &proj.agent_command, true)?;
+        self.state.projects[pi].session_name = Some(session_name.clone());
         self.state.projects[pi].features[fi].shells.push(Shell {
             index: idx,
             window_name: wname,
@@ -438,12 +543,27 @@ impl App {
             self.message = Some("shell has no live window".into());
             return;
         };
-        match self.require_tmux().and_then(|t| t.select_window(wid)) {
-            Ok(()) => log::info!("attached to {}", sh.window_name),
-            Err(e) => {
-                self.message = Some(format!("attach failed: {e}"));
-                log::error!("attach failed: {e}");
+        let Some(session) = self.state.projects[pi].session_name.clone() else {
+            self.message = Some("project has no agent session".into());
+            return;
+        };
+        let res = match self.require_tmux() {
+            Ok(t) if t.inside.is_some() => t.attach_switch(&session, wid).map(|_| {
+                log::info!("attached (switch-client) to {}", sh.window_name);
+            }),
+            Ok(t) => {
+                // standalone dashboard: select the window clientless, then
+                // hand the terminal over; the event loop does the dance
+                t.select_window_in_session(&session, wid).map(|_| {
+                    self.pending_attach = Some(session);
+                    log::info!("handing terminal over to {}", sh.window_name);
+                })
             }
+            Err(e) => Err(e),
+        };
+        if let Err(e) = res {
+            self.message = Some(format!("attach failed: {e}"));
+            log::error!("attach failed: {e}");
         }
     }
 
@@ -489,6 +609,21 @@ impl App {
                 }
             }
         }
+        // Killing a session's last window destroys the session; if it
+        // survives (other features still have shells), keep it.
+        if let Some(sess) = &proj.session_name
+            && tmux.session_exists(sess)
+            && tmux
+                .list_windows(sess)
+                .map(|ws| {
+                    ws.iter()
+                        .all(|w| !crate::tmux::is_lazywingman_window(&w.window_name))
+                })
+                .unwrap_or(false)
+        {
+            log::info!("agent session {sess} has no shells left, killing it");
+            let _ = tmux.kill_session(sess);
+        }
         Git.worktree_remove(&feat.worktree_path, force)?;
         if self.cfg.worktrees.delete_branch {
             match Git.branch_delete(&proj.path, &feat.branch) {
@@ -520,6 +655,13 @@ impl App {
                     let _ = tmux.kill_window(wid);
                 }
             }
+        }
+        // Tear down the project's agent session entirely (idempotent).
+        if let Some(sess) = &proj.session_name
+            && tmux.session_exists(sess)
+        {
+            log::info!("killing agent session {sess}");
+            let _ = tmux.kill_session(sess);
         }
         self.state.projects.remove(pi);
         self.proj_expanded.remove(pi);
@@ -875,8 +1017,8 @@ fn now_str() -> String {
 }
 
 /// The main loop: draw, poll on interval, handle keys.
-pub fn run(cfg: Config, theme: Theme, tmux: Option<Tmux>) -> Result<()> {
-    let mut app = App::new(cfg, theme, tmux);
+pub fn run(cfg: Config, theme: Theme, tmux: Tmux) -> Result<()> {
+    let mut app = App::new(cfg, theme, Some(tmux));
     if let Err(e) = app.startup() {
         // before the terminal is taken over, stderr is safe
         eprintln!("lazywingman: startup failed: {e}");
@@ -891,6 +1033,24 @@ pub fn run(cfg: Config, theme: Theme, tmux: Option<Tmux>) -> Result<()> {
 
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     loop {
+        // Standalone attach: hand the terminal over to `tmux attach` and
+        // resume the TUI when the user detaches.
+        if let Some(session) = app.pending_attach.take() {
+            let res = (|| -> Result<()> {
+                ratatui::restore();
+                let tmux = app.require_tmux()?;
+                let r = tmux.attach_handoff(&session);
+                ratatui::init();
+                r
+            })();
+            if let Err(e) = res {
+                app.message = Some(format!("attach handoff failed: {e}"));
+                log::error!("attach handoff failed: {e}");
+            } else {
+                log::info!("returned from tmux attach ({session})");
+            }
+            continue;
+        }
         terminal.draw(|f| crate::ui::draw(f, app))?;
         if app.quit {
             break;

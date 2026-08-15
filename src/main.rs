@@ -1,8 +1,10 @@
-//! LazyWingman — a tmux-native control centre for supervising coding agents.
+//! LazyWingman — a control centre for supervising coding agents.
 //!
-//! Runs as a pane inside an existing tmux session. Agent shells live in
-//! deterministic tmux windows (`lw:<project>/<feature>/<n>`) that LazyWingman
-//! spawns, polls, and tears down.
+//! Agent shells live in dedicated tmux sessions
+//! (`wingman-session-<project>`) that LazyWingman spawns, polls, and tears
+//! down — never in the user's own session. The dashboard itself runs either
+//! inside tmux (as a pane of the user's session) or standalone in a plain
+//! terminal; both are supported.
 
 mod app;
 mod config;
@@ -42,29 +44,15 @@ fn real_main() -> Result<()> {
         truecolor
     );
     log::info!("theme '{}' resolved", theme.name);
-    let tmux = match tmux::Tmux::detect()? {
-        Some(t) => {
-            log::info!(
-                "inside tmux: session='{}' window={} pane={}",
-                t.session_name,
-                t.window_id,
-                t.pane_id
-            );
-            Some(t)
-        }
-        None => {
-            if std::env::var_os("LAZYWINGMAN_NO_TMUX").is_some() {
-                log::warn!("not inside tmux — running in no-tmux mode (tmux actions disabled)");
-                None
-            } else {
-                return Err(error::Error::Tmux(
-                    "LazyWingman must run inside tmux (TMUX env var not set). \
-                     Start it from a tmux pane, or set LAZYWINGMAN_NO_TMUX=1 to \
-                     run without tmux (tmux actions will fail)."
-                        .into(),
-                ));
-            }
-        }
-    };
+    let tmux = tmux::Tmux::detect()?;
+    match &tmux.inside {
+        Some(i) => log::info!(
+            "dashboard inside tmux: session='{}' window={} pane={}",
+            i.session_name,
+            i.window_id,
+            i.pane_id
+        ),
+        None => log::info!("dashboard standalone (no tmux around it)"),
+    }
     app::run(cfg, theme, tmux)
 }

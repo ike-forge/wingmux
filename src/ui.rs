@@ -375,11 +375,13 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_statusbar(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
-    let session = app
-        .tmux
-        .as_ref()
-        .map(|t| format!("session {}", t.session_name))
-        .unwrap_or_else(|| "no tmux".into());
+    let session = match &app.tmux {
+        Some(t) => match &t.inside {
+            Some(i) => format!("dashboard: {}", i.session_name),
+            None => "standalone".into(),
+        },
+        None => "no tmux".into(),
+    };
     let left = format!(" lazywingman · {session} ");
     let right = format!(" poll {}ms · ? help · q quit ", app.cfg.poll_interval_ms);
     let msg = app

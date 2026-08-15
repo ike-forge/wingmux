@@ -2,8 +2,14 @@
 //!
 //! Stored as JSON in `$XDG_STATE_HOME/lazywingman/state.json`. On startup the
 //! state is reconciled against reality (`git worktree list`,
-//! `tmux list-windows`) so stale entries self-heal and running shells are
-//! rediscovered after a restart.
+//! `tmux list-sessions` + per-session `list-windows`) so stale entries
+//! self-heal and running shells are rediscovered after a restart.
+//!
+//! Schema v2: agent shells live in dedicated tmux sessions
+//! (`wingman-session-<project>`, one per project) instead of windows in the
+//! dashboard's session. v1 files load through serde defaults; v1 shells are
+//! pruned on the first v2 reconcile (their windows are not in any agent
+//! session), while projects and worktrees survive.
 
 use std::path::PathBuf;
 
@@ -11,10 +17,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::git::Git;
-use crate::tmux::{Tmux, is_lazywingman_window};
+use crate::tmux::{Tmux, is_lazywingman_session, is_lazywingman_window};
+
+pub const STATE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct State {
+    #[serde(default)]
+    pub version: u32,
     pub projects: Vec<Project>,
 }
 
@@ -27,6 +37,10 @@ pub struct Project {
     /// Resolved agent command/shell (from config or defaults).
     pub agent_command: String,
     pub agent_shell: String,
+    /// The dedicated tmux session holding this project's shells
+    /// (`wingman-session-<slug>`), if any has been created.
+    #[serde(default)]
+    pub session_name: Option<String>,
     pub features: Vec<Feature>,
 }
 
@@ -53,8 +67,19 @@ impl State {
     pub fn load() -> Result<State> {
         let path = crate::util::state_path();
         match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text)
-                .map_err(|e| Error::State(format!("{}: {e}", path.display()))),
+            Ok(text) => {
+                let mut state: State = serde_json::from_str(&text)
+                    .map_err(|e| Error::State(format!("{}: {e}", path.display())))?;
+                if state.version != STATE_VERSION {
+                    log::info!(
+                        "state v{} → v{} (schema migration)",
+                        state.version,
+                        STATE_VERSION
+                    );
+                    state.version = STATE_VERSION;
+                }
+                Ok(state)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
             Err(e) => Err(Error::Io(e)),
         }
@@ -72,56 +97,93 @@ impl State {
         Ok(())
     }
 
-    /// Reconcile tmux windows against state: fill in window/pane ids and
-    /// reconstruct features that exist on disk but not in state.
+    /// Reconcile tmux sessions against state: fill in window/pane ids and
+    /// reconstruct features that exist on disk but not in state. Windows are
+    /// matched inside the project's dedicated agent session, never in the
+    /// dashboard's own session.
     pub fn reconcile(&mut self, tmux: &Tmux) -> Result<()> {
-        let windows = tmux.list_windows()?;
-        for w in &windows {
-            if !is_lazywingman_window(&w.window_name) {
+        let sessions = tmux.list_sessions()?;
+        for s in &sessions {
+            if !is_lazywingman_session(&s.name) {
                 continue;
             }
-            let Some((pname, fname, idx)) = parse_window_name(&w.window_name) else {
-                continue;
-            };
-            // Match the project by sanitised name (window names are built
-            // from the project's display name through the same sanitise).
+            let slug = s
+                .name
+                .trim_start_matches(crate::tmux::SESSION_PREFIX)
+                .to_string();
+            let windows = tmux.list_windows(&s.name)?;
+            // Which project owns this session? Exact session-name match
+            // first; else the slug matches the project's sanitised name;
+            // else a hash-suffixed session; else reconstruct from pane cwd.
             let proj_idx = self
                 .projects
                 .iter()
-                .position(|p| sanitize_name(&p.name) == pname);
-            let Some(proj_idx) = proj_idx else {
-                // Project not in state — try reconstructing from the pane's
-                // cwd (the worktree path) and its git metadata.
-                if let Some(path) = pane_cwd(tmux, &w.pane_id) {
-                    self.reconstruct_feature(&path, &pname, &fname, idx);
-                }
-                continue;
-            };
-            let proj = &mut self.projects[proj_idx];
-            // Features are matched by their branch slug.
-            let feat_idx = proj
-                .features
-                .iter()
-                .position(|f| sanitize_name(&f.branch) == fname);
-            let Some(fi) = feat_idx else {
-                // Feature state lost but window alive: reconstruct from disk.
-                if let Some(path) = pane_cwd(tmux, &w.pane_id) {
-                    self.reconstruct_feature(&path, &pname, &fname, idx);
-                }
-                continue;
-            };
-            let feat = &mut proj.features[fi];
-            if let Some(shell) = feat.shells.iter_mut().find(|s| s.index == idx) {
-                shell.window_id = Some(w.window_id.clone());
-                shell.pane_id = Some(w.pane_id.clone());
-            } else {
-                feat.shells.push(Shell {
-                    index: idx,
-                    window_name: w.window_name.clone(),
-                    window_id: Some(w.window_id.clone()),
-                    pane_id: Some(w.pane_id.clone()),
+                .position(|p| p.session_name.as_deref() == Some(&s.name))
+                .or_else(|| {
+                    self.projects
+                        .iter()
+                        .position(|p| sanitize_name(&p.name) == slug)
+                })
+                .or_else(|| {
+                    self.projects.iter().position(|p| {
+                        n_contains_slug(p, &slug)
+                            && p.session_name
+                                .as_deref()
+                                .map(|n| {
+                                    n.ends_with(&format!(
+                                        "-{}",
+                                        crate::tmux::Tmux::hash_suffix(&p.path)
+                                    ))
+                                })
+                                .unwrap_or(false)
+                    })
                 });
-                feat.shells.sort_by_key(|s| s.index);
+            for w in &windows {
+                if !is_lazywingman_window(&w.window_name) {
+                    continue;
+                }
+                let Some((fname, idx)) = parse_window_name(&w.window_name) else {
+                    continue;
+                };
+                let Some(pi) = proj_idx else {
+                    // Session for an unknown project — try reconstructing
+                    // from the pane's cwd (the worktree path) + git metadata.
+                    if let Some(path) = pane_cwd(tmux, &w.pane_id) {
+                        self.reconstruct_feature(&path, &slug, &fname, idx);
+                    }
+                    continue;
+                };
+                let proj = &mut self.projects[pi];
+                // Remember the session this project lives in.
+                if proj.session_name.as_deref() != Some(&s.name) {
+                    proj.session_name = Some(s.name.clone());
+                    log::info!("project '{}' → agent session {}", proj.name, s.name);
+                }
+                // Features are matched by their branch slug.
+                let feat_idx = proj
+                    .features
+                    .iter()
+                    .position(|f| sanitize_name(&f.branch) == fname);
+                let Some(fi) = feat_idx else {
+                    // Feature state lost but window alive: reconstruct.
+                    if let Some(path) = pane_cwd(tmux, &w.pane_id) {
+                        self.reconstruct_feature(&path, &slug, &fname, idx);
+                    }
+                    continue;
+                };
+                let feat = &mut proj.features[fi];
+                if let Some(shell) = feat.shells.iter_mut().find(|s| s.index == idx) {
+                    shell.window_id = Some(w.window_id.clone());
+                    shell.pane_id = Some(w.pane_id.clone());
+                } else {
+                    feat.shells.push(Shell {
+                        index: idx,
+                        window_name: w.window_name.clone(),
+                        window_id: Some(w.window_id.clone()),
+                        pane_id: Some(w.pane_id.clone()),
+                    });
+                    feat.shells.sort_by_key(|s| s.index);
+                }
             }
         }
         Ok(())
@@ -163,7 +225,7 @@ impl State {
             created_at: String::new(),
             shells: vec![Shell {
                 index: idx,
-                window_name: format!("lw:{pname}/{fname}/{idx}"),
+                window_name: format!("lw:{fname}/{idx}"),
                 window_id: None,
                 pane_id: None,
             }],
@@ -171,12 +233,23 @@ impl State {
     }
 
     /// Prune state entries that no longer match reality. When `tmux` is
-    /// given, shells whose window has vanished are dropped too.
+    /// given, shells whose window has vanished are dropped too (windows are
+    /// looked up across all agent sessions).
     pub fn prune(&mut self, tmux: Option<&Tmux>) -> Result<()> {
         let git = Git;
-        let live_windows: Option<std::collections::HashSet<String>> = tmux
-            .and_then(|t| t.list_windows().ok())
-            .map(|ws| ws.into_iter().map(|w| w.window_id).collect());
+        let live_windows: Option<std::collections::HashSet<String>> = tmux.and_then(|t| {
+            let mut set = std::collections::HashSet::new();
+            let sessions = t.list_sessions().ok()?;
+            for s in sessions
+                .into_iter()
+                .filter(|s| is_lazywingman_session(&s.name))
+            {
+                if let Ok(ws) = t.list_windows(&s.name) {
+                    set.extend(ws.into_iter().map(|w| w.window_id));
+                }
+            }
+            Some(set)
+        });
         let mut removed_projects = 0;
         let mut removed_features = 0;
         let mut removed_shells = 0;
@@ -211,6 +284,20 @@ impl State {
                     removed_shells += before - feat.shells.len();
                 }
             }
+            // If the agent session vanished (crashed server, killed session)
+            // but the project still exists, drop the stale name so a new
+            // session is created on demand.
+            if let Some(sess) = &proj.session_name {
+                let alive = tmux.map(|t| t.session_exists(sess)).unwrap_or(false);
+                if !alive {
+                    log::info!(
+                        "agent session {} gone for project '{}', clearing",
+                        sess,
+                        proj.name
+                    );
+                    proj.session_name = None;
+                }
+            }
         }
         self.projects.retain(|p| {
             let keep = git.is_repo(&p.path);
@@ -229,7 +316,14 @@ impl State {
     }
 }
 
-/// Sanitise a name the same way window names are built.
+/// Does the project's name match the session slug (for hash-suffixed
+/// session names)?
+fn n_contains_slug(p: &Project, slug: &str) -> bool {
+    let n = sanitize_name(&p.name);
+    n == slug || n.starts_with(slug) || slug.starts_with(&n)
+}
+
+/// Sanitise a name the same way session/window names are built.
 pub fn sanitize_name(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -242,12 +336,11 @@ pub fn sanitize_name(s: &str) -> String {
     out
 }
 
-/// Parse `lw:<project>/<feature>/<index>`.
-pub fn parse_window_name(name: &str) -> Option<(String, String, usize)> {
-    let rest = name.strip_prefix("lw:")?;
-    let (p, rest) = rest.split_once('/')?;
+/// Parse `lw:<feature>/<index>` (project is implied by the session).
+pub fn parse_window_name(name: &str) -> Option<(String, usize)> {
+    let rest = name.strip_prefix(crate::tmux::WINDOW_PREFIX)?;
     let (f, idx) = rest.rsplit_once('/')?;
-    Some((p.to_string(), f.to_string(), idx.parse().ok()?))
+    Some((f.to_string(), idx.parse().ok()?))
 }
 
 fn pane_cwd(tmux: &Tmux, pane_id: &str) -> Option<PathBuf> {
@@ -277,10 +370,9 @@ mod tests {
 
     #[test]
     fn window_name_roundtrip() {
-        let name = Tmux::window_name("my project", "feat-one", 2);
-        assert_eq!(name, "lw:my-project/feat-one/2");
-        let (p, f, i) = parse_window_name(&name).unwrap();
-        assert_eq!(p, "my-project");
+        let name = crate::tmux::Tmux::window_name("feat-one", 2);
+        assert_eq!(name, "lw:feat-one/2");
+        let (f, i) = parse_window_name(&name).unwrap();
         assert_eq!(f, "feat-one");
         assert_eq!(i, 2);
         assert!(parse_window_name("0:bash").is_none());
@@ -296,6 +388,7 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
+            session_name: Some("wingman-session-proj".into()),
             features: vec![Feature {
                 name: "feat".into(),
                 branch: "feat".into(),
@@ -303,7 +396,7 @@ mod tests {
                 created_at: "now".into(),
                 shells: vec![Shell {
                     index: 0,
-                    window_name: "lw:proj/feat/0".into(),
+                    window_name: "lw:feat/0".into(),
                     window_id: Some("@5".into()),
                     pane_id: Some("%9".into()),
                 }],
@@ -316,6 +409,20 @@ mod tests {
             back.projects[0].features[0].shells[0].window_id.as_deref(),
             Some("@5")
         );
+        assert_eq!(
+            back.projects[0].session_name.as_deref(),
+            Some("wingman-session-proj")
+        );
+    }
+
+    #[test]
+    fn v1_state_loads_with_defaults() {
+        // A v1 state file has no version and no session_name.
+        let v1 = r#"{"projects":[{"name":"p","path":"/tmp/p","base_branch":"main","agent_command":"claude","agent_shell":"bash","features":[]}]}"#;
+        let s: State = serde_json::from_str(v1).unwrap();
+        assert_eq!(s.version, 0);
+        assert!(s.projects[0].session_name.is_none());
+        assert!(s.projects[0].features.is_empty());
     }
 
     #[test]
@@ -328,12 +435,14 @@ mod tests {
                 base_branch: "main".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
+                session_name: None,
                 features: vec![],
             });
             s.save().unwrap();
             let loaded = State::load().unwrap();
             assert_eq!(loaded.projects.len(), 1);
             assert_eq!(loaded.projects[0].name, "p");
+            assert_eq!(loaded.version, STATE_VERSION);
         });
     }
 
@@ -355,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_matches_window_names() {
+    fn sanitize_matches_session_names() {
         assert_eq!(sanitize_name("My Project"), "My-Project");
         assert_eq!(sanitize_name("feat/one"), "feat/one");
     }

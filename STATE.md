@@ -5,10 +5,111 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M7 — Harden & verify — COMPLETE. Project done.**
-**M7.1 — Feedback fix (input popup cursor) — COMPLETE.**
+**M8 — user-feedback milestone set — IN PROGRESS (M8.1 COMPLETE, M8.2 next).**
+M7.1 (cursor fix) complete; M8 plan below; resume from STATE.md progress log.
+
+## M8 — plan (user feedback: hide agent panes in separate sessions, project
+## discovery, follow agent-common-instructions, work inside AND outside tmux)
+
+Milestones in order; each must be green (fmt + clippy + tests) and committed
+AND pushed before the next starts. Update the progress log + Current
+milestone line at the end of every milestone. When ALL are done, mark
+"M8 COMPLETE" at the top and write the completion marker.
+
+- **M8.1 — dedicated agent sessions (hide panes).** tmux.rs: `Tmux` gains
+  optional `inside: Option<Inside>` coords; `list_sessions`, `new_session`
+  (first window), per-session `list_windows`; pane listing filtered to
+  `wingman-session-*` sessions. Naming: session `wingman-session-<slug>`
+  (+`-<hash8>` on collision), windows `lw:<feature>/<n>`. state.rs v2:
+  `version`, `Project.session_name` (serde-default migration). app.rs:
+  create_feature/add_shell create-or-join the project session; delete_feature
+  kills windows (session auto-destroys on last); remove_project kills session
+  windows; attach = switch-client + select-window (inside) / handoff stub
+  (outside, M8.2); startup reconciles sessions + binds back-key in every agent
+  session; poll lists only agent-session panes. Update integration tests to
+  session model; add session roundtrip tests. Update ui.rs (statusbar
+  "inside/standalone", shell detail shows session). README/DECISIONS/AGENTS
+  in same commit.
+- **M8.2 — runs outside tmux.** main.rs: no hard "must run inside tmux" error;
+  detect() → coordinates or standalone; remove LAZYWINGMAN_NO_TMUX. Attach
+  outside tmux = terminal handoff: restore terminal → clientless
+  select-window to shell window → `tmux attach -t <agent-session>` (blocking)
+  → re-init terminal → continue loop (event loop must support the
+  suspend/resume dance). Statusbar shows where the dashboard runs. No
+  back-key outside tmux (C-b d detaches). Tests: detect standalone, handoff
+  path unit-tested at the command level.
+- **M8.3 — project discovery.** Startup: cwd (or ancestor) is a git repo →
+  auto-import project + `git worktree list` → features for each worktree
+  (0 shells). Not a repo → startup Confirm prompt "scan subfolders for git
+  repos?"; scan = recursive walk (depth limit, skip dirs: .git, node_modules,
+  target, hidden, .lazywingman-worktrees) for `.git` DIRECTORIES (worktrees
+  have `.git` files → skipped, covered by their main repo); results cached in
+  `$XDG_CACHE_HOME/lazywingman/discovered.json` (root + timestamp + paths).
+  New key `I` = "scan for new projects" (stronger variant of `i` import,
+  per TUI guidelines) — rescans config `[discovery].scan_root` (default:
+  startup cwd), adds new repos found. Missing projects: keep in state,
+  `missing: true`, shown "(missing)" dimmed; re-activate when repo again;
+  prune() must not drop them. Config: `[discovery] scan_root`, `max_depth`,
+  `skip_dirs`. Tests: scan finds nested repos + skips worktrees/deps;
+  missing-flag lifecycle; cache roundtrip.
+- **M8.4 — agent-common-instructions conformance.** `docs/shortcuts.md` (every
+  binding + rule it satisfies); help overlay grouped + palette wording;
+  statusbar contextual hints; config failure behaviour per guidelines (drop
+  smallest unit + startup diagnostics overlay instead of hard error);
+  accessibility keys (PageUp/Down = ctrl-u/d, Home/End = g/G, ctrl-d/u half
+  page); NO_COLOR + ASCII fallback check; small-terminal/resize tests; mouse
+  basics (click to focus/select, click bar entries); 4 Catppuccin built-in
+  themes (Latte/Frappé/Macchiato/Mocha) + `ctrl-t` live theme picker; config
+  layering (project-local `.lazywingman.toml` searched upward). Split into
+  M8.4a/8.4b if too big for one run.
+- **M8.5/M9 — acceptance.** Full verify (build+test), live-tmux acceptance
+  loop against a throwaway server (recreate M7's): create feature in a
+  project → assert NO window appears in the dashboard session and the agent
+  session exists with the shell window; attach/back inside tmux; attach
+  handoff outside tmux (command-level); quick-send; status flip; kill/restart
+  wingman → rediscovery via sessions; delete feature → session gone; discovery
+  flows (git cwd auto-import, scan prompt, `I` rescan, missing project);
+  README rewritten for the new model; delivery zip; completion marker
+  "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M8.1 — dedicated agent sessions (COMPLETE, committed)
+- [x] tmux.rs rewritten: `Tmux { inside: Option<Inside> }` (dashboard coords
+      optional — standalone supported), session primitives (`list_sessions`,
+      `new_session` with named first window, per-session `list_windows`,
+      `session_exists`, `kill_session`), pane listing filtered to
+      `wingman-session-*` sessions (dashboard panes excluded), clientless
+      `select-window -t session:@win`, `switch-client` attach,
+      `attach_handoff` (`tmux attach` for standalone), server-wide
+      `bind_back_key` (verified: tmux key tables are server-wide; `bind-key`
+      has no target flag; two-command binding needs literal `\;` argument).
+      Naming: `wingman-session-<slug>` + stable `-<hash8>` of the path on
+      collision (`DefaultHasher::new()` is deterministic); windows
+      `lw:<feature>/<n>`.
+- [x] state.rs v2: `State.version`, `Project.session_name` (serde-default
+      migration; v1 files load, v1 shells prune on first v2 reconcile).
+      Reconcile walks `wingman-session-*` sessions → windows; project matched
+      by session name / slug / hash suffix / pane-cwd reconstruction.
+- [x] app.rs: create_feature/add_shell create-or-join the project's agent
+      session (`ensure_agent_session`), set `session_name`; delete_feature
+      kills windows (last-window kill auto-destroys the session) + kills a
+      shell-less session; remove_project kills the session; attach =
+      switch-client+select-window inside tmux, handoff flag standalone;
+      startup binds back-key when inside; event loop performs the
+      restore→attach→re-init handoff dance.
+- [x] main.rs: no hard "must run inside tmux" error; detect → coordinates or
+      standalone; LAZYWINGMAN_NO_TMUX removed.
+- [x] ui.rs: statusbar "dashboard: <session> / standalone".
+- [x] Tests: 55 green (was 51) incl. real-tmux session lifecycle (create,
+      join, clientless select-window changes active window, last-window kill
+      destroys session, dashboard panes excluded from list_panes), detect
+      standalone, back-key registration, v1→v2 migration. clippy/fmt clean.
+- [x] LIVE SMOKE (real tmux + binary): config-imported repo-a; 'n' →
+      "feat-smoke" → dashboard session gained ZERO windows; agent session
+      `wingman-session-repo-a` created with `lw:feat-smoke/0`; TUI tree
+      renders it; quit + restart → shell rediscovered from its session.
+- [x] README sections updated (session model, run inside/outside tmux).
 
 ### M7.1 — Feedback fix: input popup cursor offset (committed)
 - [x] Bug: the block cursor in the input popups (new feature, quick-send,

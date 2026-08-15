@@ -1,13 +1,14 @@
 # LazyWingman
 
-A tmux-native control centre for supervising coding agents (Claude Code,
-Codex, Mistral Vibe, …) across **multiple projects and multiple features in
-parallel**. See everything at a glance, jump into any agent with one
-keystroke, spin up and tear down feature workspaces instantly.
+A control centre for supervising coding agents (Claude Code, Codex, Mistral
+Vibe, …) across **multiple projects and multiple features in parallel**. See
+everything at a glance, jump into any agent with one keystroke, spin up and
+tear down feature workspaces instantly.
 
-LazyWingman runs **inside** tmux, as a normal pane of your existing session —
-it cooperates with the session you're already in instead of trying to own the
-terminal.
+LazyWingman runs anywhere — inside tmux (as a pane of your existing session)
+or standalone in a plain terminal. Agent shells never pollute your tmux
+session: they live in their own dedicated tmux sessions
+(`wingman-session-<project>`), invisible until you attach to them.
 
 ```
 ProjectA  (a git repo, imported by path)
@@ -39,15 +40,18 @@ cargo build --release
 # binary at target/release/lazywingman
 ```
 
-Requirements: Rust ≥ 1.85, `git`, `tmux` (≥ 3.0). Run it from a pane of the
-tmux session you want to supervise:
+Requirements: Rust ≥ 1.85, `git`, `tmux` (≥ 3.0 — agent shells are tmux
+sessions; the server is started on demand).
 
 ```sh
 lazywingman
 ```
 
-Outside tmux it refuses to start with a clear message; set
-`LAZYWINGMAN_NO_TMUX=1` to run the UI anyway (tmux actions will fail).
+Run it from a pane of your tmux session, or from any plain terminal — both
+work. Inside tmux you get instant attach/return (`Enter` to attach, the
+back-key `C-o` to return to the dashboard); standalone, attach hands the
+terminal over to `tmux attach` and drops you back into the dashboard when you
+detach (`C-b d`).
 
 First run writes a commented config to
 `$XDG_CONFIG_HOME/lazywingman/config.toml` and copies the three built-in
@@ -139,26 +143,35 @@ only — the live preview panel lets you confirm what's really happening.
 ## How it works with tmux
 
 - LazyWingman detects its own coordinates (`TMUX` env, `display-message -t
-  pane`) and stays in its pane; it never creates or switches sessions.
-- Agent shells live in **sibling windows of your session**, named
-  deterministically `lw:<project>/<feature>/<n>` — rediscoverable after a
-  restart, and safe to touch from plain tmux.
-- All interaction goes through the tmux CLI (`new-window`, `send-keys`,
-  `capture-pane`, `select-window`, `kill-window`, `list-panes -a`,
-  `bind-key`); nothing is shell-interpreted.
-- **Attach** = `select-window` to the agent's window (the client follows).
-  **Back** = a global `bind-key -n <key> select-window` to the dashboard
-  window, rebound on every startup.
+  pane`) when it runs inside tmux; standalone it still manages the same tmux
+  server via its CLI. Agent shells live in **dedicated sessions**, one per
+  project, named deterministically `wingman-session-<project>` — your own
+  session is never touched. Shell windows are named `lw:<feature>/<n>`
+  inside that session, so everything is rediscoverable after a restart
+  (`tmux list-sessions` → per-session `list-windows`), even if the state
+  file is lost.
+- All interaction goes through the tmux CLI (`new-session`, `new-window`,
+  `send-keys`, `capture-pane`, `switch-client`, `select-window`,
+  `kill-window`, `list-panes -a`, `bind-key`); nothing is shell-interpreted.
+- **Attach & return (inside tmux)**: `Enter` on a shell = `switch-client` to
+  the agent session + `select-window` to the shell's window. The back-key
+  (default `C-o`, configurable via `tmux.back_key`) is bound server-wide to
+  `switch-client` back to the dashboard window, rebound on every startup.
+- **Attach (standalone)**: the terminal is handed over to `tmux attach -t
+  <agent-session>` (the shell's window is preselected); detaching with `C-b
+  d` returns you to the dashboard.
 - **Quick-send** = an in-TUI popup that `send-keys -l` the line to the
   selected pane.
 - State (`$XDG_STATE_HOME/lazywingman/state.json`) is reconciled against
   reality on startup: worktrees are checked against `git worktree list`,
-  windows against `tmux list-windows`; stale entries self-heal and running
-  shells are rediscovered (even with a deleted state file, from the pane's
-  cwd + git metadata).
-- Feature deletion kills the feature's windows, then `git worktree remove`
-  (with `--force` offered when the worktree is dirty). The branch is kept
-  unless `worktrees.delete_branch = true`.
+  agent sessions and their windows against `tmux list-sessions` /
+  `list-windows`; stale entries self-heal and running shells are
+  rediscovered (even with a deleted state file, from the pane's cwd + git
+  metadata).
+- Feature deletion kills the feature's windows — a session whose last shell
+  window is killed destroys itself — then `git worktree remove` (with
+  `--force` offered when the worktree is dirty). The branch is kept unless
+  `worktrees.delete_branch = true`.
 
 ## Layout
 
@@ -173,7 +186,7 @@ only — the live preview panel lets you confirm what's really happening.
 ┌ preview (capture-pane) ──────────────────────────────────────────┐
 │ live tail of the selected shell, refreshed every poll            │
 └───────────────────────────────────────────────────────────────────┘
- lazywingman · session work   …messages…   poll 500ms · ? help · q quit
+ lazywingman · dashboard: work   …messages…   poll 500ms · ? help · q quit
 ```
 
 ## Development
