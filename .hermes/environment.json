@@ -10,7 +10,7 @@
     "test": [
       "cargo test"
     ],
-    "start": "cargo run",
+    "start": null,
     "port": null,
     "readinessPath": "/",
     "evidence": [

@@ -111,6 +111,11 @@ whenever a milestone runs long.
 
 - **PATH**: `~/.cargo/bin` and `~/.local/bin` must be on PATH; tmux needs
   `LD_LIBRARY_PATH=$HOME/.local/tmux-prefix/usr/lib/x86_64-linux-gnu`.
+- **`hermes verify` recipe** (`.hermes/environment.json`) has `start: null`
+  on purpose: this is a TUI with no HTTP endpoint and it refuses to boot
+  outside tmux, so the start/readiness phase is skipped. Do NOT re-run
+  `hermes verify --save` — detection regenerates `start: cargo run` and
+  the readiness poll then fails.
 - **TERM**: container TERM=dumb; use `TERM=xterm-256color` for tmux commands.
 - **No root**: everything installed into `$HOME/.local` via deb extraction.
 - zip: use `python3 -m zipfile -c out.zip dir` (no zip binary).
