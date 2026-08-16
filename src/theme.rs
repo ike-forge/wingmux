@@ -259,12 +259,33 @@ fn quantize_256(r: u8, g: u8, b: u8) -> u8 {
     16 + 36 * q(r) + 6 * q(g) + q(b)
 }
 
-/// Built-in themes embedded in the binary.
-pub const BUILTIN_THEMES: [(&str, &str); 3] = [
+/// Built-in themes embedded in the binary. The Catppuccin set is the
+/// reference palette (theming guideline); dracula/gruvbox/ansi predate it.
+/// Order here is the order the theme picker lists built-ins in.
+pub const BUILTIN_THEMES: [(&str, &str); 7] = [
+    (
+        "catppuccin-mocha",
+        include_str!("../themes/catppuccin-mocha.toml"),
+    ),
+    (
+        "catppuccin-macchiato",
+        include_str!("../themes/catppuccin-macchiato.toml"),
+    ),
+    (
+        "catppuccin-frappe",
+        include_str!("../themes/catppuccin-frappe.toml"),
+    ),
+    (
+        "catppuccin-latte",
+        include_str!("../themes/catppuccin-latte.toml"),
+    ),
     ("dracula", include_str!("../themes/dracula.toml")),
     ("gruvbox", include_str!("../themes/gruvbox.toml")),
     ("ansi", include_str!("../themes/ansi.toml")),
 ];
+
+/// The default theme (config `theme = ...` when unset).
+pub const DEFAULT_THEME: &str = "catppuccin-mocha";
 
 /// Copy built-in themes into the user themes dir if they don't exist yet.
 pub fn ensure_builtin_themes() -> Result<()> {
@@ -304,8 +325,43 @@ fn load_file(name: &str) -> Result<ThemeFile> {
         }
     }
     Err(Error::Theme(format!(
-        "unknown theme '{name}' (built-ins: dracula, gruvbox, ansi)"
+        "unknown theme '{name}' (built-ins: {}, …)",
+        builtin_names().join(", ")
     )))
+}
+
+/// Names of all embedded themes, in [`BUILTIN_THEMES`] order.
+pub fn builtin_names() -> Vec<String> {
+    BUILTIN_THEMES.iter().map(|(n, _)| n.to_string()).collect()
+}
+
+/// Every theme the picker can offer: built-ins first (the order is the
+/// same in every project, per the theming guideline), then the user's
+/// themes from the themes dir, sorted and deduplicated. A user theme that
+/// shadows a built-in name is listed once (the user copy wins on load).
+pub fn available_names() -> Result<Vec<String>> {
+    let mut names = builtin_names();
+    let dir = crate::util::themes_dir();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut user: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let p = e.path();
+                if p.extension().is_some_and(|x| x == "toml") {
+                    p.file_stem().map(|s| s.to_string_lossy().into_owned())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        user.sort();
+        for n in user {
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        }
+    }
+    Ok(names)
 }
 
 fn read_if_exists(path: &Path) -> Result<Option<String>> {
@@ -495,5 +551,88 @@ mod tests {
     #[test]
     fn unknown_theme_errors() {
         assert!(load("nope", true).is_err());
+    }
+
+    // ---- M8.4c — Catppuccin set + theme picker listing ----
+
+    /// The reference set ships all four Catppuccin flavours with the
+    /// official hex values (theming guideline: never hand-tune a
+    /// Catppuccin colour), and mocha is the default.
+    #[test]
+    fn catppuccin_set_ships_with_official_hexes() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            // base + text + one accent per flavour, straight from catppuccin.com
+            let cases: [(&str, u32, u32, u32); 4] = [
+                ("catppuccin-latte", 0xeff1f5, 0x4c4f69, 0x7287fd),
+                ("catppuccin-frappe", 0x303446, 0xc6d0f5, 0xbabbf1),
+                ("catppuccin-macchiato", 0x24273a, 0xcad3f5, 0xb7bdf8),
+                ("catppuccin-mocha", 0x1e1e2e, 0xcdd6f4, 0xb4befe),
+            ];
+            for (name, base, text, accent) in cases {
+                let t = load(name, true).unwrap();
+                assert_eq!(
+                    spec_hex(&t, |c| c.background),
+                    base,
+                    "{name} background must be the official base"
+                );
+                assert_eq!(
+                    spec_hex(&t, |c| c.foreground),
+                    text,
+                    "{name} foreground must be the official text"
+                );
+                assert_eq!(
+                    spec_hex(&t, |c| c.accent),
+                    accent,
+                    "{name} accent must be the official lavender"
+                );
+            }
+        });
+        assert_eq!(DEFAULT_THEME, "catppuccin-mocha");
+    }
+
+    /// A helper: re-resolve a resolved theme's role to its hex value.
+    fn spec_hex(t: &Theme, pick: fn(&ResolvedColors) -> Color) -> u32 {
+        let c = pick(&t.colors);
+        match c {
+            Color::Rgb(r, g, b) => ((r as u32) << 16) | ((g as u32) << 8) | b as u32,
+            other => panic!("expected an RGB colour, got {other:?}"),
+        }
+    }
+
+    /// The picker list: built-ins first in the stable order, then user
+    /// themes sorted; a user theme shadowing a built-in appears once.
+    #[test]
+    fn available_names_list_builtins_first_then_user_themes() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            ensure_builtin_themes().unwrap();
+            let dir = crate::util::themes_dir();
+            std::fs::write(dir.join("mytheme.toml"), "name = \"mytheme\"\n").unwrap();
+            std::fs::write(dir.join("ztheme.toml"), "name = \"ztheme\"\n").unwrap();
+            // a user file shadowing a built-in name must not be duplicated
+            std::fs::write(dir.join("ansi.toml"), include_str!("../themes/ansi.toml")).unwrap();
+            let names = available_names().unwrap();
+            assert_eq!(
+                &names[0..4],
+                &[
+                    "catppuccin-mocha",
+                    "catppuccin-macchiato",
+                    "catppuccin-frappe",
+                    "catppuccin-latte"
+                ],
+                "catppuccin set leads the list, stable order"
+            );
+            assert!(
+                names.contains(&"ansi".to_string())
+                    && names.iter().filter(|n| n.as_str() == "ansi").count() == 1,
+                "shadowed built-in listed once"
+            );
+            let my = names.iter().position(|n| n == "mytheme").unwrap();
+            let z = names.iter().position(|n| n == "ztheme").unwrap();
+            let ansi = names.iter().position(|n| n == "ansi").unwrap();
+            assert!(
+                ansi < my && my < z,
+                "user themes come after built-ins, sorted: {names:?}"
+            );
+        });
     }
 }

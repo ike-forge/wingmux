@@ -1,0 +1,32 @@
+# LazyWingman theme — catppuccin-latte (light)
+#
+# Official Catppuccin hex values, unmodified (theming guideline: never
+# hand-tune a Catppuccin colour). Roles map to the palette: base →
+# background, text/subtext0 → foreground/dim, surface0-2 → selection /
+# borders, and the flavour accents for the semantic roles, with lavender
+# reserved as the accent (key letters, focused borders).
+name = "catppuccin-latte"
+
+[colors]
+background = "#eff1f5"
+foreground = "#4c4f69"
+dim = "#6c6f85"
+accent = "#7287fd"
+selection_bg = "#ccd0da"
+selection_fg = "#4c4f69"
+border = "#bcc0cc"
+border_focused = "#7287fd"
+tree_project = "#1e66f5"
+tree_feature = "#40a02b"
+tree_shell = "#df8e1d"
+status_working = "#40a02b"
+status_waiting = "#df8e1d"
+status_idle = "#9ca0b0"
+status_failed = "#d20f39"
+status_dead = "#8c8fa1"
+status_ended = "#8839ef"
+title_bg = "#bcc0cc"
+title_fg = "#4c4f69"
+popup_bg = "#e6e9ef"
+popup_fg = "#4c4f69"
+popup_border = "#7287fd"

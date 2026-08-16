@@ -26,6 +26,11 @@ pub struct State {
     #[serde(default)]
     pub version: u32,
     pub projects: Vec<Project>,
+    /// Theme picked in the TUI (ctrl-t). Wins over the config's `theme`
+    /// line at startup — config is never rewritten behind the user's back;
+    /// in-app changes persist to state per the configuration guidelines.
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

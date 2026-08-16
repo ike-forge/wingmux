@@ -36,9 +36,14 @@ fn real_main() -> Result<()> {
     log::info!("lazywingman starting (pid {})", std::process::id());
     let cfg = config::Config::load()?;
     let truecolor = theme::supports_truecolor();
-    let theme = theme::load(&cfg.theme, truecolor)?;
+    // A theme picked in the TUI (ctrl-t) is persisted to state.json and
+    // wins over the config line; the config file is never rewritten.
+    let picked = state::State::load()?.theme;
+    let theme_name = picked.as_deref().unwrap_or(&cfg.theme);
+    let theme = theme::load(theme_name, truecolor)?;
     log::info!(
-        "config loaded: theme={} poll={}ms projects={} truecolor={}",
+        "config loaded: theme={} (config '{}') poll={}ms projects={} truecolor={}",
+        theme_name,
         cfg.theme,
         cfg.poll_interval_ms,
         cfg.projects.len(),

@@ -63,6 +63,7 @@ pub(crate) fn tree_width(viewport: (u16, u16)) -> Option<u16> {
 fn overlay_min(kind: OverlayKind) -> (u16, u16) {
     match kind {
         OverlayKind::Help => (44, 14),
+        OverlayKind::ThemePicker => (34, 10),
         OverlayKind::Input | OverlayKind::Confirm => (34, 10),
     }
 }
@@ -70,6 +71,7 @@ fn overlay_min(kind: OverlayKind) -> (u16, u16) {
 #[derive(Clone, Copy)]
 enum OverlayKind {
     Help,
+    ThemePicker,
     Input,
     Confirm,
 }
@@ -119,6 +121,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let kind = OverlayKind::Help;
             if fits(area, overlay_min(kind)) {
                 let rect = draw_help(f, app);
+                app.popup_area = Some(rect);
+            } else {
+                draw_overlay_too_small(f, area, app, kind);
+            }
+        }
+        Mode::ThemePicker { .. } => {
+            let kind = OverlayKind::ThemePicker;
+            if fits(area, overlay_min(kind)) {
+                let rect = draw_theme_picker(f, app);
                 app.popup_area = Some(rect);
             } else {
                 draw_overlay_too_small(f, area, app, kind);
@@ -833,6 +844,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
         "global",
         &[
             (&["r"], &["refresh", "reconcile state"]),
+            (&["ctrl-t"], &["change theme", "live picker"]),
             (&["?"], &["this help", "palette"]),
             (&["q", "Esc"], &["quit"]),
             (&["ctrl-c"], &["quit from any state"]),
@@ -903,6 +915,77 @@ fn help_lines(app: &App) -> Vec<Line<'_>> {
 /// (same construction as the renderer, so they cannot drift).
 pub(crate) fn help_line_count(app: &App) -> usize {
     help_lines(app).len()
+}
+
+/// The live theme picker (`ctrl-t`): one row per theme, built-ins first.
+/// Moving the cursor previews live (the whole screen repaints with the new
+/// palette via `App::preview_picker_theme`); Enter keeps, Esc restores.
+fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
+    let theme = &app.theme.colors;
+    let names: Vec<&str> = app.theme_names.iter().map(String::as_str).collect();
+    let index = match &app.mode {
+        Mode::ThemePicker { index } => *index,
+        _ => 0,
+    };
+    // Size to content (bounded by the frame), like the help overlay.
+    let w = names
+        .iter()
+        .map(|n| n.chars().count() as u16)
+        .max()
+        .unwrap_or(20)
+        .saturating_add(8)
+        .max(34)
+        .min(f.area().width);
+    let h = (names.len() as u16 + 3).min(f.area().height);
+    let area = Rect::new(
+        f.area().x + (f.area().width.saturating_sub(w)) / 2,
+        f.area().y + (f.area().height.saturating_sub(h)) / 2,
+        w,
+        h,
+    );
+    f.render_widget(Clear, area);
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    let rows = inner.height.saturating_sub(1) as usize; // last line = footer
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, name) in names.iter().take(rows).enumerate() {
+        let selected = i == index;
+        let marker = if app.ascii { ">" } else { "▸" };
+        let label = if selected {
+            format!(" {marker} {name} ")
+        } else {
+            format!("   {name} ")
+        };
+        lines.push(Line::from(if selected {
+            vec![Span::styled(
+                label,
+                on(theme.selection_fg, theme.selection_bg).add_modifier(Modifier::BOLD),
+            )]
+        } else {
+            vec![Span::styled(label, fg(theme.foreground))]
+        }));
+    }
+    let footer = format!(
+        " Enter keep{}Esc cancel ",
+        if app.ascii { "-" } else { " · " }
+    );
+    lines.push(Line::from(Span::styled(footer, fg(theme.dim))));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(fg(theme.popup_border))
+        .title(Span::styled(
+            " themes ",
+            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
+        ));
+    f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    if app.ascii {
+        asciify(f, area);
+    }
+    area
 }
 
 fn draw_input(f: &mut Frame, app: &App) -> Rect {
@@ -1452,5 +1535,71 @@ mod tests {
         // scrolling to the very end must be possible
         let visible = 28usize;
         assert!(lines > visible, "content must overflow a 30-row popup");
+    }
+
+    // ---- M8.4c — theme picker render ----
+
+    /// The picker renders every theme name with the cursor highlighted on
+    /// the selected row; the app's popup rect is registered so click-out-
+    /// side dismisses work.
+    #[test]
+    fn theme_picker_renders_names_and_cursor() {
+        let mut app = seeded_app();
+        app.theme_names = crate::theme::available_names().unwrap();
+        app.mode = Mode::ThemePicker { index: 1 };
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        for name in [
+            "catppuccin-mocha",
+            "catppuccin-macchiato",
+            "catppuccin-frappe",
+            "catppuccin-latte",
+            "dracula",
+            "gruvbox",
+            "ansi",
+        ] {
+            assert!(text.contains(name), "picker lists {name:?}");
+        }
+        assert!(text.contains("themes"), "picker has a title");
+        assert!(
+            app.popup_area.is_some(),
+            "picker must register its dismissable rect"
+        );
+    }
+
+    /// The picker is ascii-safe: plain `>` cursor, `-` separators, no
+    /// unicode glyphs survive the fallback.
+    #[test]
+    fn theme_picker_ascii_fallback_is_clean() {
+        let mut app = seeded_app();
+        app.ascii = true;
+        app.theme_names = crate::theme::available_names().unwrap();
+        app.mode = Mode::ThemePicker { index: 0 };
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        for glyph in ["▸", "·", "─", "│"] {
+            assert!(
+                !text.contains(glyph),
+                "ascii picker must not contain {glyph:?}"
+            );
+        }
+    }
+
+    /// The picker on a tiny frame is refused with the standard message
+    /// (never garbage, never a panic).
+    #[test]
+    fn theme_picker_refused_on_tiny_frame() {
+        let mut app = seeded_app();
+        app.theme_names = crate::theme::available_names().unwrap();
+        app.mode = Mode::ThemePicker { index: 0 };
+        let backend = ratatui::backend::TestBackend::new(30, 8);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("too small"), "tiny frame refuses the picker");
     }
 }

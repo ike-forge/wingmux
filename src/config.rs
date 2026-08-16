@@ -15,9 +15,12 @@ use crate::error::{Error, Result};
 pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on first run, edit freely.
 # Location: $XDG_CONFIG_HOME/lazywingman/config.toml (default ~/.config/lazywingman)
 
-# Theme to use. Built-ins: "dracula", "gruvbox", "ansi".
+# Theme to use. Built-ins: "catppuccin-mocha", "catppuccin-macchiato",
+# "catppuccin-frappe", "catppuccin-latte", "dracula", "gruvbox", "ansi".
 # Drop your own theme into ~/.config/lazywingman/themes/<name>.toml
-theme = "dracula"
+# Press ctrl-t inside the TUI to switch themes live (picked themes are
+# saved to the state file; this line is the startup default).
+theme = "catppuccin-mocha"
 
 # How often (ms) agent panes are polled for status + preview.
 poll_interval_ms = 500
@@ -177,7 +180,7 @@ pub struct ProjectConfig {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            theme: "dracula".into(),
+            theme: crate::theme::DEFAULT_THEME.into(),
             poll_interval_ms: 500,
             confirm_on_delete: true,
             tmux: TmuxConfig {
@@ -536,7 +539,7 @@ mod tests {
     fn first_run_writes_defaults() {
         with_fresh_xdg(|| {
             let cfg = Config::load().unwrap();
-            assert_eq!(cfg.theme, "dracula");
+            assert_eq!(cfg.theme, crate::theme::DEFAULT_THEME);
             assert_eq!(cfg.poll_interval_ms, 500);
             assert!(cfg.confirm_on_delete);
             assert_eq!(cfg.tmux.back_key, "C-o");
@@ -545,9 +548,15 @@ mod tests {
             assert!(crate::util::config_path().exists());
             // themes copied too
             assert!(crate::util::themes_dir().join("dracula.toml").exists());
+            assert!(
+                crate::util::themes_dir()
+                    .join("catppuccin-mocha.toml")
+                    .exists(),
+                "catppuccin set must be copied on first run"
+            );
             // written file parses back identically
             let again = Config::load().unwrap();
-            assert_eq!(again.theme, "dracula");
+            assert_eq!(again.theme, crate::theme::DEFAULT_THEME);
         });
     }
 
@@ -556,7 +565,7 @@ mod tests {
         with_fresh_xdg(|| {
             Config::load().unwrap();
             let mut text = std::fs::read_to_string(crate::util::config_path()).unwrap();
-            text = text.replace("theme = \"dracula\"", "theme = \"ansi\"");
+            text = text.replace("theme = \"catppuccin-mocha\"", "theme = \"ansi\"");
             text = text.replace("poll_interval_ms = 500", "poll_interval_ms = 250");
             std::fs::write(crate::util::config_path(), text).unwrap();
             let cfg = Config::load().unwrap();

@@ -131,6 +131,25 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
 - **M8.4b — everything documented**: `docs/shortcuts.md` lists every
   binding with the TUI rule it satisfies and every deliberately unbound
   key with its reason; updated in the same commit as any binding change.
+- **M8.4c — the Catppuccin set is the reference palette**: all four
+  flavours ship as built-ins (official hex values, unmodified, mapped onto
+  the app's roles: base → background, text/subtext0 → foreground/dim,
+  surface0-2 → selection/borders, flavour accents → status roles,
+  lavender → accent). `catppuccin-mocha` is the new default (the guideline
+  names it the usual default; config files written before this keep their
+  old `theme = "dracula"` line and load exactly as before).
+- **M8.4c — `ctrl-t` live theme picker**: previews as the cursor moves
+  (the whole screen repaints via the same load path), Enter keeps, Esc
+  restores the theme it opened with. Built-ins list first (stable order),
+  then user themes. The pick persists to `state.json` (configuration
+  guideline: the app never rewrites the user's config file; `state.theme`
+  wins over the config line at startup, and the config line stays the
+  documented startup default).
+- **M8.4c — picker motions**: j/k/arrows step by one theme, g/G and
+  Home/End jump to first/last, PgUp/PgDn + ctrl-d/u move 5, the wheel
+  moves 3, and a mouse click on a row selects + previews while a
+  double-click keeps — all through the one accessibility code path (the
+  tree selection never moves while the picker is open).
 - tmux quirks hit & fixed: `list-panes -t <session>` only lists the active
   window (use `-a` + filter by session_id); `new-window` right after
   `new-session -d` races window index 0 (retry 3x); a fake TMUX env var makes

@@ -1,0 +1,33 @@
+# LazyWingman theme — catppuccin-mocha (dark, highest contrast — the
+# usual default of the Catppuccin reference set)
+#
+# Official Catppuccin hex values, unmodified (theming guideline: never
+# hand-tune a Catppuccin colour). Roles map to the palette: base →
+# background, text/subtext0 → foreground/dim, surface0-2 → selection /
+# borders, and the flavour accents for the semantic roles, with lavender
+# reserved as the accent (key letters, focused borders).
+name = "catppuccin-mocha"
+
+[colors]
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+dim = "#a6adc8"
+accent = "#b4befe"
+selection_bg = "#313244"
+selection_fg = "#cdd6f4"
+border = "#45475a"
+border_focused = "#b4befe"
+tree_project = "#89b4fa"
+tree_feature = "#a6e3a1"
+tree_shell = "#f9e2af"
+status_working = "#a6e3a1"
+status_waiting = "#f9e2af"
+status_idle = "#6c7086"
+status_failed = "#f38ba8"
+status_dead = "#7f849c"
+status_ended = "#cba6f7"
+title_bg = "#45475a"
+title_fg = "#cdd6f4"
+popup_bg = "#181825"
+popup_fg = "#cdd6f4"
+popup_border = "#b4befe"

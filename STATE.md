@@ -6,9 +6,9 @@ whenever a milestone runs long.
 ## Current milestone
 
 **M8 — user-feedback milestone set — IN PROGRESS (M8.1 + M8.2 + M8.3 + M8.4a
-+ M8.4b COMPLETE, M8.4c next — themes: 4 Catppuccin built-ins
-(Latte/Frappé/Macchiato/Mocha) + `ctrl-t` live theme picker. Then M8.4d
-config, M8.5 acceptance).**
++ M8.4b + M8.4c COMPLETE, M8.4d next — config conformance: drop-smallest-
+unit failure + startup diagnostics overlay + project-local
+`.lazywingman.toml` layering. Then M8.5 acceptance).**
 Resume from STATE.md progress log.
 
 ## M8 — plan (user feedback: hide agent panes in separate sessions, project
@@ -82,6 +82,50 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M8.4c — themes: Catppuccin set + ctrl-t live picker (COMPLETE, committed)
+- [x] Four Catppuccin built-ins (latte / frappe / macchiato / mocha) with
+      the OFFICIAL hex values, unmodified (theming rule), mapped onto the
+      app's roles (base → background, text/subtext0 → foreground/dim,
+      surface0-2 → selection/borders, flavour accents → status, lavender →
+      accent). `catppuccin-mocha` is the new default (the guideline's
+      "usual default"); old configs with `theme = "dracula"` keep working.
+      `ensure_builtin_themes` now copies all 7 to the themes dir.
+- [x] `ctrl-t` opens a live theme picker (ctrl layer → works from any
+      state): j/k + arrows step by one theme, g/G + Home/End jump to
+      first/last, PgUp/PgDn + ctrl-d/u move 5, wheel moves 3 — the same
+      accessibility code path as the tree/help (mode-dependent target, the
+      tree selection never moves while the picker is open). Moving the
+      cursor PREVIEWS live (the whole screen repaints with the new
+      palette). Enter keeps, Esc restores the theme it opened with. Mouse:
+      click a row selects + previews, double-click keeps, click outside =
+      Esc. Popup sizes to content; tiny frames refuse it with the standard
+      message.
+- [x] Picker lists built-ins FIRST (stable order: mocha, macchiato,
+      frappe, latte, dracula, gruvbox, ansi — same first rows in every
+      project), then user themes from the themes dir, sorted + deduped
+      (`theme::available_names`). A user theme shadowing a built-in name
+      is listed once (user copy wins on load).
+- [x] Persistence per the configuration rules: the pick is saved to
+      `state.json` (`State.theme`), NEVER rewriting the user's config
+      file; startup honours `state.theme` over the config line (main.rs
+      logs both). README/DECISIONS/shortcuts.md updated in the same
+      commit.
+- [x] Tests: 116 green (was 103): official hexes per flavour + mocha
+      default; available_names ordering (built-ins first, user themes
+      sorted after, shadow dedupe); ctrl-t opens on the current theme;
+      cursor previews + clamps (j/k/arrows/End/Home/g/G/PgUp); Enter
+      persists to state (fresh XDG) + Esc restores + nothing persisted on
+      cancel; page/g motions never move the tree; mouse select/preview/
+      double-keep/outside-restore; wheel by 3; picker renders all names +
+      registers popup rect; ascii picker clean; tiny frame refused.
+      clippy -D warnings + fmt clean.
+- [x] LIVE SMOKE (real binary in a throwaway tmux server): boot → `C-t`
+      → picker lists all 7 themes, cursor on current; `j` `j` → preview
+      moves (frappe selected); Enter → "theme: catppuccin-frappe" +
+      state.json `"theme": "catppuccin-frappe"`; restart → log shows
+      `theme=catppuccin-frappe (config 'catppuccin-mocha')` — state wins,
+      config untouched; quit clean.
 
 ### M8.4b — discoverability: grouped help overlay + docs/shortcuts.md (COMPLETE, committed)
 - [x] Help overlay `?` becomes the grouped palette (per discoverability

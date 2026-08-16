@@ -32,9 +32,19 @@ pub enum Sel {
 #[derive(Debug)]
 pub enum Mode {
     Normal,
-    Input { kind: InputKind, text: String },
-    Confirm { confirm: Confirm },
+    Input {
+        kind: InputKind,
+        text: String,
+    },
+    Confirm {
+        confirm: Confirm,
+    },
     Help,
+    /// Live theme picker (`ctrl-t`): previews as the cursor moves, keeps
+    /// on Enter, restores the theme it opened with on Esc.
+    ThemePicker {
+        index: usize,
+    },
 }
 
 /// An action reachable from the statusbar shortcut entries (and by mouse
@@ -119,6 +129,11 @@ pub struct App {
     /// Scroll offset of the grouped help overlay (palette). Navigation
     /// keys scroll the help when it is open instead of the tree.
     pub help_scroll: usize,
+    /// Themes offered by the picker (built-ins first, then user themes),
+    /// computed when the picker opens.
+    pub theme_names: Vec<String>,
+    /// The theme name the picker opened with — restored on Esc.
+    pub picker_original: String,
     /// Hit ranges of the statusbar shortcut entries, set by the renderer:
     /// (x_start, x_end, action) on the statusbar row.
     pub bar_hits: Vec<(u16, u16, BarAction)>,
@@ -151,6 +166,8 @@ impl App {
             ascii: false,
             popup_area: None,
             help_scroll: 0,
+            theme_names: vec![crate::theme::DEFAULT_THEME.into()],
+            picker_original: crate::theme::DEFAULT_THEME.into(),
             bar_hits: Vec::new(),
             last_click: None,
         }
@@ -1114,7 +1131,11 @@ impl App {
         // are consumed: they must not fall through to a mode handler
         // (ctrl-d is navigation here, never "delete feature"). While the
         // help overlay is open these motions scroll the help (the palette
-        // takes over the viewport); elsewhere they move the tree.
+        // takes over the viewport); while the theme picker is open they
+        // move the picker cursor; elsewhere they move the tree.
+        //
+        // ctrl-t opens the live theme picker (a chord, so it dispatches
+        // over every state — a theme switch is never behind a prompt).
         let handled = match key.code {
             KeyCode::PageUp => {
                 self.move_view(-1);
@@ -1150,6 +1171,10 @@ impl App {
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.quit = true;
+                true
+            }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_theme_picker();
                 true
             }
             _ => false,
@@ -1211,6 +1236,27 @@ impl App {
                 }
                 KeyCode::Char('g') => self.help_scroll_to(0),
                 KeyCode::Char('G') => self.help_scroll_to(usize::MAX),
+                _ => {}
+            },
+            Mode::ThemePicker { index } => match key.code {
+                // j/k + arrows step by one theme (previewing live);
+                // g/G jump to first/last. PgUp/PgDn etc. are handled by the
+                // accessibility layer above.
+                KeyCode::Char('j') | KeyCode::Down => {
+                    *index = (*index + 1).min(self.theme_names.len().saturating_sub(1));
+                    self.preview_picker_theme();
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    *index = index.saturating_sub(1);
+                    self.preview_picker_theme();
+                }
+                KeyCode::Char('g') => self.picker_to(0),
+                KeyCode::Char('G') => self.picker_to(usize::MAX),
+                // Enter keeps the previewed theme (persisted to state —
+                // the config file is never rewritten), Esc/`q` restores
+                // the theme the picker opened with.
+                KeyCode::Enter => self.keep_picked_theme(),
+                KeyCode::Esc | KeyCode::Char('q') => self.cancel_theme_picker(),
                 _ => {}
             },
             Mode::Normal => self.on_key_normal(key),
@@ -1285,6 +1331,104 @@ impl App {
         self.mode = Mode::Help;
     }
 
+    // ------------------------------------------------------ theme picker
+
+    /// Open the live theme picker on the current theme. Built-ins are
+    /// listed before user themes (theming rule: the first rows are the
+    /// same in every project).
+    fn open_theme_picker(&mut self) {
+        let names = match crate::theme::available_names() {
+            Ok(n) if !n.is_empty() => n,
+            _ => crate::theme::builtin_names(),
+        };
+        self.picker_original = self.theme.name.clone();
+        let index = names
+            .iter()
+            .position(|n| *n == self.theme.name)
+            .unwrap_or(0);
+        self.theme_names = names;
+        self.mode = Mode::ThemePicker { index };
+    }
+
+    /// Preview the theme under the picker cursor (live preview on move —
+    /// the screen repaints with the new palette immediately).
+    fn preview_picker_theme(&mut self) {
+        let Mode::ThemePicker { index } = &self.mode else {
+            return;
+        };
+        let Some(name) = self.theme_names.get(*index) else {
+            return;
+        };
+        let truecolor = crate::theme::supports_truecolor();
+        match crate::theme::load(name, truecolor) {
+            Ok(t) => self.theme = t,
+            Err(e) => {
+                log::warn!("theme preview '{}' failed: {e}", name);
+                self.message = Some(format!("theme '{}': {e}", name));
+            }
+        }
+    }
+
+    /// The picker cursor index, when the mode is a theme picker (0 otherwise).
+    fn picker_index(&self) -> usize {
+        match &self.mode {
+            Mode::ThemePicker { index } => *index,
+            _ => 0,
+        }
+    }
+
+    /// Move the picker cursor to `n` (clamped) and preview.
+    fn picker_to(&mut self, n: usize) {
+        let Mode::ThemePicker { index } = &mut self.mode else {
+            return;
+        };
+        *index = n.min(self.theme_names.len().saturating_sub(1));
+        self.preview_picker_theme();
+    }
+
+    /// Keep the previewed theme and close. Persist to STATE (per the
+    /// configuration rules the app never rewrites the user's config file);
+    /// startup honours `state.theme` over the config line.
+    fn keep_picked_theme(&mut self) {
+        let Mode::ThemePicker { index } = &self.mode else {
+            return;
+        };
+        let name = self
+            .theme_names
+            .get(*index)
+            .cloned()
+            .unwrap_or_else(|| self.picker_original.clone());
+        self.theme.name = name.clone();
+        self.state.theme = Some(name.clone());
+        if let Err(e) = self.save_state() {
+            log::warn!("save theme '{}': {e}", name);
+            self.message = Some(format!("theme '{name}' (not saved: {e})"));
+        } else {
+            self.message = Some(format!("theme: {name}"));
+        }
+        self.mode = Mode::Normal;
+    }
+
+    /// Close without keeping: restore the theme the picker opened with.
+    fn cancel_theme_picker(&mut self) {
+        self.restore_original_theme();
+        self.mode = Mode::Normal;
+    }
+
+    /// Reload the theme the picker opened with (called on Esc and on a
+    /// click outside the picker).
+    fn restore_original_theme(&mut self) {
+        let name = std::mem::take(&mut self.picker_original);
+        if name.is_empty() {
+            return;
+        }
+        let truecolor = crate::theme::supports_truecolor();
+        match crate::theme::load(&name, truecolor) {
+            Ok(t) => self.theme = t,
+            Err(e) => log::warn!("restore theme '{}' failed: {e}", name),
+        }
+    }
+
     // ---------------------------------------------------------- mouse
 
     pub fn on_mouse(&mut self, m: MouseEvent) {
@@ -1295,10 +1439,12 @@ impl App {
             }
             // Wheel scrolls the panel under the cursor without changing
             // focus; the only scrollable panel is the tree (or the help
-            // overlay while it is open).
+            // overlay / theme picker while one is open).
             MouseEventKind::ScrollDown => {
                 if matches!(self.mode, Mode::Help) {
                     self.help_scroll_to(self.help_scroll + 3);
+                } else if matches!(self.mode, Mode::ThemePicker { .. }) {
+                    self.picker_to(self.picker_index().saturating_add(3));
                 } else {
                     self.move_sel(3);
                 }
@@ -1306,6 +1452,8 @@ impl App {
             MouseEventKind::ScrollUp => {
                 if matches!(self.mode, Mode::Help) {
                     self.help_scroll_to(self.help_scroll.saturating_sub(3));
+                } else if matches!(self.mode, Mode::ThemePicker { .. }) {
+                    self.picker_to(self.picker_index().saturating_sub(3));
                 } else {
                     self.move_sel(-3);
                 }
@@ -1333,7 +1481,33 @@ impl App {
 
     fn mouse_click(&mut self, x: u16, y: u16, dbl: bool) {
         // Overlays: a click outside dismisses them (accessibility rule);
-        // a click inside keeps keyboard as the way in.
+        // a click inside keeps keyboard as the way in. The theme picker is
+        // the exception: clicking a theme row selects + previews it, and a
+        // double-click keeps it (Enter).
+        if let Mode::ThemePicker { index } = &mut self.mode {
+            let inside = self
+                .popup_area
+                .map(|r| x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height)
+                .unwrap_or(false);
+            if !inside {
+                // click outside = Esc (restores the original theme)
+                self.mode = Mode::Normal;
+                self.restore_original_theme();
+                return;
+            }
+            let Some(rect) = self.popup_area else {
+                return;
+            };
+            let row = y.saturating_sub(rect.y + 1) as usize;
+            if row < self.theme_names.len() {
+                *index = row;
+                self.preview_picker_theme();
+                if dbl {
+                    self.keep_picked_theme();
+                }
+            }
+            return;
+        }
         if !matches!(self.mode, Mode::Normal) {
             let inside = self
                 .popup_area
@@ -1428,10 +1602,16 @@ impl App {
 
     /// The accessibility "move the viewport" motions. While the help
     /// overlay (palette) is open they scroll the help instead of the tree:
-    /// the overlay owns the viewport for as long as it is up. Same code
-    /// path as the tree motions, so the two spellings cannot drift.
+    /// the overlay owns the viewport for as long as it is up. While the
+    /// theme picker is open they move the picker cursor. Same code path
+    /// as the tree motions, so the two spellings cannot drift.
     fn move_view(&mut self, half_pages: i32) {
-        if matches!(self.mode, Mode::Help) {
+        if let Mode::ThemePicker { index } = &mut self.mode {
+            let step = 5 * half_pages;
+            *index = (index.saturating_add_signed(step as isize))
+                .min(self.theme_names.len().saturating_sub(1));
+            self.preview_picker_theme();
+        } else if matches!(self.mode, Mode::Help) {
             let total = crate::ui::help_line_count(self);
             let visible = self
                 .popup_area
@@ -1450,7 +1630,10 @@ impl App {
     }
 
     fn move_view_first(&mut self) {
-        if matches!(self.mode, Mode::Help) {
+        if let Mode::ThemePicker { index } = &mut self.mode {
+            *index = 0;
+            self.preview_picker_theme();
+        } else if matches!(self.mode, Mode::Help) {
             self.help_scroll = 0;
         } else {
             self.move_sel_first();
@@ -1458,7 +1641,10 @@ impl App {
     }
 
     fn move_view_last(&mut self) {
-        if matches!(self.mode, Mode::Help) {
+        if let Mode::ThemePicker { index } = &mut self.mode {
+            *index = self.theme_names.len().saturating_sub(1);
+            self.preview_picker_theme();
+        } else if matches!(self.mode, Mode::Help) {
             let total = crate::ui::help_line_count(self);
             let visible = self
                 .popup_area
@@ -2237,5 +2423,192 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.help_scroll, 0);
+    }
+
+    // ---- M8.4c — theme picker ----
+
+    /// A helper that opens the picker on a headless app standing on the
+    /// given theme (defaults to the config default when unset).
+    fn app_with_picker(theme_name: &str) -> App {
+        let mut app = app_with_projects(3);
+        if theme_name != app.theme.name {
+            app.theme = theme::load(theme_name, false).unwrap();
+        }
+        app.open_theme_picker();
+        app
+    }
+
+    /// ctrl-t opens the picker on the CURRENT theme with built-in names
+    /// (Catppuccin first, per the theming rule that the first rows are the
+    /// same in every project); the cursor sits on the active theme.
+    #[test]
+    fn ctrl_t_opens_picker_on_current_theme() {
+        let mut app = app_with_picker("catppuccin-mocha");
+        app.on_key(key(KeyCode::Char('t'), true));
+        let Mode::ThemePicker { index } = app.mode else {
+            panic!("ctrl-t must open the picker");
+        };
+        assert_eq!(app.theme_names[index], "catppuccin-mocha");
+        assert_eq!(
+            app.theme_names[0], "catppuccin-mocha",
+            "built-ins first, in the picker's stable order"
+        );
+        assert!(
+            app.theme_names.contains(&"ansi".to_string()),
+            "legacy built-ins still offered"
+        );
+        assert_eq!(
+            app.picker_original, "catppuccin-mocha",
+            "the theme the picker opened with is remembered for Esc"
+        );
+    }
+
+    /// j/k move the cursor and PREVIEW live (the app's theme follows the
+    /// cursor); g/G and End/Home jump to first/last; everything clamps.
+    #[test]
+    fn picker_cursor_previews_and_clamps() {
+        let mut app = app_with_picker("catppuccin-mocha");
+        let start = match &app.mode {
+            Mode::ThemePicker { index } => *index,
+            _ => panic!(),
+        };
+        app.on_key(key(KeyCode::Char('j'), false));
+        let Mode::ThemePicker { index } = app.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(index, start + 1);
+        assert_eq!(
+            app.theme.name,
+            app.theme_names[start + 1],
+            "cursor move previews the theme live"
+        );
+        // up again returns to the original
+        app.on_key(key(KeyCode::Up, false)); // arrows = same code path
+        assert_eq!(app.theme.name, "catppuccin-mocha");
+
+        // End = last theme, previewing it; Home = back to first
+        app.on_key(key(KeyCode::End, false));
+        let n = app.theme_names.len();
+        assert_eq!(app.theme.name, app.theme_names[n - 1], "End previews last");
+        app.on_key(key(KeyCode::Home, false));
+        assert_eq!(app.theme.name, app.theme_names[0]);
+
+        // clamping: j from the last row stays there
+        app.on_key(key(KeyCode::End, false));
+        app.on_key(key(KeyCode::Char('j'), false));
+        let Mode::ThemePicker { index } = app.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(index, n - 1, "no overflow past the last theme");
+    }
+
+    /// Enter keeps the previewed theme: it becomes the app theme and the
+    /// pick persists to STATE (never rewrites the user's config file);
+    /// reopening the app honours it.
+    #[test]
+    fn picker_enter_keeps_and_persists_theme() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_picker("catppuccin-mocha");
+            app.on_key(key(KeyCode::Char('j'), false)); // preview a different one
+            let picked = app.theme.name.clone();
+            app.on_key(key(KeyCode::Enter, false));
+            assert!(matches!(app.mode, Mode::Normal), "picker closes on Enter");
+            assert_eq!(app.theme.name, picked);
+            assert_eq!(app.state.theme.as_deref(), Some(picked.as_str()));
+            // persisted state file carries the pick (state dir is fresh XDG)
+            let loaded = crate::state::State::load().unwrap();
+            assert_eq!(loaded.theme.as_deref(), Some(picked.as_str()));
+        });
+    }
+
+    /// Esc restores the theme the picker opened with, even after previews,
+    /// and does not persist anything.
+    #[test]
+    fn picker_esc_restores_original() {
+        let mut app = app_with_picker("catppuccin-mocha");
+        app.on_key(key(KeyCode::Char('j'), false));
+        assert_ne!(app.theme.name, "catppuccin-mocha");
+        app.on_key(key(KeyCode::Esc, false));
+        assert_eq!(app.theme.name, "catppuccin-mocha", "Esc restores the theme");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.state.theme, None, "nothing persisted on cancel");
+        assert!(app.picker_original.is_empty(), "restore consumed the name");
+    }
+
+    /// PageDown/ctrl-d move the picker by a page (5), g/G jump to
+    /// first/last — the accessibility layer routes to the picker, not the
+    /// tree, while it is open.
+    #[test]
+    fn picker_page_and_g_motions_route_to_picker() {
+        let mut app = app_with_picker("catppuccin-mocha");
+        app.on_key(key(KeyCode::PageDown, false));
+        let Mode::ThemePicker { index } = app.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(index, 5, "page down = 5 rows in the picker");
+        app.on_key(key(KeyCode::Char('G'), false));
+        let Mode::ThemePicker { index } = app.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(index, app.theme_names.len() - 1);
+        app.on_key(key(KeyCode::Char('g'), false));
+        let Mode::ThemePicker { index } = app.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(index, 0);
+        // the tree selection never moved while the picker was open
+        assert_eq!(app.sel, Sel::Project(0));
+    }
+
+    /// Mouse: clicking a theme row selects + previews it, double-click
+    /// keeps it, click outside restores the original (Esc semantics).
+    #[test]
+    fn picker_mouse_selects_and_double_click_keeps() {
+        let mut app = app_with_picker("catppuccin-mocha");
+        let rect = Rect::new(20, 5, 40, app.theme_names.len() as u16 + 3);
+        app.popup_area = Some(rect);
+        // single click row 1 → select + preview (not kept)
+        app.on_mouse(click(rect.x + 5, rect.y + 1 + 1));
+        let Mode::ThemePicker { index } = app.mode else {
+            panic!("picker must still be open after a single click");
+        };
+        assert_eq!(index, 1);
+        assert_eq!(app.theme.name, app.theme_names[1]);
+        // double-click the same row keeps it
+        app.on_mouse(click(rect.x + 5, rect.y + 1 + 1));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.theme.name, app.theme_names[1]);
+        assert_eq!(
+            app.state.theme.as_deref(),
+            Some(app.theme_names[1].as_str())
+        );
+    }
+
+    /// Click outside the picker = Esc: restores the original theme.
+    #[test]
+    fn picker_click_outside_restores_original() {
+        let mut app = app_with_picker("catppuccin-mocha");
+        app.popup_area = Some(Rect::new(20, 5, 40, 12));
+        app.on_key(key(KeyCode::Char('j'), false));
+        assert_ne!(app.theme.name, "catppuccin-mocha");
+        app.on_mouse(click(2, 2));
+        assert_eq!(app.theme.name, "catppuccin-mocha", "outside click restores");
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    /// The wheel moves the picker cursor when the picker is open.
+    #[test]
+    fn picker_wheel_moves_cursor() {
+        let mut app = app_with_picker("catppuccin-mocha");
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 40,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        let Mode::ThemePicker { index } = app.mode else {
+            panic!("picker must still be open");
+        };
+        assert_eq!(index, 3, "wheel moves the picker by 3");
     }
 }

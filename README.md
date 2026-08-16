@@ -98,7 +98,7 @@ startup.
 file written on first run. Example:
 
 ```toml
-theme = "dracula"            # dracula | gruvbox | ansi | your own
+theme = "catppuccin-mocha"  # 7 built-ins; ctrl-t switches live (saved to state)
 poll_interval_ms = 500       # status/preview refresh
 confirm_on_delete = true
 
@@ -167,12 +167,32 @@ LazyWingman finds your repos so you don't have to import them one by one:
 `$XDG_CONFIG_HOME/lazywingman/themes/<name>.toml`. Colours are named roles
 (`background`, `accent`, `tree_project`, `status_working`, …) written as
 `#rrggbb` hex, an ANSI-16 name (`cyan`, `bright_black`, `gray`, …), or
-`default` (terminal default). Three built-ins ship with the binary:
+`default` (terminal default). Seven built-ins ship with the binary:
 
+- **catppuccin-mocha** (default) — dark, highest contrast; the reference set
+- **catppuccin-macchiato** — dark, middle contrast
+- **catppuccin-frappe** — dark, warm, lowest contrast
+- **catppuccin-latte** — the light theme
 - **dracula** — truecolor; falls back to xterm-256 when `COLORTERM` doesn't
   advertise 24-bit support
 - **gruvbox** — truecolor with the same fallback
 - **ansi** — ANSI-16 palette only, so it inherits your terminal's colours
+
+The Catppuccin flavours use the official hex values, unmodified, mapped onto
+the app's roles (`base` → background, `text`/`subtext0` → text/dim,
+`surface0-2` → selection/borders, flavour accents for status, `lavender` for
+the accent).
+
+Press **`ctrl-t`** inside the TUI for a live theme picker: move with
+`j`/`k` (or `PgUp`/`PgDn`, `Home`/`End`) and the whole screen repaints with
+the new palette; `Enter` keeps the previewed theme, `Esc` restores the one
+you opened with. The pick is saved to the state file (the config file is
+never rewritten behind your back) and honoured on the next start; the
+config's `theme = ...` line is the startup default.
+
+`NO_COLOR` (present and non-empty) switches to a monochrome render — every
+role resolves to the terminal default; the UI stays readable because meaning
+is carried by symbols, labels and position, not by colour.
 
 ### Agent status
 
