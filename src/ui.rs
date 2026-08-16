@@ -445,17 +445,31 @@ fn draw_help(f: &mut Frame, app: &App) {
         ]));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "attach: press Enter in the dashboard, then press the tmux back-key",
-        fg(theme.dim),
-    )));
-    lines.push(Line::from(Span::styled(
-        format!(
-            "back-key is '{}' (config tmux.back_key) — jump back to this window",
-            app.cfg.tmux.back_key
-        ),
-        fg(theme.dim),
-    )));
+    // The way back differs by where the dashboard runs: inside tmux the
+    // back-key jumps to this window; standalone there is no back-key — the
+    // user detaches from `tmux attach` with C-b d and lands back here.
+    if app.tmux.as_ref().and_then(|t| t.inside.as_ref()).is_some() {
+        lines.push(Line::from(Span::styled(
+            "attach: press Enter in the dashboard, then press the tmux back-key",
+            fg(theme.dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "back-key is '{}' (config tmux.back_key) — jump back to this window",
+                app.cfg.tmux.back_key
+            ),
+            fg(theme.dim),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "attach: press Enter — the terminal is handed over to tmux attach",
+            fg(theme.dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            "detach with C-b d to return to the dashboard",
+            fg(theme.dim),
+        )));
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(fg(theme.popup_border))

@@ -72,6 +72,14 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   shell's window), then re-enters the TUI on detach. No back-key exists outside
   tmux (the user detaches with C-b d). `LAZYWINGMAN_NO_TMUX` is removed —
   there is no no-tmux mode anymore.
+- **M8.2 — the tmux server is auto-started** for a standalone dashboard:
+  tmux 3.5a exits a server as soon as it has no sessions and no clients, so
+  `Tmux::ensure_server()` runs `start-server \; set -g exit-empty off` in ONE
+  client invocation (two clients would race the server's exit). Only runs
+  when `list-sessions` reports no server, so the user's own server is never
+  modified; the dashboard's server then lingers empty after quit (harmless,
+  standard tmux-with-exit-empty-off behaviour). `list-panes -a` on a
+  zero-session server ("no current target") reads as an empty pane list.
 - **M8 — project discovery** (per user feedback): on startup, if the working
   directory is inside a git repo, that repo is auto-imported as a project and
   all its worktrees become features (no shells spawned); if not, the user is

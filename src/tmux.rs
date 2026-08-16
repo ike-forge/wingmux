@@ -142,6 +142,27 @@ impl Tmux {
         run_tmux(&self.socket, args)
     }
 
+    /// Make sure a tmux server exists on our socket, starting one if needed.
+    ///
+    /// Standalone boot usually happens before any tmux server exists; tmux
+    /// 3.5a shuts a server down as soon as it has no sessions and no
+    /// clients, so a server we had to start ourselves is told to stay alive
+    /// (`exit-empty off`) — in ONE client invocation, because the server
+    /// can exit between two separate clients. A pre-existing server (e.g.
+    /// the user's own) is never touched: `list-sessions` succeeds and we
+    /// return.
+    pub fn ensure_server(&self) -> Result<()> {
+        match self.list_sessions() {
+            Ok(_) => Ok(()),
+            Err(e) if is_no_server_error(&e) => {
+                self.run(&["start-server", ";", "set", "-g", "exit-empty", "off"])?;
+                log::info!("started tmux server on our socket (exit-empty off)");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Run a raw tmux command and return stdout (used by state.rs for
     /// pane-cwd lookups).
     pub fn run_raw(&self, args: &[&str]) -> Result<String> {
@@ -374,9 +395,16 @@ impl Tmux {
 
     /// All panes of our agent sessions (one tmux call per poll). The
     /// dashboard's own session is excluded — we only supervise agent shells.
+    /// A server with no sessions yet (fresh standalone boot) yields an empty
+    /// list, not an error.
     pub fn list_panes(&self) -> Result<Vec<PaneInfo>> {
         let fmt = "#{pane_id}|#{pane_current_command}|#{pane_dead}|#{pane_width}|#{pane_height}|#{session_name}";
-        let out = self.run(&["list-panes", "-a", "-F", fmt])?;
+        let out = match self.run(&["list-panes", "-a", "-F", fmt]) {
+            Ok(o) => o,
+            // list-panes -a has no target when the server has zero sessions.
+            Err(e) if is_no_server_error(&e) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
         Ok(out
             .lines()
             .filter(|line| {
@@ -491,6 +519,16 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
     })
 }
 
+/// tmux errors that merely mean "no server / no sessions yet" — normal
+/// during a standalone boot before any agent session exists, and the
+/// trigger for [`Tmux::ensure_server`].
+fn is_no_server_error(e: &Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("no server running")
+        || msg.contains("error connecting")
+        || msg.contains("no current target")
+}
+
 /// Is `cmd` a login shell (i.e. no agent running in the pane)?
 pub fn is_shell_command(cmd: &str) -> bool {
     let c = cmd.trim();
@@ -573,69 +611,11 @@ mod tests {
     }
 
     // ---- integration tests against a real (throwaway) tmux server ----
-    //
-    // NOTE: the mutex MUST live at module level — a `static` inside the
-    // generic `with_tmux_server` would be duplicated per closure type, so
-    // tests would not serialize and would stomp each other's env vars.
-
-    static TMUX_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    static SOCK_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-    fn with_tmux_server(f: impl FnOnce(&str, Tmux)) {
-        // Skip gracefully when tmux isn't installed.
-        if Command::new("tmux").arg("-V").output().is_err() {
-            eprintln!("skipping: tmux not available");
-            return;
-        }
-        // Recover from a previous test's panic (poisoned lock).
-        let _guard = TMUX_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Unique socket per invocation: zero cross-test server coupling.
-        let n = SOCK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let sock = format!("lwtest-{}-{n}", std::process::id());
-        let status = Command::new("tmux")
-            .args([
-                "-L",
-                &sock,
-                "new-session",
-                "-d",
-                "-s",
-                "main",
-                "-x",
-                "200",
-                "-y",
-                "50",
-            ])
-            .status()
-            .unwrap();
-        assert!(status.success(), "new-session failed on socket {sock}");
-        // Let the server finish initialising its first window — window
-        // creation right after `new-session -d` can race window index 0.
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        // NOTE: TMUX/TMUX_PANE must stay UNSET here — a fake value makes the
-        // tmux client behave as a nested client and breaks session/window
-        // creation.
-        unsafe {
-            std::env::set_var("LAZYWINGMAN_TMUX_SOCKET", &sock);
-            std::env::remove_var("TMUX");
-            std::env::remove_var("TMUX_PANE");
-        }
-        let tmux = Tmux {
-            inside: Some(Inside {
-                session_name: "main".into(),
-                window_id: "@0".into(),
-                pane_id: "%0".into(),
-            }),
-            socket: Some(sock.clone()),
-        };
-        // Guarantee the server is torn down even if the test body panics.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&sock, tmux)));
-        let _ = Command::new("tmux")
-            .args(["-L", &sock, "kill-server"])
-            .status();
-        if let Err(e) = result {
-            std::panic::resume_unwind(e);
-        }
-    }
+    // Server setup lives in the shared `testutil` module (see below) so the
+    // app-level handoff tests can reuse it — all tmux tests in the binary
+    // must serialize on ONE lock, because they mutate process-global env
+    // vars (`LAZYWINGMAN_TMUX_SOCKET`, TMUX/TMUX_PANE).
+    use super::testutil::*;
 
     #[test]
     fn detect_finds_our_coordinates() {
@@ -665,6 +645,28 @@ mod tests {
         }
         let t = Tmux::detect().unwrap();
         assert!(t.inside.is_none());
+    }
+
+    #[test]
+    fn ensure_server_starts_a_server_when_none_running() {
+        testutil::with_no_server(|sock| {
+            let tmux = testutil::tmux_standalone(sock);
+            // no server yet: list-sessions fails, panes list is empty
+            assert!(tmux.list_sessions().is_err());
+            assert!(tmux.list_panes().unwrap().is_empty());
+
+            tmux.ensure_server().unwrap();
+
+            // server is now reachable and stays alive with zero sessions
+            assert!(tmux.list_sessions().unwrap().is_empty());
+            assert!(tmux.list_panes().unwrap().is_empty());
+            // and real agent sessions can be created on it
+            let w = tmux
+                .new_session("wingman-session-p", "lw:f/0", Path::new("/tmp"), "bash")
+                .unwrap();
+            assert!(w.window_id.starts_with('@'));
+            assert!(tmux.session_exists("wingman-session-p"));
+        });
     }
 
     #[test]
@@ -783,5 +785,124 @@ mod tests {
             );
             assert!(keys.contains("select-window -t @0"));
         });
+    }
+}
+
+/// Shared fixture for tests that need a real (throwaway) tmux server.
+///
+/// Exposed to the app-level tests too, so the M8.2 handoff path can be
+/// verified at the command level. NOTE: the mutex MUST live at module level —
+/// a `static` inside the generic `with_tmux_server` would be duplicated per
+/// closure type, so tests would not serialize and would stomp each other's
+/// env vars.
+#[cfg(test)]
+pub(crate) mod testutil {
+    use std::process::Command;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::{Inside, Tmux};
+
+    static TMUX_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static SOCK_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// Run `f` against a throwaway tmux server on a unique socket.
+    ///
+    /// Sets `LAZYWINGMAN_TMUX_SOCKET` and clears TMUX/TMUX_PANE (a fake
+    /// value makes the tmux client behave as a nested client and breaks
+    /// session/window creation). The server is killed on the way out even if
+    /// the test body panics.
+    pub fn with_tmux_server(f: impl FnOnce(&str, Tmux)) {
+        // Skip gracefully when tmux isn't installed.
+        if Command::new("tmux").arg("-V").output().is_err() {
+            eprintln!("skipping: tmux not available");
+            return;
+        }
+        // Recover from a previous test's panic (poisoned lock).
+        let _guard = TMUX_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Unique socket per invocation: zero cross-test server coupling.
+        let n = SOCK_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let sock = format!("lwtest-{}-{n}", std::process::id());
+        let status = Command::new("tmux")
+            .args([
+                "-L",
+                &sock,
+                "new-session",
+                "-d",
+                "-s",
+                "main",
+                "-x",
+                "200",
+                "-y",
+                "50",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success(), "new-session failed on socket {sock}");
+        // Let the server finish initialising its first window — window
+        // creation right after `new-session -d` can race window index 0.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        unsafe {
+            std::env::set_var("LAZYWINGMAN_TMUX_SOCKET", &sock);
+            std::env::remove_var("TMUX");
+            std::env::remove_var("TMUX_PANE");
+        }
+        let tmux = Tmux {
+            inside: Some(Inside {
+                session_name: "main".into(),
+                window_id: "@0".into(),
+                pane_id: "%0".into(),
+            }),
+            socket: Some(sock.clone()),
+        };
+        // Guarantee the server is torn down even if the test body panics.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&sock, tmux)));
+        let _ = Command::new("tmux")
+            .args(["-L", &sock, "kill-server"])
+            .status();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    /// A handle pretending the dashboard runs inside the `main` session.
+    pub fn tmux_inside(sock: &str) -> Tmux {
+        Tmux {
+            inside: Some(Inside {
+                session_name: "main".into(),
+                window_id: "@0".into(),
+                pane_id: "%0".into(),
+            }),
+            socket: Some(sock.to_string()),
+        }
+    }
+
+    /// A handle for a dashboard running in a plain terminal (no tmux around
+    /// it), still managing the same tmux server.
+    pub fn tmux_standalone(sock: &str) -> Tmux {
+        Tmux {
+            inside: None,
+            socket: Some(sock.to_string()),
+        }
+    }
+
+    /// Run `f` with a unique socket and NO server running on it — the test
+    /// body is expected to start one itself (e.g. via `ensure_server`).
+    /// Serialises on the same lock as `with_tmux_server`.
+    pub fn with_no_server(f: impl FnOnce(&str)) {
+        let _guard = TMUX_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let n = SOCK_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let sock = format!("lwtest-{}-{n}", std::process::id());
+        // Clear any leftover server from a previous run on this socket.
+        let _ = Command::new("tmux")
+            .args(["-L", &sock, "kill-server"])
+            .status();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&sock)));
+        let _ = Command::new("tmux")
+            .args(["-L", &sock, "kill-server"])
+            .status();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
     }
 }

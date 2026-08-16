@@ -5,8 +5,8 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M8 — user-feedback milestone set — IN PROGRESS (M8.1 COMPLETE, M8.2 next).**
-M7.1 (cursor fix) complete; M8 plan below; resume from STATE.md progress log.
+**M8 — user-feedback milestone set — IN PROGRESS (M8.1 + M8.2 COMPLETE, M8.3 next).**
+Resume from STATE.md progress log.
 
 ## M8 — plan (user feedback: hide agent panes in separate sessions, project
 ## discovery, follow agent-common-instructions, work inside AND outside tmux)
@@ -73,6 +73,39 @@ milestone line at the end of every milestone. When ALL are done, mark
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M8.2 — runs outside tmux (COMPLETE, committed)
+- [x] main.rs already had no "must run inside tmux" error (M8.1); `detect()`
+      returns coordinates or standalone; LAZYWINGMAN_NO_TMUX gone.
+- [x] NEW BUG FOUND & FIXED by standalone boot smoke: with no tmux server
+      running at all, startup failed hard ("no server running") because
+      reconcile → `list-sessions`. tmux 3.5a also exits a server that has
+      zero sessions (`exit-empty on` by default), so plain `start-server`
+      alone doesn't help — probed all variants. Fix: `Tmux::ensure_server()`
+      runs `start-server \; set -g exit-empty off` in ONE client invocation
+      (two separate clients race the server's exit) only when `list-sessions`
+      reports no server — a pre-existing server (user's own) is never
+      touched. Called from `App::startup` when `inside.is_none()`.
+      `list-panes -a` on a zero-session server errors "no current target" →
+      treated as an empty list (fresh boot is a normal state, not an error).
+- [x] Attach outside tmux = terminal handoff (M8.1 code, now command-level
+      TESTED): `attach()` standalone → clientless `select-window` to the
+      shell's window + `pending_attach` → event loop restores the terminal,
+      runs `tmux attach -t <session>` (blocking), re-inits ratatui, resumes.
+      Inside tmux → `switch-client`, never a handoff.
+- [x] Help overlay: attach hint now conditional — inside tmux shows the
+      back-key (C-o → dashboard); standalone shows "terminal handed over to
+      tmux attach, detach with C-b d". No back-key exists outside tmux.
+- [x] Tests: 59 green (was 55) — `ensure_server_starts_a_server_when_none_running`,
+      `standalone_attach_preselects_shell_window_and_requests_handoff`,
+      `inside_attach_never_requests_handoff`,
+      `standalone_startup_boots_without_a_server`. Shared `testutil` module
+      in tmux.rs (one lock for ALL tmux tests in the binary — env vars are
+      process-global). clippy/fmt clean.
+- [x] LIVE SMOKE (real binary): standalone boot in a pty with NO tmux server
+      → "dashboard standalone" + "started tmux server (exit-empty off)" →
+      TUI renders → `q` exits 0. In-tmux boot unchanged ("dashboard inside
+      tmux: session='dash'") and still renders/quit cleanly.
 
 ### M8.1 — dedicated agent sessions (COMPLETE, committed)
 - [x] tmux.rs rewritten: `Tmux { inside: Option<Inside> }` (dashboard coords

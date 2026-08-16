@@ -106,6 +106,11 @@ impl App {
         self.state = State::load()?;
         self.merge_config_projects()?;
         if let Some(tmux) = &self.tmux {
+            // Standalone boot usually happens before any tmux server exists;
+            // start one so session/window operations work from the first poll.
+            if tmux.inside.is_none() {
+                tmux.ensure_server()?;
+            }
             self.state.reconcile(tmux)?;
             self.state.prune(Some(tmux))?;
             self.bind_back_keys(tmux)?;
@@ -1069,4 +1074,123 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{Feature, Project, Shell};
+    use crate::theme;
+    use crate::tmux::testutil::{tmux_inside, tmux_standalone, with_tmux_server};
+    use std::path::Path;
+
+    fn app_with(tmux: Tmux) -> App {
+        App::new(
+            Config::default(),
+            theme::load("ansi", false).unwrap(),
+            Some(tmux),
+        )
+    }
+
+    /// Seed state with one project whose agent session and first shell
+    /// window really exist on the test tmux server.
+    fn seed_project_with_shell(tmux: &Tmux, app: &mut App) -> (String, String) {
+        let w = tmux
+            .new_session("wingman-session-p", "lw:feat/0", Path::new("/tmp"), "bash")
+            .unwrap();
+        app.state.projects.push(Project {
+            name: "p".into(),
+            path: PathBuf::from("/tmp/p"),
+            base_branch: "master".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: Some("wingman-session-p".into()),
+            features: vec![Feature {
+                name: "feat".into(),
+                branch: "feat".into(),
+                worktree_path: PathBuf::from("/tmp/p-wt"),
+                created_at: "2026-08-16".into(),
+                shells: vec![Shell {
+                    index: 0,
+                    window_name: "lw:feat/0".into(),
+                    window_id: Some(w.window_id.clone()),
+                    pane_id: Some(w.pane_id.clone()),
+                }],
+            }],
+        });
+        (w.window_id, w.pane_id)
+    }
+
+    /// M8.2 — the standalone handoff path, verified at the command level:
+    /// attach must preselect the shell's window clientless (so `tmux attach`
+    /// lands on it) and flag the event loop to hand the terminal over.
+    #[test]
+    fn standalone_attach_preselects_shell_window_and_requests_handoff() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_standalone(sock);
+            let mut app = app_with(tmux.clone());
+            let (wid, _pid) = seed_project_with_shell(&tmux, &mut app);
+
+            app.attach(0, 0, 0);
+
+            // the shell's window was preselected clientless...
+            let active = tmux
+                .run_raw(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    "wingman-session-p",
+                    "#{window_id}",
+                ])
+                .unwrap();
+            assert_eq!(
+                active.trim(),
+                wid,
+                "standalone attach must preselect the shell's window"
+            );
+            // ...and the event loop is told to run `tmux attach -t <session>`
+            assert_eq!(
+                app.pending_attach.as_deref(),
+                Some("wingman-session-p"),
+                "standalone attach must schedule the terminal handoff"
+            );
+        });
+    }
+
+    /// M8.2 — inside tmux the dashboard switches the client instead; it must
+    /// never schedule a terminal handoff.
+    #[test]
+    fn inside_attach_never_requests_handoff() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_wid, _pid) = seed_project_with_shell(&tmux, &mut app);
+
+            app.attach(0, 0, 0);
+
+            // switch-client needs a client, which headless tests don't have —
+            // the point here is only that the standalone branch is NOT taken.
+            assert!(
+                app.pending_attach.is_none(),
+                "inside-tmux attach must not hand the terminal over"
+            );
+        });
+    }
+
+    /// M8.2 — a standalone dashboard must boot even when no tmux server
+    /// exists yet: startup auto-starts one instead of failing on
+    /// "no server running".
+    #[test]
+    fn standalone_startup_boots_without_a_server() {
+        crate::tmux::testutil::with_no_server(|sock| {
+            let tmux = tmux_standalone(sock);
+            let mut app = app_with(tmux);
+            app.startup().unwrap();
+            assert!(app.state.projects.is_empty());
+            // the server now exists and is supervised
+            let t = app.tmux.as_ref().unwrap();
+            assert!(!t.session_exists("wingman-session-p"));
+            assert!(t.list_sessions().unwrap().is_empty());
+        });
+    }
 }

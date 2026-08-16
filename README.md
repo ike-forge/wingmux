@@ -144,7 +144,8 @@ only — the live preview panel lets you confirm what's really happening.
 
 - LazyWingman detects its own coordinates (`TMUX` env, `display-message -t
   pane`) when it runs inside tmux; standalone it still manages the same tmux
-  server via its CLI. Agent shells live in **dedicated sessions**, one per
+  server via its CLI — the server is started automatically if none is
+  running. Agent shells live in **dedicated sessions**, one per
   project, named deterministically `wingman-session-<project>` — your own
   session is never touched. Shell windows are named `lw:<feature>/<n>`
   inside that session, so everything is rediscoverable after a restart
