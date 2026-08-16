@@ -126,6 +126,16 @@ pub fn supports_truecolor() -> bool {
         .unwrap_or(false)
 }
 
+/// `NO_COLOR` (no-color.org): when present and not an empty string, the app
+/// must not emit colour at all. Everything meaningful is carried by symbols,
+/// labels and position anyway, so a monochrome render stays usable — the UI
+/// is never colour-only.
+pub fn no_color() -> bool {
+    std::env::var("NO_COLOR")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
 impl<'de> serde::Deserialize<'de> for Spec {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
@@ -271,9 +281,16 @@ pub fn ensure_builtin_themes() -> Result<()> {
 }
 
 /// Resolve and load a theme by name: user themes dir first, then built-ins.
+/// Honour `NO_COLOR`: when set, every role resolves to the terminal default.
 pub fn load(name: &str, truecolor: bool) -> Result<Theme> {
+    load_with(name, truecolor, no_color())
+}
+
+/// [`Self::load`] with an explicit monochrome decision (tests pass it
+/// directly instead of touching `NO_COLOR`, which is process-global).
+pub fn load_with(name: &str, truecolor: bool, monochrome: bool) -> Result<Theme> {
     let file = load_file(name)?;
-    resolve_theme(file, truecolor)
+    resolve_theme(file, truecolor, monochrome)
 }
 
 fn load_file(name: &str) -> Result<ThemeFile> {
@@ -304,33 +321,44 @@ fn parse_theme(content: &str, source: &Path) -> Result<ThemeFile> {
         .map_err(|e| Error::Theme(format!("{}: {e}", source.display())))
 }
 
-fn resolve_theme(file: ThemeFile, truecolor: bool) -> Result<Theme> {
+fn resolve_theme(file: ThemeFile, truecolor: bool, monochrome: bool) -> Result<Theme> {
     let c = file.colors;
+    // NO_COLOR: no colour at all — every role falls back to the terminal
+    // default. This is not a low-colour mode; it is a no-colour mode, and
+    // everything the theme conveyed semantically is still readable because
+    // the UI carries meaning in symbols, labels and position too.
+    let resolve = |s: Spec| -> Color {
+        if monochrome {
+            Color::Reset
+        } else {
+            s.resolve(truecolor)
+        }
+    };
     Ok(Theme {
         name: file.name,
         colors: ResolvedColors {
-            background: c.background.resolve(truecolor),
-            foreground: c.foreground.resolve(truecolor),
-            dim: c.dim.resolve(truecolor),
-            accent: c.accent.resolve(truecolor),
-            selection_bg: c.selection_bg.resolve(truecolor),
-            selection_fg: c.selection_fg.resolve(truecolor),
-            border: c.border.resolve(truecolor),
-            border_focused: c.border_focused.resolve(truecolor),
-            tree_project: c.tree_project.resolve(truecolor),
-            tree_feature: c.tree_feature.resolve(truecolor),
-            tree_shell: c.tree_shell.resolve(truecolor),
-            status_working: c.status_working.resolve(truecolor),
-            status_waiting: c.status_waiting.resolve(truecolor),
-            status_idle: c.status_idle.resolve(truecolor),
-            status_failed: c.status_failed.resolve(truecolor),
-            status_dead: c.status_dead.resolve(truecolor),
-            status_ended: c.status_ended.resolve(truecolor),
-            title_bg: c.title_bg.resolve(truecolor),
-            title_fg: c.title_fg.resolve(truecolor),
-            popup_bg: c.popup_bg.resolve(truecolor),
-            popup_fg: c.popup_fg.resolve(truecolor),
-            popup_border: c.popup_border.resolve(truecolor),
+            background: resolve(c.background),
+            foreground: resolve(c.foreground),
+            dim: resolve(c.dim),
+            accent: resolve(c.accent),
+            selection_bg: resolve(c.selection_bg),
+            selection_fg: resolve(c.selection_fg),
+            border: resolve(c.border),
+            border_focused: resolve(c.border_focused),
+            tree_project: resolve(c.tree_project),
+            tree_feature: resolve(c.tree_feature),
+            tree_shell: resolve(c.tree_shell),
+            status_working: resolve(c.status_working),
+            status_waiting: resolve(c.status_waiting),
+            status_idle: resolve(c.status_idle),
+            status_failed: resolve(c.status_failed),
+            status_dead: resolve(c.status_dead),
+            status_ended: resolve(c.status_ended),
+            title_bg: resolve(c.title_bg),
+            title_fg: resolve(c.title_fg),
+            popup_bg: resolve(c.popup_bg),
+            popup_fg: resolve(c.popup_fg),
+            popup_border: resolve(c.popup_border),
         },
     })
 }
@@ -387,8 +415,50 @@ mod tests {
             let t = parse_theme(content, Path::new("builtin")).unwrap();
             assert_eq!(t.name, name);
             // every role resolves without panicking
-            let resolved = resolve_theme(t, true).unwrap();
+            let resolved = resolve_theme(t, true, false).unwrap();
             let _ = resolved.colors.background;
+        }
+    }
+
+    /// NO_COLOR must wipe every role to the terminal default — a monochrome
+    /// render, not a low-colour one. The UI stays readable because meaning
+    /// is carried by symbols/labels/position, not by colour.
+    #[test]
+    fn no_color_resolves_every_role_to_reset() {
+        for (_, content) in BUILTIN_THEMES {
+            let t = parse_theme(content, Path::new("builtin")).unwrap();
+            let resolved = resolve_theme(t, true, true).unwrap();
+            let c = &resolved.colors;
+            for (name, role) in [
+                ("background", c.background),
+                ("foreground", c.foreground),
+                ("dim", c.dim),
+                ("accent", c.accent),
+                ("selection_bg", c.selection_bg),
+                ("selection_fg", c.selection_fg),
+                ("border", c.border),
+                ("border_focused", c.border_focused),
+                ("tree_project", c.tree_project),
+                ("tree_feature", c.tree_feature),
+                ("tree_shell", c.tree_shell),
+                ("status_working", c.status_working),
+                ("status_waiting", c.status_waiting),
+                ("status_idle", c.status_idle),
+                ("status_failed", c.status_failed),
+                ("status_dead", c.status_dead),
+                ("status_ended", c.status_ended),
+                ("title_bg", c.title_bg),
+                ("title_fg", c.title_fg),
+                ("popup_bg", c.popup_bg),
+                ("popup_fg", c.popup_fg),
+                ("popup_border", c.popup_border),
+            ] {
+                assert_eq!(
+                    role,
+                    Color::Reset,
+                    "role {name} must be Reset under NO_COLOR"
+                );
+            }
         }
     }
 

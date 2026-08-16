@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::Rect;
 
 use crate::config::{Config, ProjectConfig};
 use crate::error::{Error, Result};
@@ -32,6 +35,21 @@ pub enum Mode {
     Input { kind: InputKind, text: String },
     Confirm { confirm: Confirm },
     Help,
+}
+
+/// An action reachable from the statusbar shortcut entries (and by mouse
+/// click). Same words as the help overlay — learning one teaches the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarAction {
+    Help,
+    Import,
+    Scan,
+    NewFeature,
+    AddShell,
+    QuickSend,
+    DeleteFeature,
+    RemoveProject,
+    Attach,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +108,20 @@ pub struct App {
     /// booted); `run()` turns it on.
     pub interactive_boot: bool,
     pub quit: bool,
+    /// Last frame size — drives page-sized motions and mouse hit-testing.
+    pub viewport: (u16, u16),
+    /// ASCII-only rendering (terminals that mangle box-drawing): `+ - |`
+    /// borders, `v`/`>` tree markers. Set by `run()` from the environment.
+    pub ascii: bool,
+    /// Rect of the overlay currently on screen, if any. Mouse clicks
+    /// outside it dismiss the overlay (accessibility rule).
+    pub popup_area: Option<Rect>,
+    /// Hit ranges of the statusbar shortcut entries, set by the renderer:
+    /// (x_start, x_end, action) on the statusbar row.
+    pub bar_hits: Vec<(u16, u16, BarAction)>,
+    /// Last left-click (time, x, y) — double-click detection, since this
+    /// crossterm version does not report a click count on mouse events.
+    last_click: Option<(Instant, u16, u16)>,
 }
 
 impl App {
@@ -112,6 +144,11 @@ impl App {
             pending_attach: None,
             interactive_boot: false,
             quit: false,
+            viewport: (0, 0),
+            ascii: false,
+            popup_area: None,
+            bar_hits: Vec::new(),
+            last_click: None,
         }
     }
 
@@ -929,9 +966,12 @@ impl App {
                     feat.name,
                     feat.worktree_path.display(),
                     if dirty {
-                        "⚠ worktree has uncommitted changes — force delete will discard them"
+                        format!(
+                            "{} worktree has uncommitted changes — force delete will discard them",
+                            crate::ui::warn_mark(self.ascii)
+                        )
                     } else {
-                        "worktree is clean"
+                        "worktree is clean".into()
                     }
                 ),
                 force_label: if dirty {
@@ -1063,6 +1103,63 @@ impl App {
     // ---------------------------------------------------------- keys
 
     pub fn on_key(&mut self, key: KeyEvent) {
+        // Accessibility layer, dispatched above everything (the ctrl layer
+        // works over text input and overlays too): PageUp/PageDown and
+        // ctrl-u/ctrl-d half-page, ctrl-f/ctrl-b full-page, Home/End
+        // first/last, ctrl-c quit — always, from any state. Handled keys
+        // are consumed: they must not fall through to a mode handler
+        // (ctrl-d is navigation here, never "delete feature").
+        let handled = match key.code {
+            KeyCode::PageUp => {
+                self.move_sel_page(-1);
+                true
+            }
+            KeyCode::PageDown => {
+                self.move_sel_page(1);
+                true
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_sel_page(-1);
+                true
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_sel_page(1);
+                true
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_sel_page(2);
+                true
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_sel_page(-2);
+                true
+            }
+            KeyCode::Home => {
+                self.move_sel_first();
+                true
+            }
+            KeyCode::End => {
+                self.move_sel_last();
+                true
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.quit = true;
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            return;
+        }
+        // `g`/`G` (first/last) are normal-mode motions only: printable
+        // keys belong to text input everywhere else.
+        if matches!(self.mode, Mode::Normal) {
+            match key.code {
+                KeyCode::Char('g') => self.move_sel_first(),
+                KeyCode::Char('G') => self.move_sel_last(),
+                _ => {}
+            }
+        }
         match &mut self.mode {
             Mode::Input { kind, text } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
@@ -1107,7 +1204,6 @@ impl App {
     fn on_key_normal(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
             KeyCode::Char('j') | KeyCode::Down => self.move_sel(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
             KeyCode::Char('h') | KeyCode::Left => self.collapse_or_up(),
@@ -1164,6 +1260,142 @@ impl App {
             KeyCode::Char('?') => self.mode = Mode::Help,
             _ => {}
         }
+    }
+
+    // ---------------------------------------------------------- mouse
+
+    pub fn on_mouse(&mut self, m: MouseEvent) {
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let dbl = self.is_double_click(m.column, m.row);
+                self.mouse_click(m.column, m.row, dbl);
+            }
+            // Wheel scrolls the panel under the cursor without changing
+            // focus; the only scrollable panel is the tree.
+            MouseEventKind::ScrollDown => self.move_sel(3),
+            MouseEventKind::ScrollUp => self.move_sel(-3),
+            _ => {}
+        }
+    }
+
+    /// Two left-clicks at the same spot within 400 ms count as a
+    /// double-click (crossterm here reports no click count).
+    fn is_double_click(&mut self, x: u16, y: u16) -> bool {
+        const DOUBLE_CLICK_MS: u64 = 400;
+        let now = Instant::now();
+        let dbl = self
+            .last_click
+            .map(|(t, px, py)| {
+                py == y
+                    && px.abs_diff(x) <= 1
+                    && now.duration_since(t).as_millis() as u64 <= DOUBLE_CLICK_MS
+            })
+            .unwrap_or(false);
+        self.last_click = Some((now, x, y));
+        dbl
+    }
+
+    fn mouse_click(&mut self, x: u16, y: u16, dbl: bool) {
+        // Overlays: a click outside dismisses them (accessibility rule);
+        // a click inside keeps keyboard as the way in.
+        if !matches!(self.mode, Mode::Normal) {
+            let inside = self
+                .popup_area
+                .map(|r| x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height)
+                .unwrap_or(false);
+            if !inside {
+                self.mode = Mode::Normal;
+            }
+            return;
+        }
+        let h = self.viewport.1;
+        // Statusbar row: click a shortcut entry to run its action.
+        if h > 0 && y == h - 1 && !self.bar_hits.is_empty() {
+            if let Some((_, _, action)) =
+                self.bar_hits.iter().find(|(x0, x1, _)| *x0 <= x && x < *x1)
+            {
+                self.run_bar_action(*action);
+            }
+            return;
+        }
+        // Tree rows: click selects, double-click opens (Enter).
+        let Some(tree_w) = crate::ui::tree_width(self.viewport) else {
+            return; // terminal too small for the tree
+        };
+        if x >= tree_w {
+            return; // detail/preview panels are not selectable
+        }
+        let row = y.saturating_sub(1) as usize; // below the top border
+        let nodes = self.visible_nodes();
+        if let Some(sel) = nodes.get(row) {
+            self.sel = *sel;
+            if dbl {
+                self.expand_or_attach();
+            }
+        }
+    }
+
+    fn run_bar_action(&mut self, action: BarAction) {
+        match action {
+            BarAction::Help => self.mode = Mode::Help,
+            BarAction::Import => {
+                self.mode = Mode::Input {
+                    kind: InputKind::ImportProject,
+                    text: String::new(),
+                };
+            }
+            BarAction::Scan => {
+                let root = self.scan_root();
+                self.run_scan(root);
+            }
+            BarAction::NewFeature => match self.sel {
+                Sel::Project(_) | Sel::Feature(_, _) => {
+                    self.mode = Mode::Input {
+                        kind: InputKind::NewFeature,
+                        text: String::new(),
+                    };
+                }
+                _ => {}
+            },
+            BarAction::AddShell => {
+                if let Some((pi, fi, _)) = self.selected_feature_ctx()
+                    && let Err(e) = self.add_shell(pi, fi)
+                {
+                    self.fail(&e);
+                }
+            }
+            BarAction::QuickSend => {
+                if let Sel::Shell(..) = self.sel {
+                    self.mode = Mode::Input {
+                        kind: InputKind::QuickSend,
+                        text: String::new(),
+                    };
+                }
+            }
+            BarAction::DeleteFeature => self.confirm_delete_feature(),
+            BarAction::RemoveProject => self.confirm_remove_project(),
+            BarAction::Attach => {
+                if let Some((pi, fi, si)) = self.selected_shell() {
+                    self.attach(pi, fi, si);
+                }
+            }
+        }
+    }
+
+    fn move_sel_page(&mut self, half_pages: i32) {
+        // Page size = the tree's visible rows (statusbar + panel borders
+        // subtracted). ctrl-u/d are half pages, ctrl-f/b full pages.
+        let rows = (self.viewport.1.saturating_sub(3)).max(1) as i32;
+        let step = (rows / 2).max(1) * half_pages;
+        self.move_sel(step);
+    }
+
+    fn move_sel_first(&mut self) {
+        self.move_sel(i32::MIN / 2);
+    }
+
+    fn move_sel_last(&mut self) {
+        self.move_sel(i32::MAX / 2);
     }
 
     fn refresh(&mut self) {
@@ -1258,6 +1490,10 @@ fn now_str() -> String {
 pub fn run(cfg: Config, theme: Theme, tmux: Tmux) -> Result<()> {
     let mut app = App::new(cfg, theme, Some(tmux));
     app.interactive_boot = true;
+    app.ascii = crate::util::ascii_requested();
+    if app.ascii {
+        log::info!("ascii-only rendering enabled (LW_ASCII or C locale)");
+    }
     if let Err(e) = app.startup() {
         // before the terminal is taken over, stderr is safe
         eprintln!("lazywingman: startup failed: {e}");
@@ -1305,6 +1541,10 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
             && let Event::Key(key) = event::read()?
         {
             app.on_key(key);
+        } else if event::poll(Duration::ZERO)?
+            && let Event::Mouse(m) = event::read()?
+        {
+            app.on_mouse(m);
         }
     }
     Ok(())
@@ -1601,5 +1841,218 @@ mod tests {
         assert!(err.to_string().contains("missing"), "err: {err}");
         let err = app.add_shell(0, 0).unwrap_err();
         assert!(err.to_string().contains("missing"), "err: {err}");
+    }
+
+    // ---- M8.4a — accessibility keys ----
+
+    /// Seed a headless app with `n` projects (no tmux needed: navigation
+    /// is pure state).
+    fn app_with_projects(n: usize) -> App {
+        let mut app = app_with(tmux_standalone("unused"));
+        for i in 0..n {
+            app.state.projects.push(Project {
+                name: format!("p{i}"),
+                path: PathBuf::from(format!("/tmp/p{i}")),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: false,
+                features: vec![],
+            });
+        }
+        app.build_tree_flags();
+        app.clamp_sel();
+        app
+    }
+
+    fn key(code: KeyCode, ctrl: bool) -> KeyEvent {
+        KeyEvent::new(
+            code,
+            if ctrl {
+                KeyModifiers::CONTROL
+            } else {
+                KeyModifiers::NONE
+            },
+        )
+    }
+
+    /// PageDown / PageUp and ctrl-d / ctrl-u move half a page; ctrl-f / b
+    /// a full page; Home / End and g / G jump to first / last; arrows are
+    /// the same code path as j/k.
+    #[test]
+    fn accessibility_motions_work_in_normal_mode() {
+        let mut app = app_with_projects(20);
+        app.viewport = (120, 40);
+        app.on_key(key(KeyCode::Char('j'), false));
+        assert_eq!(app.sel, Sel::Project(1));
+
+        // arrows = the same code path as j/k
+        app.on_key(key(KeyCode::Up, false));
+        assert_eq!(app.sel, Sel::Project(0));
+
+        // half page down: (40-3)/2 = 18 rows
+        app.on_key(key(KeyCode::PageDown, false));
+        assert_eq!(app.sel, Sel::Project(18));
+        app.on_key(key(KeyCode::PageUp, false));
+        assert_eq!(app.sel, Sel::Project(0));
+
+        // ctrl-d / ctrl-u = PageDown/PageUp spellings
+        app.on_key(key(KeyCode::Char('d'), true));
+        assert_eq!(app.sel, Sel::Project(18));
+        app.on_key(key(KeyCode::Char('u'), true));
+        assert_eq!(app.sel, Sel::Project(0));
+
+        // ctrl-f / ctrl-b = full page
+        app.on_key(key(KeyCode::Char('f'), true));
+        assert_eq!(app.sel, Sel::Project(19), "full page down clamps to last");
+        app.on_key(key(KeyCode::Char('b'), true));
+        assert_eq!(app.sel, Sel::Project(0));
+
+        // Home / End = g / G
+        app.on_key(key(KeyCode::End, false));
+        assert_eq!(app.sel, Sel::Project(19));
+        app.on_key(key(KeyCode::Home, false));
+        assert_eq!(app.sel, Sel::Project(0));
+        app.on_key(key(KeyCode::Char('G'), false));
+        assert_eq!(app.sel, Sel::Project(19));
+        app.on_key(key(KeyCode::Char('g'), false));
+        assert_eq!(app.sel, Sel::Project(0));
+    }
+
+    /// The ctrl/accessibility layer dispatches ABOVE text input, so
+    /// ctrl-d / PageDown still move the tree while a popup is open — and
+    /// ctrl-c quits from any state (it used to type a 'c' into the input).
+    #[test]
+    fn ctrl_layer_works_over_text_input() {
+        let mut app = app_with_projects(20);
+        app.viewport = (120, 40);
+        app.mode = Mode::Input {
+            kind: InputKind::NewFeature,
+            text: "abc".into(),
+        };
+        app.on_key(key(KeyCode::Char('d'), true));
+        assert_eq!(app.sel, Sel::Project(18), "ctrl-d moves behind the popup");
+        let Mode::Input { text, .. } = &app.mode else {
+            panic!("input popup stays open");
+        };
+        assert_eq!(text, "abc", "no stray 'd' typed");
+
+        app.on_key(key(KeyCode::Char('c'), true));
+        assert!(app.quit, "ctrl-c quits from an input popup");
+    }
+
+    /// `g`/`G` are motions in Normal mode but printable keys in a prompt.
+    #[test]
+    fn g_and_g_respect_text_input() {
+        let mut app = app_with_projects(5);
+        app.on_key(key(KeyCode::Char('G'), false));
+        assert_eq!(app.sel, Sel::Project(4));
+        app.mode = Mode::Input {
+            kind: InputKind::QuickSend,
+            text: String::new(),
+        };
+        app.on_key(key(KeyCode::Char('g'), false));
+        let Mode::Input { text, .. } = &app.mode else {
+            panic!()
+        };
+        assert_eq!(text, "g");
+    }
+
+    // ---- M8.4a — mouse ----
+
+    fn click(x: u16, y: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// Click selects the row under the cursor; double-click opens it.
+    #[test]
+    fn mouse_click_selects_row_and_double_click_opens() {
+        let mut app = app_with_projects(5);
+        app.viewport = (120, 40);
+        // row 3 in the tree (below the top border), inside the tree column
+        app.on_mouse(click(5, 4));
+        assert_eq!(app.sel, Sel::Project(3));
+        // double-click on the same row toggles expansion (projects start
+        // expanded, so the toggle collapses it)
+        app.on_mouse(click(5, 4));
+        assert!(
+            !app.proj_expanded[3],
+            "double-click must toggle the project expansion"
+        );
+    }
+
+    /// The wheel scrolls the tree (its only scrollable surface) without a
+    /// click; clicks outside the tree column do nothing.
+    #[test]
+    fn mouse_wheel_scrolls_and_right_panels_are_dead() {
+        let mut app = app_with_projects(10);
+        app.viewport = (120, 40);
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.sel, Sel::Project(3));
+        let before = app.sel;
+        app.on_mouse(click(60, 5)); // detail panel area
+        assert_eq!(app.sel, before, "detail panel is not selectable");
+    }
+
+    /// Clicking a statusbar shortcut entry runs its action (a context bar
+    /// is clickable — discoverability rule).
+    #[test]
+    fn mouse_click_on_bar_entry_runs_action() {
+        let mut app = app_with_projects(3);
+        app.viewport = (120, 40);
+        // render once so the renderer computes the bar hit ranges
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        assert!(!app.bar_hits.is_empty());
+        assert_eq!(app.sel, Sel::Project(0));
+        // a project's bar has "x remove" → confirm_remove_project
+        let (x0, x1, _) = app
+            .bar_hits
+            .iter()
+            .find(|(_, _, a)| *a == BarAction::RemoveProject)
+            .copied()
+            .expect("bar must offer 'x remove' for a project");
+        app.on_mouse(click((x0 + x1) / 2, 39));
+        assert!(
+            matches!(app.mode, Mode::Confirm { .. }),
+            "clicking 'x remove' must open the confirm"
+        );
+    }
+
+    /// Clicking outside an open overlay dismisses it; clicking inside does
+    /// not.
+    #[test]
+    fn mouse_click_outside_overlay_dismisses_it() {
+        let mut app = app_with_projects(3);
+        app.viewport = (120, 40);
+        app.mode = Mode::Help;
+        app.popup_area = Some(Rect::new(20, 5, 70, 20));
+        app.on_mouse(click(60, 10)); // inside
+        assert!(matches!(app.mode, Mode::Help), "inside click keeps it open");
+        app.on_mouse(click(2, 2)); // outside → dismiss
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    /// A missing popup_area (too-small fallback) means any click dismisses.
+    #[test]
+    fn overlay_dismisses_when_no_popup_area_known() {
+        let mut app = app_with_projects(3);
+        app.viewport = (20, 5);
+        app.mode = Mode::Help;
+        app.popup_area = None;
+        app.on_mouse(click(10, 2));
+        assert!(matches!(app.mode, Mode::Normal));
     }
 }

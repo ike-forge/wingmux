@@ -9,9 +9,70 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, InputKind, Mode, Sel};
+use crate::app::{App, BarAction, InputKind, Mode, Sel};
 use crate::status::Status;
 use crate::theme::ResolvedColors;
+
+/// Minimum sizes for the layout tiers. Resize is normal, not an edge case:
+/// the UI degrades gracefully — preview hides first, then detail, then the
+/// bar — and a too-small frame shows a message instead of drawing garbage.
+const FULL_MIN: (u16, u16) = (64, 12);
+const NO_PREVIEW_MIN: (u16, u16) = (44, 9);
+const TREE_MIN: (u16, u16) = (26, 7);
+
+/// Which panels fit in a frame of `(width, height)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tier {
+    /// Tree + detail + preview + statusbar.
+    Full,
+    /// Tree + detail + statusbar (preview hidden).
+    NoPreview,
+    /// Tree + statusbar only.
+    TreeOnly,
+    /// Too small for the tree — a message instead of the UI.
+    Message,
+}
+
+pub(crate) fn tier_impl(w: u16, h: u16) -> Tier {
+    if w >= FULL_MIN.0 && h >= FULL_MIN.1 {
+        Tier::Full
+    } else if w >= NO_PREVIEW_MIN.0 && h >= NO_PREVIEW_MIN.1 {
+        Tier::NoPreview
+    } else if w >= TREE_MIN.0 && h >= TREE_MIN.1 {
+        Tier::TreeOnly
+    } else {
+        Tier::Message
+    }
+}
+
+/// Width of the tree panel for a viewport, or `None` when the frame is too
+/// small for the tree at all. Same math for rendering and mouse hit-testing.
+pub(crate) fn tree_width(viewport: (u16, u16)) -> Option<u16> {
+    let (w, h) = viewport;
+    match tier_impl(w, h) {
+        Tier::Full => Some(w * 32 / 100),
+        Tier::NoPreview => Some(w * 42 / 100),
+        Tier::TreeOnly => Some(w),
+        Tier::Message => None,
+    }
+}
+
+/// Minimum popup size per overlay kind; below it the overlay is refused
+/// with a message ("frame too small for this dialog") instead of drawing
+/// garbage — never a crash.
+fn overlay_min(kind: OverlayKind) -> (u16, u16) {
+    match kind {
+        OverlayKind::Help => (44, 14),
+        OverlayKind::Input | OverlayKind::Confirm => (34, 10),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OverlayKind {
+    Help,
+    Input,
+    Confirm,
+}
 
 fn fg(c: Color) -> Style {
     Style::default().fg(c)
@@ -34,11 +95,97 @@ fn status_color(theme: &ResolvedColors, st: Status) -> Color {
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    app.viewport = (area.width, area.height);
     // theme background
     f.render_widget(
         Block::default().style(Style::default().bg(app.theme.colors.background)),
         area,
     );
+    match tier_impl(area.width, area.height) {
+        Tier::Message => {
+            draw_too_small(f, area, app);
+            return;
+        }
+        Tier::Full => draw_full(f, area, app),
+        Tier::NoPreview => draw_no_preview(f, area, app),
+        Tier::TreeOnly => draw_tree_only(f, area, app),
+    }
+    // Overlays render last (on top). popup_area is (re)computed every
+    // frame so mouse "click outside dismisses" tracks what is on screen;
+    // in Normal there is nothing to dismiss.
+    app.popup_area = None;
+    match &app.mode {
+        Mode::Help => {
+            let kind = OverlayKind::Help;
+            if fits(area, overlay_min(kind)) {
+                let rect = draw_help(f, app);
+                app.popup_area = Some(rect);
+            } else {
+                draw_overlay_too_small(f, area, app, kind);
+            }
+        }
+        Mode::Input { .. } => {
+            let kind = OverlayKind::Input;
+            if fits(area, overlay_min(kind)) {
+                let rect = draw_input(f, app);
+                app.popup_area = Some(rect);
+            } else {
+                draw_overlay_too_small(f, area, app, kind);
+            }
+        }
+        Mode::Confirm { .. } => {
+            let kind = OverlayKind::Confirm;
+            if fits(area, overlay_min(kind)) {
+                let rect = draw_confirm(f, app);
+                app.popup_area = Some(rect);
+            } else {
+                draw_overlay_too_small(f, area, app, kind);
+            }
+        }
+        Mode::Normal => {}
+    }
+}
+
+fn fits(area: Rect, min: (u16, u16)) -> bool {
+    area.width >= min.0 && area.height >= min.1
+}
+
+/// App-generated glyphs with ASCII fallbacks (the user's pane content is
+/// never rewritten — only our own labels).
+pub(crate) fn arrow(ascii: bool) -> &'static str {
+    if ascii { "->" } else { "→" }
+}
+
+pub(crate) fn warn_mark(ascii: bool) -> &'static str {
+    if ascii { "!" } else { "⚠" }
+}
+
+pub(crate) fn sep(ascii: bool) -> &'static str {
+    if ascii { " - " } else { " · " }
+}
+
+/// Replace box-drawing glyphs in a rendered area with plain ASCII
+/// (`+ - |`). Terminals that mangle box-drawing stay readable. Cell
+/// styles are untouched — the fallback changes shapes, not colours.
+fn asciify(f: &mut Frame, area: Rect) {
+    let buf = f.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            let repl = match cell.symbol() {
+                "─" => "-",
+                "│" => "|",
+                "┌" | "┐" | "└" | "┘" => "+",
+                "╭" | "╮" | "╰" | "╯" => "+",
+                _ => continue,
+            };
+            cell.set_symbol(repl);
+        }
+    }
+}
+
+/// The full layout: tree | detail / preview, statusbar below.
+fn draw_full(f: &mut Frame, area: Rect, app: &mut App) {
     let [main, statusbar] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
     let [tree, right] =
@@ -50,12 +197,74 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_detail(f, detail, app);
     draw_preview(f, preview, app);
     draw_statusbar(f, statusbar, app);
+}
 
-    match &app.mode {
-        Mode::Help => draw_help(f, app),
-        Mode::Input { .. } => draw_input(f, app),
-        Mode::Confirm { .. } => draw_confirm(f, app),
-        Mode::Normal => {}
+/// Tree + detail, no preview.
+fn draw_no_preview(f: &mut Frame, area: Rect, app: &mut App) {
+    let [main, statusbar] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let [tree, detail] =
+        Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(main);
+
+    draw_tree(f, tree, app);
+    draw_detail(f, detail, app);
+    draw_statusbar(f, statusbar, app);
+}
+
+/// Tree across the whole main area.
+fn draw_tree_only(f: &mut Frame, area: Rect, app: &mut App) {
+    let [main, statusbar] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    draw_tree(f, main, app);
+    draw_statusbar(f, statusbar, app);
+}
+
+fn draw_too_small(f: &mut Frame, area: Rect, app: &mut App) {
+    app.popup_area = None;
+    app.bar_hits.clear();
+    let theme = &app.theme.colors;
+    f.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from(Span::styled(
+                " terminal too small ",
+                on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::raw(
+                "enlarge the window to at least 26x7 to show the dashboard",
+            )),
+            Line::from(Span::styled("q quits", fg(theme.dim))),
+        ]))
+        .style(fg(theme.foreground)),
+        area,
+    );
+}
+
+fn draw_overlay_too_small(f: &mut Frame, area: Rect, app: &App, kind: OverlayKind) {
+    let theme = &app.theme.colors;
+    let (min_w, min_h) = overlay_min(kind);
+    let rect = centered_rect(area, 70, 25);
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(fg(theme.popup_border))
+        .title(Span::styled(
+            " frame too small for this dialog ",
+            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
+        ));
+    let text = Text::from(vec![
+        Line::from(""),
+        Line::from(Span::raw(format!(
+            "enlarge the window to at least {min_w}x{min_h}"
+        ))),
+        Line::from(Span::styled(
+            "click anywhere or press Esc to dismiss",
+            fg(theme.dim),
+        )),
+    ]);
+    f.render_widget(Paragraph::new(text).block(block), rect);
+    if app.ascii {
+        asciify(f, rect);
     }
 }
 
@@ -76,13 +285,19 @@ fn panel_block(theme: &ResolvedColors, title: &str, focused: bool) -> Block<'sta
 
 fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
+    // ASCII fallback (terminals that mangle box-drawing): plain markers.
+    let (exp, coll, hl) = if app.ascii {
+        ("v", ">", ">")
+    } else {
+        ("▾", "▸", "›")
+    };
     let mut items: Vec<ListItem> = Vec::new();
     let mut sel_row: Option<usize> = None;
     let mut row: usize = 0;
 
     for (pi, proj) in app.state.projects.iter().enumerate() {
         let expanded = app.proj_expanded.get(pi).copied().unwrap_or(false);
-        let marker = if expanded { "▾" } else { "▸" };
+        let marker = if expanded { exp } else { coll };
         let count = proj.features.len();
         let mut spans = vec![Span::styled(
             format!("{marker} {} ", proj.name),
@@ -110,7 +325,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 .and_then(|v| v.get(fi))
                 .copied()
                 .unwrap_or(false);
-            let marker = if fexp { "▾" } else { "▸" };
+            let marker = if fexp { exp } else { coll };
             let n = feat.shells.len();
             items.push(ListItem::new(Line::from(vec![
                 Span::raw("  "),
@@ -160,10 +375,13 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let list = List::new(items)
         .block(block)
         .highlight_style(on(theme.selection_fg, theme.selection_bg))
-        .highlight_symbol("› ");
+        .highlight_symbol(format!("{hl} "));
     let mut state = ListState::default();
     state.select(sel_row);
     f.render_stateful_widget(list, area, &mut state);
+    if app.ascii {
+        asciify(f, area);
+    }
 }
 
 fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
@@ -217,7 +435,10 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
                     Line::from(vec![
                         Span::raw("  "),
                         Span::styled(&ft.name, fg(theme.tree_feature)),
-                        Span::styled(format!(" → {}", ft.branch), fg(theme.dim)),
+                        Span::styled(
+                            format!(" {} {}", arrow(app.ascii), ft.branch),
+                            fg(theme.dim),
+                        ),
                     ])
                 }))
                 .collect()
@@ -350,7 +571,11 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
                     ]),
                     Line::from(vec![
                         Span::styled("keys: ", fg(theme.accent)),
-                        Span::raw("Enter attach · s quick-send · d delete feature"),
+                        Span::raw(format!(
+                            "Enter attach{}s quick-send{}d delete feature",
+                            sep(app.ascii),
+                            sep(app.ascii)
+                        )),
                     ]),
                 ]
             } else {
@@ -361,6 +586,9 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
     let block = panel_block(theme, "detail", false);
     let p = Paragraph::new(Text::from(lines)).block(block);
     f.render_widget(p, area);
+    if app.ascii {
+        asciify(f, area);
+    }
 }
 
 fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
@@ -372,7 +600,11 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
                 if let Some(cap) = app.captures.get(&pid) {
                     Text::from(cap.clone())
                 } else {
-                    Text::from("capturing… (select the shell in the tree)")
+                    Text::from(if app.ascii {
+                        "capturing... (select the shell in the tree)"
+                    } else {
+                        "capturing… (select the shell in the tree)"
+                    })
                 }
             } else {
                 Text::from("no live pane for this shell")
@@ -388,9 +620,42 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         .block(block)
         .style(fg(theme.foreground));
     f.render_widget(p, area);
+    if app.ascii {
+        asciify(f, area);
+    }
 }
 
-fn draw_statusbar(f: &mut Frame, area: Rect, app: &App) {
+/// The contextual shortcut entries for the statusbar — same words as the
+/// help overlay. The bar is contextual: keys that would do nothing in the
+/// current state do not appear. `? help` is always there (it is the
+/// palette key); hjkl/arrows/Esc/q are assumed knowledge and never take a
+/// slot (per the discoverability rules).
+pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
+    use BarAction::*;
+    match app.sel {
+        Sel::Project(_) => vec![
+            ("I scan".into(), Scan),
+            ("i import".into(), Import),
+            ("n feature".into(), NewFeature),
+            ("x remove".into(), RemoveProject),
+            ("? help".into(), Help),
+        ],
+        Sel::Feature(..) => vec![
+            ("n feature".into(), NewFeature),
+            ("a shell".into(), AddShell),
+            ("d delete".into(), DeleteFeature),
+            ("? help".into(), Help),
+        ],
+        Sel::Shell(..) => vec![
+            ("↵ attach".into(), Attach),
+            ("s send".into(), QuickSend),
+            ("d delete".into(), DeleteFeature),
+            ("? help".into(), Help),
+        ],
+    }
+}
+
+fn draw_statusbar(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = &app.theme.colors;
     let session = match &app.tmux {
         Some(t) => match &t.inside {
@@ -399,10 +664,44 @@ fn draw_statusbar(f: &mut Frame, area: Rect, app: &App) {
         },
         None => "no tmux".into(),
     };
-    let left = format!(" lazywingman · {session} ");
-    let right = format!(" poll {}ms · ? help · q quit ", app.cfg.poll_interval_ms);
+    let left = format!(
+        " lazywingman{} {session}: {} project(s) ",
+        sep(app.ascii),
+        app.state.projects.len()
+    );
+    // Right side: contextual shortcut entries, each with a hit range so a
+    // mouse click can run it. Truncated (never wrapped) on narrow frames —
+    // the tail just drops off the screen.
+    let entries = bar_entries(app);
+    let sp = sep(app.ascii);
+    let mut right = String::new();
+    let mut hits: Vec<(u16, u16, BarAction)> = Vec::new();
+    let mut cx: u16 = 0;
+    for (i, (label, action)) in entries.iter().enumerate() {
+        if i > 0 {
+            right.push_str(sp);
+            cx += sp.chars().count() as u16;
+        }
+        let start = cx;
+        right.push_str(label);
+        cx += label.chars().count() as u16;
+        hits.push((start, cx, *action));
+    }
+    let right_x = area.width.saturating_sub(cx);
+    app.bar_hits = hits
+        .into_iter()
+        .map(|(a, b, act)| (right_x + a, right_x + b, act))
+        .collect();
     let msg = app.message.clone().unwrap_or_else(|| {
-        "j/k move · ↵ attach · i import · I scan · n feature · s send · d delete".into()
+        format!(
+            "j/k move{} Enter attach{} i import{} I scan{} n feature{} s send{} d delete",
+            sep(app.ascii),
+            sep(app.ascii),
+            sep(app.ascii),
+            sep(app.ascii),
+            sep(app.ascii),
+            sep(app.ascii)
+        )
     });
     let line = Line::from(vec![
         Span::styled(left, on(theme.title_fg, theme.title_bg)),
@@ -410,6 +709,9 @@ fn draw_statusbar(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(right, fg(theme.dim)),
     ]);
     f.render_widget(Paragraph::new(line), area);
+    if app.ascii {
+        asciify(f, area);
+    }
 }
 
 fn centered_rect(area: Rect, w_pct: u16, h_pct: u16) -> Rect {
@@ -428,7 +730,7 @@ fn centered_rect(area: Rect, w_pct: u16, h_pct: u16) -> Rect {
     h
 }
 
-fn draw_help(f: &mut Frame, app: &App) {
+fn draw_help(f: &mut Frame, app: &App) -> Rect {
     let theme = &app.theme.colors;
     let area = centered_rect(f.area(), 62, 78);
     f.render_widget(Clear, area);
@@ -443,6 +745,9 @@ fn draw_help(f: &mut Frame, app: &App) {
         ("↵ / l", "attach to shell · expand project/feature"),
         ("h", "collapse · jump to parent"),
         ("j / k", "move selection"),
+        ("g / G", "first / last item"),
+        ("PgUp / PgDn, ctrl-u / ctrl-d", "half page up / down"),
+        ("Home / End", "first / last item"),
         ("r", "refresh (reconcile state with reality)"),
         ("?", "this help"),
         ("q / Esc", "quit"),
@@ -455,12 +760,17 @@ fn draw_help(f: &mut Frame, app: &App) {
     for (key, desc) in rows {
         lines.push(Line::from(vec![
             Span::styled(
-                format!(" {key:<9} "),
+                format!(" {key:<30} "),
                 fg(theme.accent).add_modifier(Modifier::BOLD),
             ),
             Span::raw(desc),
         ]));
     }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " mouse: click selects · double-click opens · wheel scrolls · click a bar entry runs it",
+        fg(theme.dim),
+    )));
     lines.push(Line::from(""));
     // The way back differs by where the dashboard runs: inside tmux the
     // back-key jumps to this window; standalone there is no back-key — the
@@ -495,9 +805,13 @@ fn draw_help(f: &mut Frame, app: &App) {
             on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
         ));
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    if app.ascii {
+        asciify(f, area);
+    }
+    area
 }
 
-fn draw_input(f: &mut Frame, app: &App) {
+fn draw_input(f: &mut Frame, app: &App) -> Rect {
     let theme = &app.theme.colors;
     let (title, label) = match &app.mode {
         Mode::Input { kind, .. } => match kind {
@@ -510,7 +824,7 @@ fn draw_input(f: &mut Frame, app: &App) {
     let area = centered_rect(f.area(), 60, 18);
     f.render_widget(Clear, area);
     let Mode::Input { text, .. } = &app.mode else {
-        return;
+        return area;
     };
     let inner = Rect {
         x: area.x + 1,
@@ -532,7 +846,7 @@ fn draw_input(f: &mut Frame, app: &App) {
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Enter to submit · Esc to cancel",
+        format!("Enter to submit{}Esc to cancel", sep(app.ascii)),
         fg(theme.dim),
     )));
     let popup_style = on(theme.popup_fg, theme.popup_bg);
@@ -542,23 +856,32 @@ fn draw_input(f: &mut Frame, app: &App) {
             .style(popup_style),
         area,
     );
+    if app.ascii {
+        asciify(f, area);
+    }
     // cursor after the typed text, on the input row (the second content
-    // line below the border: one spacer line, then label + text)
+    // line below the border: one spacer line, then label + text). Only
+    // when the popup fits the frame — a cursor off the buffer would
+    // corrupt the terminal.
     let cursor_x = inner.x + label.chars().count() as u16 + text.chars().count() as u16;
     let cursor_y = inner.y + 1;
-    f.set_cursor_position(Position::new(cursor_x, cursor_y));
+    if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
+        f.set_cursor_position(Position::new(cursor_x, cursor_y));
+    }
+    area
 }
 
-fn draw_confirm(f: &mut Frame, app: &App) {
+fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
     let theme = &app.theme.colors;
     let Mode::Confirm { confirm } = &app.mode else {
-        return;
+        return Rect::default();
     };
     let area = centered_rect(f.area(), 62, 26);
     f.render_widget(Clear, area);
+    let sp = sep(app.ascii);
     let options = match &confirm.force_label {
-        Some(fl) => format!(" [y] yes · [f] {fl} · [n] cancel "),
-        None => " [y] yes · [n] cancel ".to_string(),
+        Some(fl) => format!(" [y] yes{sp}[f] {fl}{sp}[n] cancel "),
+        None => format!(" [y] yes{sp}[n] cancel "),
     };
     let mut lines: Vec<Line> = confirm
         .body
@@ -584,6 +907,10 @@ fn draw_confirm(f: &mut Frame, app: &App) {
             .style(popup_style),
         area,
     );
+    if app.ascii {
+        asciify(f, area);
+    }
+    area
 }
 
 #[cfg(test)]
@@ -711,5 +1038,191 @@ mod tests {
                 "cursor must sit on the input row after the typed text ({label:?})",
             );
         }
+    }
+
+    // ---- M8.4a — small terminals, resize, ASCII fallback ----
+
+    fn seeded_app() -> App {
+        let cfg = Config::default();
+        let theme = theme::load("ansi", false).unwrap();
+        let mut app = App::new(cfg, theme, None);
+        app.startup().unwrap();
+        app.state.projects.push(crate::state::Project {
+            name: "repo-a".into(),
+            path: std::path::PathBuf::from("/tmp/repo-a"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: false,
+            features: vec![],
+        });
+        app.build_tree_flags();
+        app.clamp_sel();
+        app
+    }
+
+    fn buffer_text(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| buf[(x, y)].symbol()))
+            .collect()
+    }
+
+    /// Layout tiers degrade gracefully instead of drawing garbage: full
+    /// layout at 120x40 (detail + preview present), tree-only below the
+    /// detail threshold, a plain message below the tree threshold.
+    #[test]
+    fn small_terminals_degrade_gracefully() {
+        let mut app = seeded_app();
+        let mut at = |w: u16, h: u16| {
+            let backend = ratatui::backend::TestBackend::new(w, h);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            buffer_text(&terminal)
+        };
+
+        let full = at(120, 40);
+        assert!(full.contains("detail"), "full layout has the detail panel");
+        assert!(
+            full.contains("preview (capture-pane)"),
+            "full layout has the preview panel"
+        );
+
+        let no_preview = at(50, 10);
+        assert!(no_preview.contains("detail"), "tree+detail tier");
+        assert!(
+            !no_preview.contains("preview"),
+            "preview hides first on a small frame"
+        );
+
+        let tree_only = at(30, 8);
+        assert!(
+            tree_only.contains("projects/features"),
+            "tree-only tier still shows the tree"
+        );
+        assert!(!tree_only.contains("detail"), "detail hides second");
+
+        let message = at(20, 5);
+        assert!(
+            message.contains("terminal too small"),
+            "below the tree threshold a message shows instead: {message:?}"
+        );
+    }
+
+    /// An overlay on a frame too small for it is refused with a message,
+    /// not drawn as garbage.
+    #[test]
+    fn overlay_refused_on_tiny_frame() {
+        let mut app = seeded_app();
+        app.mode = Mode::Help;
+        let backend = ratatui::backend::TestBackend::new(30, 8);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("too small"),
+            "tiny frame must refuse the help overlay: {text:?}"
+        );
+        assert!(
+            app.popup_area.is_none(),
+            "no dismissable popup on a refusal"
+        );
+    }
+
+    /// Resize is normal: re-rendering at several sizes in every mode must
+    /// never panic and must never leave the cursor off-buffer.
+    #[test]
+    fn resize_never_panics_in_any_mode() {
+        let mut app = seeded_app();
+        for mode in [
+            Mode::Normal,
+            Mode::Help,
+            Mode::Input {
+                kind: InputKind::ImportProject,
+                text: "/tmp/repo-a".into(),
+            },
+            Mode::Confirm {
+                confirm: Confirm {
+                    title: "delete feature".into(),
+                    body: "delete 'x'?".into(),
+                    force_label: None,
+                    action: ConfirmAction::DeleteFeature {
+                        project: 0,
+                        feature: 0,
+                    },
+                },
+            },
+        ] {
+            app.mode = mode;
+            for (w, h) in [(120u16, 40u16), (80, 24), (50, 10), (30, 8), (20, 5)] {
+                let backend = ratatui::backend::TestBackend::new(w, h);
+                let mut terminal = ratatui::Terminal::new(backend).unwrap();
+                terminal.draw(|f| draw(f, &mut app)).unwrap();
+                // cursor (when set) must be on the buffer
+                let size = terminal.size().unwrap();
+                let cur = terminal.get_cursor_position().unwrap_or_default();
+                assert!(
+                    cur.x < size.width && cur.y < size.height,
+                    "cursor off-buffer at {w}x{h}: {cur:?}"
+                );
+            }
+        }
+    }
+
+    /// ASCII fallback: no box-drawing, no unicode markers — plain `+ - |`
+    /// and `v`/`>` — so terminals that mangle box-drawing stay readable.
+    #[test]
+    fn ascii_fallback_renders_without_box_glyphs() {
+        let mut app = seeded_app();
+        app.ascii = true;
+        app.state.projects.push(crate::state::Project {
+            name: "repo-b".into(),
+            path: std::path::PathBuf::from("/tmp/repo-b"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: false,
+            features: vec![],
+        });
+        app.build_tree_flags();
+        app.clamp_sel();
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        for glyph in ["─", "│", "┌", "▾", "▸", "›", "·", "→"] {
+            assert!(
+                !text.contains(glyph),
+                "ascii render must not contain {glyph:?}: {text:?}"
+            );
+        }
+        for glyph in ["+", "-", "|", "v", ">"] {
+            assert!(text.contains(glyph), "ascii render must use {glyph:?}");
+        }
+    }
+
+    /// In unicode mode the box-drawing tree markers are present — the
+    /// fallback must not silently replace them.
+    #[test]
+    fn unicode_mode_keeps_box_drawing() {
+        let mut app = seeded_app();
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("─"), "unicode render keeps box-drawing");
+        assert!(text.contains("▾"), "unicode render keeps the tree markers");
+    }
+
+    /// tree_width matches the renderer's tier math (used by both drawing
+    /// and mouse hit-testing — they must never drift).
+    #[test]
+    fn tree_width_follows_tier_math() {
+        assert_eq!(tree_width((120, 40)), Some(38)); // full: 32%
+        assert_eq!(tree_width((50, 10)), Some(21)); // no-preview: 42%
+        assert_eq!(tree_width((30, 8)), Some(30)); // tree-only: 100%
+        assert_eq!(tree_width((20, 5)), None); // message tier
     }
 }

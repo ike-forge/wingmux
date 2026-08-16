@@ -129,3 +129,22 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
 - Back-key interactive fire could not be simulated in this environment (pty
   byte-injection blocked by host guardrail) — binding registration and
   select-window both verified separately.
+- **M8.4a — accessibility**: one dispatch layer above all modes handles
+  PageUp/PageDown/Home/End + ctrl-d/u/f/b + ctrl-c; `g`/`G` stay normal-mode
+  motions. Handled keys are consumed — ctrl-d is navigation, never "delete".
+- **M8.4a — crossterm here reports no `click_count`** on MouseEvent, so
+  double-click = two left clicks at the same spot within 400 ms, tracked on
+  the App.
+- **M8.4a — small terminals**: layout tiers (Full / NoPreview / TreeOnly /
+  message) at fixed thresholds; overlays that don't fit are refused with a
+  "frame too small" box instead of drawing garbage; the input cursor is only
+  set when on-buffer.
+- **M8.4a — NO_COLOR** (no-color.org, present + non-empty) resolves every
+  role to the terminal default via `theme::load_with`; a monochrome render,
+  not a low-colour one.
+- **M8.4a — ASCII fallback**: `LW_ASCII=1` or an exact C/POSIX locale
+  (LC_ALL > LC_CTYPE > LANG; `C.UTF-8` excluded) switches to `+ - |` borders
+  (buffer cell rewrite — styles untouched) and plain markers. Only the app's
+  own labels; user pane content is never rewritten.
+- **M8.4a — statusbar**: contextual, clickable shortcut entries computed per
+  selection; hjkl/Esc/q deliberately take no slot (assumed knowledge).

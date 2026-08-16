@@ -5,8 +5,10 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M8 — user-feedback milestone set — IN PROGRESS (M8.1 + M8.2 + M8.3 COMPLETE,
-M8.4 next).**
+**M8 — user-feedback milestone set — IN PROGRESS (M8.1 + M8.2 + M8.3 + M8.4a
+COMPLETE, M8.4b next — discoverability: contextual bar already shipped in
+M8.4a; M8.4b = grouped help overlay + docs/shortcuts.md + README wording. Then
+M8.4c themes, M8.4d config, M8.5 acceptance).**
 Resume from STATE.md progress log.
 
 ## M8 — plan (user feedback: hide agent panes in separate sessions, project
@@ -80,6 +82,59 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M8.4a — input & rendering conformance (COMPLETE, committed)
+- [x] Accessibility keys (one shared code path with their vim spellings,
+      dispatched above EVERYTHING — over text input and overlays too, per
+      the ctrl-layer rule): PageDown/PageUp = ctrl-d/ctrl-u = half page,
+      ctrl-f/ctrl-b = full page, Home/End = g/G = first/last. `g`/`G` are
+      normal-mode motions only (printable keys belong to text input).
+      ctrl-c now quits from ANY state (it used to type a 'c' into
+      popups); page size = visible tree rows from the stored viewport.
+- [x] Mouse basics: click a tree row selects it, double-click opens
+      (Enter); wheel scrolls the tree (the only scrollable panel) without
+      changing focus; click outside an overlay dismisses it (popup rect
+      tracked per frame); clicks on the detail/preview panels are inert;
+      statusbar shortcut entries are clickable (hit ranges recorded by the
+      renderer). NOTE: this crossterm version reports no click count on
+      MouseEvent, so double-click is manual (same spot within 400 ms).
+- [x] Small terminals degrade gracefully, never crash or draw garbage:
+      tiers Full ≥64x12 (tree/detail/preview + bar) → NoPreview ≥44x9
+      → TreeOnly ≥26x7 → "terminal too small" message below that. An
+      overlay that does not fit is REFUSED with a "frame too small for
+      this dialog" box (popup_area = None → any click dismisses). Input
+      cursor is only set when it lies on the buffer. Resize is per-frame
+      (viewport stored on the App; same tier math used by rendering and
+      mouse hit-testing so they can't drift).
+- [x] NO_COLOR honoured (no-color.org): when present and non-empty, every
+      theme role resolves to the terminal default — a monochrome render,
+      not a low-colour one; the UI already carries meaning in symbols,
+      labels and position. `theme::load_with(name, truecolor, mono)` lets
+      tests pass the decision without touching the process-global env.
+- [x] ASCII-only fallback for terminals that mangle box-drawing: triggered
+      by `LW_ASCII` (non-empty) or a C/POSIX locale (exact match, libc
+      precedence LC_ALL > LC_CTYPE > LANG; `C.UTF-8` stays unicode).
+      Tree markers become `v`/`>`, separators `-`, `→`→`->`, `⚠`→`!`; box
+      borders are rewritten cell-by-cell to `+ - |` after every panel /
+      popup render (styles untouched). Pane capture content is never
+      rewritten — only LazyWingman's own labels.
+- [x] Statusbar becomes a contextual, clickable shortcut bar (was static):
+      entries change with the selection (project: I scan · i import · n
+      feature · x remove · ? help; feature: n · a · d · ?; shell: ↵ attach
+      · s send · d delete · ?) — keys that would do nothing do not appear;
+      hjkl/Esc/q take no slot (assumed knowledge per discoverability
+      rules). Same words as the help overlay.
+- [x] Tests: 94 green (was 78): accessibility motions incl. ctrl layer
+      over a popup + ctrl-c from input; mouse select/double-click/wheel/
+      bar-click/overlay-dismiss; tier degradation at 120x40/50x10/30x8/
+      20x5; overlay refusal on tiny frames; resize in every mode never
+      panics and never leaves the cursor off-buffer; ascii render has no
+      box glyphs / unicode render keeps them; tree_width tier math;
+      ascii_requested env matrix; NO_COLOR resolves every role to Reset.
+      clippy -D warnings + fmt clean. README keybindings table updated.
+- [x] LIVE SMOKE (real binary): standalone boot renders; ascii mode
+      (LW_ASCII=1) renders with + - | borders and v/> markers; NO_COLOR
+      boot renders monochrome; all quit cleanly.
 
 ### M8.3 — project discovery (COMPLETE, committed)
 - [x] Startup (interactive boot, `App::interactive_boot` set by `run()`, off in
