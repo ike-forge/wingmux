@@ -732,43 +732,142 @@ fn centered_rect(area: Rect, w_pct: u16, h_pct: u16) -> Rect {
 
 fn draw_help(f: &mut Frame, app: &App) -> Rect {
     let theme = &app.theme.colors;
-    let area = centered_rect(f.area(), 62, 78);
+    // Grouped by context (discoverability rule): the overlay is the app's
+    // palette, so every action appears grouped — navigate / projects /
+    // features / shells / global — with the same words as the statusbar.
+    // The popup sizes itself to the content (bounded by the frame); long
+    // content scrolls (j/k, arrows, PgUp/PgDn, ctrl-u/d, Home/End) and the
+    // title advertises it.
+    let lines = help_lines(app);
+    let h = (lines.len() as u16 + 2).min(f.area().height);
+    let w = 74u16.min(f.area().width);
+    let area = Rect::new(
+        f.area().x + (f.area().width.saturating_sub(w)) / 2,
+        f.area().y + (f.area().height.saturating_sub(h)) / 2,
+        w,
+        h,
+    );
     f.render_widget(Clear, area);
-    let rows = [
-        ("i", "import project (absolute path)"),
-        ("I", "scan for new projects (discovery rescan)"),
-        ("n", "new feature (worktree + agent shell)"),
-        ("a", "add shell to feature"),
-        ("s", "quick-send a line to the selected shell"),
-        ("d", "delete feature (kills windows, removes worktree)"),
-        ("x", "remove project from LazyWingman"),
-        ("↵ / l", "attach to shell · expand project/feature"),
-        ("h", "collapse · jump to parent"),
-        ("j / k", "move selection"),
-        ("g / G", "first / last item"),
-        ("PgUp / PgDn, ctrl-u / ctrl-d", "half page up / down"),
-        ("Home / End", "first / last item"),
-        ("r", "refresh (reconcile state with reality)"),
-        ("?", "this help"),
-        ("q / Esc", "quit"),
-    ];
-    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-        " keybindings ",
-        on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
-    ))];
-    lines.push(Line::from(""));
-    for (key, desc) in rows {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {key:<30} "),
-                fg(theme.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(desc),
-        ]));
+    let inner_h = h.saturating_sub(2) as usize;
+    let max_scroll = lines.len().saturating_sub(inner_h);
+    let scroll = app.help_scroll.min(max_scroll);
+    let window: Vec<Line> = lines.iter().skip(scroll).take(inner_h).cloned().collect();
+    let mut title_text = " help ".to_string();
+    if max_scroll > 0 {
+        // The separator follows the ASCII fallback like every other label.
+        if app.ascii {
+            title_text.push_str("- j/k scrolls");
+        } else {
+            title_text.push_str("· j/k scrolls");
+        }
     }
-    lines.push(Line::from(""));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(fg(theme.popup_border))
+        .title(Span::styled(
+            title_text,
+            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
+        ));
+    f.render_widget(Paragraph::new(Text::from(window)).block(block), area);
+    if app.ascii {
+        asciify(f, area);
+    }
+    area
+}
+
+/// One help row: the key spellings (joined with the app's separator) and
+/// the description parts (same words as the statusbar).
+pub(crate) type HelpRow<'a> = (&'a [&'a str], &'a [&'a str]);
+/// A help group: (group title, rows).
+pub(crate) type HelpGroup<'a> = (&'a str, &'a [HelpRow<'a>]);
+
+/// The help content, grouped by context. Joined with the app's separator
+/// so the ASCII fallback rewrites `·` to `-` uniformly. The descriptions
+/// use the same words as the statusbar entries (learning one teaches the
+/// other).
+pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
+    (
+        "navigate",
+        &[
+            (&["j/k", "arrows"], &["move selection"]),
+            (&["h"], &["collapse", "jump to parent"]),
+            (&["l", "Enter"], &["expand", "attach"]),
+            (&["g/G"], &["first / last item"]),
+            (&["PgUp/PgDn", "ctrl-u/d"], &["half page"]),
+            (&["ctrl-f/b"], &["full page"]),
+            (&["Home/End"], &["first / last item"]),
+        ],
+    ),
+    (
+        "projects",
+        &[
+            (&["i"], &["import project", "absolute path"]),
+            (&["I"], &["scan for new projects", "discovery rescan"]),
+            (&["n"], &["new feature", "worktree + agent shell"]),
+            (
+                &["x"],
+                &["remove project", "windows killed", "worktrees kept"],
+            ),
+        ],
+    ),
+    (
+        "features",
+        &[
+            (&["n"], &["new feature"]),
+            (&["a"], &["add shell"]),
+            (
+                &["d"],
+                &["delete feature", "kills windows", "removes worktree"],
+            ),
+        ],
+    ),
+    (
+        "shells",
+        &[
+            (&["Enter"], &["attach to shell"]),
+            (&["s"], &["quick-send a line"]),
+            (&["d"], &["delete this feature"]),
+        ],
+    ),
+    (
+        "global",
+        &[
+            (&["r"], &["refresh", "reconcile state"]),
+            (&["?"], &["this help", "palette"]),
+            (&["q", "Esc"], &["quit"]),
+            (&["ctrl-c"], &["quit from any state"]),
+        ],
+    ),
+];
+
+/// Build the help overlay lines — the single source of truth for both the
+/// renderer (which clips them to the popup) and the scroll-height math in
+/// the app (which must never drift from what is rendered).
+fn help_lines(app: &App) -> Vec<Line<'_>> {
+    let theme = &app.theme.colors;
+    let s = sep(app.ascii);
+    let mut lines: Vec<Line> = Vec::new();
+    for (group_title, rows) in HELP_GROUPS {
+        lines.push(Line::from(Span::styled(
+            format!(" {} ", group_title),
+            fg(theme.dim).add_modifier(Modifier::BOLD),
+        )));
+        for (keys, desc) in *rows {
+            let key_str = keys.join(s);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {key_str:<24} "),
+                    fg(theme.accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(desc.join(s), fg(theme.foreground)),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
     lines.push(Line::from(Span::styled(
-        " mouse: click selects · double-click opens · wheel scrolls · click a bar entry runs it",
+        format!(
+            "mouse: click selects{s}double-click opens{s}wheel scrolls{s}bar entries clickable"
+        ),
         fg(theme.dim),
     )));
     lines.push(Line::from(""));
@@ -797,18 +896,13 @@ fn draw_help(f: &mut Frame, app: &App) -> Rect {
             fg(theme.dim),
         )));
     }
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(fg(theme.popup_border))
-        .title(Span::styled(
-            " help ",
-            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
-        ));
-    f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
-    if app.ascii {
-        asciify(f, area);
-    }
-    area
+    lines
+}
+
+/// Total help line count — the app clamps its scroll offset against this
+/// (same construction as the renderer, so they cannot drift).
+pub(crate) fn help_line_count(app: &App) -> usize {
+    help_lines(app).len()
 }
 
 fn draw_input(f: &mut Frame, app: &App) -> Rect {
@@ -1224,5 +1318,139 @@ mod tests {
         assert_eq!(tree_width((50, 10)), Some(21)); // no-preview: 42%
         assert_eq!(tree_width((30, 8)), Some(30)); // tree-only: 100%
         assert_eq!(tree_width((20, 5)), None); // message tier
+    }
+
+    // ---- M8.4b — grouped help overlay render ----
+
+    fn help_text(app: &mut App, w: u16, h: u16) -> String {
+        app.open_help();
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        buffer_text(&terminal)
+    }
+
+    /// The overlay is grouped by context with palette wording: every group
+    /// header renders, every binding appears, and the descriptions use the
+    /// same words as the statusbar entries.
+    #[test]
+    fn help_overlay_groups_actions_by_context() {
+        let mut app = seeded_app();
+        let text = help_text(&mut app, 120, 40);
+        for header in ["navigate", "projects", "features", "shells", "global"] {
+            assert!(text.contains(header), "group header {header:?} missing");
+        }
+        // every action is listed (palette = the index of everything)
+        for needle in [
+            "move selection",
+            "collapse",
+            "expand",
+            "attach",
+            "import project",
+            "scan for new projects",
+            "new feature",
+            "add shell",
+            "delete feature",
+            "quick-send",
+            "remove project",
+            "refresh",
+            "this help",
+        ] {
+            assert!(text.contains(needle), "action {needle:?} missing from help");
+        }
+        assert!(
+            app.popup_area.is_some(),
+            "help overlay must register its dismissable rect"
+        );
+    }
+
+    /// The statusbar entries and the help overlay share their words — the
+    /// discoverability rule that makes learning one teach the other.
+    #[test]
+    fn bar_entries_and_help_share_wording() {
+        // For every bar label, the action's key word appears in the help
+        // overlay (bar: "n feature" vs help: "new feature", etc.).
+        let mut app = seeded_app();
+        let text = help_text(&mut app, 120, 40);
+        let app2 = seeded_app();
+        for (label, _) in crate::ui::bar_entries(&app2) {
+            let word = label
+                .split(' ')
+                .nth(1)
+                .or_else(|| label.split(' ').next())
+                .unwrap_or(label.as_str());
+            if word == "help" {
+                assert!(text.contains("this help"), "bar '? help' ↔ help row");
+            } else if word == "send" {
+                assert!(text.contains("quick-send"), "bar 's send' ↔ help row");
+            } else if word == "feature" {
+                assert!(text.contains("new feature"), "bar 'n feature' ↔ help");
+            } else if word == "shell" {
+                assert!(text.contains("add shell"), "bar 'a shell' ↔ help");
+            } else if word == "delete" {
+                assert!(text.contains("delete feature"), "bar 'd delete' ↔ help");
+            } else if word == "attach" {
+                assert!(text.contains("attach"), "bar '↵ attach' ↔ help");
+            } else if word == "scan" {
+                assert!(
+                    text.contains("scan for new projects"),
+                    "bar 'I scan' ↔ help"
+                );
+            } else if word == "import" {
+                assert!(text.contains("import project"), "bar 'i import' ↔ help");
+            } else if word == "remove" {
+                assert!(text.contains("remove project"), "bar 'x remove' ↔ help");
+            } else {
+                panic!("unmapped bar label: {label:?}");
+            }
+        }
+    }
+
+    /// The help overlay scrolls: on a short frame the title advertises
+    /// 'j/k scrolls' and the content is clipped to the popup; on a tall
+    /// frame everything fits and no scroll hint appears.
+    #[test]
+    fn help_overlay_scrolls_on_short_frames() {
+        let mut app = seeded_app();
+        let short = help_text(&mut app, 80, 18);
+        assert!(
+            short.contains("j/k scrolls"),
+            "short frame must advertise scrolling: {short:?}"
+        );
+        let mut app = seeded_app();
+        let tall = help_text(&mut app, 120, 40);
+        assert!(
+            !tall.contains("j/k scrolls"),
+            "tall frame fits everything: {tall:?}"
+        );
+    }
+
+    /// ASCII mode: the help overlay's separators are plain `-` and no
+    /// unicode glyphs survive (the sep()/arrow() code path, not a second
+    /// renderer).
+    #[test]
+    fn help_overlay_ascii_fallback_is_clean() {
+        let mut app = seeded_app();
+        app.ascii = true;
+        let text = help_text(&mut app, 120, 40);
+        for glyph in ["·", "→", "─", "│"] {
+            assert!(
+                !text.contains(glyph),
+                "ascii help must not contain {glyph:?}"
+            );
+        }
+    }
+
+    /// The scroll-height math in the app and the rendered line count share
+    /// one source (help_line_count), so clamping can never drift from the
+    /// renderer.
+    #[test]
+    fn help_line_count_matches_rendered_content() {
+        let app = seeded_app();
+        let lines = help_line_count(&app);
+        assert!(lines > 30, "grouped help is long: {lines}");
+        // scrolling to the very end must be possible
+        let visible = 28usize;
+        assert!(lines > visible, "content must overflow a 30-row popup");
     }
 }

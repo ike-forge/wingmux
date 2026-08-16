@@ -116,6 +116,9 @@ pub struct App {
     /// Rect of the overlay currently on screen, if any. Mouse clicks
     /// outside it dismiss the overlay (accessibility rule).
     pub popup_area: Option<Rect>,
+    /// Scroll offset of the grouped help overlay (palette). Navigation
+    /// keys scroll the help when it is open instead of the tree.
+    pub help_scroll: usize,
     /// Hit ranges of the statusbar shortcut entries, set by the renderer:
     /// (x_start, x_end, action) on the statusbar row.
     pub bar_hits: Vec<(u16, u16, BarAction)>,
@@ -147,6 +150,7 @@ impl App {
             viewport: (0, 0),
             ascii: false,
             popup_area: None,
+            help_scroll: 0,
             bar_hits: Vec::new(),
             last_click: None,
         }
@@ -1108,38 +1112,40 @@ impl App {
         // ctrl-u/ctrl-d half-page, ctrl-f/ctrl-b full-page, Home/End
         // first/last, ctrl-c quit — always, from any state. Handled keys
         // are consumed: they must not fall through to a mode handler
-        // (ctrl-d is navigation here, never "delete feature").
+        // (ctrl-d is navigation here, never "delete feature"). While the
+        // help overlay is open these motions scroll the help (the palette
+        // takes over the viewport); elsewhere they move the tree.
         let handled = match key.code {
             KeyCode::PageUp => {
-                self.move_sel_page(-1);
+                self.move_view(-1);
                 true
             }
             KeyCode::PageDown => {
-                self.move_sel_page(1);
+                self.move_view(1);
                 true
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_sel_page(-1);
+                self.move_view(-1);
                 true
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_sel_page(1);
+                self.move_view(1);
                 true
             }
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_sel_page(2);
+                self.move_view(2);
                 true
             }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_sel_page(-2);
+                self.move_view(-2);
                 true
             }
             KeyCode::Home => {
-                self.move_sel_first();
+                self.move_view_first();
                 true
             }
             KeyCode::End => {
-                self.move_sel_last();
+                self.move_view_last();
                 true
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1195,6 +1201,16 @@ impl App {
                 KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
                     self.mode = Mode::Normal;
                 }
+                // The palette scrolls with the same motions as the tree
+                // (j/k + arrows step by line; g/G jump to first/last).
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.help_scroll_to(self.help_scroll + 1);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.help_scroll_to(self.help_scroll.saturating_sub(1));
+                }
+                KeyCode::Char('g') => self.help_scroll_to(0),
+                KeyCode::Char('G') => self.help_scroll_to(usize::MAX),
                 _ => {}
             },
             Mode::Normal => self.on_key_normal(key),
@@ -1257,9 +1273,16 @@ impl App {
             KeyCode::Char('r') => {
                 self.refresh();
             }
-            KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char('?') => self.open_help(),
             _ => {}
         }
+    }
+
+    /// Open the grouped help overlay (the palette) at its top. Also used
+    /// by the statusbar help entry.
+    pub(crate) fn open_help(&mut self) {
+        self.help_scroll = 0;
+        self.mode = Mode::Help;
     }
 
     // ---------------------------------------------------------- mouse
@@ -1271,9 +1294,22 @@ impl App {
                 self.mouse_click(m.column, m.row, dbl);
             }
             // Wheel scrolls the panel under the cursor without changing
-            // focus; the only scrollable panel is the tree.
-            MouseEventKind::ScrollDown => self.move_sel(3),
-            MouseEventKind::ScrollUp => self.move_sel(-3),
+            // focus; the only scrollable panel is the tree (or the help
+            // overlay while it is open).
+            MouseEventKind::ScrollDown => {
+                if matches!(self.mode, Mode::Help) {
+                    self.help_scroll_to(self.help_scroll + 3);
+                } else {
+                    self.move_sel(3);
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if matches!(self.mode, Mode::Help) {
+                    self.help_scroll_to(self.help_scroll.saturating_sub(3));
+                } else {
+                    self.move_sel(-3);
+                }
+            }
             _ => {}
         }
     }
@@ -1337,7 +1373,7 @@ impl App {
 
     fn run_bar_action(&mut self, action: BarAction) {
         match action {
-            BarAction::Help => self.mode = Mode::Help,
+            BarAction::Help => self.open_help(),
             BarAction::Import => {
                 self.mode = Mode::Input {
                     kind: InputKind::ImportProject,
@@ -1388,6 +1424,61 @@ impl App {
         let rows = (self.viewport.1.saturating_sub(3)).max(1) as i32;
         let step = (rows / 2).max(1) * half_pages;
         self.move_sel(step);
+    }
+
+    /// The accessibility "move the viewport" motions. While the help
+    /// overlay (palette) is open they scroll the help instead of the tree:
+    /// the overlay owns the viewport for as long as it is up. Same code
+    /// path as the tree motions, so the two spellings cannot drift.
+    fn move_view(&mut self, half_pages: i32) {
+        if matches!(self.mode, Mode::Help) {
+            let total = crate::ui::help_line_count(self);
+            let visible = self
+                .popup_area
+                .map(|r| r.height.saturating_sub(2) as usize)
+                .unwrap_or(10);
+            let max_scroll = total.saturating_sub(visible);
+            let step = (visible / 2).max(1) * half_pages.max(0) as usize;
+            if half_pages < 0 {
+                self.help_scroll = self.help_scroll.saturating_sub(step.max(1));
+            } else {
+                self.help_scroll = (self.help_scroll + step).min(max_scroll);
+            }
+        } else {
+            self.move_sel_page(half_pages);
+        }
+    }
+
+    fn move_view_first(&mut self) {
+        if matches!(self.mode, Mode::Help) {
+            self.help_scroll = 0;
+        } else {
+            self.move_sel_first();
+        }
+    }
+
+    fn move_view_last(&mut self) {
+        if matches!(self.mode, Mode::Help) {
+            let total = crate::ui::help_line_count(self);
+            let visible = self
+                .popup_area
+                .map(|r| r.height.saturating_sub(2) as usize)
+                .unwrap_or(10);
+            self.help_scroll = total.saturating_sub(visible);
+        } else {
+            self.move_sel_last();
+        }
+    }
+
+    /// Step the help overlay by whole lines (`j`/`k` and arrows) or to the
+    /// given index (`g`/`G`), clamped to the scrollable range.
+    fn help_scroll_to(&mut self, n: usize) {
+        let total = crate::ui::help_line_count(self);
+        let visible = self
+            .popup_area
+            .map(|r| r.height.saturating_sub(2) as usize)
+            .unwrap_or(10);
+        self.help_scroll = n.min(total.saturating_sub(visible));
     }
 
     fn move_sel_first(&mut self) {
@@ -2054,5 +2145,97 @@ mod tests {
         app.popup_area = None;
         app.on_mouse(click(10, 2));
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    // ---- M8.4b — grouped help overlay (palette) scrolling ----
+
+    /// Build a help overlay with a known popup rect so scroll math is
+    /// deterministic (the popup's inner height comes from popup_area).
+    fn app_with_help(n: usize) -> App {
+        let mut app = app_with_projects(n);
+        app.open_help();
+        app.popup_area = Some(Rect::new(20, 5, 70, 30)); // 28 visible rows
+        app
+    }
+
+    /// j/k and arrows scroll the help overlay one line at a time and never
+    /// move the tree selection; the overlay owns the viewport while open.
+    #[test]
+    fn help_scrolls_with_jk_and_arrows_but_keeps_selection() {
+        let mut app = app_with_help(20);
+        let before = app.sel;
+        app.on_key(key(KeyCode::Char('j'), false));
+        assert_eq!(app.help_scroll, 1);
+        app.on_key(key(KeyCode::Down, false)); // arrows = same code path
+        assert_eq!(app.help_scroll, 2);
+        app.on_key(key(KeyCode::Char('k'), false));
+        assert_eq!(app.help_scroll, 1);
+        app.on_key(key(KeyCode::Up, false));
+        assert_eq!(app.help_scroll, 0);
+        assert_eq!(app.sel, before, "help scrolling must not move the tree");
+    }
+
+    /// g/G and Home/End jump the help to first/last; PageDown/ctrl-d scroll
+    /// half a page; all clamp at the ends (never underflow, never past the
+    /// last line).
+    #[test]
+    fn help_palette_motions_jump_scroll_and_clamp() {
+        let mut app = app_with_help(3);
+        // scroll a long way down
+        for _ in 0..100 {
+            app.on_key(key(KeyCode::Char('j'), false));
+        }
+        let max_scroll = app.help_scroll;
+        assert!(max_scroll > 0, "help content must overflow 28 rows");
+        // PageDown = ctrl-d = half page; from the bottom it clamps
+        app.on_key(key(KeyCode::PageDown, false));
+        assert_eq!(app.help_scroll, max_scroll, "clamped at the bottom");
+        assert!(matches!(app.mode, Mode::Help), "still in help");
+
+        // Home / End and g / G jump to first / last
+        app.on_key(key(KeyCode::Home, false));
+        assert_eq!(app.help_scroll, 0);
+        app.on_key(key(KeyCode::End, false));
+        assert_eq!(app.help_scroll, max_scroll);
+        app.on_key(key(KeyCode::Char('g'), false));
+        assert_eq!(app.help_scroll, 0);
+        app.on_key(key(KeyCode::Char('G'), false));
+        assert_eq!(app.help_scroll, max_scroll);
+
+        // dark-climb from the top must not underflow
+        app.on_key(key(KeyCode::Home, false));
+        app.on_key(key(KeyCode::Char('k'), false));
+        assert_eq!(app.help_scroll, 0);
+    }
+
+    /// In Normal mode the same key code paths still move the tree (the
+    /// routing is mode-dependent, not key-dependent).
+    #[test]
+    fn page_motions_still_move_tree_outside_help() {
+        let mut app = app_with_projects(20);
+        app.viewport = (120, 40);
+        app.on_key(key(KeyCode::PageDown, false));
+        assert_eq!(app.sel, Sel::Project(18));
+    }
+
+    /// The mouse wheel scrolls the help overlay while it is open, and the
+    /// tree when it is not.
+    #[test]
+    fn mouse_wheel_scrolls_help_or_tree_by_mode() {
+        let mut app = app_with_help(20);
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 40,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.help_scroll, 3, "wheel scrolls the help");
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 40,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.help_scroll, 0);
     }
 }

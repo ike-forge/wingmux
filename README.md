@@ -59,9 +59,17 @@ themes to `$XDG_CONFIG_HOME/lazywingman/themes/`.
 
 ## Keybindings
 
+Every binding follows the global TUI conventions (vim/LazyGit tradition) and
+is documented with the rule it satisfies in
+[`docs/shortcuts.md`](docs/shortcuts.md) — also shown, grouped by context, in
+the help overlay (`?`).
+
 | Key | Action |
 |-----|--------|
 | `j` / `k` (or arrows) | move selection |
+| `g` / `G`, `Home` / `End` | first / last item |
+| `PgUp` / `PgDn`, `ctrl-u` / `ctrl-d` | half page up / down |
+| `ctrl-f` / `ctrl-b` | full page up / down |
 | `h` | collapse / jump to parent |
 | `l` / `Enter` | expand, or **attach** to the selected shell |
 | `i` | import a project (absolute repo path) |
@@ -72,8 +80,12 @@ themes to `$XDG_CONFIG_HOME/lazywingman/themes/`.
 | `d` | delete feature (kills windows, removes worktree; `f` = force when dirty) |
 | `x` | remove project from LazyWingman (windows killed, worktrees kept) |
 | `r` | refresh — reconcile state against reality |
-| `?` | help overlay |
-| `q` / `Esc` | quit / close popup |
+| `?` | help overlay (grouped, scrollable: `j`/`k`, `PgUp`/`PgDn`) |
+| `q` / `Esc` / `ctrl-c` | quit (ctrl-c works from any state) |
+
+Mouse: click a row selects, double-click opens (same as `Enter`), the wheel
+scrolls the tree, statusbar entries are clickable, and clicking outside an
+overlay dismisses it.
 
 **Attach & return**: `Enter` on a shell switches your client to that agent's
 window. Press the *back-key* to return to the dashboard — default

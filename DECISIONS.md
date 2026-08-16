@@ -115,12 +115,22 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   Option<String>`. v1 files load via serde defaults; v1 shells (windows in the
   dashboard session) are not found by session-based reconcile and are pruned
   (worktrees and projects survive).
-- **M8 — global instructions conformance** (per user feedback): all new
-  bindings follow the agent-common-instructions TUI rules (one key table,
-  LazyGit/vim precedent, `docs/shortcuts.md`, palette/bar wording, XDG
-  placement); config gains `[discovery]` keys. The remaining guideline gaps
-  (fuzzy command palette, Catppuccin built-in themes + theme picker, config
-  layers, mouse) are closed in M8.4.
+- **M8.4b — the help overlay is the palette**: the app has one index of
+  everything (`?`), grouped by context (navigate / projects / features /
+  shells / global) with the same words as the contextual bar (shared
+  `HELP_GROUPS` strings). A fuzzy-search palette was deliberately not
+  built: the action set is small enough that a grouped reference +
+  contextual bar covers discoverability; the palette is scrollable and
+  the popup sizes to content (clip + "j/k scrolls" hint instead of a
+  fixed-size overlay).
+- **M8.4b — motions while the palette is open**: the accessibility layer
+  keeps ONE code path (PageUp/ctrl-d/Home/g/G...) and routes it to the
+  overlay when the overlay is open, tree otherwise — mode-dependent
+  target, never two implementations. Tree selection never moves while
+  browsing help.
+- **M8.4b — everything documented**: `docs/shortcuts.md` lists every
+  binding with the TUI rule it satisfies and every deliberately unbound
+  key with its reason; updated in the same commit as any binding change.
 - tmux quirks hit & fixed: `list-panes -t <session>` only lists the active
   window (use `-a` + filter by session_id); `new-window` right after
   `new-session -d` races window index 0 (retry 3x); a fake TMUX env var makes

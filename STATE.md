@@ -6,9 +6,9 @@ whenever a milestone runs long.
 ## Current milestone
 
 **M8 — user-feedback milestone set — IN PROGRESS (M8.1 + M8.2 + M8.3 + M8.4a
-COMPLETE, M8.4b next — discoverability: contextual bar already shipped in
-M8.4a; M8.4b = grouped help overlay + docs/shortcuts.md + README wording. Then
-M8.4c themes, M8.4d config, M8.5 acceptance).**
++ M8.4b COMPLETE, M8.4c next — themes: 4 Catppuccin built-ins
+(Latte/Frappé/Macchiato/Mocha) + `ctrl-t` live theme picker. Then M8.4d
+config, M8.5 acceptance).**
 Resume from STATE.md progress log.
 
 ## M8 — plan (user feedback: hide agent panes in separate sessions, project
@@ -82,6 +82,39 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M8.4b — discoverability: grouped help overlay + docs/shortcuts.md (COMPLETE, committed)
+- [x] Help overlay `?` becomes the grouped palette (per discoverability
+      rules): five context groups — navigate / projects / features /
+      shells / global — listing EVERY action (the palette is the index of
+      everything, not the contextual bar which hides inert keys). Same
+      words as the statusbar entries; the shared strings live in
+      `HELP_GROUPS` (src/ui.rs) with the bar entries, so learning one
+      teaches the other (test `bar_entries_and_help_share_wording`).
+- [x] The palette is scrollable: j/k + arrows step by line, g/G and
+      Home/End jump to first/last, PgUp/PgDn + ctrl-u/d scroll half a
+      page, the wheel scrolls 3 lines — all while the overlay is open the
+      accessibility layer routes to `help_scroll` instead of the tree
+      (same code path, mode-dependent target; tree selection never moves
+      while browsing help). Popup sizes itself to the content (max 74
+      wide) instead of a fixed percentage; long content clips and the
+      title advertises "· j/k scrolls". `open_help()` resets the scroll.
+- [x] `docs/shortcuts.md` — every binding + the global TUI rule it
+      satisfies (motions, actions by selection, text input, confirms,
+      palette, mouse, tmux back-key) and the deliberately unbound keys
+      with reasons (`/`, `Tab`, `y`/`v`, `:`).
+- [x] Tests: 103 green (was 94): help scrolls with j/k/arrows/g/G while
+      selection is preserved; half-page + clamping both ends (no
+      underflow/overflow); page motions still move the tree in Normal;
+      wheel scrolls help-or-tree by mode; grouped render lists every
+      action + all 5 headers; bar/help wording cross-check; short frame
+      advertises "j/k scrolls" / tall frame fits; ascii help has no `·`
+      `→` box glyphs; help_line_count is the single scroll-height source.
+      clippy -D warnings + fmt clean. README keybindings table updated
+      (a11y keys, mouse, ctrl-c, shortcuts.md pointer).
+- [x] LIVE SMOKE (real binary in a throwaway tmux server): boot inside
+      tmux → `?` → all 5 group headers render; snapshot shows grouped
+      rows; `q` quits cleanly (exit 0).
 
 ### M8.4a — input & rendering conformance (COMPLETE, committed)
 - [x] Accessibility keys (one shared code path with their vim spellings,
