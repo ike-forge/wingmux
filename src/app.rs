@@ -26,6 +26,7 @@ pub enum Sel {
 }
 
 /// What the user is doing right now.
+#[derive(Debug)]
 pub enum Mode {
     Normal,
     Input { kind: InputKind, text: String },
@@ -52,8 +53,18 @@ pub struct Confirm {
 
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
-    DeleteFeature { project: usize, feature: usize },
-    RemoveProject { project: usize },
+    DeleteFeature {
+        project: usize,
+        feature: usize,
+    },
+    RemoveProject {
+        project: usize,
+    },
+    /// Startup scan prompt: recursively scan `root` for git repos and
+    /// import every new one found.
+    ScanProjects {
+        root: PathBuf,
+    },
 }
 
 pub struct App {
@@ -74,6 +85,10 @@ pub struct App {
     /// Set by `attach` when the dashboard runs standalone: the event loop
     /// hands the terminal over to `tmux attach -t <session>` and resumes.
     pub pending_attach: Option<String>,
+    /// Interactive boot: cwd project auto-import + the startup discovery
+    /// scan prompt. Off in tests (and irrelevant for a TUI that already
+    /// booted); `run()` turns it on.
+    pub interactive_boot: bool,
     pub quit: bool,
 }
 
@@ -95,6 +110,7 @@ impl App {
             last_poll: Instant::now(),
             message: None,
             pending_attach: None,
+            interactive_boot: false,
             quit: false,
         }
     }
@@ -105,6 +121,12 @@ impl App {
     pub fn startup(&mut self) -> Result<()> {
         self.state = State::load()?;
         self.merge_config_projects()?;
+        // Interactive boot: auto-import the cwd's repo (with its worktrees
+        // as features) or, when the cwd is not a repo, arm the startup
+        // scan prompt.
+        if self.interactive_boot {
+            self.boot_discovery()?;
+        }
         if let Some(tmux) = &self.tmux {
             // Standalone boot usually happens before any tmux server exists;
             // start one so session/window operations work from the first poll.
@@ -159,8 +181,13 @@ impl App {
     /// Import projects declared in config.toml that aren't in state yet.
     fn merge_config_projects(&mut self) -> Result<()> {
         let mut imported = 0;
-        for p in self.cfg.usable_projects() {
-            let path = PathBuf::from(&p.path);
+        let paths: Vec<PathBuf> = self
+            .cfg
+            .usable_projects()
+            .into_iter()
+            .map(|p| PathBuf::from(&p.path))
+            .collect();
+        for path in paths {
             if self.state.projects.iter().any(|x| x.path == path) {
                 continue;
             }
@@ -171,18 +198,7 @@ impl App {
                 );
                 continue;
             }
-            let name = Git.repo_name(&path);
-            let base = Git.resolve_base_branch(&path, &self.cfg.base_branch_for(p))?;
-            let agent = self.cfg.agent_for(p);
-            self.state.projects.push(Project {
-                name,
-                path,
-                base_branch: base,
-                agent_command: agent.command,
-                agent_shell: agent.shell,
-                session_name: None,
-                features: Vec::new(),
-            });
+            self.add_project(path)?;
             imported += 1;
         }
         if imported > 0 {
@@ -191,7 +207,218 @@ impl App {
         Ok(())
     }
 
-    fn build_tree_flags(&mut self) {
+    /// Push a new project for a verified repo path, resolving base branch
+    /// and agent settings from the config (per-project overrides by path).
+    fn add_project(&mut self, path: PathBuf) -> Result<()> {
+        let name = Git.repo_name(&path);
+        let proj_cfg = ProjectConfig {
+            path: path.to_string_lossy().into_owned(),
+            base_branch: None,
+            agent: None,
+            agent_command: None,
+        };
+        let base = Git.resolve_base_branch(&path, &self.cfg.base_branch_for(&proj_cfg))?;
+        let agent = self.cfg.agent_for(&proj_cfg);
+        self.state.projects.push(Project {
+            name,
+            path,
+            base_branch: base,
+            agent_command: agent.command,
+            agent_shell: agent.shell,
+            session_name: None,
+            missing: false,
+            features: Vec::new(),
+        });
+        Ok(())
+    }
+
+    // ---------------------------------------------------------- discovery
+
+    /// The root directory scanned by the `I` key and the startup scan
+    /// prompt: `[discovery].scan_root`, or the directory LazyWingman was
+    /// started from when unset. Relative roots resolve against the cwd.
+    fn scan_root(&self) -> PathBuf {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        self.scan_root_from(&cwd)
+    }
+
+    /// [`Self::scan_root`] with an explicit base directory (the cwd is
+    /// injected here so tests don't have to `chdir`).
+    fn scan_root_from(&self, cwd: &std::path::Path) -> PathBuf {
+        let root = self.cfg.discovery.scan_root.trim();
+        if root.is_empty() {
+            cwd.to_path_buf()
+        } else {
+            let p = PathBuf::from(root);
+            if p.is_absolute() { p } else { cwd.join(p) }
+        }
+    }
+
+    /// Startup project discovery (interactive boot only):
+    /// - cwd (or an ancestor) is a git repo → auto-import the MAIN repo as
+    ///   a project and add each of its linked worktrees as a feature (0
+    ///   shells; the user decides what to spawn).
+    /// - otherwise → arm the confirm prompt "scan subfolders for git
+    ///   repos?", seeding it with the last scan's repo count when a cache
+    ///   for this root exists.
+    fn boot_discovery(&mut self) -> Result<()> {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        self.boot_discovery_from(&cwd)
+    }
+
+    fn boot_discovery_from(&mut self, cwd: &std::path::Path) -> Result<()> {
+        if let Some(main_repo) = Git.main_repo(cwd) {
+            log::info!(
+                "cwd is inside a git repo (main: {}), auto-importing",
+                main_repo.display()
+            );
+            return self.import_cwd_repo(&main_repo);
+        }
+        let root = crate::util::normalize_path(&self.scan_root_from(cwd));
+        let cached_n = crate::discovery::load_cache()
+            .filter(|c| c.root == root)
+            .map(|c| c.paths.len())
+            .unwrap_or(0);
+        let mut body = format!(
+            "The current directory is not a git repository.\nScan {} for git repos?",
+            root.display()
+        );
+        if cached_n > 0 {
+            body.push_str(&format!(
+                "\n(last scan of this root found {cached_n} repo(s))"
+            ));
+        }
+        self.mode = Mode::Confirm {
+            confirm: Confirm {
+                title: "project discovery".into(),
+                body,
+                force_label: None,
+                action: ConfirmAction::ScanProjects { root },
+            },
+        };
+        Ok(())
+    }
+
+    /// Import (or complete) the project for `main_repo`: adds the project
+    /// when missing, then adds every linked worktree as a feature with 0
+    /// shells (deduplicated by worktree path). Never fails startup on git
+    /// errors — discovery is best-effort.
+    fn import_cwd_repo(&mut self, main_repo: &std::path::Path) -> Result<()> {
+        let path = main_repo.to_path_buf();
+        let mut pi = self.state.projects.iter().position(|x| x.path == path);
+        if pi.is_none() {
+            if !Git.is_repo(&path) {
+                return Ok(()); // vanished between detect and import
+            }
+            self.add_project(path.clone())?;
+            pi = Some(self.state.projects.len() - 1);
+        }
+        let pi = pi.unwrap();
+        let worktrees = match Git.worktree_list(&path) {
+            Ok(w) => w,
+            Err(e) => {
+                log::warn!("worktree list failed for {}: {e}", path.display());
+                return Ok(());
+            }
+        };
+        let existing: std::collections::HashSet<PathBuf> = self.state.projects[pi]
+            .features
+            .iter()
+            .map(|f| f.worktree_path.clone())
+            .collect();
+        let mut added = 0;
+        for wt in worktrees {
+            // The first entry is the main worktree — that IS the project.
+            if wt.path == path || existing.contains(&wt.path) {
+                continue;
+            }
+            let branch = wt.branch_short().unwrap_or("").to_string();
+            let name = if branch.is_empty() {
+                wt.path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "worktree".into())
+            } else {
+                branch.clone()
+            };
+            self.state.projects[pi].features.push(Feature {
+                name,
+                branch,
+                worktree_path: wt.path,
+                created_at: String::new(),
+                shells: Vec::new(),
+            });
+            added += 1;
+        }
+        if added > 0 {
+            log::info!(
+                "auto-imported {added} worktree feature(s) into '{}'",
+                self.state.projects[pi].name
+            );
+        }
+        Ok(())
+    }
+
+    /// Scan `root` for git repos, cache the results, and import every new
+    /// one (projects already in state are skipped). Returns the number of
+    /// projects added.
+    fn discover_and_import(&mut self, root: &std::path::Path) -> Result<usize> {
+        let root = crate::util::normalize_path(root);
+        let paths = crate::discovery::scan(
+            &root,
+            self.cfg.discovery.max_depth,
+            &self.cfg.discovery.skip_dirs,
+        );
+        crate::discovery::save_cache(&crate::discovery::DiscoveryCache {
+            root: root.clone(),
+            scanned_at: crate::discovery::now_unix(),
+            paths: paths.clone(),
+        })?;
+        let mut added = 0;
+        for p in &paths {
+            if self.state.projects.iter().any(|x| x.path == *p) {
+                continue;
+            }
+            if !Git.is_repo(p) {
+                continue; // raced (removed mid-scan)
+            }
+            match self.add_project(p.clone()) {
+                Ok(()) => added += 1,
+                Err(e) => log::warn!("importing {} failed: {e}", p.display()),
+            }
+        }
+        if added > 0 {
+            log::info!("discovery: {added} new project(s) under {}", root.display());
+        }
+        Ok(added)
+    }
+
+    /// Run a discovery scan and report the outcome in the statusbar;
+    /// also re-prunes so projects that came back from `missing` re-activate.
+    fn run_scan(&mut self, root: PathBuf) {
+        match self.discover_and_import(&root) {
+            Ok(n) => {
+                if let Some(tmux) = &self.tmux {
+                    let _ = self.state.prune(Some(tmux));
+                }
+                self.build_tree_flags();
+                self.clamp_sel();
+                // Persist: imports must survive a restart.
+                if let Err(e) = self.save_state() {
+                    log::warn!("save after scan: {e}");
+                }
+                if n > 0 {
+                    self.message = Some(format!("scan: {n} new project(s) added"));
+                } else {
+                    self.message =
+                        Some(format!("scan of {} found no new projects", root.display()));
+                }
+            }
+            Err(e) => self.fail(&e),
+        }
+    }
+
+    pub(crate) fn build_tree_flags(&mut self) {
         self.proj_expanded = vec![true; self.state.projects.len()];
         self.feat_expanded = self
             .state
@@ -231,7 +458,7 @@ impl App {
     }
 
     /// Keep `sel` valid after tree mutations.
-    fn clamp_sel(&mut self) {
+    pub(crate) fn clamp_sel(&mut self) {
         let nodes = self.visible_nodes();
         if nodes.is_empty() {
             self.sel = Sel::Project(0);
@@ -388,25 +615,7 @@ impl App {
         if self.state.projects.iter().any(|p| p.path == path) {
             return Err(Error::State("project already imported".into()));
         }
-        let name = Git.repo_name(&path);
-        // consult config for per-project agent settings by path
-        let proj_cfg = ProjectConfig {
-            path: path.to_string_lossy().into_owned(),
-            base_branch: None,
-            agent: None,
-            agent_command: None,
-        };
-        let base = Git.resolve_base_branch(&path, &self.cfg.base_branch_for(&proj_cfg))?;
-        let agent = self.cfg.agent_for(&proj_cfg);
-        self.state.projects.push(Project {
-            name,
-            path,
-            base_branch: base,
-            agent_command: agent.command,
-            agent_shell: agent.shell,
-            session_name: None,
-            features: Vec::new(),
-        });
+        self.add_project(path)?;
         self.build_tree_flags();
         self.clamp_sel();
         self.save_state()?;
@@ -418,18 +627,25 @@ impl App {
     }
 
     pub fn create_feature(&mut self, pi: usize, name: &str) -> Result<()> {
-        let tmux = self.require_tmux()?;
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(Error::State("feature name is empty".into()));
-        }
-        let slug = crate::git::slugify(name);
         let proj = self
             .state
             .projects
             .get(pi)
             .cloned()
             .ok_or_else(|| Error::State(format!("project index {pi} out of range")))?;
+        if proj.missing {
+            return Err(Error::State(format!(
+                "project '{}' is missing ({} is not a git repo)",
+                proj.name,
+                proj.path.display()
+            )));
+        }
+        let tmux = self.require_tmux()?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::State("feature name is empty".into()));
+        }
+        let slug = crate::git::slugify(name);
         if proj.features.iter().any(|f| f.branch == slug) {
             return Err(Error::State(format!(
                 "feature '{}' already exists in '{}'",
@@ -498,6 +714,13 @@ impl App {
             .get(pi)
             .cloned()
             .ok_or_else(|| Error::State(format!("project index {pi} out of range")))?;
+        if proj.missing {
+            return Err(Error::State(format!(
+                "project '{}' is missing ({} is not a git repo)",
+                proj.name,
+                proj.path.display()
+            )));
+        }
         let feat = proj
             .features
             .get(fi)
@@ -895,6 +1118,12 @@ impl App {
                     text: String::new(),
                 };
             }
+            // `I` — the stronger variant of `i`: scan a whole root for new
+            // projects (per the TUI guidelines, shifted = stronger).
+            KeyCode::Char('I') => {
+                let root = self.scan_root();
+                self.run_scan(root);
+            }
             KeyCode::Char('n') => match self.sel {
                 Sel::Project(_) | Sel::Feature(_, _) => {
                     self.mode = Mode::Input {
@@ -993,6 +1222,10 @@ impl App {
                 self.delete_feature(project, feature, force)
             }
             ConfirmAction::RemoveProject { project } => self.remove_project(project),
+            ConfirmAction::ScanProjects { root } => {
+                self.run_scan(root);
+                return;
+            }
         };
         if let Err(e) = res {
             self.fail(&e);
@@ -1024,6 +1257,7 @@ fn now_str() -> String {
 /// The main loop: draw, poll on interval, handle keys.
 pub fn run(cfg: Config, theme: Theme, tmux: Tmux) -> Result<()> {
     let mut app = App::new(cfg, theme, Some(tmux));
+    app.interactive_boot = true;
     if let Err(e) = app.startup() {
         // before the terminal is taken over, stderr is safe
         eprintln!("lazywingman: startup failed: {e}");
@@ -1105,6 +1339,7 @@ mod tests {
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
             session_name: Some("wingman-session-p".into()),
+            missing: false,
             features: vec![Feature {
                 name: "feat".into(),
                 branch: "feat".into(),
@@ -1192,5 +1427,179 @@ mod tests {
             assert!(!t.session_exists("wingman-session-p"));
             assert!(t.list_sessions().unwrap().is_empty());
         });
+    }
+
+    // ---- M8.3 — project discovery ----
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {} failed", args.join(" "));
+    }
+
+    /// Init a repo with one commit (worktree add needs a commit-ish).
+    fn repo_with_commit(root: &Path, name: &str) -> PathBuf {
+        let p = root.join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        git(&p, &["init", "-b", "main"]);
+        git(&p, &["config", "user.name", "lw-test"]);
+        git(&p, &["config", "user.email", "lw-test@example.com"]);
+        std::fs::write(p.join("readme.md"), "# t\n").unwrap();
+        git(&p, &["add", "."]);
+        git(&p, &["commit", "-m", "init"]);
+        p
+    }
+
+    /// `discover_and_import` finds repos under a root, imports them as
+    /// projects, is idempotent, and writes the discovery cache.
+    #[test]
+    fn discover_and_import_adds_new_projects_and_caches() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let r = root.path();
+            repo_with_commit(r, "repo-a");
+            repo_with_commit(r, "repo-b");
+            std::fs::create_dir_all(r.join("node_modules/dep/.git")).unwrap();
+
+            let mut app = app_with(tmux_standalone("unused"));
+            let n = app.discover_and_import(r).unwrap();
+            assert_eq!(n, 2);
+            assert_eq!(app.state.projects.len(), 2);
+            let names: Vec<&str> = app.state.projects.iter().map(|p| p.name.as_str()).collect();
+            assert!(names.contains(&"repo-a") && names.contains(&"repo-b"));
+
+            // idempotent: re-scan adds nothing
+            let n2 = app.discover_and_import(r).unwrap();
+            assert_eq!(n2, 0);
+            assert_eq!(app.state.projects.len(), 2);
+
+            // cache was written and matches the root
+            let cache = crate::discovery::load_cache().unwrap();
+            assert_eq!(cache.root, crate::util::normalize_path(r));
+            assert_eq!(cache.paths.len(), 2);
+        });
+    }
+
+    /// Boot from a non-repo directory arms the startup scan prompt; the
+    /// confirm action runs the scan when accepted.
+    #[test]
+    fn boot_discovery_arms_scan_prompt_when_cwd_is_not_a_repo() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let r = root.path();
+            repo_with_commit(r, "repo-a");
+
+            let mut app = app_with(tmux_standalone("unused"));
+            app.boot_discovery_from(r).unwrap();
+            let Mode::Confirm { confirm } = &app.mode else {
+                panic!("expected a confirm prompt, mode={:?}", app.mode);
+            };
+            assert_eq!(confirm.title, "project discovery");
+            assert!(matches!(confirm.action, ConfirmAction::ScanProjects { .. }));
+            assert!(confirm.body.contains("not a git repository"));
+
+            // accepting the prompt runs the scan
+            let action = confirm.action.clone();
+            app.run_confirm(action, false);
+            assert_eq!(app.state.projects.len(), 1);
+            assert_eq!(app.state.projects[0].name, "repo-a");
+            // the import is persisted — a restart must not lose it
+            let loaded = State::load().unwrap();
+            assert_eq!(loaded.projects.len(), 1, "scan imports must be saved");
+            assert_eq!(loaded.projects[0].name, "repo-a");
+        });
+    }
+
+    /// Boot from inside a git repo auto-imports the MAIN repo (even from a
+    /// linked worktree) and adds its worktrees as features with 0 shells.
+    #[test]
+    fn boot_discovery_auto_imports_cwd_repo_and_its_worktrees() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let r = root.path();
+            let repo = repo_with_commit(r, "proj");
+            let wt = r.join("wt-feature-x");
+            git(
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    "feature-x",
+                    wt.to_str().unwrap(),
+                    "main",
+                ],
+            );
+
+            let mut app = app_with(tmux_standalone("unused"));
+            app.boot_discovery_from(&repo).unwrap();
+            assert_eq!(app.state.projects.len(), 1);
+            let proj = &app.state.projects[0];
+            assert_eq!(proj.path, repo);
+            assert_eq!(proj.features.len(), 1, "linked worktree becomes a feature");
+            assert_eq!(proj.features[0].name, "feature-x");
+            assert_eq!(proj.features[0].branch, "feature-x");
+            assert!(proj.features[0].shells.is_empty(), "0 shells");
+
+            // booting again is idempotent (no duplicate features)
+            app.boot_discovery_from(&repo).unwrap();
+            assert_eq!(app.state.projects[0].features.len(), 1);
+
+            // booting from INSIDE the worktree resolves to the main repo
+            let mut app2 = app_with(tmux_standalone("unused"));
+            app2.boot_discovery_from(&wt).unwrap();
+            assert_eq!(app2.state.projects.len(), 1);
+            assert_eq!(app2.state.projects[0].path, repo);
+            assert_eq!(app2.state.projects[0].features.len(), 1);
+        });
+    }
+
+    /// The `I` key scans the configured root and reports new projects.
+    #[test]
+    fn i_key_scans_and_imports_new_projects() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let r = root.path();
+            repo_with_commit(r, "repo-a");
+
+            let mut app = app_with(tmux_standalone("unused"));
+            app.cfg.discovery.scan_root = r.to_string_lossy().into_owned();
+            app.on_key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::NONE));
+            assert_eq!(app.state.projects.len(), 1);
+            assert_eq!(app.state.projects[0].name, "repo-a");
+            let msg = app.message.as_deref().unwrap();
+            assert!(msg.contains("1 new project"), "message: {msg}");
+        });
+    }
+
+    /// Creating a feature or adding a shell on a missing project is
+    /// rejected with a clear error instead of failing deep in git/tmux.
+    #[test]
+    fn actions_reject_missing_projects() {
+        let mut app = app_with(tmux_standalone("unused"));
+        app.state.projects.push(Project {
+            name: "gone".into(),
+            path: PathBuf::from("/definitely/not/here"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: true,
+            features: vec![Feature {
+                name: "feat".into(),
+                branch: "feat".into(),
+                worktree_path: PathBuf::from("/definitely/not/here/wt"),
+                created_at: "".into(),
+                shells: vec![],
+            }],
+        });
+        let err = app.create_feature(0, "new-feat").unwrap_err();
+        assert!(err.to_string().contains("missing"), "err: {err}");
+        let err = app.add_shell(0, 0).unwrap_err();
+        assert!(err.to_string().contains("missing"), "err: {err}");
     }
 }

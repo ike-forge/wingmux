@@ -5,7 +5,8 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M8 — user-feedback milestone set — IN PROGRESS (M8.1 + M8.2 COMPLETE, M8.3 next).**
+**M8 — user-feedback milestone set — IN PROGRESS (M8.1 + M8.2 + M8.3 COMPLETE,
+M8.4 next).**
 Resume from STATE.md progress log.
 
 ## M8 — plan (user feedback: hide agent panes in separate sessions, project
@@ -73,6 +74,57 @@ milestone line at the end of every milestone. When ALL are done, mark
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M8.3 — project discovery (COMPLETE, committed)
+- [x] Startup (interactive boot, `App::interactive_boot` set by `run()`, off in
+      tests): cwd (or ancestor) is a git repo → auto-import the MAIN repo
+      (`Git::repo_root` + `git worktree list` first entry, so booting from
+      inside a linked worktree resolves to the main checkout) as a project;
+      every linked worktree becomes a feature with 0 shells (deduped by
+      worktree path; `branch_short` now used by real code). Not a repo →
+      startup Confirm prompt "scan <root> for git repos?", seeded with the
+      last scan's repo count from the cache.
+- [x] New `discovery.rs`: recursive scan for `.git` DIRECTORIES (repos;
+      reported, not descended into), `.git` FILES skipped (worktrees /
+      submodules — covered by their main repo), hidden dirs always skipped,
+      `[discovery].skip_dirs` configurable, `max_depth` bounds (0 = root
+      only), symlinks never followed, sorted+deduped output. Results cached
+      in `$XDG_CACHE_HOME/lazywingman/discovered.json` (root + timestamp +
+      paths; regenerable, corrupt cache → None).
+- [x] New key `I` = "scan for new projects" — stronger variant of `i`
+      (shifted = stronger, per global TUI keybinding rules): rescans
+      `[discovery].scan_root` (default startup cwd; relative roots resolve
+      against cwd), adds new repos, re-prunes so missing projects
+      re-activate, SAVES state (bug found in live smoke: imports were
+      memory-only and lost on quit — `run_scan` now persists; regression
+      asserted in `boot_discovery_arms_scan_prompt_when_cwd_is_not_a_repo`).
+- [x] Missing projects: `Project.missing` (serde-default); prune() NEVER
+      drops projects — a non-repo path flips `missing: true` (features and
+      shells kept, unverifiable while gone), a repo-again path flips back
+      (re-activation). Tree shows "(missing)" dimmed; detail shows
+      "missing — path is not a git repo"; create_feature/add_shell reject
+      missing projects with a clear error.
+- [x] Config: `[discovery] scan_root` (""), `max_depth` (4),
+      `skip_dirs` (default .git/node_modules/target/.lazywingman-worktrees)
+      — documented in the first-run config, README and DECISIONS.
+- [x] Tests: 78 green (was 59): scan finds nested repos at depth limit +
+      skips worktrees/deps/hidden/depth-overflow; custom skip/depth; root
+      itself as repo; sorted/deduped; missing root empty; cache roundtrip /
+      corrupt / keyed-by-root; `Git::repo_root`+`main_repo` from
+      subdirs+worktrees; prune keeps+reactivates missing projects and keeps
+      their features; discover_and_import idempotent + cache; boot prompt
+      arms + accept runs scan + persisted; boot auto-import incl. from
+      inside a worktree; `I` key; missing-project action guards; ui renders
+      "(missing)". clippy/fmt clean.
+- [x] LIVE SMOKE (real binary + throwaway tmux server, XDG under
+      /opt/data/.lw-m83): (1) standalone boot → discovery prompt →
+      `y` → both demo repos imported + persisted + cache written (worktree
+      .git file excluded) → quit; (2) boot from INSIDE the linked worktree
+      → main repo auto-imported, worktree feature `feat-1` with 0 shells;
+      (3) repo deleted → kept in state, tree shows "(missing)", prompt
+      shows "(last scan of this root found 2 repo(s))", state.json
+      `missing: true` after quit; (4) repo recreated → re-activated
+      (`missing: false`). Standalone boot with the fresh binary clean.
 
 ### M8.2 — runs outside tmux (COMPLETE, committed)
 - [x] main.rs already had no "must run inside tmux" error (M8.1); `detect()`

@@ -8,6 +8,7 @@
 
 mod app;
 mod config;
+mod discovery;
 mod error;
 mod git;
 mod logging;

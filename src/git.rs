@@ -26,7 +26,6 @@ pub struct WorktreeInfo {
 
 impl WorktreeInfo {
     /// Short branch name (`refs/heads/x` → `x`).
-    #[allow(dead_code)] // used by tests
     pub fn branch_short(&self) -> Option<&str> {
         self.branch
             .as_deref()
@@ -107,6 +106,30 @@ impl Git {
         Self::run(dir, &["rev-parse", "--is-inside-work-tree"])
             .map(|o| o.stdout.trim() == "true")
             .unwrap_or(false)
+    }
+
+    /// The work tree root of `dir` (works from any subdirectory, including
+    /// inside a linked worktree). `None` when `dir` is not in a repo.
+    pub fn repo_root(&self, dir: &Path) -> Option<PathBuf> {
+        let out = Self::run(dir, &["rev-parse", "--show-toplevel"]).ok()?;
+        let root = out.stdout.trim();
+        if root.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(root))
+        }
+    }
+
+    /// The MAIN repository of `dir`'s work tree: when `dir` is inside a
+    /// linked worktree this resolves to the main checkout (`git worktree
+    /// list` always lists the main worktree first); otherwise it is the
+    /// work tree root itself. `None` when `dir` is not in a repo.
+    pub fn main_repo(&self, dir: &Path) -> Option<PathBuf> {
+        let top = self.repo_root(dir)?;
+        self.worktree_list(&top)
+            .ok()
+            .and_then(|wts| wts.into_iter().next().map(|w| w.path))
+            .or(Some(top))
     }
 
     /// Repository name: the basename of the path.
@@ -337,6 +360,30 @@ mod tests {
         assert!(git.is_repo(&repo));
         assert_eq!(git.repo_name(&repo), "proj");
         assert!(!git.is_repo(repo.parent().unwrap()));
+    }
+
+    #[test]
+    fn repo_root_and_main_repo_resolve_from_subdirs_and_worktrees() {
+        let (_guard, repo) = temp_repo("proj");
+        let git = Git;
+
+        // from a subdirectory of the repo
+        fs::create_dir_all(repo.join("sub/dir")).unwrap();
+        assert_eq!(git.repo_root(&repo.join("sub/dir")).unwrap(), repo);
+        assert_eq!(git.main_repo(&repo.join("sub/dir")).unwrap(), repo);
+
+        // not a repo
+        assert!(git.repo_root(repo.parent().unwrap()).is_none());
+        assert!(git.main_repo(repo.parent().unwrap()).is_none());
+
+        // from a linked worktree → the MAIN repo is returned
+        let wt = repo.parent().unwrap().join("wt-main-repo");
+        git.worktree_add(&repo, &wt, "feature-wt", "main").unwrap();
+        let nested = wt.join("src");
+        fs::create_dir_all(&nested).unwrap();
+        assert_eq!(git.repo_root(&nested).unwrap(), wt);
+        assert_eq!(git.main_repo(&nested).unwrap(), repo);
+        git.worktree_remove(&wt, false).unwrap();
     }
 
     #[test]

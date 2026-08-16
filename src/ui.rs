@@ -84,16 +84,18 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
         let expanded = app.proj_expanded.get(pi).copied().unwrap_or(false);
         let marker = if expanded { "▾" } else { "▸" };
         let count = proj.features.len();
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(
-                format!("{marker} {} ", proj.name),
-                fg(theme.tree_project).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("({count} feature{})", if count == 1 { "" } else { "s" }),
-                fg(theme.dim),
-            ),
-        ])));
+        let mut spans = vec![Span::styled(
+            format!("{marker} {} ", proj.name),
+            fg(theme.tree_project).add_modifier(Modifier::BOLD),
+        )];
+        if proj.missing {
+            spans.push(Span::styled("(missing) ", fg(theme.dim)));
+        }
+        spans.push(Span::styled(
+            format!("({count} feature{})", if count == 1 { "" } else { "s" }),
+            fg(theme.dim),
+        ));
+        items.push(ListItem::new(Line::from(spans)));
         if app.sel == Sel::Project(pi) {
             sel_row = Some(row);
         }
@@ -178,6 +180,21 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
                     Line::from(vec![
                         Span::styled("path: ", fg(theme.accent)),
                         Span::raw(p.path.display().to_string()),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("status: ", fg(theme.accent)),
+                        Span::styled(
+                            if p.missing {
+                                "missing — path is not a git repo"
+                            } else {
+                                "active"
+                            },
+                            fg(if p.missing {
+                                theme.status_failed
+                            } else {
+                                theme.status_working
+                            }),
+                        ),
                     ]),
                     Line::from(vec![
                         Span::styled("base branch: ", fg(theme.accent)),
@@ -384,10 +401,9 @@ fn draw_statusbar(f: &mut Frame, area: Rect, app: &App) {
     };
     let left = format!(" lazywingman · {session} ");
     let right = format!(" poll {}ms · ? help · q quit ", app.cfg.poll_interval_ms);
-    let msg = app
-        .message
-        .clone()
-        .unwrap_or_else(|| "j/k move · ↵ attach · i import · n feature · s send · d delete".into());
+    let msg = app.message.clone().unwrap_or_else(|| {
+        "j/k move · ↵ attach · i import · I scan · n feature · s send · d delete".into()
+    });
     let line = Line::from(vec![
         Span::styled(left, on(theme.title_fg, theme.title_bg)),
         Span::styled(format!(" {msg} "), fg(theme.foreground)),
@@ -418,6 +434,7 @@ fn draw_help(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
     let rows = [
         ("i", "import project (absolute path)"),
+        ("I", "scan for new projects (discovery rescan)"),
         ("n", "new feature (worktree + agent shell)"),
         ("a", "add shell to feature"),
         ("s", "quick-send a line to the selected shell"),
@@ -615,6 +632,41 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(30, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
+    }
+
+    /// A missing project renders with a dimmed "(missing)" marker in the
+    /// tree — visibility without pretending the repo is there.
+    #[test]
+    fn missing_project_renders_dimmed_marker() {
+        let cfg = Config::default();
+        let theme = theme::load("ansi", false).unwrap();
+        let mut app = App::new(cfg, theme, None);
+        app.startup().unwrap();
+        app.state.projects.push(crate::state::Project {
+            name: "gone".into(),
+            path: std::path::PathBuf::from("/gone"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: true,
+            features: vec![],
+        });
+        app.build_tree_flags();
+        app.clamp_sel();
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buf = terminal.backend().buffer();
+        let all: String = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| buf[(x, y)].symbol()))
+            .collect();
+        assert!(
+            all.contains("(missing)"),
+            "tree must show the missing marker: {all:?}"
+        );
     }
 
     /// The input popup's block cursor must sit on the input text row, right

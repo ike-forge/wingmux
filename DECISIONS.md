@@ -87,6 +87,26 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   `$XDG_CACHE_HOME/lazywingman/` (regenerable data — not state). A project whose
   path vanished is kept in state and marked `missing` (shown "(missing)" in the
   tree) instead of being pruned; it re-activates when the path is a repo again.
+- **M8.3 — discovery semantics, settled**: the scan reports a directory whose
+  `.git` is a DIRECTORY as a repo and does not descend into it (repos nested
+  inside a repo are that repo's business); a `.git` FILE (linked worktree /
+  submodule) is skipped, covered by its main repo; hidden dirs are always
+  skipped on top of `skip_dirs`; symlinks are never followed (cycle safety);
+  depth is bounded by `[discovery].max_depth` (0 = scan root only). The
+  startup auto-import resolves to the MAIN repo (`git worktree list` first
+  entry) even when booting from inside a linked worktree. The scan cache
+  (`discovered.json`: root + timestamp + paths) is written after every scan
+  and read at startup to tell the prompt how many repos the last scan found —
+  it never auto-imports from a stale cache. `I` (shifted = stronger variant
+  of `i`, per the global TUI keybinding rules) rescans `scan_root` and also
+  re-prunes so `missing` projects re-activate. Config-declared projects that
+  are not repos are still skipped with a warning (explicit config entries are
+  the user's statement; the missing-flag is for projects that WERE imported
+  and later vanished). Missing projects keep their features and shells
+  untouched (they cannot be verified while gone); pruning only removes
+  features/shells of present projects. Startup discovery is gated behind an
+  `interactive_boot` flag (`run()` sets it; tests boot headless without it),
+  so tests never import the crate's own repo by accident.
 - **M8 — state schema v2**: `State.version = 2`, `Project.session_name:
   Option<String>`. v1 files load via serde defaults; v1 shells (windows in the
   dashboard session) are not found by session-based reconcile and are pruned

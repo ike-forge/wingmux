@@ -41,6 +41,17 @@ base_branch = "master"
 # Also delete the feature branch when the feature is removed.
 delete_branch = false
 
+[discovery]
+# Root directory scanned by the `I` key and the startup scan prompt.
+# Empty = the directory LazyWingman was started from.
+scan_root = ""
+# Maximum subdirectory depth of a scan (0 = the scan root itself only).
+max_depth = 4
+# Directory names skipped during a scan. Hidden directories (names starting
+# with '.') are always skipped; worktree `.git` files are never treated as
+# repositories (their main repo covers them).
+skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
+
 [defaults]
 # Agent command spawned in a feature shell unless a project overrides it.
 agent_command = "claude"
@@ -93,6 +104,7 @@ pub struct Config {
     pub confirm_on_delete: bool,
     pub tmux: TmuxConfig,
     pub worktrees: WorktreeConfig,
+    pub discovery: DiscoveryConfig,
     pub defaults: DefaultsConfig,
     pub agents: Vec<AgentConfig>,
     pub projects: Vec<ProjectConfig>,
@@ -111,6 +123,20 @@ pub struct WorktreeConfig {
     pub root: String,
     pub base_branch: String,
     pub delete_branch: bool,
+}
+
+/// Project discovery: recursive scans for git repositories.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DiscoveryConfig {
+    /// Root scanned by the `I` key and the startup scan prompt. Empty =
+    /// the directory LazyWingman was started from.
+    pub scan_root: String,
+    /// Maximum subdirectory depth of a scan (0 = scan root only).
+    pub max_depth: usize,
+    /// Directory names skipped during a scan (hidden dirs are always
+    /// skipped on top of this).
+    pub skip_dirs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -162,6 +188,16 @@ impl Default for Config {
                 base_branch: "master".into(),
                 delete_branch: false,
             },
+            discovery: DiscoveryConfig {
+                scan_root: String::new(),
+                max_depth: 4,
+                skip_dirs: vec![
+                    ".git".into(),
+                    "node_modules".into(),
+                    "target".into(),
+                    ".lazywingman-worktrees".into(),
+                ],
+            },
             defaults: DefaultsConfig {
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
@@ -199,6 +235,21 @@ impl Default for WorktreeConfig {
             root: String::new(),
             base_branch: "master".into(),
             delete_branch: false,
+        }
+    }
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        DiscoveryConfig {
+            scan_root: String::new(),
+            max_depth: 4,
+            skip_dirs: vec![
+                ".git".into(),
+                "node_modules".into(),
+                "target".into(),
+                ".lazywingman-worktrees".into(),
+            ],
         }
     }
 }
@@ -608,5 +659,33 @@ mod tests {
         let cfg = Config::from_str("[[agents]]\nname = \"\"\ncommand = \"\"\n").unwrap();
         let a = cfg.agent_for(&ProjectConfig::default());
         assert_eq!(a.command, "claude");
+    }
+
+    #[test]
+    fn discovery_defaults_apply() {
+        let cfg = Config::default();
+        assert_eq!(cfg.discovery.scan_root, "");
+        assert_eq!(cfg.discovery.max_depth, 4);
+        assert!(cfg.discovery.skip_dirs.iter().any(|d| d == "node_modules"));
+        // a config without [discovery] parses with defaults
+        let cfg = Config::from_str("theme = \"ansi\"\n").unwrap();
+        assert_eq!(cfg.discovery.max_depth, 4);
+        assert_eq!(cfg.discovery.scan_root, "");
+    }
+
+    #[test]
+    fn discovery_overrides_parse() {
+        let cfg = Config::from_str(
+            r#"
+            [discovery]
+            scan_root = "/work"
+            max_depth = 2
+            skip_dirs = ["vendor", "build"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.discovery.scan_root, "/work");
+        assert_eq!(cfg.discovery.max_depth, 2);
+        assert_eq!(cfg.discovery.skip_dirs, vec!["vendor", "build"]);
     }
 }
