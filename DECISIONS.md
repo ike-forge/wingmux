@@ -17,6 +17,10 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   current so any tick can resume cleanly. When finished, write a
   completion marker at the top of STATE.md ("COMPLETE") so the cron goes
   permanently silent.
+- **Run length (user directive)**: consume close to 80–95% of the 5h rolling
+  token window per run — unused quota is wasted money. Multiple milestones
+  per run; stop only when everything is done (marker written) or the budget
+  is spent. Mid-run stop must leave STATE.md precise enough to resume.
 
 ## Architecture
 - Single binary crate, no lib.rs; modules: `error`, `util`, `logging`,

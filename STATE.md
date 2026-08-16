@@ -17,6 +17,12 @@ AND pushed before the next starts. Update the progress log + Current
 milestone line at the end of every milestone. When ALL are done, mark
 "M8 COMPLETE" at the top and write the completion marker.
 
+Run policy (continuation worker): each run consumes close to 80–95% of the
+5h rolling token window — work through as many milestones as fit; stop only
+when ALL are done (marker written) or the budget is near exhaustion
+(~4–4.5h active work). A mid-run stop must leave the progress log precise
+enough to resume without re-reading code.
+
 - **M8.1 — dedicated agent sessions (hide panes).** tmux.rs: `Tmux` gains
   optional `inside: Option<Inside>` coords; `list_sessions`, `new_session`
   (first window), per-session `list_windows`; pane listing filtered to
