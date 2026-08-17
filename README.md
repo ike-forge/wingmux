@@ -54,8 +54,12 @@ terminal over to `tmux attach` and drops you back into the dashboard when you
 detach (`C-b d`).
 
 First run writes a commented config to
-`$XDG_CONFIG_HOME/lazywingman/config.toml` and copies the three built-in
-themes to `$XDG_CONFIG_HOME/lazywingman/themes/`.
+`$XDG_CONFIG_HOME/lazywingman/config.toml` and copies the built-in themes to
+`$XDG_CONFIG_HOME/lazywingman/themes/`.
+
+LazyWingman finds your projects for you (see [Project discovery](#project-discovery)),
+and projects can carry their own committed `.lazywingman.toml` so a fresh
+clone is already configured (see [Configuration](#configuration)).
 
 ## Keybindings
 
@@ -82,6 +86,7 @@ the help overlay (`?`).
 | `r` | refresh — reconcile state against reality |
 | `?` | help overlay (grouped, scrollable: `j`/`k`, `PgUp`/`PgDn`) |
 | `q` / `Esc` / `ctrl-c` | quit (ctrl-c works from any state) |
+| `Esc` / `q` / `Enter` (startup) | dismiss the startup diagnostics overlay (shown when config problems were dropped at load) |
 
 Mouse: click a row selects, double-click opens (same as `Enter`), the wheel
 scrolls the tree, statusbar entries are clickable, and clicking outside an
