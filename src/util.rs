@@ -33,13 +33,6 @@ pub fn state_home() -> PathBuf {
         .unwrap_or_else(|| home().join(".local/state"))
 }
 
-/// `$XDG_CACHE_HOME` or `~/.cache`.
-pub fn cache_home() -> PathBuf {
-    env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".cache"))
-}
-
 /// LazyWingman config directory: `$XDG_CONFIG_HOME/lazywingman`.
 pub fn config_dir() -> PathBuf {
     config_home().join("lazywingman")
@@ -68,16 +61,6 @@ pub fn state_path() -> PathBuf {
 /// Log file path: `$XDG_STATE_HOME/lazywingman/lazywingman.log`.
 pub fn log_path() -> PathBuf {
     state_dir().join("lazywingman.log")
-}
-
-/// Cache directory: `$XDG_CACHE_HOME/lazywingman` (regenerable data).
-pub fn cache_dir() -> PathBuf {
-    cache_home().join("lazywingman")
-}
-
-/// Project-discovery cache file: `$XDG_CACHE_HOME/lazywingman/discovered.json`.
-pub fn discovery_cache_path() -> PathBuf {
-    cache_dir().join("discovered.json")
 }
 
 /// Lexically resolve `.` and `..` in a path without touching the filesystem.
@@ -178,13 +161,8 @@ mod tests {
             let tmp = std::env::temp_dir().join(format!("lwtest-{}", std::process::id()));
             assert_eq!(config_home(), tmp.join("config"));
             assert_eq!(state_home(), tmp.join("state"));
-            assert_eq!(cache_home(), tmp.join("cache"));
             assert_eq!(config_path(), tmp.join("config/lazywingman/config.toml"));
             assert_eq!(state_path(), tmp.join("state/lazywingman/state.json"));
-            assert_eq!(
-                discovery_cache_path(),
-                tmp.join("cache/lazywingman/discovered.json")
-            );
         });
     }
 

@@ -329,28 +329,32 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let mut sel_row: Option<usize> = None;
     let mut row: usize = 0;
 
-    for (pi, proj) in app.state.projects.iter().enumerate() {
-        let expanded = app.proj_expanded.get(pi).copied().unwrap_or(false);
-        let marker = if expanded { exp } else { coll };
-        let count = proj.features.len();
-        let mut spans = vec![Span::styled(
-            format!("{marker} {} ", proj.name),
-            fg(theme.tree_project).add_modifier(Modifier::BOLD),
-        )];
-        if proj.missing {
-            spans.push(Span::styled("(missing) ", fg(theme.dim)));
-        }
-        spans.push(Span::styled(
-            format!("({count} feature{})", if count == 1 { "" } else { "s" }),
-            fg(theme.dim),
-        ));
-        items.push(ListItem::new(Line::from(spans)));
-        if app.sel == Sel::Project(pi) {
-            sel_row = Some(row);
-        }
-        row += 1;
-        if !expanded {
-            continue;
+    // Scope-filtered: only projects inside the current path get rows.
+    for pi in app.visible_projects() {
+        let proj = &app.state.projects[pi];
+        if !app.flatten {
+            let expanded = app.proj_expanded.get(pi).copied().unwrap_or(false);
+            let marker = if expanded { exp } else { coll };
+            let count = proj.features.len();
+            let mut spans = vec![Span::styled(
+                format!("{marker} {} ", proj.name),
+                fg(theme.tree_project).add_modifier(Modifier::BOLD),
+            )];
+            if proj.missing {
+                spans.push(Span::styled("(missing) ", fg(theme.dim)));
+            }
+            spans.push(Span::styled(
+                format!("({count} feature{})", if count == 1 { "" } else { "s" }),
+                fg(theme.dim),
+            ));
+            items.push(ListItem::new(Line::from(spans)));
+            if app.sel == Sel::Project(pi) {
+                sel_row = Some(row);
+            }
+            row += 1;
+            if !expanded {
+                continue;
+            }
         }
         for (fi, feat) in proj.features.iter().enumerate() {
             let fexp = app
@@ -361,8 +365,9 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 .unwrap_or(false);
             let marker = if fexp { exp } else { coll };
             let n = feat.shells.len();
+            let indent = if app.flatten { "" } else { "  " };
             items.push(ListItem::new(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(indent),
                 Span::styled(format!("{marker} {}", feat.name), fg(theme.tree_feature)),
                 Span::styled(
                     format!(" [{n} shell{}]", if n == 1 { "" } else { "s" }),
@@ -383,8 +388,9 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     .and_then(|p| app.statuses.get(p))
                     .copied()
                     .unwrap_or(Status::Idle);
+                let indent = if app.flatten { "  " } else { "    " };
                 items.push(ListItem::new(Line::from(vec![
-                    Span::raw("    "),
+                    Span::raw(indent),
                     Span::styled(format!("#{}", sh.index), fg(theme.tree_shell)),
                     Span::raw(" "),
                     Span::styled(st.label(), fg(status_color(theme, st))),
@@ -1429,6 +1435,19 @@ mod tests {
         app.state.projects.push(crate::state::Project {
             name: "repo-a".into(),
             path: std::path::PathBuf::from("/tmp/repo-a"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: false,
+            features: vec![],
+        });
+        // A second project keeps the fixture out of flatten mode (a lone
+        // project's features would become the top level, hiding the rows
+        // these render tests assert on).
+        app.state.projects.push(crate::state::Project {
+            name: "repo-b".into(),
+            path: std::path::PathBuf::from("/tmp/repo-b"),
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),

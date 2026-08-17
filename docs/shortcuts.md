@@ -63,7 +63,7 @@ overlay lists all of them grouped by context. Same words in both.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `I` | scan `[discovery].scan_root` for new projects (discovery rescan) | shifted = stronger variant of `i` |
+| `I` | rescan the scope for new projects (discovery rescan, live, no cache) | shifted = stronger variant of `i` |
 | `i` | import a project by absolute path | import action |
 | `n` | new feature (worktree + branch + agent shell) | create action |
 | `x` | remove project (windows killed, worktrees kept) | menu/destructive action, confirms before acting |
@@ -117,7 +117,7 @@ Sending uses tmux's paste-buffer with bracketed paste, so multi-line prompts
 arrive as ONE paste (embedded newlines are content, not Enter presses) and
 the trailing Enter submits.
 
-## Confirm dialogs (delete feature / remove project / scan prompt)
+## Confirm dialogs (delete feature / remove project)
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
@@ -157,7 +157,7 @@ and report every drop — never a log line nobody reads).
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `Esc` / `q` / `Enter` / `?` | dismiss (a parked startup confirm, e.g. the discovery scan prompt, resumes) | close the overlay, then continue boot |
+| `Esc` / `q` / `Enter` / `?` | dismiss (boot continues; discovery already ran automatically) | close the overlay, then continue boot |
 | `j` / `k` (or `↓` / `↑`) | scroll one line | same motions as the help palette |
 | `g` / `G`, `Home` / `End` | first / last line | vim + accessibility spellings |
 | `PgDn` / `PgUp`, `ctrl-d` / `ctrl-u` | half page | accessibility ctrl layer |
@@ -189,9 +189,9 @@ An inert key is a decision, not an omission.
 
 - `/` — no search/filter panel exists yet (the tree is small; statuses are
   classified automatically). When a filter lands it takes `/` per the rules.
-- `Tab` / `Shift-Tab` — there is exactly one focusable panel (the tree);
-  the detail/preview panes are display-only, so panel cycling would have
-  nothing to cycle.
+- `Tab` / `Shift-Tab` — no panel cycling: there is exactly one focusable
+  panel (the tree); the detail/preview panes are display-only. In the
+  quick-send textarea, `Tab` inserts a tab (see above).
 - `y` / `v` — no yank or row-selection feature yet (no multi-select model).
 - `:` — no command language; every action already has a key.
 - `e`, `c`, `w`, `b`, `t`, `E`, `C`, ... — reserved for future actions

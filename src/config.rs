@@ -70,8 +70,10 @@ base_branch = "master"
 delete_branch = false
 
 [discovery]
-# Root directory scanned by the `I` key and the startup scan prompt.
-# Empty = the directory LazyWingman was started from.
+# The scope: only projects inside this directory are listed (scopes never
+# mix). Empty = the directory LazyWingman was started from. When you start
+# inside a git repo, that repo is the scope and its features are shown
+# flat (no project row). The `I` key rescans this root live (no cache).
 scan_root = ""
 # Maximum subdirectory depth of a scan (0 = the scan root itself only).
 max_depth = 4

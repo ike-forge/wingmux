@@ -117,7 +117,7 @@ base_branch = "master"       # falls back to the repo's current branch
 delete_branch = false        # also delete the feature branch on delete
 
 [discovery]
-scan_root = ""               # `I` key / startup scan prompt root; empty = cwd
+scan_root = ""               # the scope: projects inside this dir are listed; empty = cwd
 max_depth = 4                # how deep a discovery scan walks
 skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
 
@@ -182,23 +182,27 @@ consulted for per-project agent settings.
 
 ## Project discovery
 
-LazyWingman finds your repos so you don't have to import them one by one:
+LazyWingman lists exactly the projects **inside the current path** — the
+scope — and nothing else. Different scopes never mix; projects you worked
+on elsewhere stay saved in state but are hidden until you start there
+again. There is no cache and no prompt: finding `.git` entries is a few
+stats per directory, done live.
 
-- **Start in a git repo**: if the working directory (or an ancestor) is
-  inside a git repository, that repo's **main checkout** is auto-imported as
-  a project and every linked worktree becomes a feature with 0 shells (press
-  `n` on it to spawn an agent). Booting from inside a linked worktree
-  resolves to its main repo.
-- **Start outside a repo**: a startup prompt asks whether to scan subfolders
-  for git repos. Accepting walks the tree (bounded by `max_depth`, skipping
-  hidden dirs and `skip_dirs`; linked-worktree `.git` files are never
-  treated as repos — their main repo covers them) and imports everything
-  found.
-- **`I`** rescans `[discovery].scan_root` (default: the directory
-  LazyWingman was started from) at any time and adds new repos. It is the
+- **Start inside a git repo**: that repo is the scope. It is auto-imported
+  and, because it is the only project, the tree shows its **features flat**
+  at the top level (no project row — the project is obvious). A lone
+  *missing* project still shows its row so the problem is visible.
+- **Start in a folder of repos**: every repo inside it is listed (walk is
+  bounded by `max_depth`, skips hidden dirs and `skip_dirs`; linked-worktree
+  `.git` files are never treated as repos — their main repo covers them).
+  Up to 5 projects are expanded so their features are visible; more than 5
+  stay collapsed — you unfold the ones you care about.
+- **Worktrees load lazily**: `git worktree list` is the expensive part, so
+  it runs once per project when you expand it (or for the flattened single
+  project at boot). Listing 200 repos costs 200 directory stats, not 200
+  git calls.
+- **`I`** rescans the scope at any time and adds new repos. It is the
   stronger variant of `i` (single path).
-- Scan results are cached in `$XDG_CACHE_HOME/lazywingman/discovered.json`
-  (regenerable data) and shown as context in the startup prompt.
 - **Missing projects** are kept, not pruned: a project whose path is
   currently not a git repo shows `(missing)` dimmed in the tree and
   re-activates automatically when the path is a repo again. Remove it

@@ -89,6 +89,21 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   submit the first line early; bracketed paste delivers multi-line text as
   one paste, then a trailing Enter submits. Import/new-feature inputs stay
   single-line (`Enter` submits) — they are names, not prompts.
+- **M9 — discovery is scope-based, live, and lazy.** The tree no longer
+  lists EVERY project ever discovered — that mixed scopes. The scope is the
+  startup directory (or `[discovery].scan_root`): only projects inside it
+  get rows; projects from other scopes stay in state but are hidden. When
+  you start INSIDE a git repo, that repo is the scope and its features are
+  shown flat at the top level (no project row — `flatten`); a lone MISSING
+  project still shows its row. >5 projects collapse by default (≤5 expand,
+  so the user sees features immediately). The startup scan prompt and the
+  discovered.json cache are GONE: finding `.git` entries is a few stats per
+  dir, done live at boot and on `I` — no stale cache to trust, no prompt to
+  dismiss, even at hundreds of folders. The expensive part — `git worktree
+  list` per project — is lazy (`ensure_worktrees`): it runs ONCE per project
+  when the project is expanded (or for the flattened single project at
+  boot), and `prune` skips worktree verification for projects whose
+  worktrees were never loaded, so boot never pays 200 git calls.
 - **M8 — runs inside AND outside tmux** (per user feedback): the dashboard no
   longer requires tmux around itself. `Tmux` keeps optional `inside`
   coordinates (detected via TMUX/TMUX_PANE); all session/window/pane operations

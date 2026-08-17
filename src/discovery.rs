@@ -1,7 +1,8 @@
 //! Project discovery: recursive scans for git repositories.
 //!
-//! Used by the startup flow (cwd is not a repo → prompt to scan subfolders)
-//! and the `I` key (rescan `[discovery].scan_root`, add new repos).
+//! Used by the startup flow (scope = the working directory: what is inside
+//! it is listed, nothing else) and the `I` key (rescan the scope, add new
+//! repos).
 //!
 //! Scan semantics:
 //! - A directory whose `.git` entry is a DIRECTORY is a repository and is
@@ -15,63 +16,21 @@
 //! - Symlinks are not followed (avoids cycles; the walk only descends into
 //!   real directories).
 //!
-//! Results are cached in `$XDG_CACHE_HOME/lazywingman/discovered.json`
-//! (root + timestamp + paths) — regenerable data, per XDG cache semantics.
-//! The cache is written after every scan and read at startup to tell the
-//! prompt how many repos a previous scan of this root found.
+//! There is NO cache: finding `.git` entries is a handful of stats per
+//! directory, fast enough to do live even for scopes with hundreds of
+//! folders. The expensive part — `git worktree list` per project — is the
+//! caller's responsibility and is done lazily, only for projects whose
+//! details are actually on screen.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-
-use serde::{Deserialize, Serialize};
-
-use crate::error::Result;
-
-/// One scan's persisted result.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiscoveryCache {
-    /// The root that was scanned (absolute).
-    pub root: PathBuf,
-    /// Unix seconds at scan time (informational / audit).
-    pub scanned_at: u64,
-    /// Repositories found, absolute, sorted, deduplicated.
-    pub paths: Vec<PathBuf>,
-}
-
-/// Path of the discovery cache file.
-pub fn cache_path() -> PathBuf {
-    crate::util::discovery_cache_path()
-}
-
-/// Load the cache; `None` when missing or unparsable (it is regenerable).
-pub fn load_cache() -> Option<DiscoveryCache> {
-    let text = std::fs::read_to_string(cache_path()).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
-/// Persist a scan result.
-pub fn save_cache(cache: &DiscoveryCache) -> Result<()> {
-    let path = cache_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let text = serde_json::to_string_pretty(cache)
-        .map_err(|e| crate::error::Error::State(format!("discovery cache: {e}")))?;
-    std::fs::write(&path, text)?;
-    log::info!(
-        "discovery cache written: {} repo(s) under {}",
-        cache.paths.len(),
-        cache.root.display()
-    );
-    Ok(())
-}
 
 /// Recursively scan `root` for git repositories (see module docs).
 ///
 /// `max_depth` bounds directory depth (0 = only `root` itself is checked);
 /// `skip_dirs` names are never entered (hidden dirs are always skipped).
 /// Returns absolute, sorted, deduplicated paths.
-pub fn scan(root: &Path, max_depth: usize, skip_dirs: &[String]) -> Vec<PathBuf> {
+pub fn scan(root: &Path, max_depth: usize, skip_dirs: &[String]) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     walk(root, 0, max_depth, skip_dirs, &mut out, &mut seen);
@@ -128,18 +87,9 @@ fn walk(
     }
 }
 
-/// Unix seconds, for the cache timestamp.
-pub fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::testutil::with_fresh_xdg;
     use std::fs;
 
     /// Create `<root>/<rel>` as a real git repo (`.git` directory).
@@ -232,48 +182,5 @@ mod tests {
         let root = tempfile::TempDir::new().unwrap();
         let gone = root.path().join("does-not-exist");
         assert!(scan(&gone, 4, &default_skip()).is_empty());
-    }
-
-    #[test]
-    fn cache_roundtrip() {
-        with_fresh_xdg(|| {
-            let cache = DiscoveryCache {
-                root: PathBuf::from("/work"),
-                scanned_at: 1_234_567_890,
-                paths: vec![PathBuf::from("/work/a"), PathBuf::from("/work/b")],
-            };
-            save_cache(&cache).unwrap();
-            assert!(cache_path().exists());
-            let loaded = load_cache().unwrap();
-            assert_eq!(loaded, cache);
-            assert_eq!(loaded.root, PathBuf::from("/work"));
-            assert_eq!(loaded.paths.len(), 2);
-        });
-    }
-
-    #[test]
-    fn cache_missing_or_corrupt_loads_as_none() {
-        with_fresh_xdg(|| {
-            assert!(load_cache().is_none());
-            fs::create_dir_all(cache_path().parent().unwrap()).unwrap();
-            fs::write(cache_path(), "{not json").unwrap();
-            assert!(load_cache().is_none());
-        });
-    }
-
-    #[test]
-    fn cache_is_keyed_by_root() {
-        with_fresh_xdg(|| {
-            let cache = DiscoveryCache {
-                root: PathBuf::from("/one"),
-                scanned_at: 1,
-                paths: vec![],
-            };
-            save_cache(&cache).unwrap();
-            // a different root must not match the cached one
-            let loaded = load_cache().unwrap();
-            assert_eq!(loaded.root, PathBuf::from("/one"));
-            assert_ne!(loaded.root, PathBuf::from("/two"));
-        });
     }
 }

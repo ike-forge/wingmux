@@ -285,18 +285,8 @@ pub struct Confirm {
 
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
-    DeleteFeature {
-        project: usize,
-        feature: usize,
-    },
-    RemoveProject {
-        project: usize,
-    },
-    /// Startup scan prompt: recursively scan `root` for git repos and
-    /// import every new one found.
-    ScanProjects {
-        root: PathBuf,
-    },
+    DeleteFeature { project: usize, feature: usize },
+    RemoveProject { project: usize },
 }
 
 pub struct App {
@@ -317,11 +307,24 @@ pub struct App {
     /// Set by `attach` when the dashboard runs standalone: the event loop
     /// hands the terminal over to `tmux attach -t <session>` and resumes.
     pub pending_attach: Option<String>,
-    /// Interactive boot: cwd project auto-import + the startup discovery
-    /// scan prompt. Off in tests (and irrelevant for a TUI that already
-    /// booted); `run()` turns it on.
+    /// Interactive boot: scope discovery runs automatically (no prompt).
+    /// Off in tests (and irrelevant for a TUI that already booted);
+    /// `run()` turns it on.
     pub interactive_boot: bool,
     pub quit: bool,
+    /// The current scope: only projects whose path is inside this root are
+    /// listed (startup cwd, or `[discovery].scan_root` when set). Projects
+    /// in state from other scopes stay saved but are not shown — scopes
+    /// never mix.
+    pub scope_root: PathBuf,
+    /// Flatten mode: exactly one project is in scope, so the tree shows
+    /// its features at the top level without a project row.
+    pub flatten: bool,
+    /// Has `git worktree list` been run for each project (index-parallel
+    /// to `state.projects`)? Worktrees are the expensive part of
+    /// discovery, so they load lazily — when a project is expanded, or for
+    /// the single flattened project at boot.
+    pub worktrees_loaded: Vec<bool>,
     /// Last frame size — drives page-sized motions and mouse hit-testing.
     pub viewport: (u16, u16),
     /// ASCII-only rendering (terminals that mangle box-drawing): `+ - |`
@@ -337,9 +340,6 @@ pub struct App {
     /// diagnostics when it is open instead of the tree (same code path as
     /// help/picker — mode-dependent target).
     pub diag_scroll: usize,
-    /// A startup confirm (e.g. the discovery scan prompt) that was armed
-    /// before the diagnostics overlay opened; shown after it is dismissed.
-    pub pending_confirm: Option<Confirm>,
     /// Themes offered by the picker (built-ins first, then user themes),
     /// computed when the picker opens.
     pub theme_names: Vec<String>,
@@ -378,7 +378,9 @@ impl App {
             popup_area: None,
             help_scroll: 0,
             diag_scroll: 0,
-            pending_confirm: None,
+            scope_root: PathBuf::from("."),
+            flatten: false,
+            worktrees_loaded: Vec::new(),
             theme_names: vec![crate::theme::DEFAULT_THEME.into()],
             picker_original: crate::theme::DEFAULT_THEME.into(),
             bar_hits: Vec::new(),
@@ -405,7 +407,7 @@ impl App {
                 tmux.ensure_server()?;
             }
             self.state.reconcile(tmux)?;
-            self.state.prune(Some(tmux))?;
+            self.state.prune(Some(tmux), &self.worktrees_loaded)?;
             self.bind_back_keys(tmux)?;
         }
         self.build_tree_flags();
@@ -511,9 +513,9 @@ impl App {
 
     // ---------------------------------------------------------- discovery
 
-    /// The root directory scanned by the `I` key and the startup scan
-    /// prompt: `[discovery].scan_root`, or the directory LazyWingman was
-    /// started from when unset. Relative roots resolve against the cwd.
+    /// The root directory scanned by the `I` key and the startup scope:
+    /// `[discovery].scan_root`, or the directory LazyWingman was started
+    /// from when unset. Relative roots resolve against the cwd.
     fn scan_root(&self) -> PathBuf {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         self.scan_root_from(&cwd)
@@ -531,55 +533,57 @@ impl App {
         }
     }
 
-    /// Startup project discovery (interactive boot only):
-    /// - cwd (or an ancestor) is a git repo → auto-import the MAIN repo as
-    ///   a project and add each of its linked worktrees as a feature (0
-    ///   shells; the user decides what to spawn).
-    /// - otherwise → arm the confirm prompt "scan subfolders for git
-    ///   repos?", seeding it with the last scan's repo count when a cache
-    ///   for this root exists.
+    /// Startup scope discovery (interactive boot only). No prompt, no
+    /// cache: the scope is what is INSIDE the startup directory.
+    /// - cwd (or an ancestor) is a git repo → that repo is the scope; it is
+    ///   imported as the single project and its worktrees become features.
+    /// - otherwise → the scope is scanned LIVE for git repos and each one
+    ///   is imported. Worktrees stay lazy until a project is expanded.
+    ///
+    /// Either way `scope_root` is set, and the tree only lists projects
+    /// inside it — different scopes never mix.
     fn boot_discovery(&mut self) -> Result<()> {
         let cwd = std::env::current_dir().unwrap_or_default();
         self.boot_discovery_from(&cwd)
     }
 
     fn boot_discovery_from(&mut self, cwd: &std::path::Path) -> Result<()> {
+        let scope = crate::util::normalize_path(&self.scan_root_from(cwd));
+        self.scope_root = scope.clone();
         if let Some(main_repo) = Git.main_repo(cwd) {
+            // Single-repo scope: the repo we are standing in.
             log::info!(
-                "cwd is inside a git repo (main: {}), auto-importing",
+                "cwd is inside a git repo (main: {}), single-project scope",
                 main_repo.display()
             );
-            return self.import_cwd_repo(&main_repo);
+            self.import_cwd_repo(&main_repo)?;
+        } else {
+            // Folder scope: live-scan for repos. No cache — finding .git
+            // is a few stats per dir, cheap even at hundreds of folders.
+            let found = self.discover_and_import(&scope)?;
+            log::info!(
+                "scope {}: {found} project(s) from live scan",
+                scope.display()
+            );
         }
-        let root = crate::util::normalize_path(&self.scan_root_from(cwd));
-        let cached_n = crate::discovery::load_cache()
-            .filter(|c| c.root == root)
-            .map(|c| c.paths.len())
-            .unwrap_or(0);
-        let mut body = format!(
-            "The current directory is not a git repository.\nScan {} for git repos?",
-            root.display()
-        );
-        if cached_n > 0 {
-            body.push_str(&format!(
-                "\n(last scan of this root found {cached_n} repo(s))"
-            ));
+        self.build_tree_flags();
+        // Flatten mode (exactly one project in scope) shows features at
+        // the top level — load that project's worktrees now.
+        if self.flatten
+            && let Some(&pi) = self.visible_projects().first()
+        {
+            self.ensure_worktrees(pi)?;
+            self.build_tree_flags();
         }
-        self.mode = Mode::Confirm {
-            confirm: Confirm {
-                title: "project discovery".into(),
-                body,
-                force_label: None,
-                action: ConfirmAction::ScanProjects { root },
-            },
-        };
+        // Imports must survive a restart — persist what discovery found.
+        self.save_state()?;
         Ok(())
     }
 
-    /// Import (or complete) the project for `main_repo`: adds the project
-    /// when missing, then adds every linked worktree as a feature with 0
-    /// shells (deduplicated by worktree path). Never fails startup on git
-    /// errors — discovery is best-effort.
+    /// Import (or complete) the project for `main_repo`. Worktrees are NOT
+    /// listed here — [`Self::ensure_worktrees`] does that lazily when the
+    /// project is expanded (or right after boot in flatten mode). Never
+    /// fails startup on git errors — discovery is best-effort.
     fn import_cwd_repo(&mut self, main_repo: &std::path::Path) -> Result<()> {
         let path = main_repo.to_path_buf();
         let mut pi = self.state.projects.iter().position(|x| x.path == path);
@@ -591,54 +595,14 @@ impl App {
             pi = Some(self.state.projects.len() - 1);
         }
         let pi = pi.unwrap();
-        let worktrees = match Git.worktree_list(&path) {
-            Ok(w) => w,
-            Err(e) => {
-                log::warn!("worktree list failed for {}: {e}", path.display());
-                return Ok(());
-            }
-        };
-        let existing: std::collections::HashSet<PathBuf> = self.state.projects[pi]
-            .features
-            .iter()
-            .map(|f| f.worktree_path.clone())
-            .collect();
-        let mut added = 0;
-        for wt in worktrees {
-            // The first entry is the main worktree — that IS the project.
-            if wt.path == path || existing.contains(&wt.path) {
-                continue;
-            }
-            let branch = wt.branch_short().unwrap_or("").to_string();
-            let name = if branch.is_empty() {
-                wt.path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "worktree".into())
-            } else {
-                branch.clone()
-            };
-            self.state.projects[pi].features.push(Feature {
-                name,
-                branch,
-                worktree_path: wt.path,
-                created_at: String::new(),
-                shells: Vec::new(),
-            });
-            added += 1;
-        }
-        if added > 0 {
-            log::info!(
-                "auto-imported {added} worktree feature(s) into '{}'",
-                self.state.projects[pi].name
-            );
-        }
+        // In flatten mode the features ARE the tree — load them now.
+        self.ensure_worktrees(pi)?;
         Ok(())
     }
 
-    /// Scan `root` for git repos, cache the results, and import every new
-    /// one (projects already in state are skipped). Returns the number of
-    /// projects added.
+    /// Scan `root` for git repos and import every new one (projects already
+    /// in state are skipped). No cache — the scan is live. Returns the
+    /// number of projects added.
     fn discover_and_import(&mut self, root: &std::path::Path) -> Result<usize> {
         let root = crate::util::normalize_path(root);
         let paths = crate::discovery::scan(
@@ -646,11 +610,6 @@ impl App {
             self.cfg.discovery.max_depth,
             &self.cfg.discovery.skip_dirs,
         );
-        crate::discovery::save_cache(&crate::discovery::DiscoveryCache {
-            root: root.clone(),
-            scanned_at: crate::discovery::now_unix(),
-            paths: paths.clone(),
-        })?;
         let mut added = 0;
         for p in &paths {
             if self.state.projects.iter().any(|x| x.path == *p) {
@@ -676,7 +635,7 @@ impl App {
         match self.discover_and_import(&root) {
             Ok(n) => {
                 if let Some(tmux) = &self.tmux {
-                    let _ = self.state.prune(Some(tmux));
+                    let _ = self.state.prune(Some(tmux), &self.worktrees_loaded);
                 }
                 self.build_tree_flags();
                 self.clamp_sel();
@@ -696,24 +655,125 @@ impl App {
     }
 
     pub(crate) fn build_tree_flags(&mut self) {
-        self.proj_expanded = vec![true; self.state.projects.len()];
+        // Scope-aware: only in-scope projects get rows, and >5 projects
+        // stay collapsed by default (per the discovery rework — many repos
+        // must not unfold everything on boot). ≤5 projects expand so the
+        // user sees their features immediately.
+        let vis = self.visible_projects();
+        // Flatten: exactly one project in scope → its features ARE the
+        // tree, no project row. A lone MISSING project still shows its
+        // row ("(missing)") — flattening would hide the only information.
+        self.flatten = vis.len() == 1 && !self.state.projects[vis[0]].missing;
+        let expand = vis.len() <= 5;
+        self.proj_expanded = self
+            .state
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(i, _)| vis.contains(&i) && expand)
+            .collect();
         self.feat_expanded = self
             .state
             .projects
             .iter()
             .map(|p| vec![false; p.features.len()])
             .collect();
+        // Keep the loaded flag parallel to projects.
+        self.worktrees_loaded
+            .resize(self.state.projects.len(), false);
+    }
+
+    /// Indices of the projects currently in scope (path inside
+    /// `scope_root`). Projects from other scopes stay in state but never
+    /// get rows — scopes don't mix. When the scope was never set (tests,
+    /// or an app that skipped boot discovery) `scope_root` is the "."
+    /// sentinel and everything is visible.
+    pub(crate) fn visible_projects(&self) -> Vec<usize> {
+        let scoped = self.scope_root.as_os_str() != ".";
+        self.state
+            .projects
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| !scoped || p.path.starts_with(&self.scope_root))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Lazily load a project's worktrees (the expensive part of
+    /// discovery): `git worktree list` runs ONCE per project, when its
+    /// details are actually needed (expanded, or the flattened single
+    /// project at boot). Features are added deduplicated by worktree path.
+    fn ensure_worktrees(&mut self, pi: usize) -> Result<()> {
+        if self.worktrees_loaded.get(pi).copied().unwrap_or(false) {
+            return Ok(());
+        }
+        let proj = self
+            .state
+            .projects
+            .get(pi)
+            .cloned()
+            .ok_or_else(|| Error::State(format!("project index {pi} out of range")))?;
+        if proj.missing {
+            return Ok(());
+        }
+        let worktrees = match Git.worktree_list(&proj.path) {
+            Ok(w) => w,
+            Err(e) => {
+                log::warn!("worktree list failed for {}: {e}", proj.path.display());
+                return Ok(());
+            }
+        };
+        let existing: std::collections::HashSet<PathBuf> = self.state.projects[pi]
+            .features
+            .iter()
+            .map(|f| f.worktree_path.clone())
+            .collect();
+        let mut added = 0;
+        for wt in worktrees {
+            // The first entry is the main worktree — that IS the project.
+            if wt.path == proj.path || existing.contains(&wt.path) {
+                continue;
+            }
+            let branch = wt.branch_short().unwrap_or("").to_string();
+            let name = if branch.is_empty() {
+                wt.path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "worktree".into())
+            } else {
+                branch.clone()
+            };
+            self.state.projects[pi].features.push(Feature {
+                name,
+                branch,
+                worktree_path: wt.path,
+                created_at: String::new(),
+                shells: Vec::new(),
+            });
+            added += 1;
+        }
+        if let Some(flag) = self.worktrees_loaded.get_mut(pi) {
+            *flag = true;
+        }
+        if added > 0 {
+            log::info!("lazy worktree load: {added} feature(s) for '{}'", proj.name);
+        }
+        Ok(())
     }
 
     // ---------------------------------------------------------- navigation
 
-    /// All visible tree nodes in display order.
+    /// All visible tree nodes in display order (scope-filtered; in flatten
+    /// mode the single project's features sit at the top level).
     fn visible_nodes(&self) -> Vec<Sel> {
         let mut v = Vec::new();
-        for (pi, proj) in self.state.projects.iter().enumerate() {
-            v.push(Sel::Project(pi));
-            if !self.proj_expanded.get(pi).copied().unwrap_or(false) {
-                continue;
+        for pi in self.visible_projects() {
+            let proj = &self.state.projects[pi];
+            if !self.flatten {
+                v.push(Sel::Project(pi));
+                if !self.proj_expanded.get(pi).copied().unwrap_or(false) {
+                    continue;
+                }
             }
             for (fi, feat) in proj.features.iter().enumerate() {
                 v.push(Sel::Feature(pi, fi));
@@ -759,6 +819,19 @@ impl App {
     fn expand_or_attach(&mut self) {
         match self.sel {
             Sel::Project(pi) => {
+                // Expanding a project is when its worktrees are needed:
+                // load them lazily (once per project per run).
+                if !self.proj_expanded.get(pi).copied().unwrap_or(false)
+                    && self.ensure_worktrees(pi).is_ok()
+                    && self.worktrees_loaded.get(pi).copied().unwrap_or(false)
+                {
+                    // features may have appeared; refresh the per-feature
+                    // expand flags
+                    let n = self.state.projects[pi].features.len();
+                    if let Some(v) = self.feat_expanded.get_mut(pi) {
+                        v.resize(n, false);
+                    }
+                }
                 if let Some(e) = self.proj_expanded.get_mut(pi) {
                     *e = !*e;
                 }
@@ -792,7 +865,9 @@ impl App {
                     if let Some(e) = self.feat_expanded.get_mut(pi).and_then(|v| v.get_mut(fi)) {
                         *e = false;
                     }
-                } else {
+                } else if !self.flatten {
+                    // In flatten mode there is no project row above the
+                    // features — `h` at a collapsed feature is a no-op.
                     self.sel = Sel::Project(pi);
                 }
             }
@@ -1627,25 +1702,16 @@ impl App {
         self.mode = Mode::Help;
     }
 
-    /// Close the startup diagnostics overlay, resuming a startup confirm
-    /// (scan prompt) that was waiting behind it.
+    /// Close the startup diagnostics overlay.
     fn close_diagnostics(&mut self) {
         self.mode = Mode::Normal;
-        if let Some(confirm) = self.pending_confirm.take() {
-            self.mode = Mode::Confirm { confirm };
-        }
     }
 
     /// Open the startup diagnostics overlay when there is anything to show
-    /// (once per start — dismissed with Esc/q/Enter). If a startup confirm
-    /// (e.g. the discovery scan prompt) was armed by boot_discovery, it is
-    /// parked and resumes after the overlay is dismissed.
+    /// (once per start — dismissed with Esc/q/Enter).
     fn open_startup_diagnostics(&mut self) {
         if self.cfg.diagnostics.is_empty() {
             return;
-        }
-        if let Mode::Confirm { confirm } = std::mem::replace(&mut self.mode, Mode::Normal) {
-            self.pending_confirm = Some(confirm);
         }
         self.diag_scroll = 0;
         self.mode = Mode::Diagnostics;
@@ -2043,7 +2109,7 @@ impl App {
                 log::warn!("reconcile: {e}");
                 ok = false;
             }
-            if let Err(e) = self.state.prune(Some(tmux)) {
+            if let Err(e) = self.state.prune(Some(tmux), &self.worktrees_loaded) {
                 log::warn!("prune: {e}");
                 ok = false;
             }
@@ -2092,10 +2158,6 @@ impl App {
                 self.delete_feature(project, feature, force)
             }
             ConfirmAction::RemoveProject { project } => self.remove_project(project),
-            ConfirmAction::ScanProjects { root } => {
-                self.run_scan(root);
-                return;
-            }
         };
         if let Err(e) = res {
             self.fail(&e);
@@ -2202,11 +2264,15 @@ mod tests {
     use std::path::Path;
 
     fn app_with(tmux: Tmux) -> App {
-        App::new(
+        let mut app = App::new(
             Config::default(),
             theme::load("ansi", false).unwrap(),
             Some(tmux),
-        )
+        );
+        // Tests seed projects under /tmp without going through
+        // boot_discovery — make the whole filesystem the scope.
+        app.scope_root = PathBuf::from("/");
+        app
     }
 
     /// Seed state with one project whose agent session and first shell
@@ -2363,42 +2429,160 @@ mod tests {
             let n2 = app.discover_and_import(r).unwrap();
             assert_eq!(n2, 0);
             assert_eq!(app.state.projects.len(), 2);
-
-            // cache was written and matches the root
-            let cache = crate::discovery::load_cache().unwrap();
-            assert_eq!(cache.root, crate::util::normalize_path(r));
-            assert_eq!(cache.paths.len(), 2);
         });
     }
 
-    /// Boot from a non-repo directory arms the startup scan prompt; the
-    /// confirm action runs the scan when accepted.
+    /// Boot from a non-repo directory live-scans it (no prompt, no cache)
+    /// and imports what is inside — the scope is exactly what is there.
     #[test]
-    fn boot_discovery_arms_scan_prompt_when_cwd_is_not_a_repo() {
+    fn boot_discovery_live_scans_folder_scope() {
         crate::util::testutil::with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             let r = root.path();
             repo_with_commit(r, "repo-a");
+            repo_with_commit(r, "repo-b");
+            std::fs::create_dir_all(r.join("node_modules/dep/.git")).unwrap();
 
             let mut app = app_with(tmux_standalone("unused"));
             app.boot_discovery_from(r).unwrap();
-            let Mode::Confirm { confirm } = &app.mode else {
-                panic!("expected a confirm prompt, mode={:?}", app.mode);
-            };
-            assert_eq!(confirm.title, "project discovery");
-            assert!(matches!(confirm.action, ConfirmAction::ScanProjects { .. }));
-            assert!(confirm.body.contains("not a git repository"));
-
-            // accepting the prompt runs the scan
-            let action = confirm.action.clone();
-            app.run_confirm(action, false);
-            assert_eq!(app.state.projects.len(), 1);
-            assert_eq!(app.state.projects[0].name, "repo-a");
+            // No prompt — the scan just ran and imported the scope.
+            assert!(matches!(app.mode, Mode::Normal));
+            assert_eq!(app.state.projects.len(), 2);
+            assert_eq!(app.scope_root, crate::util::normalize_path(r));
+            // Two projects → not flattened, both expanded (≤5).
+            assert!(!app.flatten);
+            assert!(app.visible_projects().len() == 2);
+            // Worktrees are NOT loaded yet (lazy) — features empty.
+            assert!(app.worktrees_loaded.iter().all(|f| !*f));
+            assert!(app.state.projects.iter().all(|p| p.features.is_empty()));
             // the import is persisted — a restart must not lose it
             let loaded = State::load().unwrap();
-            assert_eq!(loaded.projects.len(), 1, "scan imports must be saved");
-            assert_eq!(loaded.projects[0].name, "repo-a");
+            assert_eq!(loaded.projects.len(), 2, "scan imports must be saved");
         });
+    }
+
+    /// Expanding a project lazily loads its worktrees (once per run).
+    #[test]
+    fn expand_loads_worktrees_lazily_and_only_once() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let r = root.path();
+            let repo = repo_with_commit(r, "repo-a");
+            // add a linked worktree to repo-a
+            let wt = r.join("wt-a");
+            std::process::Command::new("git")
+                .args([
+                    "-C",
+                    repo.to_str().unwrap(),
+                    "worktree",
+                    "add",
+                    "-b",
+                    "feat-1",
+                    wt.to_str().unwrap(),
+                ])
+                .output()
+                .unwrap();
+
+            let mut app = app_with(tmux_standalone("unused"));
+            app.boot_discovery_from(r).unwrap();
+            // 1 project → flattened → worktrees loaded at boot
+            assert!(app.flatten);
+            assert_eq!(app.state.projects[0].features.len(), 1, "wt-a feature");
+            let pi = app.visible_projects()[0];
+            assert!(app.worktrees_loaded[pi]);
+            let _ = pi;
+        });
+    }
+
+    /// >5 projects stay collapsed by default; ≤5 expand.
+    #[test]
+    fn many_projects_collapse_by_default_few_expand() {
+        let mut app = app_with(tmux_standalone("unused"));
+        app.scope_root = PathBuf::from("/");
+        for i in 0..6 {
+            app.state.projects.push(Project {
+                name: format!("p{i}"),
+                path: PathBuf::from(format!("/tmp/p{i}")),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: false,
+                features: vec![],
+            });
+        }
+        app.build_tree_flags();
+        // 6 projects → collapsed, not flattened
+        assert!(!app.flatten);
+        assert!(app.proj_expanded.iter().all(|e| !*e));
+
+        let mut few = app_with(tmux_standalone("unused"));
+        few.scope_root = PathBuf::from("/");
+        for i in 0..3 {
+            few.state.projects.push(Project {
+                name: format!("p{i}"),
+                path: PathBuf::from(format!("/tmp/p{i}")),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: false,
+                features: vec![],
+            });
+        }
+        few.build_tree_flags();
+        // 3 projects → expanded
+        assert!(few.proj_expanded.iter().all(|e| *e));
+
+        // 1 project → flattened (features are the tree)
+        let mut one = app_with(tmux_standalone("unused"));
+        one.scope_root = PathBuf::from("/");
+        one.state.projects.push(Project {
+            name: "p".into(),
+            path: PathBuf::from("/tmp/p"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: false,
+            features: vec![],
+        });
+        one.build_tree_flags();
+        assert!(one.flatten);
+    }
+
+    /// Out-of-scope projects (other scopes' leftovers in state) stay saved
+    /// but never get rows.
+    #[test]
+    fn scope_filters_projects_from_other_scopes() {
+        let mut app = app_with(tmux_standalone("unused"));
+        app.scope_root = PathBuf::from("/work/scope-a");
+        app.state.projects.push(Project {
+            name: "in-a".into(),
+            path: PathBuf::from("/work/scope-a/repo-x"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: false,
+            features: vec![],
+        });
+        app.state.projects.push(Project {
+            name: "in-b".into(),
+            path: PathBuf::from("/work/scope-b/repo-y"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: false,
+            features: vec![],
+        });
+        let vis = app.visible_projects();
+        assert_eq!(vis, vec![0], "only scope-a's project is visible");
+        assert_eq!(app.state.projects.len(), 2, "state keeps both");
+        // Missing projects inside the scope still show.
+        app.state.projects[0].missing = true;
+        assert_eq!(app.visible_projects(), vec![0]);
     }
 
     /// Boot from inside a git repo auto-imports the MAIN repo (even from a
@@ -3199,26 +3383,16 @@ mod tests {
     }
 
     /// The startup diagnostics overlay opens when the config carried
-    /// diagnostics, and a startup confirm (scan prompt) resumes afterwards.
+    /// diagnostics, and dismisses back to Normal (there is no parked
+    /// confirm anymore — discovery is automatic).
     #[test]
-    fn startup_diagnostics_overlay_opens_and_resumes_confirm() {
+    fn startup_diagnostics_overlay_opens_and_dismisses() {
         let mut app = app_with_diagnostics(3);
-        // boot_discovery would have armed a scan confirm
-        app.mode = Mode::Confirm {
-            confirm: Confirm {
-                title: "project discovery".into(),
-                body: "scan?".into(),
-                force_label: None,
-                action: ConfirmAction::ScanProjects {
-                    root: PathBuf::from("/tmp"),
-                },
-            },
-        };
         app.open_startup_diagnostics();
         assert!(matches!(app.mode, Mode::Diagnostics));
-        // dismiss → the parked confirm resumes
+        // dismiss → Normal (boot continues; discovery already ran)
         app.on_key(key(KeyCode::Esc, false));
-        assert!(matches!(app.mode, Mode::Confirm { .. }), "confirm resumes");
+        assert!(matches!(app.mode, Mode::Normal), "dismiss lands in Normal");
     }
 
     /// No diagnostics → the overlay never opens (not even an empty one).
@@ -3300,23 +3474,14 @@ mod tests {
         assert_eq!(app.diag_scroll, 0);
     }
 
-    /// Clicking outside the diagnostics overlay dismisses it (and resumes a
-    /// parked confirm).
+    /// Clicking outside the diagnostics overlay dismisses it.
     #[test]
     fn diagnostics_click_outside_dismisses() {
         let mut app = app_with_diagnostics(2);
         app.mode = Mode::Diagnostics;
-        app.pending_confirm = Some(Confirm {
-            title: "t".into(),
-            body: "b".into(),
-            force_label: None,
-            action: ConfirmAction::ScanProjects {
-                root: PathBuf::from("/tmp"),
-            },
-        });
         app.popup_area = Some(Rect::new(20, 5, 40, 10));
         app.on_mouse(click(2, 2)); // outside the popup
-        assert!(matches!(app.mode, Mode::Confirm { .. }), "confirm resumes");
+        assert!(matches!(app.mode, Mode::Normal), "outside click dismisses");
         // ...and clicking INSIDE keeps the overlay open
         app.mode = Mode::Diagnostics;
         app.on_mouse(click(22, 6));
