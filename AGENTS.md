@@ -34,12 +34,23 @@ global TUI rules on purpose, say so here with the reason.
 
 ## Workflow
 
-- Build: `cargo build`
-- Format: `cargo fmt` — check: `cargo fmt --check`
-- Lint: `cargo clippy -- -D warnings`
-- Test: `cargo test` (tmux integration tests run headless with `tmux -L lwtest`;
-  the full verify recipe lives in `STATE.md`)
-- **Gating command:** `cargo fmt --check && cargo clippy -- -D warnings && cargo test`
+Driven by **mise** (`mise.toml` at the repo root — the single task runner
+per the global task-runner rules; task commands below are also documented
+there). Toolchain: `[tools] rust = "1.97"`.
+
+- Build: `mise run build` (cargo build)
+- Format: `mise run fmt` (cargo fmt --check)
+- Lint: `mise run lint` (cargo clippy -- -D warnings)
+- Test: `mise run test` (cargo test; tmux integration tests run headless
+  with `tmux -L lwtest`)
+- **Gating command:** `mise run gate` (fmt --check && clippy -D warnings
+  && test)
+- Install for local testing from anywhere: `mise run install` (release
+  build + symlink into `~/.local/bin`)
+
+The underlying cargo commands (from the pre-mise workflow, kept for
+reference): `cargo build`, `cargo fmt --check`, `cargo clippy -- -D
+warnings`, `cargo test`.
 
 ## Definition of done
 
@@ -64,3 +75,6 @@ global TUI rules on purpose, say so here with the reason.
 - Global rules: `/opt/data/agents-common-instructions/` (`general/` +
   `tui/`) — read them at task time, they are the single source of truth and
   may change.
+- Task runner convention: `general/task-runner.md` (mise as the one task
+  runner) — this project follows it; the choice is stated in the Workflow
+  section above.

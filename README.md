@@ -305,10 +305,17 @@ only — the live preview panel lets you confirm what's really happening.
 
 ## Development
 
+Driven by mise (the single task runner):
+
 ```sh
-cargo test          # unit tests (config, themes, git, status) + real-tmux integration tests
-cargo clippy --all-targets -- -D warnings
-cargo fmt
+mise install        # ensure the declared toolchain (rust 1.97)
+mise tasks          # list everything below
+mise run build      # debug build
+mise run fmt        # cargo fmt --check
+mise run lint       # cargo clippy --all-targets -- -D warnings
+mise run test       # unit tests + real-tmux integration tests (needs tmux)
+mise run gate       # fmt + lint + test — the pre-commit gate
+mise run install    # release build + link into ~/.local/bin (test from anywhere)
 ```
 
 Logs go to `$XDG_STATE_HOME/lazywingman/lazywingman.log` — never stdout

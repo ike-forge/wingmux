@@ -1,0 +1,30 @@
+# LazyWingman — driven by mise (the single task runner, per the global
+# task-runner rules). `mise install` is the complete setup step: it makes
+# sure the declared toolchain exists. `mise tasks` lists what can be run.
+
+[tools]
+rust = "1.97"
+
+[tasks.build]
+description = "Build the debug binary"
+run = "cargo build"
+
+[tasks.fmt]
+description = "Check formatting (no changes)"
+run = "cargo fmt --check"
+
+[tasks.lint]
+description = "Clippy with warnings as errors"
+run = "cargo clippy --all-targets -- -D warnings"
+
+[tasks.test]
+description = "Run the full test suite (tmux integration tests need tmux)"
+run = "cargo test"
+
+[tasks.gate]
+description = "Everything before a commit: fmt + clippy + tests"
+run = "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test"
+
+[tasks.install]
+description = "Build the release binary and link it into ~/.local/bin so `lazywingman` works from anywhere (local testing)"
+run = "cargo build --release && mkdir -p ~/.local/bin && ln -sf $PWD/target/release/lazywingman ~/.local/bin/lazywingman"
