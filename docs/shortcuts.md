@@ -81,18 +81,41 @@ overlay lists all of them grouped by context. Same words in both.
 | Key | Meaning | Rule satisfied |
 |---|---|---|
 | `Enter` / `l` | attach to the shell | domain convention (attach) |
-| `s` | quick-send a line to the agent (no leaving the dashboard) | send action |
+| `s` | quick-send a prompt to the agent (multiline editor, Alt+Enter sends) | send action |
 | `d` | delete the feature holding this shell | vim `d` destructive, confirms |
 
-## Text input (import / new feature / quick-send)
+## Text input (import / new feature — single line)
 
-| Key | Meaning | Rule satisfied |
+|| Key | Meaning | Rule satisfied |
 |---|---|---|
 | any printable | append to the input | printable keys belong to text input |
 | `Enter` | submit | confirm |
 | `Esc` | cancel (back to Normal) | leave innermost first |
 | `Backspace` | delete a character | accessibility |
 | `ctrl-c` | quit, even here | ctrl layer over input |
+
+## Quick-send textarea (multiline prompt editor)
+
+Quick-send is a full editor, not a line input — it is the main way to talk
+to agents, so it behaves like an editor.
+
+|| Key | Meaning | Rule satisfied |
+|---|---|---|
+| any printable | insert at the cursor | printable keys belong to text input |
+| `Enter` | insert a newline | multiline input: Enter writes, it does not submit |
+| `Alt+Enter` / `Ctrl+Enter` | send to the agent (and submit) | the send chord — a plain Enter is needed for editing |
+| `Tab` | insert a tab | tab is content, not focus (only one panel) |
+| `Backspace` / `Delete` | delete before / under the cursor (joining lines at line ends) | editing |
+| `←` `→` `↑` `↓` | move the cursor (wrapping at line ends) | arrows = same code path |
+| `Home` / `End` | line start / line end | editing motions; the textarea owns them (they never move the tree) |
+| `PgUp` / `PgDn`, `ctrl-u` / `ctrl-d` | page the cursor half a page up/down | accessibility, owned by the textarea |
+| `ctrl-f` / `ctrl-b` | page the cursor a full page down/up | accessibility, owned by the textarea |
+| `Esc` | cancel (back to Normal) | leave innermost first |
+| `ctrl-c` | quit, even here | ctrl layer keeps only quit (and ctrl-t) over the textarea |
+
+Sending uses tmux's paste-buffer with bracketed paste, so multi-line prompts
+arrive as ONE paste (embedded newlines are content, not Enter presses) and
+the trailing Enter submits.
 
 ## Confirm dialogs (delete feature / remove project / scan prompt)
 

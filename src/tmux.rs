@@ -426,6 +426,26 @@ impl Tmux {
         Ok(())
     }
 
+    /// Paste text into a pane via tmux's paste-buffer with bracketed paste
+    /// (`set-buffer` + `paste-buffer -p -d`). Unlike `send-keys -l`, this
+    /// preserves embedded newlines: an application that enabled bracketed
+    /// paste (Claude Code, most REPLs) receives the multi-line text as one
+    /// paste instead of a newline being interpreted as Enter.
+    pub fn paste_keys(&self, pane_id: &str, text: &str, enter: bool) -> Result<()> {
+        const BUF: &str = "lw-paste";
+        // Buffer names cannot contain the ':' character; text is fine.
+        // Load the text, paste it (bracketed, delete after), then make
+        // sure the buffer is gone even if -d was not enough.
+        self.run(&["set-buffer", "-b", BUF, text])?;
+        let paste_result = self.run(&["paste-buffer", "-b", BUF, "-p", "-d", "-t", pane_id]);
+        let _ = self.run(&["delete-buffer", "-b", BUF]);
+        paste_result?;
+        if enter {
+            self.run(&["send-keys", "-t", pane_id, "Enter"])?;
+        }
+        Ok(())
+    }
+
     /// Last `lines` lines of a pane's visible content (escape codes stripped).
     pub fn capture_pane(&self, pane_id: &str, lines: u32) -> Result<String> {
         let out = self.run(&[
@@ -790,6 +810,32 @@ mod tests {
             // kill the last window → session gone
             tmux.kill_window(&w.window_id).unwrap();
             assert!(!tmux.session_exists("wingman-session-p"));
+        });
+    }
+
+    #[test]
+    fn paste_keys_inserts_literal_multiline_text() {
+        with_tmux_server(|_sock, tmux| {
+            let w = tmux
+                .new_session("wingman-session-p", "lw:f/0", Path::new("/tmp"), "bash")
+                .unwrap();
+            // Paste a multi-line prompt WITHOUT a trailing Enter: bracketed
+            // paste (set-buffer + paste-buffer -p) delivers the text
+            // literally — embedded newlines must NOT submit the line.
+            tmux.paste_keys(&w.pane_id, "lw-line-1\nlw-line-2", false)
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let capture = tmux.capture_pane(&w.pane_id, 50).unwrap();
+            assert!(
+                capture.contains("lw-line-1") && capture.contains("lw-line-2"),
+                "both pasted lines visible: {capture}"
+            );
+            // The paste buffer is cleaned up afterwards.
+            let buffers = tmux.run_raw(&["list-buffers"]).unwrap_or_default();
+            assert!(
+                !buffers.contains("lw-paste"),
+                "paste buffer must be deleted: {buffers}"
+            );
         });
     }
 

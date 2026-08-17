@@ -76,6 +76,19 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   but only the exact command we bound — a user's own root binding of the same
   key is untouched. `tmux.back_key` still configures the second half of the
   chord.
+- **M9 — quick-send is a multiline textarea.** The main way to talk to
+  agents became a full editor (`Mode::Textarea` + `TextBuf`): Enter inserts a
+  newline, Tab a real tab, arrows/Home/End move the cursor (wrapping at line
+  ends), PgUp/PgDn/ctrl-u/d/f/b page the cursor, and the send chord is
+  **Alt+Enter or Ctrl+Enter** — a plain Enter is needed for editing, so it
+  cannot be the submit key. While the textarea is open the accessibility
+  layer yields ALL motion keys to it (only ctrl-c and ctrl-t stay global);
+  the tree selection never moves while editing. Delivery switched from
+  `send-keys -l` to tmux **paste-buffer with bracketed paste** (`paste_keys`):
+  `send-keys -l "a\nb"` would translate the newline into an Enter press and
+  submit the first line early; bracketed paste delivers multi-line text as
+  one paste, then a trailing Enter submits. Import/new-feature inputs stay
+  single-line (`Enter` submits) — they are names, not prompts.
 - **M8 — runs inside AND outside tmux** (per user feedback): the dashboard no
   longer requires tmux around itself. `Tmux` keeps optional `inside`
   coordinates (detected via TMUX/TMUX_PANE); all session/window/pane operations

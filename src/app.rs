@@ -36,6 +36,13 @@ pub enum Mode {
         kind: InputKind,
         text: String,
     },
+    /// Multiline prompt editor (quick-send). Owns all editing keys:
+    /// Enter = newline, Tab = tab, arrows/Home/End move the cursor,
+    /// Alt+Enter / Ctrl+Enter = send, Esc = cancel. The accessibility
+    /// layer only keeps ctrl-c (quit) and ctrl-t (theme) while it is open.
+    Textarea {
+        buf: TextBuf,
+    },
     Confirm {
         confirm: Confirm,
     },
@@ -49,6 +56,199 @@ pub enum Mode {
     /// dropped at load — see the configuration guidelines). Scrollable list
     /// of diagnostics, dismissed with Esc/q/Enter.
     Diagnostics,
+}
+
+/// A multiline text buffer for the quick-send editor: lines + a cursor
+/// (`row`, `col` in characters) + a viewport scroll (first visible line).
+/// Editing happens at the cursor; `text()` joins the lines for sending.
+#[derive(Debug, Clone, Default)]
+pub struct TextBuf {
+    lines: Vec<String>,
+    row: usize,
+    col: usize,
+    scroll: usize,
+}
+
+impl TextBuf {
+    pub fn new() -> Self {
+        Self {
+            lines: vec![String::new()],
+            row: 0,
+            col: 0,
+            scroll: 0,
+        }
+    }
+
+    /// The full buffer joined with newlines — what gets sent to the agent.
+    pub fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.lines.len()
+    }
+
+    pub fn line(&self, i: usize) -> &str {
+        self.lines.get(i).map(String::as_str).unwrap_or("")
+    }
+
+    pub fn cursor_row(&self) -> usize {
+        self.row
+    }
+
+    pub fn cursor_col(&self) -> usize {
+        self.col
+    }
+
+    /// First visible line (clamped so the cursor is always on screen).
+    pub fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    /// Page height for scroll motions (visible lines, minus the hint row).
+    pub fn page(&self, visible: usize) -> usize {
+        visible.saturating_sub(1).max(1)
+    }
+
+    pub fn insert_char(&mut self, c: char) {
+        self.lines[self.row].insert(self.col, c);
+        self.col += 1;
+    }
+
+    pub fn newline(&mut self) {
+        let rest = self.lines[self.row].split_off(self.col);
+        self.lines.insert(self.row + 1, rest);
+        self.row += 1;
+        self.col = 0;
+        self.ensure_visible(1);
+    }
+
+    pub fn insert_tab(&mut self) {
+        self.insert_char('\t');
+    }
+
+    /// Backspace: delete the char before the cursor; at line start, join
+    /// with the previous line.
+    pub fn backspace(&mut self) {
+        if self.col > 0 {
+            self.lines[self.row].remove(self.col - 1);
+            self.col -= 1;
+        } else if self.row > 0 {
+            let prev_len = self.lines[self.row - 1].len();
+            let rest = self.lines.remove(self.row);
+            self.lines[self.row - 1].push_str(&rest);
+            self.row -= 1;
+            self.col = prev_len;
+            self.ensure_visible(1);
+        }
+    }
+
+    /// Delete forward: the char under the cursor; at line end, join with
+    /// the next line.
+    pub fn delete(&mut self) {
+        let line_len = self.lines[self.row].len();
+        if self.col < line_len {
+            self.lines[self.row].remove(self.col);
+        } else if self.row + 1 < self.lines.len() {
+            let rest = self.lines.remove(self.row + 1);
+            self.lines[self.row].push_str(&rest);
+        }
+    }
+
+    pub fn move_left(&mut self) {
+        if self.col > 0 {
+            self.col -= 1;
+        } else if self.row > 0 {
+            self.row -= 1;
+            self.col = self.lines[self.row].len();
+            self.ensure_visible(1);
+        }
+    }
+
+    pub fn move_right(&mut self) {
+        if self.col < self.lines[self.row].len() {
+            self.col += 1;
+        } else if self.row + 1 < self.lines.len() {
+            self.row += 1;
+            self.col = 0;
+            self.ensure_visible(1);
+        }
+    }
+
+    pub fn move_up(&mut self) {
+        if self.row > 0 {
+            self.row -= 1;
+            self.clamp_col();
+            self.ensure_visible(1);
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.row + 1 < self.lines.len() {
+            self.row += 1;
+            self.clamp_col();
+            self.ensure_visible(1);
+        }
+    }
+
+    pub fn move_home(&mut self) {
+        self.col = 0;
+    }
+
+    pub fn move_end(&mut self) {
+        self.col = self.lines[self.row].len();
+    }
+
+    /// Page motion: move the cursor up/down by `page` lines (clamped to
+    /// the buffer start/end). Returns false when already at the edge.
+    pub fn move_page(&mut self, direction: isize, page: usize) -> bool {
+        let target = if direction > 0 {
+            (self.row + page).min(self.lines.len() - 1)
+        } else {
+            self.row.saturating_sub(page)
+        };
+        if target == self.row {
+            return false;
+        }
+        self.row = target;
+        self.clamp_col();
+        self.ensure_visible(page.max(1));
+        true
+    }
+
+    fn clamp_col(&mut self) {
+        self.col = self.col.min(self.lines[self.row].len());
+    }
+
+    /// Keep the cursor row visible within a `visible`-line viewport:
+    /// scroll down if the cursor moved above the viewport, up if it moved
+    /// below it.
+    fn ensure_visible(&mut self, visible: usize) {
+        let view = visible.max(1);
+        if self.row < self.scroll {
+            self.scroll = self.row;
+        } else if self.row >= self.scroll + view {
+            self.scroll = self.row + 1 - view;
+        }
+    }
+}
+
+/// Height of the quick-send textarea popup for a viewport height. Grows
+/// with the terminal up to a cap — the textarea is the main interaction,
+/// it should be roomy.
+pub(crate) fn textarea_height(viewport_h: u16) -> u16 {
+    (viewport_h / 2).clamp(10, 18)
+}
+
+/// Width of the quick-send textarea popup for a viewport width.
+pub(crate) fn textarea_width(viewport_w: u16) -> u16 {
+    (viewport_w * 70 / 100).clamp(40, 96)
+}
+
+/// Content rows of the textarea popup (inside the border, between the
+/// label row and the hint row): height − 4 (2 borders + label + hint).
+pub(crate) fn textarea_visible_lines(viewport_h: u16) -> usize {
+    textarea_height(viewport_h) as usize - 4
 }
 
 /// An action reachable from the statusbar shortcut entries (and by mouse
@@ -888,7 +1088,7 @@ impl App {
         if text.trim().is_empty() {
             return Ok(());
         }
-        tmux.send_keys(pid, text, true)?;
+        tmux.paste_keys(pid, text, true)?;
         log::info!("quick-send to {}: {text}", sh.window_name);
         Ok(())
     }
@@ -1153,38 +1353,43 @@ impl App {
         // takes over the viewport); while the theme picker is open they
         // move the picker cursor; elsewhere they move the tree.
         //
+        // The quick-send textarea owns its own motions: while it is open,
+        // the page/Home/End keys edit the text, so the layer only keeps
+        // ctrl-c (quit) and ctrl-t (theme) global.
+        //
         // ctrl-t opens the live theme picker (a chord, so it dispatches
         // over every state — a theme switch is never behind a prompt).
+        let in_textarea = matches!(self.mode, Mode::Textarea { .. });
         let handled = match key.code {
-            KeyCode::PageUp => {
+            KeyCode::PageUp if !in_textarea => {
                 self.move_view(-1);
                 true
             }
-            KeyCode::PageDown => {
+            KeyCode::PageDown if !in_textarea => {
                 self.move_view(1);
                 true
             }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_textarea => {
                 self.move_view(-1);
                 true
             }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_textarea => {
                 self.move_view(1);
                 true
             }
-            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_textarea => {
                 self.move_view(2);
                 true
             }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_textarea => {
                 self.move_view(-2);
                 true
             }
-            KeyCode::Home => {
+            KeyCode::Home if !in_textarea => {
                 self.move_view_first();
                 true
             }
-            KeyCode::End => {
+            KeyCode::End if !in_textarea => {
                 self.move_view_last();
                 true
             }
@@ -1210,6 +1415,8 @@ impl App {
                 _ => {}
             }
         }
+        // The textarea's page size = its visible content rows.
+        let visible_lines = textarea_visible_lines(self.viewport.1);
         match &mut self.mode {
             Mode::Input { kind, text } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
@@ -1225,6 +1432,60 @@ impl App {
                 KeyCode::Char(c) => text.push(c),
                 _ => {}
             },
+            Mode::Textarea { buf } => {
+                // Send: Alt+Enter or Ctrl+Enter. A plain Enter inserts a
+                // newline; Esc cancels. The textarea owns all editing keys.
+                let send_chord = key.code == KeyCode::Enter
+                    && (key.modifiers.contains(KeyModifiers::ALT)
+                        || key.modifiers.contains(KeyModifiers::CONTROL));
+                if send_chord {
+                    let text = buf.text();
+                    self.mode = Mode::Normal;
+                    self.submit_input(InputKind::QuickSend, text);
+                } else {
+                    match key.code {
+                        KeyCode::Enter => buf.newline(),
+                        KeyCode::Esc => self.mode = Mode::Normal,
+                        KeyCode::Tab => buf.insert_tab(),
+                        KeyCode::Backspace => buf.backspace(),
+                        KeyCode::Delete => buf.delete(),
+                        KeyCode::Left => buf.move_left(),
+                        KeyCode::Right => buf.move_right(),
+                        KeyCode::Up => buf.move_up(),
+                        KeyCode::Down => buf.move_down(),
+                        KeyCode::Home => buf.move_home(),
+                        KeyCode::End => buf.move_end(),
+                        KeyCode::PageUp => {
+                            buf.move_page(-1, buf.page(visible_lines));
+                        }
+                        KeyCode::PageDown => {
+                            buf.move_page(1, buf.page(visible_lines));
+                        }
+                        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            // The textarea owns ctrl-u/d/f/b motions too
+                            // (the accessibility layer yielded them):
+                            // ctrl-u/d half a page, ctrl-f/b a full page.
+                            match c {
+                                'u' => {
+                                    buf.move_page(-1, buf.page(visible_lines));
+                                }
+                                'd' => {
+                                    buf.move_page(1, buf.page(visible_lines));
+                                }
+                                'f' => {
+                                    buf.move_page(1, visible_lines.saturating_sub(1));
+                                }
+                                'b' => {
+                                    buf.move_page(-1, visible_lines.saturating_sub(1));
+                                }
+                                _ => {}
+                            }
+                        }
+                        KeyCode::Char(c) => buf.insert_char(c),
+                        _ => {}
+                    }
+                }
+            }
             Mode::Confirm { confirm } => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     let action = confirm.action.clone();
@@ -1341,9 +1602,8 @@ impl App {
             }
             KeyCode::Char('s') => match self.sel {
                 Sel::Shell(..) => {
-                    self.mode = Mode::Input {
-                        kind: InputKind::QuickSend,
-                        text: String::new(),
+                    self.mode = Mode::Textarea {
+                        buf: TextBuf::new(),
                     };
                 }
                 _ => {
@@ -1644,9 +1904,8 @@ impl App {
             }
             BarAction::QuickSend => {
                 if let Sel::Shell(..) = self.sel {
-                    self.mode = Mode::Input {
-                        kind: InputKind::QuickSend,
-                        text: String::new(),
+                    self.mode = Mode::Textarea {
+                        buf: TextBuf::new(),
                     };
                 }
             }
@@ -2041,15 +2300,19 @@ mod tests {
     /// "no server running".
     #[test]
     fn standalone_startup_boots_without_a_server() {
-        crate::tmux::testutil::with_no_server(|sock| {
-            let tmux = tmux_standalone(sock);
-            let mut app = app_with(tmux);
-            app.startup().unwrap();
-            assert!(app.state.projects.is_empty());
-            // the server now exists and is supervised
-            let t = app.tmux.as_ref().unwrap();
-            assert!(!t.session_exists("wingman-session-p"));
-            assert!(t.list_sessions().unwrap().is_empty());
+        // Isolate XDG: this test asserts an empty project list, and other
+        // tests persist state to the real path when run in parallel.
+        crate::util::testutil::with_fresh_xdg(|| {
+            crate::tmux::testutil::with_no_server(|sock| {
+                let tmux = tmux_standalone(sock);
+                let mut app = app_with(tmux);
+                app.startup().unwrap();
+                assert!(app.state.projects.is_empty());
+                // the server now exists and is supervised
+                let t = app.tmux.as_ref().unwrap();
+                assert!(!t.session_exists("wingman-session-p"));
+                assert!(t.list_sessions().unwrap().is_empty());
+            });
         });
     }
 
@@ -2250,6 +2513,36 @@ mod tests {
         app
     }
 
+    /// A project with one feature holding one shell, for action tests.
+    fn app_with_shell() -> App {
+        let mut app = app_with(tmux_standalone("unused"));
+        app.state.projects.push(Project {
+            name: "p".into(),
+            path: PathBuf::from("/tmp/p"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: false,
+            features: vec![Feature {
+                name: "feat".into(),
+                branch: "feat".into(),
+                worktree_path: PathBuf::from("/tmp/p/.lazywingman-worktrees/p/feat"),
+                created_at: String::new(),
+                shells: vec![Shell {
+                    index: 0,
+                    window_name: "lw:feat/0".into(),
+                    window_id: Some("@1".into()),
+                    pane_id: Some("%1".into()),
+                }],
+            }],
+        });
+        app.build_tree_flags();
+        app.clamp_sel();
+        app.sel = Sel::Shell(0, 0, 0);
+        app
+    }
+
     fn key(code: KeyCode, ctrl: bool) -> KeyEvent {
         KeyEvent::new(
             code,
@@ -2332,15 +2625,188 @@ mod tests {
         let mut app = app_with_projects(5);
         app.on_key(key(KeyCode::Char('G'), false));
         assert_eq!(app.sel, Sel::Project(4));
-        app.mode = Mode::Input {
-            kind: InputKind::QuickSend,
-            text: String::new(),
+        app.mode = Mode::Textarea {
+            buf: TextBuf::new(),
         };
         app.on_key(key(KeyCode::Char('g'), false));
-        let Mode::Input { text, .. } = &app.mode else {
+        let Mode::Textarea { buf } = &app.mode else {
             panic!()
         };
-        assert_eq!(text, "g");
+        assert_eq!(buf.text(), "g");
+    }
+
+    // ---- M9.2 — multiline textarea (quick-send rework) ----
+
+    #[test]
+    fn textbuf_types_and_edits_at_cursor() {
+        let mut buf = TextBuf::new();
+        // insert "hello_world" (11 chars, no space)
+        for c in "hello_world".chars() {
+            buf.insert_char(c);
+        }
+        assert_eq!(buf.text(), "hello_world");
+        assert_eq!(buf.cursor_row(), 0);
+        assert_eq!(buf.cursor_col(), 11);
+
+        // move to the middle (col 5 = after "hello"), insert a tab
+        for _ in 0..6 {
+            buf.move_left();
+        }
+        assert_eq!(buf.cursor_col(), 5);
+        buf.insert_tab();
+        assert_eq!(buf.text(), "hello\t_world");
+        assert_eq!(buf.cursor_col(), 6);
+
+        // split the line at the tab: "hello\t" / "_world"
+        buf.newline();
+        assert_eq!(buf.text(), "hello\t\n_world");
+        assert_eq!(buf.cursor_row(), 1);
+        assert_eq!(buf.cursor_col(), 0);
+
+        // type at the start of the new line
+        buf.insert_char('!');
+        assert_eq!(buf.text(), "hello\t\n!_world");
+        assert_eq!(buf.cursor_row(), 1);
+        assert_eq!(buf.cursor_col(), 1);
+
+        // up: column 1 fits in "hello\t" (6 chars) → stays 1
+        buf.move_up();
+        assert_eq!(buf.cursor_row(), 0);
+        assert_eq!(buf.cursor_col(), 1);
+        // down: clamp to line 1's length
+        buf.move_down();
+        assert_eq!(buf.cursor_row(), 1);
+        assert_eq!(buf.cursor_col(), 1);
+        // left at line start wraps to the previous line's end
+        buf.move_left();
+        assert_eq!(buf.cursor_row(), 1, "col 1 → col 0 on the same line");
+        assert_eq!(buf.cursor_col(), 0);
+        buf.move_left();
+        assert_eq!(buf.cursor_row(), 0, "line start wraps up");
+        assert_eq!(buf.cursor_col(), 6);
+        // right at line end wraps to the next line's start
+        buf.move_right();
+        assert_eq!(buf.cursor_row(), 1);
+        assert_eq!(buf.cursor_col(), 0);
+
+        // backspace at line start joins the lines
+        buf.backspace();
+        assert_eq!(buf.text(), "hello\t!_world");
+        assert_eq!(buf.cursor_row(), 0);
+        assert_eq!(buf.cursor_col(), 6);
+
+        // delete forward removes under the cursor ("!")
+        buf.delete();
+        assert_eq!(buf.text(), "hello\t_world");
+        // move to the end, delete = no-op
+        buf.move_end();
+        buf.delete();
+        assert_eq!(buf.text(), "hello\t_world");
+        // home + delete removes the first char
+        buf.move_home();
+        buf.delete();
+        assert_eq!(buf.text(), "ello\t_world");
+
+        // home/end insert at the extremes
+        buf.move_end();
+        buf.insert_char('X');
+        assert_eq!(buf.text(), "ello\t_worldX");
+        buf.move_home();
+        buf.insert_char('S');
+        assert_eq!(buf.text(), "Sello\t_worldX");
+    }
+
+    #[test]
+    fn textbuf_scroll_and_clamp() {
+        let mut buf = TextBuf::new();
+        for _ in 0..10 {
+            buf.newline();
+            for c in "line".chars() {
+                buf.insert_char(c);
+            }
+        }
+        // 11 lines: row 0..=10
+        assert_eq!(buf.line_count(), 11);
+        // cursor trails to the last line after the newlines
+        assert_eq!(buf.cursor_row(), 10);
+
+        // scrolled to the bottom by construction (ensure_visible)
+        // moving up pages keeps the cursor on screen
+        let moved = buf.move_page(-1, 5);
+        assert!(moved);
+        assert!(buf.cursor_row() <= buf.scroll() + 5);
+    }
+
+    /// The textarea: plain Enter inserts a newline, Alt+Enter sends,
+    /// Esc cancels, Tab inserts a tab, arrows navigate.
+    #[test]
+    fn textarea_enter_newline_send_chord_cancel() {
+        let mut app = app_with_shell();
+        app.viewport = (120, 40);
+
+        // `s` opens the textarea
+        app.on_key(key(KeyCode::Char('s'), false));
+        assert!(
+            matches!(app.mode, Mode::Textarea { .. }),
+            "s opens textarea"
+        );
+
+        // type two lines
+        for c in "line one".chars() {
+            app.on_key(key(KeyCode::Char(c), false));
+        }
+        app.on_key(key(KeyCode::Enter, false));
+        for c in "line two".chars() {
+            app.on_key(key(KeyCode::Char(c), false));
+        }
+        let Mode::Textarea { buf } = &app.mode else {
+            panic!("still in textarea");
+        };
+        assert_eq!(buf.text(), "line one\nline two", "Enter inserts newline");
+
+        // Alt+Enter sends: back to Normal, message + tree unchanged
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert!(matches!(app.mode, Mode::Normal), "Alt+Enter sends");
+    }
+
+    #[test]
+    fn textarea_ctrl_enter_sends_and_esc_cancels() {
+        let mut app = app_with_shell();
+        app.viewport = (120, 40);
+
+        app.on_key(key(KeyCode::Char('s'), false));
+        app.on_key(key(KeyCode::Char('x'), false));
+        // Ctrl+Enter sends too
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+        assert!(matches!(app.mode, Mode::Normal), "Ctrl+Enter sends");
+
+        // Esc cancels without sending
+        app.on_key(key(KeyCode::Char('s'), false));
+        app.on_key(key(KeyCode::Char('y'), false));
+        app.on_key(key(KeyCode::Esc, false));
+        assert!(matches!(app.mode, Mode::Normal), "Esc cancels");
+    }
+
+    #[test]
+    fn textarea_tab_and_navigation_do_not_leak_to_tree() {
+        let mut app = app_with_shell();
+        app.viewport = (120, 40);
+
+        app.on_key(key(KeyCode::Char('s'), false));
+        let before = app.sel;
+        app.on_key(key(KeyCode::Tab, false));
+        app.on_key(key(KeyCode::Down, false));
+        app.on_key(key(KeyCode::PageDown, false));
+        app.on_key(key(KeyCode::Home, false));
+        let Mode::Textarea { buf } = &app.mode else {
+            panic!("still in textarea");
+        };
+        assert!(buf.text().starts_with('\t'), "Tab inserts a tab");
+        assert_eq!(buf.cursor_row(), 0, "Home did not move the tree");
+        assert_eq!(
+            app.sel, before,
+            "tree selection untouched while textarea open"
+        );
     }
 
     // ---- M8.4a — mouse ----

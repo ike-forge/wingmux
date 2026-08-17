@@ -66,6 +66,8 @@ fn overlay_min(kind: OverlayKind) -> (u16, u16) {
         OverlayKind::Diagnostics => (44, 10),
         OverlayKind::ThemePicker => (34, 10),
         OverlayKind::Input | OverlayKind::Confirm => (34, 10),
+        // The textarea is the main interaction — it needs real estate.
+        OverlayKind::Textarea => (50, 12),
     }
 }
 
@@ -76,6 +78,7 @@ enum OverlayKind {
     ThemePicker,
     Input,
     Confirm,
+    Textarea,
 }
 
 fn fg(c: Color) -> Style {
@@ -150,6 +153,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let kind = OverlayKind::Input;
             if fits(area, overlay_min(kind)) {
                 let rect = draw_input(f, app);
+                app.popup_area = Some(rect);
+            } else {
+                draw_overlay_too_small(f, area, app, kind);
+            }
+        }
+        Mode::Textarea { .. } => {
+            let kind = OverlayKind::Textarea;
+            if fits(area, overlay_min(kind)) {
+                let rect = draw_textarea(f, app);
                 app.popup_area = Some(rect);
             } else {
                 draw_overlay_too_small(f, area, app, kind);
@@ -1132,6 +1144,110 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
         f.set_cursor_position(Position::new(cursor_x, cursor_y));
     }
     area
+}
+
+fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
+    let theme = &app.theme.colors;
+    // Span the popup to the textarea geometry (shared with the key
+    // handler's page-size math via app::textarea_visible_lines).
+    let w = crate::app::textarea_width(app.viewport.0).min(f.area().width);
+    let h = crate::app::textarea_height(app.viewport.1).min(f.area().height);
+    let area = centered_rect_wh(f.area(), w, h);
+    f.render_widget(Clear, area);
+    let Mode::Textarea { buf } = &app.mode else {
+        return area;
+    };
+    let content_lines = crate::app::textarea_visible_lines(app.viewport.1).max(1);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(fg(theme.popup_border))
+        .title(Span::styled(
+            " quick-send ",
+            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
+        ));
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    // Row layout inside the border: label, content, hint.
+    let label_y = inner.y;
+    let hint_y = inner.y + inner.height.saturating_sub(1);
+    let content_top = label_y + 1;
+    let _content_bottom = hint_y; // exclusive — reserved for future use
+
+    let mut lines: Vec<Line> = Vec::new();
+    // Label row.
+    lines.push(Line::from(vec![
+        Span::styled("send to agent:", fg(theme.accent)),
+        Span::styled(format!(" ({content_lines} rows)"), fg(theme.dim)),
+    ]));
+    // Content rows: the visible window of the buffer.
+    let scroll = buf.scroll();
+    for i in 0..content_lines {
+        let idx = scroll + i;
+        if idx >= buf.line_count() {
+            lines.push(Line::from(""));
+        } else {
+            let line = buf.line(idx).to_string();
+            // Expand tabs to four spaces for stable rendering.
+            let rendered = line.replace('\t', "    ");
+            lines.push(Line::from(rendered));
+        }
+    }
+    // Hint row.
+    lines.push(Line::from(vec![
+        Span::styled("enter newline", fg(theme.accent)),
+        Span::styled(sep(app.ascii), fg(theme.dim)),
+        Span::styled("alt+enter send", fg(theme.accent)),
+        Span::styled(sep(app.ascii), fg(theme.dim)),
+        Span::styled("esc cancel", fg(theme.accent)),
+    ]));
+
+    let popup_style = on(theme.popup_fg, theme.popup_bg);
+    f.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .style(popup_style),
+        area,
+    );
+    if app.ascii {
+        asciify(f, area);
+    }
+    // Cursor: row relative to the content window; column counts the
+    // rendered characters (tabs expanded to 4).
+    let cur_row = buf.cursor_row();
+    let cur_col = buf.cursor_col();
+    let rel_row = cur_row.saturating_sub(scroll);
+    if rel_row < content_lines {
+        let line_prefix = buf.line(cur_row)[..cur_col].chars().count();
+        let render_col = line_prefix
+            + buf.line(cur_row)[..cur_col]
+                .chars()
+                .filter(|&c| c == '\t')
+                .count()
+                * 3;
+        let cursor_x = inner.x + render_col as u16;
+        let cursor_y = (content_top as usize + rel_row) as u16;
+        if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
+            f.set_cursor_position(Position::new(cursor_x, cursor_y));
+        }
+    }
+    area
+}
+
+/// Centered rect of an exact width/height (the percentage version cannot
+/// express the textarea's clamped absolute size).
+fn centered_rect_wh(area: Rect, w: u16, h: u16) -> Rect {
+    let x = area.x + area.width.saturating_sub(w) / 2;
+    let y = area.y + area.height.saturating_sub(h) / 2;
+    Rect {
+        x,
+        y,
+        width: w.min(area.width),
+        height: h.min(area.height),
+    }
 }
 
 fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
