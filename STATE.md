@@ -1,6 +1,6 @@
 # LazyWingman — build state
 
-**M8 COMPLETE** — all M8 milestones done; watchdog: this is the completion
+**M9 COMPLETE** — all M9 milestones done; watchdog: this is the completion
 marker, ping Ilja. Delivery zip: /opt/data/lazywingman-2026-08-17.zip.
 
 Resume from this file alone. It is updated at the end of every milestone and
@@ -8,8 +8,9 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M8 — user-feedback milestone set — COMPLETE (M8.1 … M8.4d + M8.5
-acceptance all done, marker written).**
+**M9 — user-feedback milestone set — COMPLETE (M9.1 back-key prefix, M9.2
+textarea quick-send, M9.3 scope discovery, M9.4 mise, M9.5 UI pass; marker
+written).**
 Resume from STATE.md progress log.
 
 ## M8 — plan (user feedback: hide agent panes in separate sessions, project
@@ -83,6 +84,47 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M9 — back-key prefix, textarea quick-send, scope discovery, mise, UI pass (COMPLETE)
+
+All five M9 items landed, each committed + pushed to origin/main:
+
+- **M9.1** — back-key moved from the root table (`bind-key -n`, which
+  hijacked Ctrl-o server-wide and broke other TUIs) to the **prefix table**
+  (`-T prefix`): `C-b C-o` by default, second half still configurable via
+  `tmux.back_key`. A surgical cleanup unbinds any legacy root binding that
+  exactly matches our switch-client/select-window command (never a user's
+  own binding). Tests: prefix-table registration + legacy unbind.
+- **M9.2** — quick-send is a **multiline textarea** (`Mode::Textarea` +
+  `TextBuf`): Enter=newline, Tab=tab, arrows/Home/End (wrap at line ends),
+  PgUp/PgDn/ctrl-u/d/f/b page, **Alt+Enter or Ctrl+Enter sends**, Esc
+  cancels; accessibility layer yields all motion keys while it is open.
+  Delivery switched to tmux **paste-buffer with bracketed paste**
+  (`paste_keys`) so multi-line prompts arrive as one paste. Tests:
+  TextBuf editing, send chords, paste integration.
+- **M9.3** — discovery is **scope-based, live, lazy**: only projects inside
+  the startup dir (or `[discovery].scan_root`) are listed; scopes never
+  mix. Boot inside a repo → single project, features FLAT at top level.
+  ≤5 projects expand (worktrees loaded at boot for the visible rows),
+  >5 collapse (worktrees loaded on expand, once per project; `prune`
+  skips unloaded projects). Scan prompt + discovered.json cache REMOVED.
+  Tests: scope filtering, flatten (with/without features), lazy worktrees,
+  idempotent live scan.
+- **M9.4** — **mise.toml** (single task runner per the updated global
+  rules): `[tools] rust = "1.97"`, tasks build/fmt/lint/test/gate/install.
+  `mise run install` builds release + symlinks `~/.local/bin/lazywingman`
+  (verified live from any dir). AGENTS.md Workflow + Links out updated,
+  README Development section rewritten.
+- **M9.5** — UI pass from the reference screenshots: `BorderType::Rounded`
+  everywhere, titles foreground-only (no bg fill), tree draws real guides
+  (`├─`/`└─`, `│` continuation; ASCII `|-`/`'-`/`|`), per-type icons
+  (`▣` project, `◇` feature, `●` shell). Verified live in tmux: flat
+  single-repo tree, 3-repo expanded, 7-repo collapsed.
+
+**Verify:** `cargo fmt --check` clean, `cargo clippy --all-targets -- -D
+warnings` clean, `cargo test` **149 green**, `hermes verify` OK (build +
+test PASS). Live smoke-tested against real tmux servers (unicode + ASCII
+modes). Delivery zip rebuilt; marker "M9 COMPLETE" set.
 
 ### M8.5 — acceptance: full verify + live-tmux loop + README + delivery zip + marker (COMPLETE)
 - [x] Full verify: `cargo fmt --check` clean, `cargo clippy --all-targets --
