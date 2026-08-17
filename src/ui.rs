@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, BarAction, InputKind, Mode, Sel};
 use crate::status::Status;
@@ -259,10 +259,7 @@ fn draw_too_small(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = &app.theme.colors;
     f.render_widget(
         Paragraph::new(Text::from(vec![
-            Line::from(Span::styled(
-                " terminal too small ",
-                on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
-            )),
+            Line::from(Span::styled(" terminal too small ", title_style(theme))),
             Line::from(""),
             Line::from(Span::raw(
                 "enlarge the window to at least 26x7 to show the dashboard",
@@ -279,13 +276,7 @@ fn draw_overlay_too_small(f: &mut Frame, area: Rect, app: &App, kind: OverlayKin
     let (min_w, min_h) = overlay_min(kind);
     let rect = centered_rect(area, 70, 25);
     f.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(fg(theme.popup_border))
-        .title(Span::styled(
-            " frame too small for this dialog ",
-            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
-        ));
+    let block = popup_block(theme, " frame too small for this dialog ");
     let text = Text::from(vec![
         Line::from(""),
         Line::from(Span::raw(format!(
@@ -302,6 +293,21 @@ fn draw_overlay_too_small(f: &mut Frame, area: Rect, app: &App, kind: OverlayKin
     }
 }
 
+/// Panel/popup title: foreground only, no background fill — the "simple
+/// title display without background" from the M9 UI pass.
+fn title_style(theme: &ResolvedColors) -> Style {
+    fg(theme.title_fg).add_modifier(Modifier::BOLD)
+}
+
+/// Overlay block: rounded corners, popup border colour, bg-less title.
+fn popup_block(theme: &ResolvedColors, title: impl Into<String>) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(fg(theme.popup_border))
+        .title(Span::styled(title.into(), title_style(theme)))
+}
+
 fn panel_block(theme: &ResolvedColors, title: &str, focused: bool) -> Block<'static> {
     let border = if focused {
         theme.border_focused
@@ -310,11 +316,9 @@ fn panel_block(theme: &ResolvedColors, title: &str, focused: bool) -> Block<'sta
     };
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(fg(border))
-        .title(Span::styled(
-            format!(" {title} "),
-            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
-        ))
+        .title(Span::styled(format!(" {title} "), title_style(theme)))
 }
 
 fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
@@ -325,19 +329,42 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     } else {
         ("▾", "▸", "›")
     };
+    // Tree guides: `├─ `/`└─ ` for children, `│` continuing parents.
+    let (child, last_child) = if app.ascii {
+        ("  |- ", "  `- ")
+    } else {
+        ("  ├─ ", "  └─ ")
+    };
+    let (grandchild, last_grandchild) = if app.ascii {
+        ("  |  |- ", "  |  `- ")
+    } else {
+        ("  │  ├─ ", "  │  └─ ")
+    };
+    let (no_grandchild, no_last_grandchild) = if app.ascii {
+        ("     |- ", "     `- ")
+    } else {
+        ("     ├─ ", "     └─ ")
+    };
+    // Per-type icons (aesthetic pass; ASCII keeps plain markers).
+    let (proj_icon, feat_icon, shell_icon) = if app.ascii {
+        ("*", "-", "")
+    } else {
+        ("▣", "◇", "● ")
+    };
     let mut items: Vec<ListItem> = Vec::new();
     let mut sel_row: Option<usize> = None;
     let mut row: usize = 0;
 
     // Scope-filtered: only projects inside the current path get rows.
-    for pi in app.visible_projects() {
+    let vis = app.visible_projects();
+    for pi in vis {
         let proj = &app.state.projects[pi];
         if !app.flatten {
             let expanded = app.proj_expanded.get(pi).copied().unwrap_or(false);
             let marker = if expanded { exp } else { coll };
             let count = proj.features.len();
             let mut spans = vec![Span::styled(
-                format!("{marker} {} ", proj.name),
+                format!("{marker} {proj_icon} {} ", proj.name),
                 fg(theme.tree_project).add_modifier(Modifier::BOLD),
             )];
             if proj.missing {
@@ -356,6 +383,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 continue;
             }
         }
+        let n_feat = proj.features.len();
         for (fi, feat) in proj.features.iter().enumerate() {
             let fexp = app
                 .feat_expanded
@@ -365,10 +393,17 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 .unwrap_or(false);
             let marker = if fexp { exp } else { coll };
             let n = feat.shells.len();
-            let indent = if app.flatten { "" } else { "  " };
+            // In flatten mode the features are the top level (no guide);
+            // otherwise they hang off the project with a tree branch.
+            let prefix = if app.flatten {
+                format!("{marker} {feat_icon} ")
+            } else {
+                let guide = if fi + 1 == n_feat { last_child } else { child };
+                format!("{guide}{marker} {feat_icon} ")
+            };
             items.push(ListItem::new(Line::from(vec![
-                Span::raw(indent),
-                Span::styled(format!("{marker} {}", feat.name), fg(theme.tree_feature)),
+                Span::styled(prefix, fg(theme.tree_feature)),
+                Span::styled(feat.name.clone(), fg(theme.tree_feature)),
                 Span::styled(
                     format!(" [{n} shell{}]", if n == 1 { "" } else { "s" }),
                     fg(theme.dim),
@@ -388,10 +423,28 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     .and_then(|p| app.statuses.get(p))
                     .copied()
                     .unwrap_or(Status::Idle);
-                let indent = if app.flatten { "  " } else { "    " };
+                let guide = if app.flatten {
+                    if si + 1 == n {
+                        last_grandchild
+                    } else {
+                        grandchild
+                    }
+                } else if fi + 1 == n_feat {
+                    if si + 1 == n {
+                        no_last_grandchild
+                    } else {
+                        no_grandchild
+                    }
+                } else if si + 1 == n {
+                    last_grandchild
+                } else {
+                    grandchild
+                };
                 items.push(ListItem::new(Line::from(vec![
-                    Span::raw(indent),
-                    Span::styled(format!("#{}", sh.index), fg(theme.tree_shell)),
+                    Span::styled(
+                        format!("{guide}{shell_icon}#{}", sh.index),
+                        fg(theme.tree_shell),
+                    ),
                     Span::raw(" "),
                     Span::styled(st.label(), fg(status_color(theme, st))),
                     Span::styled(
@@ -801,13 +854,7 @@ fn draw_help(f: &mut Frame, app: &App) -> Rect {
             title_text.push_str("· j/k scrolls");
         }
     }
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(fg(theme.popup_border))
-        .title(Span::styled(
-            title_text,
-            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
-        ));
+    let block = popup_block(theme, title_text);
     f.render_widget(Paragraph::new(Text::from(window)).block(block), area);
     if app.ascii {
         asciify(f, area);
@@ -973,13 +1020,7 @@ fn draw_diagnostics(f: &mut Frame, app: &App) -> Rect {
             title_text.push_str("· j/k scrolls");
         }
     }
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(fg(theme.popup_border))
-        .title(Span::styled(
-            title_text,
-            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
-        ));
+    let block = popup_block(theme, title_text);
     f.render_widget(
         Paragraph::new(Text::from(window))
             .block(block)
@@ -1078,13 +1119,7 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
         if app.ascii { "-" } else { " · " }
     );
     lines.push(Line::from(Span::styled(footer, fg(theme.dim))));
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(fg(theme.popup_border))
-        .title(Span::styled(
-            " themes ",
-            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
-        ));
+    let block = popup_block(theme, " themes ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     if app.ascii {
         asciify(f, area);
@@ -1113,13 +1148,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
         width: area.width.saturating_sub(2),
         height: area.height.saturating_sub(2),
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(fg(theme.popup_border))
-        .title(Span::styled(
-            format!(" {title} "),
-            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
-        ));
+    let block = popup_block(theme, format!(" {title} "));
     let mut lines = vec![Line::from("")];
     lines.push(Line::from(vec![
         Span::styled(label, fg(theme.accent)),
@@ -1164,13 +1193,7 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
         return area;
     };
     let content_lines = crate::app::textarea_visible_lines(app.viewport.1).max(1);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(fg(theme.popup_border))
-        .title(Span::styled(
-            " quick-send ",
-            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
-        ));
+    let block = popup_block(theme, " quick-send ");
     let inner = Rect {
         x: area.x + 1,
         y: area.y + 1,
@@ -1278,13 +1301,7 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
         options,
         fg(theme.accent).add_modifier(Modifier::BOLD),
     )));
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(fg(theme.popup_border))
-        .title(Span::styled(
-            format!(" {} ", confirm.title),
-            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
-        ));
+    let block = popup_block(theme, format!(" {} ", confirm.title));
     let popup_style = on(theme.popup_fg, theme.popup_bg);
     f.render_widget(
         Paragraph::new(Text::from(lines))

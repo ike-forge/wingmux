@@ -104,6 +104,17 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   when the project is expanded (or for the flattened single project at
   boot), and `prune` skips worktree verification for projects whose
   worktrees were never loaded, so boot never pays 200 git calls.
+- **M9 — UI pass from the screenshots (rounded corners, bare titles,
+  tree guides, icons).** Panels and popups switch to `BorderType::Rounded`
+  (╭ ╮ ╰ ╯). Titles render foreground-only — the background fill under
+  every panel/popup title is gone ("simple title display without
+  background"). The tree now draws proper guides: features hang off the
+  project with `├─ `/`└─ `, shells get continuation `│` (parent branch
+  keeps running until its last child), and ASCII mode maps them to
+  `|- `/``- `/`|`. Per-type icons appear next to the expand marker:
+  `▣` projects, `◇` features, `●` shells (ASCII keeps `*`/`-`). Mouse
+  hit-testing uses the same tier math as rendering, so the wider guide
+  prefixes changed no hit areas.
 - **M8 — runs inside AND outside tmux** (per user feedback): the dashboard no
   longer requires tmux around itself. `Tmux` keeps optional `inside`
   coordinates (detected via TMUX/TMUX_PANE); all session/window/pane operations

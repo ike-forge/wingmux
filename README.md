@@ -289,19 +289,25 @@ only — the live preview panel lets you confirm what's really happening.
 
 ## Layout
 
+Rounded corners, bare titles (no background fill), tree guides and icons:
+
 ```
-┌ projects/features ──────┐┌ detail ────────────────────────────┐
-│▾ repo-a (2 features)    ││ feat-x                              │
-│  ▸ feat-a [1 shell]     ││ branch: feat-x                      │
-│▾ ▾ feat-b [2 shells]    ││ worktree: …/.lazywingman-worktrees… │
-│    #0 working  @5       ││ status: clean                       │
-│    #1 waiting  @6       ││ shells: #0 working bash …           │
-└─────────────────────────┘└─────────────────────────────────────┘
-┌ preview (capture-pane) ──────────────────────────────────────────┐
+╭ projects/features ──────╮╭ detail ────────────────────────────╮
+│▾ ▣ repo-a (2 features)  ││ feat-x                              │
+│  ├─ ▸ ◇ feat-a [1 shell]││ branch: feat-x                      │
+│  └─ ▾ ◇ feat-b [2 shells]││ worktree: …/.lazywingman-worktrees │
+│      ├─ ● #0 working  @5││ status: clean                       │
+│      └─ ● #1 waiting  @6││ shells: #0 working bash …           │
+╰─────────────────────────╯╰─────────────────────────────────────╯
+╭ preview (capture-pane) ──────────────────────────────────────────╮
 │ live tail of the selected shell, refreshed every poll            │
-└───────────────────────────────────────────────────────────────────┘
+╰───────────────────────────────────────────────────────────────────╯
  lazywingman · dashboard: work   …messages…   poll 500ms · ? help · q quit
 ```
+
+Icons: `▣` project, `◇` feature (worktree), `●` shell. Missing projects
+show `(missing)` dimmed. When only ONE project is in scope its feature
+rows replace the project row entirely (the flat layout).
 
 ## Development
 

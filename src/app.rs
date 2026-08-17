@@ -567,12 +567,33 @@ impl App {
             );
         }
         self.build_tree_flags();
-        // Flatten mode (exactly one project in scope) shows features at
-        // the top level — load that project's worktrees now.
+        // Load worktrees for the projects that are already visible in
+        // their expanded state: the flattened single project, and every
+        // unfolded project when the count is ≤5. Collapsed (>5 projects)
+        // stay untouched — that is the lazy part.
+        let vis = self.visible_projects();
+        let mut to_load: Vec<usize> = vis
+            .iter()
+            .copied()
+            .filter(|&pi| self.proj_expanded.get(pi).copied().unwrap_or(false))
+            .collect();
         if self.flatten
-            && let Some(&pi) = self.visible_projects().first()
+            && let Some(&pi) = vis.first()
+            && !to_load.contains(&pi)
         {
+            to_load.push(pi);
+        }
+        for pi in to_load {
             self.ensure_worktrees(pi)?;
+        }
+        // Re-decide flatten now that features are known (a lone project
+        // with NO features still shows its row — a blank tree would be
+        // worse than a redundant row).
+        if let Some(&pi) = vis.first()
+            && vis.len() == 1
+            && !self.state.projects[pi].features.is_empty()
+        {
+            self.flatten = true;
             self.build_tree_flags();
         }
         // Imports must survive a restart — persist what discovery found.
@@ -660,10 +681,10 @@ impl App {
         // must not unfold everything on boot). ≤5 projects expand so the
         // user sees their features immediately.
         let vis = self.visible_projects();
-        // Flatten: exactly one project in scope → its features ARE the
-        // tree, no project row. A lone MISSING project still shows its
-        // row ("(missing)") — flattening would hide the only information.
-        self.flatten = vis.len() == 1 && !self.state.projects[vis[0]].missing;
+        // Flatten: exactly one project in scope WITH features → its
+        // features ARE the tree, no project row. A lone project with no
+        // features (missing, or nothing linked yet) still shows its row.
+        self.flatten = vis.len() == 1 && !self.state.projects[vis[0]].features.is_empty();
         let expand = vis.len() <= 5;
         self.proj_expanded = self
             .state
@@ -2408,9 +2429,9 @@ mod tests {
     }
 
     /// `discover_and_import` finds repos under a root, imports them as
-    /// projects, is idempotent, and writes the discovery cache.
+    /// projects, and is idempotent. No cache — the scan is live.
     #[test]
-    fn discover_and_import_adds_new_projects_and_caches() {
+    fn discover_and_import_adds_new_projects_and_is_idempotent() {
         crate::util::testutil::with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             let r = root.path();
@@ -2449,12 +2470,14 @@ mod tests {
             assert!(matches!(app.mode, Mode::Normal));
             assert_eq!(app.state.projects.len(), 2);
             assert_eq!(app.scope_root, crate::util::normalize_path(r));
-            // Two projects → not flattened, both expanded (≤5).
+            // Two projects → not flattened, both expanded (≤5), and their
+            // worktrees ARE loaded at boot (they are the visible rows).
             assert!(!app.flatten);
             assert!(app.visible_projects().len() == 2);
-            // Worktrees are NOT loaded yet (lazy) — features empty.
-            assert!(app.worktrees_loaded.iter().all(|f| !*f));
-            assert!(app.state.projects.iter().all(|p| p.features.is_empty()));
+            assert!(
+                app.worktrees_loaded.iter().all(|f| *f),
+                "≤5 expanded projects load worktrees at boot"
+            );
             // the import is persisted — a restart must not lose it
             let loaded = State::load().unwrap();
             assert_eq!(loaded.projects.len(), 2, "scan imports must be saved");
@@ -2467,30 +2490,35 @@ mod tests {
         crate::util::testutil::with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             let r = root.path();
-            let repo = repo_with_commit(r, "repo-a");
-            // add a linked worktree to repo-a
-            let wt = r.join("wt-a");
-            std::process::Command::new("git")
-                .args([
-                    "-C",
-                    repo.to_str().unwrap(),
-                    "worktree",
-                    "add",
-                    "-b",
-                    "feat-1",
-                    wt.to_str().unwrap(),
-                ])
-                .output()
-                .unwrap();
+            // 6 repos → collapsed by default → worktrees NOT loaded at boot
+            let mut repos = Vec::new();
+            for i in 0..6 {
+                repos.push(repo_with_commit(r, &format!("repo-{i}")));
+            }
 
             let mut app = app_with(tmux_standalone("unused"));
             app.boot_discovery_from(r).unwrap();
-            // 1 project → flattened → worktrees loaded at boot
-            assert!(app.flatten);
-            assert_eq!(app.state.projects[0].features.len(), 1, "wt-a feature");
+            assert!(!app.flatten, "6 projects → not flattened");
+            assert!(
+                app.worktrees_loaded.iter().all(|f| !*f),
+                ">5 collapsed projects keep worktrees lazy at boot"
+            );
+            // Expanding a project loads ITS worktrees, once.
             let pi = app.visible_projects()[0];
-            assert!(app.worktrees_loaded[pi]);
-            let _ = pi;
+            app.proj_expanded[pi] = false; // ensure collapsed
+            app.sel = Sel::Project(pi);
+            app.expand_or_attach();
+            assert!(app.worktrees_loaded[pi], "expand loads worktrees");
+            let n_loaded = app.worktrees_loaded.iter().filter(|f| **f).count();
+            assert_eq!(n_loaded, 1, "only the expanded project loads");
+            // collapsing + expanding again does not re-run the listing
+            app.proj_expanded[pi] = false;
+            app.expand_or_attach();
+            assert_eq!(
+                app.worktrees_loaded.iter().filter(|f| **f).count(),
+                1,
+                "loaded exactly once"
+            );
         });
     }
 
@@ -2534,7 +2562,7 @@ mod tests {
         // 3 projects → expanded
         assert!(few.proj_expanded.iter().all(|e| *e));
 
-        // 1 project → flattened (features are the tree)
+        // 1 project WITH features → flattened (features are the tree)
         let mut one = app_with(tmux_standalone("unused"));
         one.scope_root = PathBuf::from("/");
         one.state.projects.push(Project {
@@ -2545,10 +2573,33 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features: vec![],
+            features: vec![Feature {
+                name: "f".into(),
+                branch: "f".into(),
+                worktree_path: PathBuf::from("/tmp/p/f"),
+                created_at: "".into(),
+                shells: vec![],
+            }],
         });
         one.build_tree_flags();
-        assert!(one.flatten);
+        assert!(one.flatten, "1 project with features → flat");
+
+        // 1 project WITHOUT features → NOT flattened; the row stays so
+        // the project is visible instead of a blank tree.
+        let mut empty = app_with(tmux_standalone("unused"));
+        empty.scope_root = PathBuf::from("/");
+        empty.state.projects.push(Project {
+            name: "p".into(),
+            path: PathBuf::from("/tmp/p"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: false,
+            features: vec![],
+        });
+        empty.build_tree_flags();
+        assert!(!empty.flatten, "no features → keep the project row");
     }
 
     /// Out-of-scope projects (other scopes' leftovers in state) stay saved
