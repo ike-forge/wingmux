@@ -150,6 +150,33 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   moves 3, and a mouse click on a row selects + previews while a
   double-click keeps — all through the one accessibility code path (the
   tree selection never moves while the picker is open).
+- **M8.4d — config layering**: defaults ← user config (config.toml /
+  `--config` / `LW_CONFIG`) ← `.lazywingman.toml` ← `.lazywingman.local.toml`
+  (gitignored sibling, highest of the file layers). Merge is key by key:
+  maps merge deeply per subkey, lists/scalars replace outright. The
+  project file is found walking upward from cwd, stopping at the first hit
+  *and* at a repository root (`.git`) so a sibling repo's config is never
+  inherited. Per the configuration rules, some keys are user-only and are
+  rejected in project files with a diagnostic (never silently applied):
+  `tmux.back_key` (a global tmux binding), `worktrees.root`,
+  `discovery.scan_root` (machine paths).
+- **M8.4d — drop the smallest unit, never prevent startup**: loading is
+  lenient — a whole-file TOML syntax error drops that file's contribution,
+  a bad `[[agents]]`/`[[projects]]` entry drops that entry, a bad scalar or
+  a bad section field (one bad binding) defaults on its own, a bad status
+  pattern regex is dropped at load, unknown keys are reported not fatal.
+  Every drop lands in `Config.diagnostics` with what/where/used-instead and
+  is shown ONCE in a startup diagnostics overlay (Esc/q/Enter dismiss,
+  j/k/g/G/PageUp/Home/End/wheel scroll — same accessibility code path as
+  help/picker; the tree selection never moves while it is open). A startup
+  confirm (discovery scan prompt) parked behind the overlay resumes after
+  dismissal.
+- **M8.4d — `--config-dump`**: prints the effective values with the layer
+  each key came from ("key = value  # from <layer>") and exits before the
+  TUI — the configuration rule "make the resolved config inspectable".
+- **M8.4d — theme failure is lenient too**: a theme that fails to load
+  (picked or configured) no longer prevents startup — it falls back to the
+  built-in default and records a diagnostic.
 - tmux quirks hit & fixed: `list-panes -t <session>` only lists the active
   window (use `-a` + filter by session_id); `new-window` right after
   `new-session -d` races window index 0 (retry 3x); a fake TMUX env var makes

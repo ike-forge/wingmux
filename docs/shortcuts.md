@@ -126,6 +126,25 @@ overlay lists all of them grouped by context. Same words in both.
 Double-click is detected manually (two left clicks at the same spot within
 400 ms): the crossterm version here reports no click count on mouse events.
 
+## Startup diagnostics overlay
+
+Shown ONCE at startup when configuration problems were dropped at load
+(the configuration rules: drop the smallest unit, never prevent startup,
+and report every drop — never a log line nobody reads).
+
+| Key | Meaning | Rule satisfied |
+|---|---|---|
+| `Esc` / `q` / `Enter` / `?` | dismiss (a parked startup confirm, e.g. the discovery scan prompt, resumes) | close the overlay, then continue boot |
+| `j` / `k` (or `↓` / `↑`) | scroll one line | same motions as the help palette |
+| `g` / `G`, `Home` / `End` | first / last line | vim + accessibility spellings |
+| `PgDn` / `PgUp`, `ctrl-d` / `ctrl-u` | half page | accessibility ctrl layer |
+| wheel | scroll 3 lines | wheel scrolls the overlay |
+| click outside | dismiss | click outside dismisses |
+
+The tree selection never moves while the overlay is open (the
+accessibility layer routes motions to the overlay, same code path as
+help/picker).
+
 ## Tmux back-key (attach & return)
 
 | Key | Meaning | Rule satisfied |

@@ -63,6 +63,7 @@ pub(crate) fn tree_width(viewport: (u16, u16)) -> Option<u16> {
 fn overlay_min(kind: OverlayKind) -> (u16, u16) {
     match kind {
         OverlayKind::Help => (44, 14),
+        OverlayKind::Diagnostics => (44, 10),
         OverlayKind::ThemePicker => (34, 10),
         OverlayKind::Input | OverlayKind::Confirm => (34, 10),
     }
@@ -71,6 +72,7 @@ fn overlay_min(kind: OverlayKind) -> (u16, u16) {
 #[derive(Clone, Copy)]
 enum OverlayKind {
     Help,
+    Diagnostics,
     ThemePicker,
     Input,
     Confirm,
@@ -121,6 +123,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let kind = OverlayKind::Help;
             if fits(area, overlay_min(kind)) {
                 let rect = draw_help(f, app);
+                app.popup_area = Some(rect);
+            } else {
+                draw_overlay_too_small(f, area, app, kind);
+            }
+        }
+        Mode::Diagnostics => {
+            let kind = OverlayKind::Diagnostics;
+            if fits(area, overlay_min(kind)) {
+                let rect = draw_diagnostics(f, app);
                 app.popup_area = Some(rect);
             } else {
                 draw_overlay_too_small(f, area, app, kind);
@@ -917,6 +928,81 @@ pub(crate) fn help_line_count(app: &App) -> usize {
     help_lines(app).len()
 }
 
+/// The startup diagnostics overlay: one line per dropped config unit, with
+/// the same motions and sizing as the help palette (scrolls, dismisses).
+/// Shown once at startup when `Config::diagnostics` is non-empty.
+fn draw_diagnostics(f: &mut Frame, app: &App) -> Rect {
+    let theme = &app.theme.colors;
+    let lines = diag_lines(app);
+    let h = (lines.len() as u16 + 2).min(f.area().height);
+    let w = 74u16.min(f.area().width);
+    let area = Rect::new(
+        f.area().x + (f.area().width.saturating_sub(w)) / 2,
+        f.area().y + (f.area().height.saturating_sub(h)) / 2,
+        w,
+        h,
+    );
+    f.render_widget(Clear, area);
+    let inner_h = h.saturating_sub(2) as usize;
+    let max_scroll = lines.len().saturating_sub(inner_h);
+    let scroll = app.diag_scroll.min(max_scroll);
+    let window: Vec<Line> = lines.iter().skip(scroll).take(inner_h).cloned().collect();
+    let mut title_text = format!(" startup diagnostics ({}) ", app.cfg.diagnostics.len());
+    if max_scroll > 0 {
+        if app.ascii {
+            title_text.push_str("- j/k scrolls");
+        } else {
+            title_text.push_str("· j/k scrolls");
+        }
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(fg(theme.popup_border))
+        .title(Span::styled(
+            title_text,
+            on(theme.title_fg, theme.title_bg).add_modifier(Modifier::BOLD),
+        ));
+    f.render_widget(
+        Paragraph::new(Text::from(window))
+            .block(block)
+            .style(on(theme.popup_fg, theme.popup_bg)),
+        area,
+    );
+    if app.ascii {
+        asciify(f, area);
+    }
+    area
+}
+
+/// The diagnostics overlay lines — single source for rendering and the
+/// app's scroll clamp (same pattern as the help palette).
+fn diag_lines(app: &App) -> Vec<Line<'_>> {
+    let theme = &app.theme.colors;
+    let mark = warn_mark(app.ascii);
+    let mut lines: Vec<Line> = app
+        .cfg
+        .diagnostics
+        .iter()
+        .map(|d| {
+            Line::from(vec![
+                Span::styled(
+                    format!(" {mark} "),
+                    fg(theme.status_failed).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(d.clone(), fg(theme.foreground)),
+            ])
+        })
+        .collect();
+    lines.push(Line::from(Span::styled("Esc/q dismisses", fg(theme.dim))));
+    lines
+}
+
+/// Total diagnostics content height (rendered lines + footer) — the app
+/// clamps its scroll against this; same construction as the renderer.
+pub(crate) fn diag_line_count(app: &App) -> usize {
+    diag_lines(app).len()
+}
+
 /// The live theme picker (`ctrl-t`): one row per theme, built-ins first.
 /// Moving the cursor previews live (the whole screen repaints with the new
 /// palette via `App::preview_picker_theme`); Enter keeps, Esc restores.
@@ -1601,5 +1687,94 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
         assert!(text.contains("too small"), "tiny frame refuses the picker");
+    }
+
+    // --------------------------------------- M8.4d: diagnostics overlay
+
+    fn app_with_diags(n: usize) -> App {
+        let mut cfg = Config::default();
+        for i in 0..n {
+            cfg.diagnostics.push(format!("config problem {i}"));
+        }
+        let mut app = App::new(cfg, theme::load("ansi", false).unwrap(), None);
+        app.startup().unwrap();
+        app
+    }
+
+    /// The diagnostics overlay renders every diagnostic with the warn mark,
+    /// registers its dismissable rect, and shows the count in the title.
+    #[test]
+    fn diagnostics_overlay_renders_all_lines_and_registers_rect() {
+        let mut app = app_with_diags(3);
+        app.mode = Mode::Diagnostics;
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("startup diagnostics (3)"), "title has count");
+        assert!(text.contains("config problem 0"));
+        assert!(text.contains("config problem 1"));
+        assert!(text.contains("config problem 2"));
+        assert!(text.contains("⚠"), "unicode warn mark");
+        assert!(
+            app.popup_area.is_some(),
+            "diagnostics must register its dismissable rect"
+        );
+    }
+
+    /// Long diagnostics scroll; only the visible window renders.
+    #[test]
+    fn diagnostics_overlay_scrolls_with_popup() {
+        let mut app = app_with_diags(50);
+        app.mode = Mode::Diagnostics;
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        // scroll down one screen and re-render: first items leave the frame
+        let visible = app.popup_area.unwrap().height.saturating_sub(2) as usize;
+        app.diag_scroll = visible;
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            !text.contains("config problem 0"),
+            "scrolled-out diagnostics are gone"
+        );
+        assert!(text.contains("j/k scrolls"), "scroll hint advertised");
+    }
+
+    /// The diagnostics overlay is ascii-safe: `!` mark, no box glyphs.
+    #[test]
+    fn diagnostics_ascii_fallback_is_clean() {
+        let mut app = app_with_diags(2);
+        app.ascii = true;
+        app.mode = Mode::Diagnostics;
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains('!'), "ascii warn mark");
+        for glyph in ["⚠", "·", "─", "│"] {
+            assert!(
+                !text.contains(glyph),
+                "ascii diagnostics must not contain {glyph:?}"
+            );
+        }
+    }
+
+    /// The diagnostics overlay on a tiny frame is refused with the standard
+    /// message (never garbage, never a panic).
+    #[test]
+    fn diagnostics_refused_on_tiny_frame() {
+        let mut app = app_with_diags(2);
+        app.mode = Mode::Diagnostics;
+        let backend = ratatui::backend::TestBackend::new(30, 8);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("too small"), "tiny frame refuses diagnostics");
+        assert!(
+            app.popup_area.is_none(),
+            "refused overlay must not register a dismissable rect"
+        );
     }
 }

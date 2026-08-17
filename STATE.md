@@ -6,9 +6,9 @@ whenever a milestone runs long.
 ## Current milestone
 
 **M8 — user-feedback milestone set — IN PROGRESS (M8.1 + M8.2 + M8.3 + M8.4a
-+ M8.4b + M8.4c COMPLETE, M8.4d next — config conformance: drop-smallest-
-unit failure + startup diagnostics overlay + project-local
-`.lazywingman.toml` layering. Then M8.5 acceptance).**
++ M8.4b + M8.4c + M8.4d COMPLETE, M8.5 next — acceptance: full verify,
+live-tmux acceptance loop, README rewrite, delivery zip, "M8 COMPLETE"
+marker).**
 Resume from STATE.md progress log.
 
 ## M8 — plan (user feedback: hide agent panes in separate sessions, project
@@ -82,6 +82,62 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M8.4d — config conformance: drop-smallest-unit + startup diagnostics overlay + project-local layering (COMPLETE, committed)
+- [x] Layering per configuration.md: defaults ← user config
+      (`$XDG_CONFIG_HOME/lazywingman/config.toml`, or `--config <path>` /
+      `LW_CONFIG`) ← project-local `.lazywingman.toml` (walked upward from
+      cwd, stopping at the FIRST hit AND at a git repo root — a sibling
+      repo's config is never inherited) ← its gitignored sibling
+      `.lazywingman.local.toml` (highest of the file layers). Merge is KEY
+      BY KEY: maps merge deeply per subkey, lists/scalars replace outright.
+      `Config::sources` records the winning layer per dotted key for
+      `--config-dump` ("key = value  # from <layer>").
+- [x] User-only keys (configuration rule "not every setting is local-able"):
+      `tmux.back_key` (global tmux binding), `worktrees.root`,
+      `discovery.scan_root` (machine paths) — rejected in project/local
+      files with a diagnostic, never silently applied.
+- [x] Failure behaviour: a malformed config NEVER prevents startup. Drop the
+      smallest addressable unit — whole-file TOML syntax error drops that
+      file's contribution; a bad `[[agents]]`/`[[projects]]` entry drops
+      that entry (others kept); a bad scalar or bad section FIELD (one bad
+      binding) defaults on its own while the section survives; a bad status
+      pattern regex is dropped at load (typed values only reach the app);
+      unknown keys are reported, never fatal. Every drop lands in
+      `Config.diagnostics` with what/where/used-instead.
+- [x] Startup diagnostics overlay (`Mode::Diagnostics`): shown ONCE at
+      startup when diagnostics exist; Esc/q/Enter/? dismiss, j/k/arrows +
+      g/G + PgUp/PgDn + Home/End + wheel scroll via the SAME accessibility
+      code path as help/picker (tree selection never moves); a startup
+      confirm (discovery scan prompt) parked behind it resumes after
+      dismissal; click outside dismisses; ascii-safe; tiny frames refused
+      with the standard message.
+- [x] `--config-dump` prints effective values + layer provenance and exits
+      before the TUI; `--config <path>` and `LW_CONFIG` override the user
+      file (CLI wins); missing explicit override is a diagnostic, not a
+      crash. Theme load failure (picked or configured) is lenient too:
+      falls back to the built-in default + diagnostic.
+- [x] Tests: 142 green (was 116): lenient salvage (whole-file error, bad
+      scalar/section-field/agent-entry/list-element, per-field survival,
+      unknown keys top+nested, bad regex dropped at load, built-in presets
+      kept when list absent); layering (project overrides one key, deep map
+      merge, list replace, upward search, stop at repo root, first hit
+      wins, local sibling wins, user-only rejection, LW_CONFIG/--config
+      override, missing override diagnostic, dump provenance); app-level
+      diagnostics overlay (opens/resumes confirm/skipped when empty, keys
+      scroll+dismiss, a11y motions route to overlay not tree, wheel, click
+      outside dismisses+inside keeps); ui render (all lines + rect + count
+      title, scroll window + "j/k scrolls" hint, ascii clean, tiny frame
+      refused). clippy -D warnings + fmt clean.
+- [x] LIVE SMOKE (real binary + throwaway tmux server, XDG under
+      /opt/data/.lw-m84d-live): boot with a deliberately broken user config
+      (`theme = 42`, `poll_interval_ms = "fast"`, bad agents entry +
+      unknown key) → startup diagnostics overlay lists all 4 dropped units
+      with file + cause; Esc dismisses → normal tree; q quits clean;
+      `--config-dump` from inside a project dir shows `theme ... # from
+      project`, `poll_interval_ms ... # from local`, `base_branch ... #
+      from project`; boot with `theme = "no-such-theme"` → overlay shows
+      the fallback diagnostic, app boots with the default theme.
 
 ### M8.4c — themes: Catppuccin set + ctrl-t live picker (COMPLETE, committed)
 - [x] Four Catppuccin built-ins (latte / frappe / macchiato / mocha) with

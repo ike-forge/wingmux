@@ -1,9 +1,16 @@
 //! Configuration loading, defaults, and first-run bootstrap.
 //!
-//! Config lives at `$XDG_CONFIG_HOME/lazywingman/config.toml`. On first run
-//! a fully commented default config is written (and built-in themes are
-//! copied into `themes/`). Parsing is lenient — unknown keys are ignored —
-//! but a structurally invalid file is a hard error so the user sees it.
+//! Config lives at `$XDG_CONFIG_HOME/lazywingman/config.toml`, layered with
+//! a project-local `.lazywingman.toml` (searched upward from the working
+//! directory, stopping at the first hit / repository root) and its ignored
+//! sibling `.lazywingman.local.toml`. On first run a fully commented default
+//! config is written (and built-in themes are copied into `themes/`).
+//!
+//! Loading is lenient per the configuration guidelines (drop the smallest
+//! addressable unit, never prevent startup): one bad agent/project entry,
+//! one bad binding, one bad scalar — each is dropped with a diagnostic in
+//! `Config.diagnostics` while everything else is kept. Unknown keys are
+//! reported, not fatal. `from_str` stays strict for tests.
 
 use std::path::{Path, PathBuf};
 
@@ -11,9 +18,26 @@ use serde::Deserialize;
 
 use crate::error::{Error, Result};
 
+/// Layer labels recorded in `Config.sources` for `--config-dump`
+/// ("key = value  # from <layer>").
+pub const LAYER_DEFAULTS: &str = "defaults";
+pub const LAYER_USER: &str = "user";
+pub const LAYER_PROJECT: &str = "project";
+pub const LAYER_LOCAL: &str = "local";
+
 /// Fully commented default config, written on first run.
 pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on first run, edit freely.
 # Location: $XDG_CONFIG_HOME/lazywingman/config.toml (default ~/.config/lazywingman)
+#
+# This file is the USER layer. A project can also carry a committed
+# .lazywingman.toml (searched upward from the working directory, stopping at
+# the repository root) and a gitignored .lazywingman.local.toml next to it;
+# those layers override keys here. Some keys are user-only and are ignored
+# in project files with a diagnostic: tmux.back_key, worktrees.root,
+# discovery.scan_root. Inspect the effective config with `lazywingman
+# --config-dump`; use --config <path> or LW_CONFIG to point at a different
+# user file. A malformed config never prevents startup — the smallest bad
+# unit is dropped and reported once in a startup diagnostics overlay.
 
 # Theme to use. Built-ins: "catppuccin-mocha", "catppuccin-macchiato",
 # "catppuccin-frappe", "catppuccin-latte", "dracula", "gruvbox", "ansi".
@@ -111,6 +135,16 @@ pub struct Config {
     pub defaults: DefaultsConfig,
     pub agents: Vec<AgentConfig>,
     pub projects: Vec<ProjectConfig>,
+    /// Diagnostics collected while loading (per configuration rules: a
+    /// malformed config never prevents startup — the smallest addressable
+    /// unit is dropped and reported here). Filled by `load`; skipped by
+    /// the strict `from_str` path used in tests.
+    #[serde(skip)]
+    pub diagnostics: Vec<String>,
+    /// Layer provenance for `--config-dump`: "key = value  # from <layer>"
+    /// — which layer (default/user/project/local) provided each key.
+    #[serde(skip)]
+    pub sources: Vec<(String, &'static str)>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -220,6 +254,8 @@ impl Default for Config {
                 },
             ],
             projects: Vec::new(),
+            diagnostics: Vec::new(),
+            sources: Vec::new(),
         }
     }
 }
@@ -386,24 +422,158 @@ pub struct EffectiveAgent {
     pub patterns: StatusPatterns,
 }
 
+/// Keys that belong to the user, not the project (configuration rule:
+/// \"not every setting is local-able\"). A project-local file setting one of
+/// these gets a diagnostic and the key is ignored — never silently applied.
+const USER_ONLY_KEYS: &[(&str, &str)] = &[
+    ("tmux", "back_key"),       // a global tmux binding is the user's choice
+    ("worktrees", "root"),      // machine-specific path
+    ("discovery", "scan_root"), // machine-specific path
+];
+
+/// Known top-level keys (unknown keys are reported, never fatal).
+const TOP_KEYS: &[&str] = &[
+    "theme",
+    "poll_interval_ms",
+    "confirm_on_delete",
+    "tmux",
+    "worktrees",
+    "discovery",
+    "defaults",
+    "agents",
+    "projects",
+];
+const TMUX_KEYS: &[&str] = &["back_key"];
+const WORKTREES_KEYS: &[&str] = &["root", "base_branch", "delete_branch"];
+const DISCOVERY_KEYS: &[&str] = &["scan_root", "max_depth", "skip_dirs"];
+const DEFAULTS_KEYS: &[&str] = &["agent_command", "agent_shell"];
+const AGENT_KEYS: &[&str] = &["name", "command", "shell", "patterns"];
+const PATTERN_KEYS: &[&str] = &["working", "waiting", "failed"];
+const PROJECT_KEYS: &[&str] = &["path", "base_branch", "agent", "agent_command"];
+
 impl Config {
     /// Load config, writing defaults (and built-in themes) on first run.
+    /// Layered per the configuration rules: built-in defaults ← user config
+    /// (`$XDG_CONFIG_HOME/lazywingman/config.toml`, or `LW_CONFIG`) ←
+    /// project-local `.lazywingman.toml` (searched upward from the working
+    /// directory, stopping at the first hit / repository root) ← its
+    /// gitignored sibling `.lazywingman.local.toml`. Higher layers win key
+    /// by key (maps merge deeply, lists replace). A malformed file never
+    /// prevents startup — the smallest addressable unit is dropped and
+    /// reported in `Config.diagnostics`.
     pub fn load() -> Result<Config> {
-        let path = crate::util::config_path();
-        if !path.exists() {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let override_path = std::env::var_os("LW_CONFIG").map(PathBuf::from);
+        Self::load_from(&cwd, override_path.as_deref())
+    }
+
+    /// [`Self::load`] with an explicit working directory + optional user
+    /// config override (`--config <path>`); the cwd is injected so tests
+    /// don't have to `chdir`.
+    pub fn load_from(cwd: &Path, user_override: Option<&Path>) -> Result<Config> {
+        // First-run bootstrap: write the commented default config + built-in
+        // themes — only for the default location, never for an override.
+        let default_path = crate::util::config_path();
+        let user_path = user_override
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| default_path.clone());
+        if user_override.is_none() && !default_path.exists() {
             std::fs::create_dir_all(crate::util::config_dir())?;
-            std::fs::write(&path, DEFAULT_CONFIG)?;
-            log::info!("wrote default config to {}", path.display());
+            std::fs::write(&default_path, DEFAULT_CONFIG)?;
+            log::info!("wrote default config to {}", default_path.display());
             crate::theme::ensure_builtin_themes()?;
+            if user_path == default_path {
+                // fresh first run: the file we just wrote is the user layer
+            }
         }
-        let text = std::fs::read_to_string(&path)?;
-        let cfg: Config =
-            toml::from_str(&text).map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
-        cfg.validate();
+
+        let mut diags: Vec<String> = Vec::new();
+        let mut sources: Vec<(String, &'static str)> = Vec::new();
+        let mut merged = toml::Table::new();
+        let mut layer_paths: Vec<(&'static str, PathBuf)> = Vec::new();
+
+        // --- user layer -------------------------------------------------
+        if user_path.exists() {
+            match parse_layer(&user_path) {
+                Ok(table) => {
+                    report_unknown_keys(&table, &user_path, &mut diags);
+                    merge_layer(
+                        &mut merged,
+                        table,
+                        LAYER_USER,
+                        &user_path,
+                        &mut sources,
+                        &mut diags,
+                    );
+                }
+                Err(e) => diags.push(format!(
+                    "{}: {e} — using defaults for this file",
+                    user_path.display()
+                )),
+            }
+            layer_paths.push((LAYER_USER, user_path.clone()));
+        } else if user_override.is_some() {
+            diags.push(format!(
+                "{}: config file not found — using defaults (remove --config / LW_CONFIG to use the default location)",
+                user_path.display()
+            ));
+        }
+
+        // --- project layers ---------------------------------------------
+        if let Some(dir) = find_project_dir(cwd) {
+            let proj = dir.join(".lazywingman.toml");
+            if proj.exists() {
+                match parse_layer(&proj) {
+                    Ok(table) => {
+                        report_unknown_keys(&table, &proj, &mut diags);
+                        merge_layer(
+                            &mut merged,
+                            table,
+                            LAYER_PROJECT,
+                            &proj,
+                            &mut sources,
+                            &mut diags,
+                        );
+                    }
+                    Err(e) => diags.push(format!(
+                        "{}: {e} — using defaults for this file",
+                        proj.display()
+                    )),
+                }
+                layer_paths.push((LAYER_PROJECT, proj.clone()));
+            }
+            // gitignored sibling: highest of the file layers
+            let local = dir.join(".lazywingman.local.toml");
+            if local.exists() {
+                match parse_layer(&local) {
+                    Ok(table) => {
+                        report_unknown_keys(&table, &local, &mut diags);
+                        merge_layer(
+                            &mut merged,
+                            table,
+                            LAYER_LOCAL,
+                            &local,
+                            &mut sources,
+                            &mut diags,
+                        );
+                    }
+                    Err(e) => diags.push(format!(
+                        "{}: {e} — using defaults for this file",
+                        local.display()
+                    )),
+                }
+                layer_paths.push((LAYER_LOCAL, local.clone()));
+            }
+        }
+
+        let mut cfg = deserialize_lenient(&merged, &layer_paths, &sources, &mut diags);
+        cfg.diagnostics = diags;
+        cfg.sources = sources;
         Ok(cfg)
     }
 
-    /// Load from an explicit string (tests / previews).
+    /// Load from an explicit string (tests / previews). Strict on purpose —
+    /// the lenient layered path is [`Self::load`]/[`Self::load_from`].
     #[allow(dead_code)]
     pub fn from_str(text: &str) -> Result<Config> {
         let cfg: Config =
@@ -424,6 +594,84 @@ impl Config {
                 log::warn!("ignoring project with empty path");
             }
         }
+    }
+
+    /// `--config-dump`: the effective values with the layer each key came
+    /// from (\"key = value  # from <layer>\"). Turns any \"why is it doing
+    /// that\" into a five-second answer.
+    pub fn dump_string(&self) -> String {
+        let layer_of = |key: &str| {
+            self.sources
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, l)| *l)
+                .unwrap_or(LAYER_DEFAULTS)
+        };
+        let mut out = String::new();
+        let mut line = |key: &str, val: String| {
+            out.push_str(&format!("{key} = {val}  # from {}\n", layer_of(key)));
+        };
+        line("theme", format!("\"{}\"", self.theme));
+        line("poll_interval_ms", self.poll_interval_ms.to_string());
+        line("confirm_on_delete", self.confirm_on_delete.to_string());
+        line("tmux.back_key", format!("\"{}\"", self.tmux.back_key));
+        line("worktrees.root", format!("\"{}\"", self.worktrees.root));
+        line(
+            "worktrees.base_branch",
+            format!("\"{}\"", self.worktrees.base_branch),
+        );
+        line(
+            "worktrees.delete_branch",
+            self.worktrees.delete_branch.to_string(),
+        );
+        line(
+            "discovery.scan_root",
+            format!("\"{}\"", self.discovery.scan_root),
+        );
+        line("discovery.max_depth", self.discovery.max_depth.to_string());
+        line(
+            "discovery.skip_dirs",
+            format!(
+                "[{}]",
+                self.discovery
+                    .skip_dirs
+                    .iter()
+                    .map(|d| format!("\"{d}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+        line(
+            "defaults.agent_command",
+            format!("\"{}\"", self.defaults.agent_command),
+        );
+        line(
+            "defaults.agent_shell",
+            format!("\"{}\"", self.defaults.agent_shell),
+        );
+        line(
+            "agents",
+            format!(
+                "[{}]",
+                self.agents
+                    .iter()
+                    .map(|a| format!("\"{}\"", a.name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+        line(
+            "projects",
+            format!(
+                "[{}]",
+                self.projects
+                    .iter()
+                    .map(|p| format!("\"{}\"", p.path))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+        out
     }
 
     /// Projects with a non-empty path.
@@ -522,6 +770,579 @@ impl Config {
             .clone()
             .unwrap_or_else(|| self.worktrees.base_branch.clone())
     }
+}
+
+// ---------------------------------------------------------------- layering
+
+/// Parse one config layer file into a TOML table. A whole-file TOML syntax
+/// error is the one case we cannot salvage — it is reported by the caller
+/// and that file's contribution is dropped (every other unit survives).
+fn parse_layer(path: &Path) -> Result<toml::Table> {
+    let text = std::fs::read_to_string(path)?;
+    let value: toml::Value =
+        toml::from_str(&text).map_err(|e| Error::Config(format!("invalid TOML: {e}")))?;
+    match value {
+        toml::Value::Table(t) => Ok(t),
+        other => Err(Error::Config(format!(
+            "expected a table, found {}",
+            other.type_str()
+        ))),
+    }
+}
+
+/// The nearest project-local config directory working upward from `cwd`,
+/// stopping at the first hit *and* at a repository root (the project
+/// boundary — a repo-root file, if any, is checked first, then the search
+/// stops so a sibling repo's config is never inherited).
+fn find_project_dir(cwd: &Path) -> Option<PathBuf> {
+    let mut dir = Some(cwd);
+    while let Some(d) = dir {
+        if d.join(".lazywingman.toml").is_file() || d.join(".lazywingman.local.toml").is_file() {
+            return Some(d.to_path_buf());
+        }
+        // Repository root is the project boundary: check it (already did),
+        // then stop — don't walk above the repo.
+        if d.join(".git").exists() {
+            return None;
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// Merge `layer` into `merged` key by key: maps merge deeply (per subkey),
+/// lists and scalars replace (the higher layer wins). Records the winning
+/// layer per dotted key for `--config-dump`. User-only keys
+/// (`tmux.back_key`, `worktrees.root`, `discovery.scan_root`) are rejected
+/// outside the user layer with a diagnostic — never silently applied.
+fn merge_layer(
+    merged: &mut toml::Table,
+    layer: toml::Table,
+    layer_name: &'static str,
+    file: &Path,
+    sources: &mut Vec<(String, &'static str)>,
+    diags: &mut Vec<String>,
+) {
+    for (key, value) in layer {
+        match value {
+            toml::Value::Table(over) => {
+                // Sections merge subkey by subkey. If a lower layer stored a
+                // non-table here, the winning layer's table replaces it.
+                let base = merged
+                    .entry(key.clone())
+                    .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+                let Some(base_t) = base.as_table_mut() else {
+                    let fresh = toml::Value::Table(over.clone());
+                    for (sk, _) in &over {
+                        set_source(sources, format!("{key}.{sk}"), layer_name);
+                    }
+                    *base = fresh;
+                    continue;
+                };
+                for (subkey, subval) in over {
+                    let dotted = format!("{key}.{subkey}");
+                    if layer_name != LAYER_USER
+                        && USER_ONLY_KEYS
+                            .iter()
+                            .any(|(s, k)| *s == key && *k == subkey)
+                    {
+                        diags.push(format!(
+                            "{}: '{dotted}' is a user-level setting — ignored (set it in your user config)",
+                            file.display()
+                        ));
+                        continue;
+                    }
+                    base_t.insert(subkey.clone(), subval);
+                    set_source(sources, dotted, layer_name);
+                }
+            }
+            // lists and scalars replace wholesale (\"a local file that
+            // defines a list replaces that list outright\").
+            v => {
+                merged.insert(key.clone(), v);
+                set_source(sources, key.clone(), layer_name);
+            }
+        }
+    }
+}
+
+fn set_source(sources: &mut Vec<(String, &'static str)>, key: String, layer_name: &'static str) {
+    if let Some(slot) = sources.iter_mut().find(|(k, _)| *k == key) {
+        slot.1 = layer_name; // overridden by a higher layer → newest wins
+    } else {
+        sources.push((key, layer_name));
+    }
+}
+
+/// Report unknown keys (top-level and inside every known section) as
+/// diagnostics. An old binary runs a newer config: unknown keys are
+/// reported, never fatal, per the configuration rules.
+fn report_unknown_keys(table: &toml::Table, file: &Path, diags: &mut Vec<String>) {
+    for (key, value) in table {
+        if !TOP_KEYS.contains(&key.as_str()) {
+            diags.push(format!("{}: unknown key '{key}' ignored", file.display()));
+        }
+        let section_keys = match key.as_str() {
+            "tmux" => Some(TMUX_KEYS),
+            "worktrees" => Some(WORKTREES_KEYS),
+            "discovery" => Some(DISCOVERY_KEYS),
+            "defaults" => Some(DEFAULTS_KEYS),
+            _ => None,
+        };
+        if let Some(known) = section_keys
+            && let Some(sub) = value.as_table()
+        {
+            for sk in sub.keys() {
+                if !known.contains(&sk.as_str()) {
+                    diags.push(format!(
+                        "{}: unknown key '{key}.{sk}' ignored",
+                        file.display()
+                    ));
+                }
+            }
+        }
+        if key == "agents"
+            && let Some(arr) = value.as_array()
+        {
+            for entry in arr {
+                let Some(t) = entry.as_table() else { continue };
+                for ek in t.keys() {
+                    if !AGENT_KEYS.contains(&ek.as_str()) {
+                        diags.push(format!(
+                            "{}: unknown key 'agents.{ek}' ignored",
+                            file.display()
+                        ));
+                    }
+                }
+                if let Some(patterns) = t.get("patterns").and_then(|p| p.as_table()) {
+                    for pk in patterns.keys() {
+                        if !PATTERN_KEYS.contains(&pk.as_str()) {
+                            diags.push(format!(
+                                "{}: unknown key 'agents.patterns.{pk}' ignored",
+                                file.display()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        if key == "projects"
+            && let Some(arr) = value.as_array()
+        {
+            for entry in arr {
+                let Some(t) = entry.as_table() else { continue };
+                for pk in t.keys() {
+                    if !PROJECT_KEYS.contains(&pk.as_str()) {
+                        diags.push(format!(
+                            "{}: unknown key 'projects.{pk}' ignored",
+                            file.display()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Smallest-addressable-unit validation: drop malformed scalars, sections,
+/// agent/project entries and status-pattern regexes with a diagnostic, keep
+/// everything else — never prevent startup.
+fn deserialize_lenient(
+    merged: &toml::Table,
+    layer_paths: &[(&'static str, PathBuf)],
+    sources: &[(String, &'static str)],
+    diags: &mut Vec<String>,
+) -> Config {
+    let mut cfg = Config::default();
+
+    // scalars
+    cfg.theme = take_str(merged, "theme", &cfg.theme, layer_paths, sources, diags);
+    cfg.poll_interval_ms = take_u64(
+        merged,
+        "poll_interval_ms",
+        cfg.poll_interval_ms,
+        layer_paths,
+        sources,
+        diags,
+    );
+    cfg.confirm_on_delete = take_bool(
+        merged,
+        "confirm_on_delete",
+        cfg.confirm_on_delete,
+        layer_paths,
+        sources,
+        diags,
+    );
+
+    // sections — each field salvaged individually (one bad binding does not
+    // drop the whole [tmux] block).
+    cfg.tmux = take_section(
+        merged,
+        "tmux",
+        TmuxConfig::default(),
+        layer_paths,
+        sources,
+        diags,
+    );
+    cfg.worktrees = take_section(
+        merged,
+        "worktrees",
+        WorktreeConfig::default(),
+        layer_paths,
+        sources,
+        diags,
+    );
+    cfg.discovery = take_section(
+        merged,
+        "discovery",
+        DiscoveryConfig::default(),
+        layer_paths,
+        sources,
+        diags,
+    );
+    cfg.defaults = take_section(
+        merged,
+        "defaults",
+        DefaultsConfig::default(),
+        layer_paths,
+        sources,
+        diags,
+    );
+
+    // lists — per-entry salvage; a missing key keeps the built-in defaults
+    // (a config file without [[agents]] still gets claude/codex presets,
+    // exactly like the serde-default path it replaces)
+    cfg.agents = take_agent_list(merged, layer_paths, sources, diags, cfg.agents);
+    cfg.projects = take_project_list(merged, layer_paths, sources, diags);
+
+    cfg
+}
+
+fn take_str(
+    merged: &toml::Table,
+    key: &str,
+    default: &str,
+    layer_paths: &[(&'static str, PathBuf)],
+    sources: &[(String, &'static str)],
+    diags: &mut Vec<String>,
+) -> String {
+    match merged.get(key) {
+        None | Some(toml::Value::String(_)) => {}
+        Some(other) => {
+            diags.push(format!(
+                "{}: '{key}' must be a string (found {}) — using \"{default}\"",
+                where_file(layer_paths, sources, key),
+                other.type_str()
+            ));
+        }
+    }
+    merged
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| default.to_string())
+}
+
+fn take_u64(
+    merged: &toml::Table,
+    key: &str,
+    default: u64,
+    layer_paths: &[(&'static str, PathBuf)],
+    sources: &[(String, &'static str)],
+    diags: &mut Vec<String>,
+) -> u64 {
+    match merged.get(key) {
+        None | Some(toml::Value::Integer(_)) => {}
+        Some(other) => {
+            diags.push(format!(
+                "{}: '{key}' must be an integer (found {}) — using {default}",
+                where_file(layer_paths, sources, key),
+                other.type_str()
+            ));
+        }
+    }
+    merged
+        .get(key)
+        .and_then(|v| v.as_integer())
+        .and_then(|i| u64::try_from(i).ok())
+        .unwrap_or(default)
+}
+
+fn take_bool(
+    merged: &toml::Table,
+    key: &str,
+    default: bool,
+    layer_paths: &[(&'static str, PathBuf)],
+    sources: &[(String, &'static str)],
+    diags: &mut Vec<String>,
+) -> bool {
+    match merged.get(key) {
+        None | Some(toml::Value::Boolean(_)) => {}
+        Some(other) => {
+            diags.push(format!(
+                "{}: '{key}' must be a boolean (found {}) — using {default}",
+                where_file(layer_paths, sources, key),
+                other.type_str()
+            ));
+        }
+    }
+    merged.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+}
+
+/// Salvage one section block field-by-field: a section that is present but
+/// not a table is dropped wholesale; a single bad field (e.g. one bad
+/// binding) defaults on its own while the rest of the section survives —
+/// the smallest addressable unit, per the configuration rules.
+fn take_section<T>(
+    merged: &toml::Table,
+    key: &str,
+    _default: T,
+    layer_paths: &[(&'static str, PathBuf)],
+    sources: &[(String, &'static str)],
+    diags: &mut Vec<String>,
+) -> T
+where
+    T: SectionSalvage,
+{
+    let file = where_file(layer_paths, sources, key);
+    match merged.get(key) {
+        None => T::default(),
+        Some(toml::Value::Table(t)) => T::salvage(t, &file, diags),
+        Some(other) => {
+            diags.push(format!(
+                "{}: '[{key}]' must be a table (found {}) — using defaults",
+                file,
+                other.type_str()
+            ));
+            T::default()
+        }
+    }
+}
+
+/// Sections implement field-by-field salvage (see [`take_section`]).
+trait SectionSalvage: Default {
+    fn salvage(table: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self;
+}
+
+impl SectionSalvage for TmuxConfig {
+    fn salvage(t: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self {
+        TmuxConfig {
+            back_key: salvage_field(t, "back_key", "C-o".to_string(), file, diags),
+        }
+    }
+}
+
+impl SectionSalvage for WorktreeConfig {
+    fn salvage(t: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self {
+        WorktreeConfig {
+            root: salvage_field(t, "root", String::new(), file, diags),
+            base_branch: salvage_field(t, "base_branch", "master".to_string(), file, diags),
+            delete_branch: salvage_field(t, "delete_branch", false, file, diags),
+        }
+    }
+}
+
+impl SectionSalvage for DiscoveryConfig {
+    fn salvage(t: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self {
+        DiscoveryConfig {
+            scan_root: salvage_field(t, "scan_root", String::new(), file, diags),
+            max_depth: salvage_field(t, "max_depth", 4usize, file, diags),
+            skip_dirs: salvage_str_list(t, "skip_dirs", &default_skip_dirs(), file, diags),
+        }
+    }
+}
+
+impl SectionSalvage for DefaultsConfig {
+    fn salvage(t: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self {
+        DefaultsConfig {
+            agent_command: salvage_field(t, "agent_command", "claude".to_string(), file, diags),
+            agent_shell: salvage_field(t, "agent_shell", "bash".to_string(), file, diags),
+        }
+    }
+}
+
+/// Extract one section field; a bad value defaults with a diagnostic while
+/// the rest of the section (and the rest of the config) is kept.
+fn salvage_field<T>(
+    t: &toml::Table,
+    key: &str,
+    default: T,
+    file: &str,
+    diags: &mut Vec<String>,
+) -> T
+where
+    T: serde::de::DeserializeOwned + Clone,
+{
+    let Some(v) = t.get(key) else {
+        return default;
+    };
+    match v.clone().try_into::<T>() {
+        Ok(x) => x,
+        Err(e) => {
+            diags.push(format!("{file}: '{key}' invalid ({e}) — using default"));
+            default
+        }
+    }
+}
+
+/// The canonical default discovery skip list (mirrors the `Default` impl).
+fn default_skip_dirs() -> Vec<String> {
+    vec![
+        ".git".to_string(),
+        "node_modules".to_string(),
+        "target".to_string(),
+        ".lazywingman-worktrees".to_string(),
+    ]
+}
+
+/// Per-element salvage for a string list (skip_dirs): one non-string
+/// element drops that element, not the whole list.
+fn salvage_str_list(
+    t: &toml::Table,
+    key: &str,
+    default: &[String],
+    file: &str,
+    diags: &mut Vec<String>,
+) -> Vec<String> {
+    let Some(v) = t.get(key) else {
+        return default.to_vec();
+    };
+    let Some(arr) = v.as_array() else {
+        diags.push(format!("{file}: '{key}' must be a list — using defaults"));
+        return default.to_vec();
+    };
+    let mut out = Vec::new();
+    for (i, e) in arr.iter().enumerate() {
+        match e.as_str() {
+            Some(s) => out.push(s.to_string()),
+            None => diags.push(format!(
+                "{file}: '{key}[{i}]' must be a string — entry dropped"
+            )),
+        }
+    }
+    out
+}
+
+fn take_agent_list(
+    merged: &toml::Table,
+    layer_paths: &[(&'static str, PathBuf)],
+    sources: &[(String, &'static str)],
+    diags: &mut Vec<String>,
+    default: Vec<AgentConfig>,
+) -> Vec<AgentConfig> {
+    let mut agents = take_list(merged, "agents", default, layer_paths, sources, diags);
+    let file = where_file(layer_paths, sources, "agents");
+    // semantic validation (empty name/command, bad pattern regexes) —
+    // smallest-unit drops on top of the structural ones
+    agents.retain(|a| {
+        let ok = !a.name.is_empty() && !a.command.is_empty();
+        if !ok {
+            diags.push(format!(
+                "{file}: agent preset with empty name/command — entry dropped"
+            ));
+        }
+        ok
+    });
+    for (i, a) in agents.iter_mut().enumerate() {
+        *a = validate_patterns(a.clone(), &file, i, diags);
+    }
+    agents
+}
+
+/// Per-entry salvage of a config list: keep every entry that deserializes
+/// and passes semantic validation, drop the rest with a diagnostic. A list
+/// that is not a list at all falls back to `default` (never an error).
+fn take_list<T>(
+    merged: &toml::Table,
+    key: &str,
+    default: Vec<T>,
+    layer_paths: &[(&'static str, PathBuf)],
+    sources: &[(String, &'static str)],
+    diags: &mut Vec<String>,
+) -> Vec<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let file = where_file(layer_paths, sources, key);
+    let Some(arr) = merged.get(key) else {
+        return default;
+    };
+    let Some(arr) = arr.as_array() else {
+        diags.push(format!("{file}: '{key}' must be a list — using none"));
+        return default;
+    };
+    let mut out = Vec::new();
+    for (i, entry) in arr.iter().enumerate() {
+        match entry.clone().try_into::<T>() {
+            Ok(v) => out.push(v),
+            Err(e) => diags.push(format!("{file}: {key}[{i}] invalid ({e}) — entry dropped")),
+        }
+    }
+    out
+}
+
+/// Drop status patterns that don't compile as regexes (validate on load
+/// into typed values — the rest of the code never sees a bad pattern).
+fn validate_patterns(
+    mut a: AgentConfig,
+    file: &str,
+    i: usize,
+    diags: &mut Vec<String>,
+) -> AgentConfig {
+    for (label, field) in [
+        ("working", &mut a.patterns.working),
+        ("waiting", &mut a.patterns.waiting),
+        ("failed", &mut a.patterns.failed),
+    ] {
+        field.retain(|p| match regex::Regex::new(p) {
+            Ok(_) => true,
+            Err(e) => {
+                diags.push(format!(
+                    "{file}: agents[{i}].patterns.{label} '{p}' is not a valid regex ({e}) — pattern dropped"
+                ));
+                false
+            }
+        });
+    }
+    a
+}
+
+fn take_project_list(
+    merged: &toml::Table,
+    layer_paths: &[(&'static str, PathBuf)],
+    sources: &[(String, &'static str)],
+    diags: &mut Vec<String>,
+) -> Vec<ProjectConfig> {
+    let mut projects =
+        take_list::<ProjectConfig>(merged, "projects", Vec::new(), layer_paths, sources, diags);
+    let file = where_file(layer_paths, sources, "projects");
+    projects.retain(|p| {
+        let ok = !p.path.is_empty();
+        if !ok {
+            diags.push(format!("{file}: project with empty path — entry dropped"));
+        }
+        ok
+    });
+    projects
+}
+
+/// \"Which file\" for a merged key — the layer that won it, resolved to its
+/// path (best effort, defaults to the first layer on unknown keys).
+fn where_file(
+    layer_paths: &[(&'static str, PathBuf)],
+    sources: &[(String, &'static str)],
+    key: &str,
+) -> String {
+    let layer = sources
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, l)| *l)
+        .unwrap_or(LAYER_DEFAULTS);
+    layer_paths
+        .iter()
+        .find(|(l, _)| *l == layer)
+        .map(|(_, p)| p.display().to_string())
+        .unwrap_or_else(|| "config".into())
 }
 
 impl StatusPatterns {
@@ -696,5 +1517,354 @@ mod tests {
         assert_eq!(cfg.discovery.scan_root, "/work");
         assert_eq!(cfg.discovery.max_depth, 2);
         assert_eq!(cfg.discovery.skip_dirs, vec!["vendor", "build"]);
+    }
+
+    // ------------------------------------------------ M8.4d: lenient load
+
+    /// Write `text` as the user config file and load it from `cwd`.
+    fn load_user(cwd: &Path, text: &str) -> Config {
+        let path = crate::util::config_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        Config::load_from(cwd, None).unwrap()
+    }
+
+    fn load_user_from(cwd: &Path, text: &str, override_path: Option<&Path>) -> Config {
+        let path = override_path
+            .map(Path::to_path_buf)
+            .unwrap_or_else(crate::util::config_path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        Config::load_from(cwd, override_path).unwrap()
+    }
+
+    #[test]
+    fn malformed_config_never_prevents_startup() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            // whole file is not even TOML → the file's contribution drops,
+            // defaults survive, diagnostics report it
+            let cfg = load_user(cwd.path(), "this is not toml {{{");
+            assert_eq!(cfg.theme, crate::theme::DEFAULT_THEME);
+            assert_eq!(cfg.poll_interval_ms, 500);
+            assert!(cfg.diagnostics.iter().any(|d| d.contains("invalid TOML")));
+        });
+    }
+
+    #[test]
+    fn bad_scalar_is_dropped_not_fatal() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(
+                cwd.path(),
+                "theme = 42\npoll_interval_ms = \"fast\"\nconfirm_on_delete = 1\n",
+            );
+            // defaults used instead, with diagnostics saying so
+            assert_eq!(cfg.theme, crate::theme::DEFAULT_THEME);
+            assert_eq!(cfg.poll_interval_ms, 500);
+            assert!(cfg.confirm_on_delete);
+            assert_eq!(cfg.diagnostics.len(), 3);
+            assert!(cfg.diagnostics.iter().any(|d| d.contains("'theme'")));
+            assert!(
+                cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("'poll_interval_ms'"))
+            );
+            assert!(
+                cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("'confirm_on_delete'"))
+            );
+        });
+    }
+
+    #[test]
+    fn bad_agent_entry_is_dropped_others_kept() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(
+                cwd.path(),
+                r#"
+                [[agents]]
+                name = "good"
+                command = "ok"
+                [[agents]]
+                name = 7
+                command = "bad"
+                [[agents]]
+                name = "also-good"
+                command = "ok2"
+                "#,
+            );
+            assert_eq!(cfg.agents.len(), 2);
+            assert!(cfg.agents.iter().any(|a| a.name == "good"));
+            assert!(cfg.agents.iter().any(|a| a.name == "also-good"));
+            assert!(cfg.diagnostics.iter().any(|d| d.contains("agents[1]")));
+        });
+    }
+
+    #[test]
+    fn bad_section_is_dropped_per_field() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(
+                cwd.path(),
+                "[tmux]\nback_key = 12\n\n[worktrees]\nbase_branch = 5\nroot = \"/wt\"\n",
+            );
+            // one bad binding → that field defaults, the section survives
+            assert_eq!(cfg.tmux.back_key, "C-o");
+            assert_eq!(cfg.worktrees.root, "/wt");
+            assert_eq!(cfg.worktrees.base_branch, "master");
+            // per-field salvage: the bad fields are reported, the good one
+            // (root) is NOT (it never fails)
+            assert!(cfg.diagnostics.iter().any(|d| d.contains("'back_key'")));
+            assert!(cfg.diagnostics.iter().any(|d| d.contains("'base_branch'")));
+            assert!(!cfg.diagnostics.iter().any(|d| d.contains("'root'")));
+        });
+    }
+
+    #[test]
+    fn unknown_keys_reported_not_fatal() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(
+                cwd.path(),
+                "frobnicate = true\n[tmux]\nnot_a_key = 1\n[[agents]]\nname=\"a\"\ncommand=\"b\"\nwrong = 3\n",
+            );
+            assert_eq!(cfg.tmux.back_key, "C-o");
+            assert_eq!(cfg.agents.len(), 1);
+            assert!(cfg.diagnostics.iter().any(|d| d.contains("'frobnicate'")));
+            assert!(
+                cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("'tmux.not_a_key'"))
+            );
+            assert!(cfg.diagnostics.iter().any(|d| d.contains("'agents.wrong'")));
+        });
+    }
+
+    #[test]
+    fn bad_pattern_regex_dropped_at_load() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(
+                cwd.path(),
+                "[[agents]]\nname=\"a\"\ncommand=\"b\"\n[agents.patterns]\nworking = [\"ok\", \"[\"]\n",
+            );
+            assert_eq!(cfg.agents.len(), 1);
+            assert_eq!(cfg.agents[0].patterns.working, vec!["ok".to_string()]);
+            assert!(
+                cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("not a valid regex"))
+            );
+        });
+    }
+
+    // ---------------------------------------------- M8.4d: project layering
+
+    #[test]
+    fn project_config_layers_over_user() {
+        with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let cwd = root.path().join("sub").join("deep");
+            std::fs::create_dir_all(&cwd).unwrap();
+            // user config
+            load_user(
+                &cwd,
+                "theme = \"dracula\"\npoll_interval_ms = 250\n[tmux]\nback_key = \"C-x\"\n",
+            );
+            // project-local config in an ancestor: overrides ONE key
+            std::fs::write(
+                root.path().join("sub/.lazywingman.toml"),
+                "theme = \"ansi\"\n",
+            )
+            .unwrap();
+            let cfg = Config::load_from(&cwd, None).unwrap();
+            assert_eq!(cfg.theme, "ansi"); // project wins for theme
+            assert_eq!(cfg.poll_interval_ms, 250); // user keeps poll
+            assert_eq!(cfg.tmux.back_key, "C-x"); // user keeps tmux
+            // provenance: theme came from the project layer
+            assert!(
+                cfg.sources
+                    .iter()
+                    .any(|(k, l)| k == "theme" && *l == LAYER_PROJECT)
+            );
+            assert!(
+                cfg.sources
+                    .iter()
+                    .any(|(k, l)| k == "poll_interval_ms" && *l == LAYER_USER)
+            );
+        });
+    }
+
+    #[test]
+    fn project_config_found_upward_stops_at_first_hit_and_repo_root() {
+        with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let repo = root.path().join("repo");
+            let deep = repo.join("a").join("b");
+            std::fs::create_dir_all(&deep).unwrap();
+            // repo root is a git repo → search stops there; a config above
+            // the repo root must NOT be picked up
+            std::fs::create_dir_all(repo.join(".git")).unwrap();
+            std::fs::write(root.path().join(".lazywingman.toml"), "theme = \"ansi\"\n").unwrap();
+            let cfg = Config::load_from(&deep, None).unwrap();
+            assert_eq!(cfg.theme, crate::theme::DEFAULT_THEME);
+            // first hit wins: put one in a/ and one in repo root
+            std::fs::write(repo.join(".lazywingman.toml"), "theme = \"gruvbox\"\n").unwrap();
+            std::fs::write(repo.join("a/.lazywingman.toml"), "theme = \"dracula\"\n").unwrap();
+            let cfg = Config::load_from(&deep, None).unwrap();
+            assert_eq!(cfg.theme, "dracula"); // nearest ancestor wins
+        });
+    }
+
+    #[test]
+    fn local_sibling_config_wins_over_project_config() {
+        with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            std::fs::write(
+                root.path().join(".lazywingman.toml"),
+                "theme = \"gruvbox\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.path().join(".lazywingman.local.toml"),
+                "theme = \"dracula\"\n",
+            )
+            .unwrap();
+            let cfg = Config::load_from(root.path(), None).unwrap();
+            assert_eq!(cfg.theme, "dracula");
+            assert!(
+                cfg.sources
+                    .iter()
+                    .any(|(k, l)| k == "theme" && *l == LAYER_LOCAL)
+            );
+        });
+    }
+
+    #[test]
+    fn lists_replace_on_merge_not_append() {
+        with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            load_user(
+                root.path(),
+                "[[agents]]\nname=\"user-agent\"\ncommand=\"u\"\n",
+            );
+            std::fs::write(
+                root.path().join(".lazywingman.toml"),
+                "[[agents]]\nname=\"project-agent\"\ncommand=\"p\"\n",
+            )
+            .unwrap();
+            let cfg = Config::load_from(root.path(), None).unwrap();
+            // the project list REPLACES the user list outright
+            assert_eq!(cfg.agents.len(), 1);
+            assert_eq!(cfg.agents[0].name, "project-agent");
+            assert!(
+                cfg.sources
+                    .iter()
+                    .any(|(k, l)| k == "agents" && *l == LAYER_PROJECT)
+            );
+        });
+    }
+
+    #[test]
+    fn user_only_keys_rejected_in_project_files() {
+        with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            load_user(root.path(), "[tmux]\nback_key = \"C-x\"\n");
+            std::fs::write(
+                root.path().join(".lazywingman.toml"),
+                "[tmux]\nback_key = \"C-b\"\n[worktrees]\nroot = \"/machine/path\"\n",
+            )
+            .unwrap();
+            let cfg = Config::load_from(root.path(), None).unwrap();
+            // user's binding wins; the project file's attempt is reported
+            assert_eq!(cfg.tmux.back_key, "C-x");
+            assert_eq!(cfg.worktrees.root, "");
+            assert!(
+                cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("'tmux.back_key'"))
+            );
+            assert!(
+                cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("'worktrees.root'"))
+            );
+        });
+    }
+
+    #[test]
+    fn config_override_flag_and_env_take_precedence() {
+        with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            // default XDG config exists with one theme
+            load_user(root.path(), "theme = \"dracula\"\n");
+            // --config points elsewhere
+            let override_path = root.path().join("custom.toml");
+            let cfg = load_user_from(root.path(), "theme = \"ansi\"\n", Some(&override_path));
+            assert_eq!(cfg.theme, "ansi");
+            // sources reflect the override file
+            assert!(cfg.diagnostics.is_empty());
+        });
+    }
+
+    #[test]
+    fn missing_override_is_reported_not_fatal() {
+        with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let cfg = Config::load_from(root.path(), Some(&root.path().join("nope.toml"))).unwrap();
+            assert_eq!(cfg.theme, crate::theme::DEFAULT_THEME);
+            assert!(cfg.diagnostics.iter().any(|d| d.contains("not found")));
+        });
+    }
+
+    /// `LW_CONFIG` env var points the USER layer at another file (same
+    /// override as `--config`, read by the no-arg `load()`).
+    #[test]
+    fn lw_config_env_overrides_user_layer() {
+        with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            // the default XDG config exists with one theme
+            load_user(root.path(), "theme = \"dracula\"\n");
+            // LW_CONFIG points elsewhere
+            let custom = root.path().join("custom.toml");
+            std::fs::write(&custom, "theme = \"ansi\"\n").unwrap();
+            unsafe { std::env::set_var("LW_CONFIG", &custom) };
+            let cfg = Config::load().unwrap();
+            unsafe { std::env::remove_var("LW_CONFIG") };
+            assert_eq!(cfg.theme, "ansi", "LW_CONFIG must win over the XDG file");
+        });
+    }
+
+    #[test]
+    fn config_dump_lists_effective_values_with_layer_provenance() {
+        with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            load_user(root.path(), "theme = \"dracula\"\npoll_interval_ms = 250\n");
+            std::fs::write(
+                root.path().join(".lazywingman.toml"),
+                "[worktrees]\nbase_branch = \"develop\"\n",
+            )
+            .unwrap();
+            let cfg = Config::load_from(root.path(), None).unwrap();
+            let dump = cfg.dump_string();
+            assert!(dump.contains("theme = \"dracula\"  # from user"));
+            assert!(dump.contains("poll_interval_ms = 250  # from user"));
+            assert!(dump.contains("worktrees.base_branch = \"develop\"  # from project"));
+            assert!(dump.contains("tmux.back_key = \"C-o\"  # from defaults"));
+        });
+    }
+
+    #[test]
+    fn agents_defaults_kept_when_list_absent() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(cwd.path(), "theme = \"ansi\"\n");
+            // no [[agents]] in the file → built-in presets remain
+            assert!(cfg.agents.iter().any(|a| a.name == "claude"));
+            assert!(cfg.agents.iter().any(|a| a.name == "codex"));
+        });
     }
 }

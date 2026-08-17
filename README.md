@@ -134,6 +134,42 @@ agent_command = "codex exec --yolo"  # optional: inline override
 base_branch = "develop"      # optional: per-project override
 ```
 
+### Layering
+
+Configuration is layered, lowest to highest (closer wins key by key — maps
+merge deeply, lists are replaced outright):
+
+1. Built-in defaults
+2. Your config — `$XDG_CONFIG_HOME/lazywingman/config.toml` (or
+   `--config <path>` / `LW_CONFIG` for the same file elsewhere)
+3. Project-local — `.lazywingman.toml` in the working directory or the
+   nearest ancestor holding one (the search stops at a git repository root)
+4. Project-local overrides — `.lazywingman.local.toml` next to it (gitignore
+   this one; it wins over the committed project file)
+
+A project-local file is meant to be committed — a teammate clones the repo
+and is already configured. A few keys belong to the user, not the project,
+and are **ignored in project files with a diagnostic**: `tmux.back_key`
+(your global tmux binding), `worktrees.root` and `discovery.scan_root`
+(machine-specific paths). Set those in your user config.
+
+Inspect the resolved config any time:
+
+```
+lazywingman --config-dump
+theme = "catppuccin-mocha"          # from user
+poll_interval_ms = 500              # from user
+worktrees.base_branch = "develop"   # from project
+```
+
+### Failure behaviour
+
+A malformed config never prevents startup. The smallest addressable unit is
+dropped — one bad `[[agents]]` entry, one bad binding, one bad scalar — and
+everything else is kept. Unknown keys are reported, not fatal (an older
+binary runs a newer config). Every drop is shown once, at startup, in a
+**diagnostics overlay** (`Esc`/`q` dismisses, `j`/`k` scrolls) and logged.
+
 Projects imported from inside the TUI (`i`, `I`) live in the state file, not
 in the config; config `[[projects]]` entries are merged in at startup and
 consulted for per-project agent settings.

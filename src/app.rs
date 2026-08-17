@@ -45,6 +45,10 @@ pub enum Mode {
     ThemePicker {
         index: usize,
     },
+    /// Startup diagnostics overlay (shown when configuration problems were
+    /// dropped at load — see the configuration guidelines). Scrollable list
+    /// of diagnostics, dismissed with Esc/q/Enter.
+    Diagnostics,
 }
 
 /// An action reachable from the statusbar shortcut entries (and by mouse
@@ -129,6 +133,13 @@ pub struct App {
     /// Scroll offset of the grouped help overlay (palette). Navigation
     /// keys scroll the help when it is open instead of the tree.
     pub help_scroll: usize,
+    /// Scroll offset of the startup diagnostics overlay. Motions scroll the
+    /// diagnostics when it is open instead of the tree (same code path as
+    /// help/picker — mode-dependent target).
+    pub diag_scroll: usize,
+    /// A startup confirm (e.g. the discovery scan prompt) that was armed
+    /// before the diagnostics overlay opened; shown after it is dismissed.
+    pub pending_confirm: Option<Confirm>,
     /// Themes offered by the picker (built-ins first, then user themes),
     /// computed when the picker opens.
     pub theme_names: Vec<String>,
@@ -166,6 +177,8 @@ impl App {
             ascii: false,
             popup_area: None,
             help_scroll: 0,
+            diag_scroll: 0,
+            pending_confirm: None,
             theme_names: vec![crate::theme::DEFAULT_THEME.into()],
             picker_original: crate::theme::DEFAULT_THEME.into(),
             bar_hits: Vec::new(),
@@ -1238,6 +1251,23 @@ impl App {
                 KeyCode::Char('G') => self.help_scroll_to(usize::MAX),
                 _ => {}
             },
+            Mode::Diagnostics => match key.code {
+                // Dismiss: the diagnostic list is informational; the
+                // session proceeds normally. Clicking outside also dismisses.
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter | KeyCode::Char('?') => {
+                    self.close_diagnostics();
+                }
+                // Same motions as the help palette (j/k + arrows, g/G).
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.diag_scroll_to(self.diag_scroll + 1);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.diag_scroll_to(self.diag_scroll.saturating_sub(1));
+                }
+                KeyCode::Char('g') => self.diag_scroll_to(0),
+                KeyCode::Char('G') => self.diag_scroll_to(usize::MAX),
+                _ => {}
+            },
             Mode::ThemePicker { index } => match key.code {
                 // j/k + arrows step by one theme (previewing live);
                 // g/G jump to first/last. PgUp/PgDn etc. are handled by the
@@ -1329,6 +1359,30 @@ impl App {
     pub(crate) fn open_help(&mut self) {
         self.help_scroll = 0;
         self.mode = Mode::Help;
+    }
+
+    /// Close the startup diagnostics overlay, resuming a startup confirm
+    /// (scan prompt) that was waiting behind it.
+    fn close_diagnostics(&mut self) {
+        self.mode = Mode::Normal;
+        if let Some(confirm) = self.pending_confirm.take() {
+            self.mode = Mode::Confirm { confirm };
+        }
+    }
+
+    /// Open the startup diagnostics overlay when there is anything to show
+    /// (once per start — dismissed with Esc/q/Enter). If a startup confirm
+    /// (e.g. the discovery scan prompt) was armed by boot_discovery, it is
+    /// parked and resumes after the overlay is dismissed.
+    fn open_startup_diagnostics(&mut self) {
+        if self.cfg.diagnostics.is_empty() {
+            return;
+        }
+        if let Mode::Confirm { confirm } = std::mem::replace(&mut self.mode, Mode::Normal) {
+            self.pending_confirm = Some(confirm);
+        }
+        self.diag_scroll = 0;
+        self.mode = Mode::Diagnostics;
     }
 
     // ------------------------------------------------------ theme picker
@@ -1443,6 +1497,8 @@ impl App {
             MouseEventKind::ScrollDown => {
                 if matches!(self.mode, Mode::Help) {
                     self.help_scroll_to(self.help_scroll + 3);
+                } else if matches!(self.mode, Mode::Diagnostics) {
+                    self.diag_scroll_to(self.diag_scroll + 3);
                 } else if matches!(self.mode, Mode::ThemePicker { .. }) {
                     self.picker_to(self.picker_index().saturating_add(3));
                 } else {
@@ -1452,6 +1508,8 @@ impl App {
             MouseEventKind::ScrollUp => {
                 if matches!(self.mode, Mode::Help) {
                     self.help_scroll_to(self.help_scroll.saturating_sub(3));
+                } else if matches!(self.mode, Mode::Diagnostics) {
+                    self.diag_scroll_to(self.diag_scroll.saturating_sub(3));
                 } else if matches!(self.mode, Mode::ThemePicker { .. }) {
                     self.picker_to(self.picker_index().saturating_sub(3));
                 } else {
@@ -1514,7 +1572,11 @@ impl App {
                 .map(|r| x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height)
                 .unwrap_or(false);
             if !inside {
-                self.mode = Mode::Normal;
+                if matches!(self.mode, Mode::Diagnostics) {
+                    self.close_diagnostics();
+                } else {
+                    self.mode = Mode::Normal;
+                }
             }
             return;
         }
@@ -1624,6 +1686,19 @@ impl App {
             } else {
                 self.help_scroll = (self.help_scroll + step).min(max_scroll);
             }
+        } else if matches!(self.mode, Mode::Diagnostics) {
+            let total = crate::ui::diag_line_count(self);
+            let visible = self
+                .popup_area
+                .map(|r| r.height.saturating_sub(2) as usize)
+                .unwrap_or(10);
+            let max_scroll = total.saturating_sub(visible);
+            let step = (visible / 2).max(1) * half_pages.max(0) as usize;
+            if half_pages < 0 {
+                self.diag_scroll = self.diag_scroll.saturating_sub(step.max(1));
+            } else {
+                self.diag_scroll = (self.diag_scroll + step).min(max_scroll);
+            }
         } else {
             self.move_sel_page(half_pages);
         }
@@ -1635,6 +1710,8 @@ impl App {
             self.preview_picker_theme();
         } else if matches!(self.mode, Mode::Help) {
             self.help_scroll = 0;
+        } else if matches!(self.mode, Mode::Diagnostics) {
+            self.diag_scroll = 0;
         } else {
             self.move_sel_first();
         }
@@ -1651,6 +1728,13 @@ impl App {
                 .map(|r| r.height.saturating_sub(2) as usize)
                 .unwrap_or(10);
             self.help_scroll = total.saturating_sub(visible);
+        } else if matches!(self.mode, Mode::Diagnostics) {
+            let total = crate::ui::diag_line_count(self);
+            let visible = self
+                .popup_area
+                .map(|r| r.height.saturating_sub(2) as usize)
+                .unwrap_or(10);
+            self.diag_scroll = total.saturating_sub(visible);
         } else {
             self.move_sel_last();
         }
@@ -1665,6 +1749,18 @@ impl App {
             .map(|r| r.height.saturating_sub(2) as usize)
             .unwrap_or(10);
         self.help_scroll = n.min(total.saturating_sub(visible));
+    }
+
+    /// Same motion target as [`Self::help_scroll_to`], for the startup
+    /// diagnostics overlay (its content height comes from
+    /// `ui::diag_line_count`, never drifts from the renderer).
+    fn diag_scroll_to(&mut self, n: usize) {
+        let total = crate::ui::diag_line_count(self);
+        let visible = self
+            .popup_area
+            .map(|r| r.height.saturating_sub(2) as usize)
+            .unwrap_or(10);
+        self.diag_scroll = n.min(total.saturating_sub(visible));
     }
 
     fn move_sel_first(&mut self) {
@@ -1777,6 +1873,11 @@ pub fn run(cfg: Config, theme: Theme, tmux: Tmux) -> Result<()> {
         return Err(e);
     }
     app.poll();
+    // Startup diagnostics overlay: configuration problems dropped at load
+    // are shown ONCE, at startup (the guidelines demand a visible report,
+    // not a log line nobody reads). If a startup confirm (scan prompt) was
+    // armed by boot_discovery, it resumes after the overlay is dismissed.
+    app.open_startup_diagnostics();
     let mut terminal = ratatui::init();
     let res = event_loop(&mut terminal, &mut app);
     ratatui::restore();
@@ -2610,5 +2711,143 @@ mod tests {
             panic!("picker must still be open");
         };
         assert_eq!(index, 3, "wheel moves the picker by 3");
+    }
+
+    // ------------------------------------------- M8.4d: diagnostics overlay
+
+    fn app_with_diagnostics(n: usize) -> App {
+        let mut cfg = Config::default();
+        for i in 0..n {
+            cfg.diagnostics.push(format!("diagnostic number {i}"));
+        }
+        let mut app = App::new(cfg, theme::load("ansi", false).unwrap(), None);
+        // an overlay is on screen once drawn: give it a tall popup
+        app.popup_area = Some(Rect::new(10, 4, 60, 12));
+        app
+    }
+
+    /// The startup diagnostics overlay opens when the config carried
+    /// diagnostics, and a startup confirm (scan prompt) resumes afterwards.
+    #[test]
+    fn startup_diagnostics_overlay_opens_and_resumes_confirm() {
+        let mut app = app_with_diagnostics(3);
+        // boot_discovery would have armed a scan confirm
+        app.mode = Mode::Confirm {
+            confirm: Confirm {
+                title: "project discovery".into(),
+                body: "scan?".into(),
+                force_label: None,
+                action: ConfirmAction::ScanProjects {
+                    root: PathBuf::from("/tmp"),
+                },
+            },
+        };
+        app.open_startup_diagnostics();
+        assert!(matches!(app.mode, Mode::Diagnostics));
+        // dismiss → the parked confirm resumes
+        app.on_key(key(KeyCode::Esc, false));
+        assert!(matches!(app.mode, Mode::Confirm { .. }), "confirm resumes");
+    }
+
+    /// No diagnostics → the overlay never opens (not even an empty one).
+    #[test]
+    fn startup_diagnostics_skipped_when_empty() {
+        let mut app = app_with_diagnostics(0);
+        app.open_startup_diagnostics();
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    /// q / Esc / Enter dismiss; j/k/arrows/g/G scroll with the same clamp
+    /// as the help palette; the tree selection never moves.
+    #[test]
+    fn diagnostics_keys_scroll_and_dismiss() {
+        let mut app = app_with_diagnostics(20); // 20 diags + footer in a 10-row popup
+        app.mode = Mode::Diagnostics;
+        app.sel = Sel::Project(0);
+        // j steps down, clamped by the popup height
+        app.on_key(key(KeyCode::Char('j'), false));
+        assert_eq!(app.diag_scroll, 1);
+        app.on_key(key(KeyCode::Char('j'), false));
+        assert_eq!(app.diag_scroll, 2);
+        app.on_key(key(KeyCode::Char('k'), false));
+        assert_eq!(app.diag_scroll, 1);
+        // g/G jump to first/last
+        app.on_key(key(KeyCode::Char('g'), false));
+        assert_eq!(app.diag_scroll, 0);
+        app.on_key(key(KeyCode::Char('G'), false));
+        let total = crate::ui::diag_line_count(&app);
+        let visible = app.popup_area.unwrap().height.saturating_sub(2) as usize;
+        assert_eq!(app.diag_scroll, total.saturating_sub(visible));
+        // the tree selection never moved while the overlay was open
+        assert_eq!(app.sel, Sel::Project(0));
+        // dismiss keys
+        for k in [KeyCode::Char('q'), KeyCode::Enter, KeyCode::Char('?')] {
+            app.mode = Mode::Diagnostics;
+            app.on_key(key(k, false));
+            assert!(matches!(app.mode, Mode::Normal), "{k:?} dismisses");
+        }
+    }
+
+    /// PageUp/PageDown/ctrl-u/d/Home/End route to the diagnostics overlay
+    /// while it is open (same accessibility path as help/picker).
+    #[test]
+    fn diagnostics_a11y_motions_scroll_overlay_not_tree() {
+        let mut app = app_with_diagnostics(30);
+        app.mode = Mode::Diagnostics;
+        app.sel = Sel::Project(0);
+        let before = app.sel;
+        app.on_key(key(KeyCode::PageDown, false));
+        assert!(app.diag_scroll > 0, "PageDown scrolls the diagnostics");
+        app.on_key(key(KeyCode::Home, false));
+        assert_eq!(app.diag_scroll, 0);
+        app.on_key(key(KeyCode::End, false));
+        let total = crate::ui::diag_line_count(&app);
+        let visible = app.popup_area.unwrap().height.saturating_sub(2) as usize;
+        assert_eq!(app.diag_scroll, total.saturating_sub(visible));
+        assert_eq!(app.sel, before, "tree selection untouched");
+    }
+
+    /// The wheel scrolls the diagnostics by 3 lines.
+    #[test]
+    fn diagnostics_wheel_scrolls() {
+        let mut app = app_with_diagnostics(20);
+        app.mode = Mode::Diagnostics;
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 40,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.diag_scroll, 3);
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 40,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.diag_scroll, 0);
+    }
+
+    /// Clicking outside the diagnostics overlay dismisses it (and resumes a
+    /// parked confirm).
+    #[test]
+    fn diagnostics_click_outside_dismisses() {
+        let mut app = app_with_diagnostics(2);
+        app.mode = Mode::Diagnostics;
+        app.pending_confirm = Some(Confirm {
+            title: "t".into(),
+            body: "b".into(),
+            force_label: None,
+            action: ConfirmAction::ScanProjects {
+                root: PathBuf::from("/tmp"),
+            },
+        });
+        app.popup_area = Some(Rect::new(20, 5, 40, 10));
+        app.on_mouse(click(2, 2)); // outside the popup
+        assert!(matches!(app.mode, Mode::Confirm { .. }), "confirm resumes");
+        // ...and clicking INSIDE keeps the overlay open
+        app.mode = Mode::Diagnostics;
+        app.on_mouse(click(22, 6));
+        assert!(matches!(app.mode, Mode::Diagnostics));
     }
 }
