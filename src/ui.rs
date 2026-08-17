@@ -899,12 +899,12 @@ fn help_lines(app: &App) -> Vec<Line<'_>> {
     // user detaches from `tmux attach` with C-b d and lands back here.
     if app.tmux.as_ref().and_then(|t| t.inside.as_ref()).is_some() {
         lines.push(Line::from(Span::styled(
-            "attach: press Enter in the dashboard, then press the tmux back-key",
+            "attach: press Enter in the dashboard, then the tmux prefix + back-key",
             fg(theme.dim),
         )));
         lines.push(Line::from(Span::styled(
             format!(
-                "back-key is '{}' (config tmux.back_key) — jump back to this window",
+                "back chord is <prefix>+'{}' (config tmux.back_key) — jump back to this window",
                 app.cfg.tmux.back_key
             ),
             fg(theme.dim),

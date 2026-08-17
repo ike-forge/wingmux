@@ -150,8 +150,15 @@ help/picker).
 | Key | Meaning | Rule satisfied |
 |---|---|---|
 | `Enter` on a shell | inside tmux: `switch-client` to the agent session + `select-window`; standalone: terminal handoff to `tmux attach` | domain convention |
-| back-key (default `C-o`, config `tmux.back_key`) | jump back to the dashboard window from any agent window | the one configurable binding (avoids clashing with the user's tmux); bound server-wide in every agent session |
+| `<prefix> + back-key` (default `C-b C-o`, config `tmux.back_key`) | jump back to the dashboard window from any agent window | the one configurable binding (avoids clashing with the user's tmux); bound in the PREFIX table — never the root table, so no other TUI ever loses the key |
 | `C-b d` | leave `tmux attach` (standalone) and land back in the dashboard | tmux's own detach; no back-key exists outside tmux |
+
+Why the prefix: tmux key tables are server-wide, so a root-table binding
+(`bind-key -n`) hijacks the chord in every session — vim's `C-o`, readline,
+and other TUIs running inside tmux would all lose the key. Behind the
+prefix, the chord only fires when the user explicitly asks for a tmux
+command. Legacy root bindings from pre-M9 versions are removed on startup
+(only the exact command we bound — user bindings of the same key survive).
 
 ## Deliberately unbound — and why
 

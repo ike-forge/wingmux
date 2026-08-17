@@ -221,6 +221,12 @@ impl App {
         let Some(inside) = &tmux.inside else {
             return Ok(());
         };
+        // Pre-M9 versions bound the key in the root table (`-n`), which
+        // hijacked the chord for every session and TUI on the server.
+        // Remove that legacy binding first (only ours — a user's own root
+        // binding of the same key is untouched), then bind behind the
+        // prefix, where it cannot collide with any application.
+        tmux.unbind_legacy_root_back_key(&inside.session_name, &inside.window_id)?;
         let mut bound = 0;
         for proj in &self.state.projects {
             if let Some(sess) = &proj.session_name
@@ -236,7 +242,7 @@ impl App {
         }
         if bound > 0 {
             log::info!(
-                "back key {} bound in {bound} agent session(s) → dashboard {}",
+                "back chord <prefix>+{} bound in {bound} agent session(s) → dashboard {}",
                 self.cfg.tmux.back_key,
                 inside.window_id
             );

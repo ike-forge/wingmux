@@ -67,6 +67,15 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   to `switch-client -t <user-session> \; select-window -t @<dashboard-window>`
   (rebound at startup and at session creation). Supersedes the old
   same-session `select-window` back-key.
+- **M9 — back-key moves behind the prefix.** The M8 back-key used
+  `bind-key -n` (root table), which is server-wide in tmux: it hijacked `C-o`
+  for every session and every TUI running inside (vim's `C-o`, readline, …).
+  The chord is now bound in the PREFIX table (`bind-key -T prefix <key>`), so
+  it only fires after the user's tmux prefix (`C-b C-o` by default) and no
+  application ever loses the key. Legacy root bindings are removed on startup,
+  but only the exact command we bound — a user's own root binding of the same
+  key is untouched. `tmux.back_key` still configures the second half of the
+  chord.
 - **M8 — runs inside AND outside tmux** (per user feedback): the dashboard no
   longer requires tmux around itself. `Tmux` keeps optional `inside`
   coordinates (detected via TMUX/TMUX_PANE); all session/window/pane operations

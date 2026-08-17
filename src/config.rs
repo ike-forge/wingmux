@@ -53,9 +53,10 @@ poll_interval_ms = 500
 confirm_on_delete = true
 
 [tmux]
-# Keybinding (tmux syntax) pressed inside an agent window to jump straight
-# back to the LazyWingman dashboard. Registered globally; pick something
-# that doesn't clash with your other tmux bindings.
+# Keybinding (tmux syntax) pressed AFTER the tmux prefix (e.g. `C-b C-o`)
+# inside an agent window to jump straight back to the LazyWingman
+# dashboard. Bound in the PREFIX table, never the root table — a root
+# binding would hijack the key for every session and other TUIs.
 back_key = "C-o"
 
 [worktrees]

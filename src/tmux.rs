@@ -485,16 +485,23 @@ impl Tmux {
         Ok(())
     }
 
-    /// Bind the back-key server-wide: pressing it from any session switches
-    /// the client back to the dashboard session+window. Rebound on every
-    /// startup and at agent-session creation. `key` is tmux syntax (e.g.
-    /// `C-o`). Note: tmux key tables are server-wide, so this applies in
-    /// every session of the server — the dashboard's back-key is a global
-    /// convenience (configurable via `tmux.back_key`).
+    /// Bind the back-key in the PREFIX table: the user presses their tmux
+    /// prefix (e.g. `C-b`) then `key` to jump back to the dashboard window
+    /// from any agent window. Rebound on every startup and at agent-session
+    /// creation. `key` is tmux syntax (e.g. `C-o`).
+    ///
+    /// Why the prefix table and not `-n` (root)? tmux key tables are
+    /// server-wide, so a root-table binding hijacks that key in EVERY
+    /// session of the server — including the user's own session — breaking
+    /// other TUIs that use the same chord (vim's `C-o`, readline, ...).
+    /// Behind the prefix, the key only fires when the user explicitly asks
+    /// for a tmux chord, so no application ever loses it. The chord stays
+    /// configurable via `tmux.back_key`.
     pub fn bind_back_key(&self, key: &str, dash_session: &str, dash_window_id: &str) -> Result<()> {
         self.run(&[
             "bind-key",
-            "-n",
+            "-T",
+            "prefix",
             key,
             "switch-client",
             "-t",
@@ -504,6 +511,41 @@ impl Tmux {
             "-t",
             &format!("@{}", dash_window_id.trim_start_matches('@')),
         ])?;
+        Ok(())
+    }
+
+    /// Remove a pre-M9 root-table back-key binding if one exists: earlier
+    /// versions bound `-n` (root table), hijacking the chord server-wide
+    /// and breaking other TUIs. Only unbinds a binding whose command
+    /// targets OUR dashboard window — a user's own root binding of the
+    /// same key is never touched.
+    pub fn unbind_legacy_root_back_key(
+        &self,
+        dash_session: &str,
+        dash_window_id: &str,
+    ) -> Result<()> {
+        let win = dash_window_id.trim_start_matches('@');
+        let keys = self.run_raw(&["list-keys", "-T", "root"])?;
+        for line in keys.lines() {
+            // A legacy root binding looks like:
+            //   bind-key -T root C-o switch-client -t main \; select-window -t @0
+            if !line.starts_with("bind-key -T root")
+                || !line.contains("switch-client -t ")
+                || !line.contains(format!("-t {dash_session}").as_str())
+                || !line.contains(&format!("select-window -t @{win}"))
+            {
+                continue;
+            }
+            // The key is the token right after the table name.
+            let mut parts = line.split_whitespace().skip_while(|p| *p != "root").skip(1);
+            let Some(key) = parts.next() else {
+                continue;
+            };
+            log::info!(
+                "removing legacy root back-key binding for {key} (prefix-table binding replaces it)"
+            );
+            self.run(&["unbind-key", "-T", "root", key])?;
+        }
         Ok(())
     }
 }
@@ -773,17 +815,67 @@ mod tests {
     }
 
     #[test]
-    fn back_key_binding_registers_server_wide() {
+    fn back_key_binding_registers_in_prefix_table_not_root() {
         with_tmux_server(|_sock, tmux| {
             tmux.new_session("wingman-session-p", "lw:f/0", Path::new("/tmp"), "bash")
                 .unwrap();
             tmux.bind_back_key("C-o", "main", "@0").unwrap();
-            let keys = tmux.run_raw(&["list-keys", "-T", "root"]).unwrap();
+            let prefix = tmux.run_raw(&["list-keys", "-T", "prefix"]).unwrap();
             assert!(
-                keys.contains("C-o") && keys.contains("switch-client -t main"),
-                "back key not bound: {keys}"
+                prefix.contains("C-o") && prefix.contains("switch-client -t main"),
+                "back key not in prefix table: {prefix}"
             );
-            assert!(keys.contains("select-window -t @0"));
+            assert!(prefix.contains("select-window -t @0"));
+            // The root table must be untouched — that is the whole point
+            // (a root binding would hijack C-o for every TUI in the server).
+            let root = tmux.run_raw(&["list-keys", "-T", "root"]).unwrap();
+            assert!(
+                !root
+                    .lines()
+                    .any(|l| l.contains("C-o") && l.contains("switch-client -t main")),
+                "root table must not carry the back key: {root}"
+            );
+        });
+    }
+
+    #[test]
+    fn legacy_root_back_key_is_unbound_but_user_binding_survives() {
+        with_tmux_server(|sock, tmux| {
+            // Recreate a pre-M9 root binding exactly as the old code did.
+            tmux.run(&[
+                "bind-key",
+                "-n",
+                "C-o",
+                "switch-client",
+                "-t",
+                "main",
+                "\\;",
+                "select-window",
+                "-t",
+                "@0",
+            ])
+            .unwrap();
+            tmux.new_session("wingman-session-p", "lw:f/0", Path::new("/tmp"), "bash")
+                .unwrap();
+            // A user's own root binding on a DIFFERENT key must survive:
+            // bind C-t to something else in the root table.
+            tmux.run(&["bind-key", "-n", "C-t", "choose-tree"]).unwrap();
+
+            tmux.unbind_legacy_root_back_key("main", "@0").unwrap();
+
+            let root = tmux.run_raw(&["list-keys", "-T", "root"]).unwrap();
+            assert!(
+                !root
+                    .lines()
+                    .any(|l| l.contains("C-o") && l.contains("switch-client -t main")),
+                "legacy back key must be gone: {root}"
+            );
+            assert!(
+                root.lines()
+                    .any(|l| l.contains("C-t") && l.contains("choose-tree")),
+                "user's own root binding must survive: {root}"
+            );
+            let _ = sock;
         });
     }
 }

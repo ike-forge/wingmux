@@ -93,9 +93,10 @@ scrolls the tree, statusbar entries are clickable, and clicking outside an
 overlay dismisses it.
 
 **Attach & return**: `Enter` on a shell switches your client to that agent's
-window. Press the *back-key* to return to the dashboard — default
-`C-o`, configurable via `tmux.back_key`. It is registered globally in tmux on
-startup.
+window. Press the tmux prefix + the *back-key* to return to the dashboard —
+`C-b C-o` by default, the second half configurable via `tmux.back_key`. The
+chord is bound in the prefix table (never the root table, so no other TUI
+ever loses the key).
 
 ## Configuration
 
@@ -108,7 +109,7 @@ poll_interval_ms = 500       # status/preview refresh
 confirm_on_delete = true
 
 [tmux]
-back_key = "C-o"             # jump back to the dashboard from any agent window
+back_key = "C-o"             # prefix + C-o jumps back to the dashboard (prefix table)
 
 [worktrees]
 root = ""                    # default: <parent-of-repo>/.lazywingman-worktrees
@@ -258,9 +259,11 @@ only — the live preview panel lets you confirm what's really happening.
   `send-keys`, `capture-pane`, `switch-client`, `select-window`,
   `kill-window`, `list-panes -a`, `bind-key`); nothing is shell-interpreted.
 - **Attach & return (inside tmux)**: `Enter` on a shell = `switch-client` to
-  the agent session + `select-window` to the shell's window. The back-key
-  (default `C-o`, configurable via `tmux.back_key`) is bound server-wide to
-  `switch-client` back to the dashboard window, rebound on every startup.
+  the agent session + `select-window` to the shell's window. The back chord
+  (prefix + `C-o` by default, configurable via `tmux.back_key`) is bound in
+  the PREFIX table to `switch-client` back to the dashboard window, rebound
+  on every startup; legacy root-table bindings from earlier versions are
+  removed on startup.
 - **Attach (standalone)**: the terminal is handed over to `tmux attach -t
   <agent-session>` (the shell's window is preselected); detaching with `C-b
   d` returns you to the dashboard.
