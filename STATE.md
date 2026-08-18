@@ -1,17 +1,19 @@
 # LazyWingman — build state
 
-**M9 COMPLETE** — all M9 milestones done; watchdog: this is the completion
-marker, ping Ilja. Delivery zip: /opt/data/lazywingman-2026-08-17.zip.
+**M8 COMPLETE** — all M8 milestones done (M8.1–M8.5) plus the M9 feedback
+set (M9.1–M9.5); watchdog: this is the completion marker, ping Ilja.
+Delivery zip: /opt/data/lazywingman-2026-08-17.zip.
 
 Resume from this file alone. It is updated at the end of every milestone and
 whenever a milestone runs long.
 
 ## Current milestone
 
-**M9 — user-feedback milestone set — COMPLETE (M9.1 back-key prefix, M9.2
-textarea quick-send, M9.3 scope discovery, M9.4 mise, M9.5 UI pass; marker
-written).**
-Resume from STATE.md progress log.
+**M8 + M9 — COMPLETE.** All milestones committed and pushed; gating green
+(fmt clean, clippy -D warnings clean, 149 tests). Marker corrected to
+"M8 COMPLETE" (the previous run wrote "M9 COMPLETE", which the watchdog
+does not match) so the Telegram ping fires. No further work; future runs
+reply [SILENT].
 
 ## M8 — plan (user feedback: hide agent panes in separate sessions, project
 ## discovery, follow agent-common-instructions, work inside AND outside tmux)
