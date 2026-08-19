@@ -80,7 +80,7 @@ the help overlay (`?`).
 | `I` | **scan** `[discovery].scan_root` for new projects (discovery rescan) |
 | `n` | new feature (worktree + branch + agent shell) |
 | `a` | add a shell to the selected feature — a prompt asks which command it runs (empty = the project's default agent command, shown as a hint) |
-| `s` | **quick-send** a line to the selected shell (or to a one-shell feature's row) |
+| `s` | **quick-send** a line to the selected shell (or to a one-shell feature's row). `Esc` keeps the unsent text as that shell's draft — `s` on it again picks up where you left off. The draft is dropped once the message is actually delivered, and lives only for this run of LazyWingman |
 | `p` | **predefined messages** for the selected shell (or a one-shell feature's row) — a modal of configured presets (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
 | `d` | on a feature: delete it (kills windows, removes worktree; `f` = force when dirty). On a shell row: close that shell (kills its window only — the feature and its other shells stay) |
 | `r` | refresh — reconcile state against reality |
@@ -206,12 +206,15 @@ stats per directory, done live.
 - **Start in a folder of repos**: every repo inside it is listed (walk is
   bounded by `max_depth`, skips hidden dirs and `skip_dirs`; linked-worktree
   `.git` files are never treated as repos — their main repo covers them).
-  Up to 5 projects are expanded so their features are visible; more than 5
-  stay collapsed — you unfold the ones you care about.
-- **Worktrees load lazily**: `git worktree list` is the expensive part, so
-  it runs once per project when you expand it (or for the flattened single
-  project at boot). Listing 200 repos costs 200 directory stats, not 200
-  git calls.
+  Everything is unfolded so the shells are visible straight away; past 30
+  projects in scope the tree starts collapsed instead, because it would be
+  longer than any terminal.
+- **Worktrees load lazily, and in the background**: `git worktree list` is
+  the expensive part, so it runs once per project — when you expand it, or
+  from the boot queue. Boot itself only waits for the first project (the
+  one the first frame draws); the rest are drained one per frame, so the
+  tree appears immediately and fills in. Listing 200 repos costs 200
+  directory stats, not 200 git calls.
 - **`I`** rescans the scope at any time and adds new repos. It is the
   stronger variant of `i` (single path).
 - **Missing projects** are kept, not pruned: a project whose path is
@@ -323,7 +326,7 @@ Two panels and a bar — the tree says what exists, the preview says what
 is happening, the bar says what you can press:
 
 ```
-╭ projects/features ───────╮╭ preview (capture-pane) ─────────────╮
+╭ Projects (2) ────────────╮╭ Preview ────────────────────────────╮
 │▾ ▣ repo-a                ││ live tail of the selected shell,    │
 │  ├─   ◇ feat-a  waiting  ││ refreshed every poll                │
 │  └─ ▾ ◆ feat-b           ││                                     │
@@ -333,6 +336,10 @@ is happening, the bar says what you can press:
 ╰──────────────────────────╯╰─────────────────────────────────────╯
  n feature · a shell · d delete · ? help
 ```
+
+Panel titles are Title Case and name what the panel holds. The tree is
+`Projects (n)`, or `Features (n)` when a single git repo is in scope and
+its features have replaced the project row (the flat layout below).
 
 **The preview panel** shows the tail of `capture-pane -e` for the selected
 shell — escape sequences included, so the agent's own colouring (spinners,
