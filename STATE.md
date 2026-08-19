@@ -279,10 +279,11 @@ All five M9 items landed, each committed + pushed to origin/main:
   in the scrollback and *ends* with the blank padding of the pane's empty
   area — so the panel showed rows 1..21 of the scrollback, mid-history.
   New `ui::preview_tail(capture, inner_height)` drops the trailing blank
-  padding and keeps the **newest** `inner_height - PREVIEW_BOTTOM_PAD`
-  lines; `PREVIEW_BOTTOM_PAD = 3` leaves a gap under the last line so the
-  newest output does not sit flush on the border and read as cut off.
-  Tests: `preview_shows_tail_with_bottom_buffer` (render assertion on the
+  padding and keeps the **newest** `inner_height` lines, so the last
+  captured line sits on the row just above the bottom border. (The
+  original `PREVIEW_BOTTOM_PAD = 3` gap was dropped later — in live use the
+  wasted rows cost more than the flush-on-border look did.)
+  Tests: `preview_shows_tail_flush_to_bottom_border` (render assertion on the
   row the last line lands in), `preview_tail_handles_short_captures_and_tiny_panels`.
 - **M9.3** — discovery is **scope-based, live, lazy**: only projects inside
   the startup dir (or `[discovery].scan_root`) are listed; scopes never
