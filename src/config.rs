@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use unicode_width::UnicodeWidthStr;
 
 use crate::error::{Error, Result};
 
@@ -258,6 +259,154 @@ pub struct DefaultsConfig {
     /// accurate status (M17). Nothing is written to the user's config;
     /// the flag is visible in the pane's own command line.
     pub agent_hooks: bool,
+}
+
+/// Border style for popups and panels. Not a glyph string: ratatui's
+/// `BorderType` owns the corner set, and pure ASCII is not one of its
+/// variants — it is a post-render buffer rewrite (`ui::asciify`).
+///
+/// Not wired in yet (task 1 of the configurable-icons plan adds the data
+/// type only); `#[allow(dead_code)]` comes off once `Config` grows an
+/// `icons` field in a later task.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BorderStyle {
+    #[default]
+    Rounded,
+    Plain,
+    Ascii,
+}
+
+/// Preset names accepted by `[icons].preset`.
+#[allow(dead_code)]
+pub const ICON_PRESETS: &[&str] = &["nerdfont", "unicode", "ascii", "none"];
+
+/// Every glyph LazyWingman draws itself. Resolved: each field is the exact
+/// string a render site emits, already padded to its column.
+///
+/// This replaced a `LW_ASCII` boolean. That boolean answered "can this
+/// terminal draw box characters?", which is not the question users have —
+/// theirs is "which glyphs suit my font?", and the two are independent.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IconsConfig {
+    pub project: String,
+    pub project_empty: String,
+    pub feature: String,
+    pub feature_dirty: String,
+    pub shell: String,
+    pub expand_open: String,
+    pub expand_closed: String,
+    pub cursor: String,
+    pub guide_branch: String,
+    pub guide_last: String,
+    pub guide_vertical: String,
+    pub separator: String,
+    pub warn: String,
+    pub ellipsis: String,
+    pub border: BorderStyle,
+}
+
+#[allow(dead_code)]
+impl Default for IconsConfig {
+    fn default() -> Self {
+        IconsConfig::preset("nerdfont")
+    }
+}
+
+impl IconsConfig {
+    /// The named preset, padded and ready to render. An unknown name falls
+    /// back to `nerdfont`; the caller reports the diagnostic (this is also
+    /// reached from `Deserialize`, which has no diagnostics vec).
+    #[allow(dead_code)]
+    pub fn preset(name: &str) -> IconsConfig {
+        let mut i = IconsConfig::raw_preset(name);
+        i.pad();
+        i
+    }
+
+    /// The preset before padding. Overrides are layered onto this, then
+    /// padded once — padding an already-padded value would compound.
+    #[allow(dead_code)]
+    fn raw_preset(name: &str) -> IconsConfig {
+        let nerdfont = IconsConfig {
+            project: "▣".into(),
+            project_empty: "▢".into(),
+            feature: String::new(),
+            feature_dirty: "󰘬".into(),
+            shell: "● ".into(),
+            expand_open: "▾".into(),
+            expand_closed: "▸".into(),
+            cursor: "›".into(),
+            guide_branch: "├─".into(),
+            guide_last: "└─".into(),
+            guide_vertical: "│".into(),
+            separator: " · ".into(),
+            warn: "⚠".into(),
+            ellipsis: "…".into(),
+            border: BorderStyle::Rounded,
+        };
+        match name {
+            "unicode" => IconsConfig {
+                feature: "◇".into(),
+                feature_dirty: "◆".into(),
+                ..nerdfont
+            },
+            "none" => IconsConfig {
+                project: String::new(),
+                project_empty: String::new(),
+                feature: String::new(),
+                feature_dirty: String::new(),
+                shell: String::new(),
+                ..nerdfont
+            },
+            "ascii" => IconsConfig {
+                project: "*".into(),
+                project_empty: "o".into(),
+                feature: "-".into(),
+                feature_dirty: "*".into(),
+                shell: String::new(),
+                expand_open: "v".into(),
+                expand_closed: ">".into(),
+                cursor: ">".into(),
+                guide_branch: "|-".into(),
+                guide_last: "`-".into(),
+                guide_vertical: "|".into(),
+                separator: " - ".into(),
+                warn: "!".into(),
+                ellipsis: "...".into(),
+                border: BorderStyle::Ascii,
+            },
+            _ => nerdfont,
+        }
+    }
+
+    /// Right-pad the four key pairs that share a rendered column, so an
+    /// empty icon still holds its column and names stay aligned. A
+    /// non-empty column also gains one trailing space, so render sites
+    /// concatenate icon and name directly and an empty column costs
+    /// nothing. Keys with no sibling (`shell`, `cursor`, `separator`,
+    /// `warn`, `ellipsis`) are used verbatim.
+    #[allow(dead_code)]
+    fn pad(&mut self) {
+        pad_pair(&mut self.project, &mut self.project_empty);
+        pad_pair(&mut self.feature, &mut self.feature_dirty);
+        pad_pair(&mut self.expand_open, &mut self.expand_closed);
+        pad_pair(&mut self.guide_branch, &mut self.guide_last);
+    }
+}
+
+#[allow(dead_code)]
+fn pad_pair(a: &mut String, b: &mut String) {
+    let w = UnicodeWidthStr::width(a.as_str()).max(UnicodeWidthStr::width(b.as_str()));
+    if w == 0 {
+        return;
+    }
+    for s in [a, b] {
+        let pad = w - UnicodeWidthStr::width(s.as_str());
+        s.push_str(&" ".repeat(pad + 1));
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1548,6 +1697,90 @@ impl StatusPatterns {
 mod tests {
     use super::*;
     use crate::util::testutil::with_fresh_xdg;
+
+    #[test]
+    fn icon_presets_carry_the_documented_glyphs() {
+        let nf = IconsConfig::preset("nerdfont");
+        assert!(
+            nf.feature_dirty.starts_with('\u{f062c}'),
+            "nerdfont dirty: {:?}",
+            nf.feature_dirty
+        );
+        assert_eq!(
+            nf.feature.trim_end(),
+            "",
+            "nerdfont clean feature draws nothing"
+        );
+        assert_eq!(nf.project.trim_end(), "▣");
+        assert_eq!(nf.border, BorderStyle::Rounded);
+
+        let uni = IconsConfig::preset("unicode");
+        assert_eq!(uni.feature.trim_end(), "◇");
+        assert_eq!(uni.feature_dirty.trim_end(), "◆");
+
+        let ascii = IconsConfig::preset("ascii");
+        assert_eq!(ascii.guide_branch.trim_end(), "|-");
+        assert_eq!(ascii.guide_last.trim_end(), "`-");
+        assert_eq!(ascii.ellipsis, "...");
+        assert_eq!(ascii.border, BorderStyle::Ascii);
+
+        let none = IconsConfig::preset("none");
+        assert_eq!(none.project, "", "none: no type icon, no column at all");
+        assert_eq!(none.feature, "");
+        assert_eq!(
+            none.expand_open.trim_end(),
+            "▾",
+            "none keeps markers — a tree needs them"
+        );
+    }
+
+    #[test]
+    fn an_unknown_preset_falls_back_to_nerdfont() {
+        assert_eq!(IconsConfig::preset("nope"), IconsConfig::preset("nerdfont"));
+    }
+
+    #[test]
+    fn column_sharing_keys_are_padded_to_equal_width() {
+        use unicode_width::UnicodeWidthStr;
+        for name in ICON_PRESETS {
+            let i = IconsConfig::preset(name);
+            for (a, b, what) in [
+                (&i.project, &i.project_empty, "project"),
+                (&i.feature, &i.feature_dirty, "feature"),
+                (&i.expand_open, &i.expand_closed, "expand"),
+                (&i.guide_branch, &i.guide_last, "guide"),
+            ] {
+                assert_eq!(
+                    UnicodeWidthStr::width(a.as_str()),
+                    UnicodeWidthStr::width(b.as_str()),
+                    "{name}: {what} pair must share a column width"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_non_empty_icon_column_carries_its_own_trailing_space() {
+        // Render sites concatenate icon + name directly, so the separating
+        // space lives in the padded icon. An empty column adds no space.
+        let nf = IconsConfig::preset("nerdfont");
+        assert!(nf.project.ends_with(' '), "project: {:?}", nf.project);
+        assert!(
+            nf.feature_dirty.ends_with(' '),
+            "dirty: {:?}",
+            nf.feature_dirty
+        );
+        assert_eq!(
+            unicode_width::UnicodeWidthStr::width(nf.feature.as_str()),
+            unicode_width::UnicodeWidthStr::width(nf.feature_dirty.as_str()),
+            "clean pads to the dirty glyph's column, trailing space included"
+        );
+        assert_eq!(
+            IconsConfig::preset("none").project,
+            "",
+            "empty column: no space"
+        );
+    }
 
     #[test]
     fn first_run_writes_defaults() {
