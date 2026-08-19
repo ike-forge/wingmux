@@ -98,29 +98,6 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     p
 }
 
-/// ASCII-only rendering: terminals that mangle box-drawing characters get a
-/// plain fallback (`+ - |` borders, `v`/`>` tree markers). Triggered by a
-/// non-empty `LW_ASCII` env var, or by a C/POSIX locale (exact match — a
-/// UTF-8 locale like `C.UTF-8` renders box-drawing fine). First non-empty
-/// locale var wins, mirroring libc precedence (LC_ALL > LC_CTYPE > LANG).
-pub fn ascii_requested() -> bool {
-    if let Ok(v) = std::env::var("LW_ASCII")
-        && !v.is_empty()
-    {
-        return true;
-    }
-    for var in ["LC_ALL", "LC_CTYPE", "LANG"] {
-        if let Ok(v) = std::env::var(var) {
-            let v = v.to_ascii_lowercase();
-            if v.is_empty() {
-                continue;
-            }
-            return v == "c" || v == "posix";
-        }
-    }
-    false
-}
-
 #[cfg(test)]
 pub mod testutil {
     //! Shared helpers so env-mutating tests don't race each other. All tests
@@ -252,60 +229,5 @@ mod tests {
         assert_eq!(normalize_path(Path::new("../wt")), PathBuf::from("../wt"));
         assert_eq!(normalize_path(Path::new("/a/../../b")), PathBuf::from("/b"));
         assert_eq!(normalize_path(Path::new(".")), PathBuf::from(""));
-    }
-
-    /// ASCII fallback trigger: `LW_ASCII=1` forces it, a C/POSIX locale
-    /// forces it, `C.UTF-8` does not. Env vars are process-global, so this
-    /// runs under the same lock as the XDG tests.
-    #[test]
-    fn ascii_requested_follows_env() {
-        testutil::with_fresh_xdg(|| {
-            unsafe {
-                std::env::remove_var("LW_ASCII");
-                std::env::remove_var("LC_ALL");
-                std::env::remove_var("LC_CTYPE");
-                std::env::remove_var("LANG");
-            }
-            assert!(!ascii_requested(), "no signals → unicode mode");
-
-            unsafe { std::env::set_var("LW_ASCII", "1") };
-            assert!(ascii_requested(), "LW_ASCII forces ascii");
-
-            unsafe {
-                std::env::remove_var("LW_ASCII");
-                std::env::set_var("LC_ALL", "C");
-            }
-            assert!(ascii_requested(), "C locale forces ascii");
-
-            unsafe { std::env::set_var("LC_ALL", "POSIX") };
-            assert!(ascii_requested(), "POSIX locale forces ascii");
-
-            unsafe {
-                std::env::remove_var("LC_ALL");
-                std::env::set_var("LC_CTYPE", "C.UTF-8");
-            }
-            assert!(
-                !ascii_requested(),
-                "C.UTF-8 renders box-drawing fine — no ascii"
-            );
-
-            unsafe {
-                std::env::remove_var("LC_CTYPE");
-                std::env::set_var("LANG", "en_US.UTF-8");
-            }
-            assert!(!ascii_requested(), "an ordinary UTF-8 locale is unicode");
-
-            unsafe { std::env::set_var("LC_ALL", "c") };
-            assert!(
-                ascii_requested(),
-                "LC_ALL wins over LANG and is case-insensitive"
-            );
-
-            unsafe {
-                std::env::remove_var("LC_ALL");
-                std::env::remove_var("LC_CTYPE");
-                std::env::remove_var("LANG");
-            }
-        });
     }
 }

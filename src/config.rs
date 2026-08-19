@@ -822,6 +822,15 @@ impl Config {
         }
 
         let mut diags: Vec<String> = Vec::new();
+
+        // Retired in favour of [icons]: a boolean answered "can this
+        // terminal draw box characters?", not "which glyphs suit my font?".
+        if std::env::var_os("LW_ASCII").is_some_and(|v| !v.is_empty()) {
+            diags.push(
+                "LW_ASCII is no longer read; set [icons].preset = \"ascii\" in config.toml".into(),
+            );
+        }
+
         let mut sources: Vec<(String, &'static str)> = Vec::new();
         let mut merged = toml::Table::new();
         let mut layer_paths: Vec<(&'static str, PathBuf)> = Vec::new();
@@ -2523,6 +2532,23 @@ mod tests {
             let cfg = Config::load().unwrap();
             unsafe { std::env::remove_var("LW_CONFIG") };
             assert_eq!(cfg.theme, "ansi", "LW_CONFIG must win over the XDG file");
+        });
+    }
+
+    #[test]
+    fn lw_ascii_is_reported_as_retired() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            unsafe { std::env::set_var("LW_ASCII", "1") };
+            let cfg = load_user(cwd.path(), "");
+            unsafe { std::env::remove_var("LW_ASCII") };
+            assert!(
+                cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("LW_ASCII") && d.contains("[icons].preset")),
+                "diagnostics: {:?}",
+                cfg.diagnostics
+            );
         });
     }
 
