@@ -71,6 +71,7 @@ fn overlay_min(kind: OverlayKind) -> (u16, u16) {
         OverlayKind::Help => (44, 14),
         OverlayKind::Diagnostics => (44, 10),
         OverlayKind::ThemePicker => (34, 10),
+        OverlayKind::Messages => (34, 10),
         OverlayKind::Input | OverlayKind::Confirm => (34, 10),
         // The textarea is the main interaction — it needs real estate.
         OverlayKind::Textarea => (50, 12),
@@ -82,6 +83,7 @@ enum OverlayKind {
     Help,
     Diagnostics,
     ThemePicker,
+    Messages,
     Input,
     Confirm,
     Textarea,
@@ -160,6 +162,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let kind = OverlayKind::ThemePicker;
             if fits(area, overlay_min(kind)) {
                 let rect = draw_theme_picker(f, app);
+                app.popup_area = Some(rect);
+            } else {
+                draw_overlay_too_small(f, area, app, kind);
+            }
+        }
+        Mode::Messages { .. } => {
+            let kind = OverlayKind::Messages;
+            if fits(area, overlay_min(kind)) {
+                let rect = draw_messages(f, app);
                 app.popup_area = Some(rect);
             } else {
                 draw_overlay_too_small(f, area, app, kind);
@@ -570,6 +581,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
         Sel::Feature(pi, fi) if app.solo_shell(pi, fi).is_some() => vec![
             ("↵ attach".into(), Attach),
             ("s send".into(), QuickSend),
+            ("p predefined".into(), PredefinedSend),
             ("a shell".into(), AddShell),
             ("d delete".into(), DeleteFeature),
             ("? help".into(), Help),
@@ -583,6 +595,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
         Sel::Shell(..) => vec![
             ("↵ attach".into(), Attach),
             ("s send".into(), QuickSend),
+            ("p predefined".into(), PredefinedSend),
             ("d delete".into(), DeleteFeature),
             ("? help".into(), Help),
         ],
@@ -751,10 +764,9 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             (&["j/k", "arrows"], &["move selection"]),
             (&["h"], &["collapse", "jump to parent"]),
             (&["l", "Enter"], &["expand", "attach"]),
-            (&["g/G"], &["first / last item"]),
+            (&["g/G", "Home/End"], &["first / last item"]),
             (&["PgUp/PgDn", "ctrl-u/d"], &["half page"]),
             (&["ctrl-f/b"], &["full page"]),
-            (&["Home/End"], &["first / last item"]),
         ],
     ),
     (
@@ -775,7 +787,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             (&["n"], &["new feature"]),
             (&["a"], &["add shell"]),
             (&["Enter"], &["attach", "one-shell feature"]),
-            (&["s"], &["quick-send", "one-shell feature"]),
+            (
+                &["s", "p"],
+                &["quick-send / predefined", "one-shell feature"],
+            ),
             (
                 &["d"],
                 &["delete feature", "kills windows", "removes worktree"],
@@ -787,6 +802,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
         &[
             (&["Enter"], &["attach to shell"]),
             (&["s"], &["quick-send", "ctrl-s sends"]),
+            (&["p"], &["predefined message", "Enter sends", "1-9 pick"]),
             (&["d"], &["delete this feature"]),
         ],
     ),
@@ -994,6 +1010,73 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
     );
     lines.push(Line::from(Span::styled(footer, fg(theme.dim))));
     let block = popup_block(theme, " themes ");
+    f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    if app.ascii {
+        asciify(f, area);
+    }
+    area
+}
+
+/// The predefined-message modal (`p`): the configured presets as a
+/// numbered list. Same shape as the theme picker — content-sized, cursor
+/// on the selection, keys in the footer.
+fn draw_messages(f: &mut Frame, app: &App) -> Rect {
+    let theme = &app.theme.colors;
+    let index = match &app.mode {
+        Mode::Messages { index } => *index,
+        _ => 0,
+    };
+    let labels: Vec<&str> = app.cfg.messages.iter().map(|m| m.label.as_str()).collect();
+    let w = labels
+        .iter()
+        .map(|l| l.chars().count() as u16)
+        .max()
+        .unwrap_or(20)
+        .saturating_add(10)
+        .max(34)
+        .min(f.area().width);
+    let h = (labels.len() as u16 + 3).min(f.area().height);
+    let area = Rect::new(
+        f.area().x + (f.area().width.saturating_sub(w)) / 2,
+        f.area().y + (f.area().height.saturating_sub(h)) / 2,
+        w,
+        h,
+    );
+    f.render_widget(Clear, area);
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    let rows = inner.height.saturating_sub(1) as usize; // last line = footer
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, label) in labels.iter().take(rows).enumerate() {
+        let selected = i == index;
+        let marker = if app.ascii { ">" } else { "▸" };
+        // The number is the key that sends the entry (up to 9 of them).
+        let num = if i < 9 {
+            format!("{} ", i + 1)
+        } else {
+            "  ".into()
+        };
+        let label = if selected {
+            format!(" {marker} {num}{label} ")
+        } else {
+            format!("   {num}{label} ")
+        };
+        lines.push(Line::from(if selected {
+            vec![Span::styled(
+                label,
+                on(theme.selection_fg, theme.selection_bg).add_modifier(Modifier::BOLD),
+            )]
+        } else {
+            vec![Span::styled(label, fg(theme.foreground))]
+        }));
+    }
+    let footer = format!(" Enter send{}Esc cancel ", sep(app.ascii));
+    lines.push(Line::from(Span::styled(footer, fg(theme.dim))));
+    let block = popup_block(theme, " messages ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     if app.ascii {
         asciify(f, area);
@@ -1614,6 +1697,11 @@ mod tests {
                 assert!(text.contains("this help"), "bar '? help' ↔ help row");
             } else if word == "send" {
                 assert!(text.contains("quick-send"), "bar 's send' ↔ help row");
+            } else if word == "predefined" {
+                assert!(
+                    text.contains("predefined message"),
+                    "bar 'p predefined' ↔ help row"
+                );
             } else if word == "feature" {
                 assert!(text.contains("new feature"), "bar 'n feature' ↔ help");
             } else if word == "shell" {
@@ -2092,5 +2180,88 @@ mod tests {
             "expected >= {PREVIEW_BOTTOM_PAD} blank rows under the last line \
              (last at {last}, border at {bottom_border})"
         );
+    }
+
+    // ---- M11 — predefined messages modal ----
+
+    /// The modal lists the configured messages, numbered, with the cursor
+    /// on the selected one and its own dismissable rect.
+    #[test]
+    fn messages_modal_lists_numbered_entries() {
+        let mut app = seeded_app();
+        app.mode = Mode::Messages { index: 1 };
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("messages"), "modal has a title");
+        assert!(text.contains("1 continue"), "first entry is numbered");
+        assert!(
+            text.contains("2 merge + drop worktree"),
+            "second entry is numbered, got: {text}"
+        );
+        assert!(text.contains("Enter send"), "modal states its keys");
+        assert!(
+            app.popup_area.is_some(),
+            "modal must register its dismissable rect"
+        );
+    }
+
+    /// A frame too small for the modal is refused with a message, never
+    /// drawn as garbage.
+    #[test]
+    fn tiny_frame_refuses_the_messages_modal() {
+        let mut app = seeded_app();
+        app.mode = Mode::Messages { index: 0 };
+        let backend = ratatui::backend::TestBackend::new(30, 8);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("too small"), "tiny frame refuses the modal");
+    }
+
+    /// Ascii mode keeps the modal free of unicode glyphs.
+    #[test]
+    fn messages_modal_ascii_fallback_is_clean() {
+        let mut app = seeded_app();
+        app.ascii = true;
+        app.mode = Mode::Messages { index: 0 };
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            text.is_ascii(),
+            "ascii mode must not emit unicode: {text:?}"
+        );
+    }
+
+    /// The statusbar advertises `p` on a shell (same words as the help).
+    #[test]
+    fn statusbar_offers_predefined_on_a_shell() {
+        let mut app = seeded_app();
+        app.sel = crate::app::Sel::Shell(0, 0, 0);
+        let labels: Vec<String> = bar_entries(&app).into_iter().map(|(l, _)| l).collect();
+        assert!(
+            labels.iter().any(|l| l == "p predefined"),
+            "shell shortcuts: {labels:?}"
+        );
+        assert!(
+            bar_entries(&app)
+                .iter()
+                .any(|(_, a)| *a == BarAction::PredefinedSend),
+            "the entry is clickable"
+        );
+    }
+
+    /// The help palette documents `p` under the shell group.
+    #[test]
+    fn help_documents_predefined_messages() {
+        let rows: Vec<&str> = HELP_GROUPS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter())
+            .flat_map(|(keys, _)| keys.iter().copied())
+            .collect();
+        assert!(rows.contains(&"p"), "help lists the p key: {rows:?}");
     }
 }

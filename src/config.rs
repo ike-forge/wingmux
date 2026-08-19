@@ -88,6 +88,19 @@ agent_command = "claude"
 # Shell used for agent windows.
 agent_shell = "bash"
 
+# Predefined messages, offered by the `p` modal on a selected shell:
+# pick one and it is sent to the agent exactly as if you had typed it.
+# `label` is what the modal lists, `text` is what gets sent (label may be
+# omitted — then the text is listed). Defining any [[messages]] entry
+# replaces this whole list, like every other list in this file.
+[[messages]]
+label = "continue"
+text = "continue"
+
+[[messages]]
+label = "merge + drop worktree"
+text = "merge to master, drop the worktree"
+
 # Agent presets, selectable per project via `agent = "<name>"`.
 # The `patterns` regexes are matched against the tail of a pane's capture
 # to classify its status (working / waiting / failed). Order of checks:
@@ -138,6 +151,8 @@ pub struct Config {
     pub defaults: DefaultsConfig,
     pub agents: Vec<AgentConfig>,
     pub projects: Vec<ProjectConfig>,
+    /// Predefined messages offered by the `p` modal (quick-send presets).
+    pub messages: Vec<MessageConfig>,
     /// Diagnostics collected while loading (per configuration rules: a
     /// malformed config never prevents startup — the smallest addressable
     /// unit is dropped and reported here). Filled by `load`; skipped by
@@ -203,6 +218,17 @@ pub struct StatusPatterns {
     pub failed: Vec<String>,
 }
 
+/// One entry of the predefined-message modal (`p`): the label shown in
+/// the list and the text pasted into the agent pane.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct MessageConfig {
+    /// Shown in the modal; falls back to `text` when left empty.
+    pub label: String,
+    /// What is sent to the shell — exactly as if it had been typed.
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ProjectConfig {
@@ -257,6 +283,7 @@ impl Default for Config {
                 },
             ],
             projects: Vec::new(),
+            messages: default_messages(),
             diagnostics: Vec::new(),
             sources: Vec::new(),
         }
@@ -445,6 +472,7 @@ const TOP_KEYS: &[&str] = &[
     "defaults",
     "agents",
     "projects",
+    "messages",
 ];
 const TMUX_KEYS: &[&str] = &["back_key"];
 const WORKTREES_KEYS: &[&str] = &["root", "base_branch", "delete_branch"];
@@ -453,6 +481,7 @@ const DEFAULTS_KEYS: &[&str] = &["agent_command", "agent_shell"];
 const AGENT_KEYS: &[&str] = &["name", "command", "shell", "patterns"];
 const PATTERN_KEYS: &[&str] = &["working", "waiting", "failed"];
 const PROJECT_KEYS: &[&str] = &["path", "base_branch", "agent", "agent_command"];
+const MESSAGE_KEYS: &[&str] = &["label", "text"];
 
 impl Config {
     /// Load config, writing defaults (and built-in themes) on first run.
@@ -670,6 +699,17 @@ impl Config {
                 self.projects
                     .iter()
                     .map(|p| format!("\"{}\"", p.path))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+        line(
+            "messages",
+            format!(
+                "[{}]",
+                self.messages
+                    .iter()
+                    .map(|m| format!("\"{}\"", m.label))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -944,6 +984,21 @@ fn report_unknown_keys(table: &toml::Table, file: &Path, diags: &mut Vec<String>
                 }
             }
         }
+        if key == "messages"
+            && let Some(arr) = value.as_array()
+        {
+            for entry in arr {
+                let Some(t) = entry.as_table() else { continue };
+                for mk in t.keys() {
+                    if !MESSAGE_KEYS.contains(&mk.as_str()) {
+                        diags.push(format!(
+                            "{}: unknown key 'messages.{mk}' ignored",
+                            file.display()
+                        ));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1017,6 +1072,7 @@ fn deserialize_lenient(
     // exactly like the serde-default path it replaces)
     cfg.agents = take_agent_list(merged, layer_paths, sources, diags, cfg.agents);
     cfg.projects = take_project_list(merged, layer_paths, sources, diags);
+    cfg.messages = take_message_list(merged, layer_paths, sources, diags, cfg.messages);
 
     cfg
 }
@@ -1329,6 +1385,50 @@ fn take_project_list(
     projects
 }
 
+fn take_message_list(
+    merged: &toml::Table,
+    layer_paths: &[(&'static str, PathBuf)],
+    sources: &[(String, &'static str)],
+    diags: &mut Vec<String>,
+    default: Vec<MessageConfig>,
+) -> Vec<MessageConfig> {
+    let mut messages = take_list(merged, "messages", default, layer_paths, sources, diags);
+    let file = where_file(layer_paths, sources, "messages");
+    messages.retain(|m| {
+        let ok = !m.text.trim().is_empty();
+        if !ok {
+            diags.push(format!(
+                "{file}: predefined message with empty text — entry dropped"
+            ));
+        }
+        ok
+    });
+    // A label is a convenience, not a requirement: an entry without one
+    // is listed by the text it sends.
+    for m in messages.iter_mut() {
+        if m.label.trim().is_empty() {
+            m.label = m.text.clone();
+        }
+    }
+    messages
+}
+
+/// The built-in predefined messages, used when no config layer defines
+/// `[[messages]]` (a list that IS defined replaces these, like every
+/// other config list).
+pub fn default_messages() -> Vec<MessageConfig> {
+    vec![
+        MessageConfig {
+            label: "continue".into(),
+            text: "continue".into(),
+        },
+        MessageConfig {
+            label: "merge + drop worktree".into(),
+            text: "merge to master, drop the worktree".into(),
+        },
+    ]
+}
+
 /// \"Which file\" for a merged key — the layer that won it, resolved to its
 /// path (best effort, defaults to the first layer on unknown keys).
 fn where_file(
@@ -1381,6 +1481,22 @@ mod tests {
             // written file parses back identically
             let again = Config::load().unwrap();
             assert_eq!(again.theme, crate::theme::DEFAULT_THEME);
+        });
+    }
+
+    #[test]
+    fn first_run_config_documents_predefined_messages() {
+        with_fresh_xdg(|| {
+            Config::load().unwrap();
+            let text = std::fs::read_to_string(crate::util::config_path()).unwrap();
+            assert!(
+                text.contains("[[messages]]"),
+                "the written config must show how to configure predefined messages"
+            );
+            // and the file that was written parses back to the same list
+            let cfg = Config::load().unwrap();
+            let labels: Vec<&str> = cfg.messages.iter().map(|m| m.label.as_str()).collect();
+            assert_eq!(labels, vec!["continue", "merge + drop worktree"]);
         });
     }
 
@@ -1868,6 +1984,111 @@ mod tests {
             // no [[agents]] in the file → built-in presets remain
             assert!(cfg.agents.iter().any(|a| a.name == "claude"));
             assert!(cfg.agents.iter().any(|a| a.name == "codex"));
+        });
+    }
+
+    #[test]
+    fn message_defaults_kept_when_list_absent() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(cwd.path(), "theme = \"ansi\"\n");
+            // no [[messages]] in the file → built-in predefined messages remain
+            let labels: Vec<&str> = cfg.messages.iter().map(|m| m.label.as_str()).collect();
+            assert_eq!(labels, vec!["continue", "merge + drop worktree"]);
+            assert_eq!(cfg.messages[0].text, "continue");
+            assert_eq!(cfg.messages[1].text, "merge to master, drop the worktree");
+        });
+    }
+
+    #[test]
+    fn configured_messages_replace_the_defaults() {
+        let cfg = Config::from_str(
+            r#"
+            [[messages]]
+            label = "ship it"
+            text = "run the gate and push"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.messages.len(), 1);
+        assert_eq!(cfg.messages[0].label, "ship it");
+        assert_eq!(cfg.messages[0].text, "run the gate and push");
+    }
+
+    #[test]
+    fn message_without_label_falls_back_to_its_text() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(cwd.path(), "[[messages]]\ntext = \"continue\"\n");
+            assert_eq!(cfg.messages.len(), 1);
+            assert_eq!(cfg.messages[0].label, "continue");
+        });
+    }
+
+    #[test]
+    fn message_with_empty_text_is_dropped_others_kept() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(
+                cwd.path(),
+                r#"
+                [[messages]]
+                label = "empty"
+                text = ""
+
+                [[messages]]
+                label = "ok"
+                text = "continue"
+                "#,
+            );
+            let labels: Vec<&str> = cfg.messages.iter().map(|m| m.label.as_str()).collect();
+            assert_eq!(labels, vec!["ok"]);
+            assert!(
+                cfg.diagnostics.iter().any(|d| d.contains("empty text")),
+                "dropped message must be reported: {:?}",
+                cfg.diagnostics
+            );
+        });
+    }
+
+    #[test]
+    fn messages_section_is_known_but_its_stray_keys_are_reported() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(
+                cwd.path(),
+                "[[messages]]\nlabel = \"go\"\ntext = \"continue\"\ncolour = \"red\"\n",
+            );
+            assert_eq!(cfg.messages.len(), 1, "the entry itself is kept");
+            assert!(
+                !cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("unknown key 'messages'")),
+                "the section is known: {:?}",
+                cfg.diagnostics
+            );
+            assert!(
+                cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("unknown key 'messages.colour'")),
+                "stray entry key must be reported: {:?}",
+                cfg.diagnostics
+            );
+        });
+    }
+
+    #[test]
+    fn config_dump_lists_message_labels() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(cwd.path(), "theme = \"ansi\"\n");
+            assert!(
+                cfg.dump_string().contains(
+                    "messages = [\"continue\", \"merge + drop worktree\"]  # from defaults"
+                ),
+                "dump: {}",
+                cfg.dump_string()
+            );
         });
     }
 }

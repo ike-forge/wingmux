@@ -81,6 +81,7 @@ the help overlay (`?`).
 | `n` | new feature (worktree + branch + agent shell) |
 | `a` | add a shell to the selected feature |
 | `s` | **quick-send** a line to the selected shell (or to a one-shell feature's row) |
+| `p` | **predefined messages** for the selected shell (or a one-shell feature's row) — a modal of configured presets (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
 | `d` | delete feature (kills windows, removes worktree; `f` = force when dirty) |
 | `x` | remove project from LazyWingman (windows killed, worktrees kept) |
 | `r` | refresh — reconcile state against reality |
@@ -124,6 +125,14 @@ skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
 [defaults]
 agent_command = "claude"     # spawned in every new feature shell by default
 agent_shell = "bash"
+
+[[messages]]                 # `p` modal: canned prompts for the selected shell
+label = "continue"           # what the modal lists (optional — defaults to text)
+text = "continue"            # what is sent, exactly as if you had typed it
+
+[[messages]]
+label = "merge + drop worktree"
+text = "merge to master, drop the worktree"
 
 [[agents]]                   # presets: patterns classify pane status
 name = "codex"

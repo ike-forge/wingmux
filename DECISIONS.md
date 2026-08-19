@@ -311,3 +311,18 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   the only thing on that row the user cannot act on — a handle for our own
   `select-window` calls. It is still in `state.json`, which is where a
   debugging session should look for it.
+- **M12 — predefined messages are a picker, not a second editor**: `p` on a
+  shell opens `Mode::Messages`, a numbered list of the configured presets,
+  and `Enter` (or the entry's own digit `1`-`9`) **sends immediately** —
+  no detour through the textarea. The whole point of a canned prompt is
+  that it needs no editing; anything that does is what `s` is for. The
+  text goes through the same `quick_send` paste path as the textarea, so
+  the agent cannot tell a preset from a typed prompt.
+- **M12 — `[[messages]]` replaces the built-ins, like every other list**:
+  a config that defines any entry defines the whole list (the layering
+  rule "maps merge deeply, lists are replaced outright"). The two
+  defaults ("continue", "merge to master, drop the worktree") therefore
+  only apply when no layer mentions `[[messages]]` — and they are written
+  out verbatim on first run, so editing them is editing a visible list,
+  not fighting an invisible one. `label` is optional: an entry without it
+  is listed by the text it sends.

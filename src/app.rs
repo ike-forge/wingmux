@@ -80,6 +80,13 @@ pub enum Mode {
     ThemePicker {
         index: usize,
     },
+    /// Predefined-message modal (`p`): the configured quick-send presets
+    /// as a list. j/k move, digits `1`..`9` pick an entry directly, Enter
+    /// sends the selected one, Esc closes. Sending uses the same paste
+    /// path as the textarea — the agent sees what a human would type.
+    Messages {
+        index: usize,
+    },
     /// Startup diagnostics overlay (shown when configuration problems were
     /// dropped at load — see the configuration guidelines). Scrollable list
     /// of diagnostics, dismissed with Esc/q/Enter.
@@ -285,6 +292,7 @@ pub enum BarAction {
     NewFeature,
     AddShell,
     QuickSend,
+    PredefinedSend,
     DeleteFeature,
     RemoveProject,
     Attach,
@@ -1805,6 +1813,29 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') => self.cancel_theme_picker(),
                 _ => {}
             },
+            Mode::Messages { index } => {
+                let last = self.cfg.messages.len().saturating_sub(1);
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => *index = (*index + 1).min(last),
+                    KeyCode::Char('k') | KeyCode::Up => *index = index.saturating_sub(1),
+                    KeyCode::Enter | KeyCode::Char('l') => {
+                        let i = *index;
+                        self.mode = Mode::Normal;
+                        self.send_predefined(i);
+                    }
+                    // The list numbers itself, so the numbers are keys:
+                    // `2` sends the second entry without moving there.
+                    KeyCode::Char(c @ '1'..='9') => {
+                        let i = c as usize - '1' as usize;
+                        if i < self.cfg.messages.len() {
+                            self.mode = Mode::Normal;
+                            self.send_predefined(i);
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
+                    _ => {}
+                }
+            }
             Mode::Normal => self.on_key_normal(key),
         }
     }
@@ -1858,6 +1889,7 @@ impl App {
                     self.notify("select a shell to quick-send");
                 }
             }
+            KeyCode::Char('p') => self.open_messages(),
             KeyCode::Char('d') => self.confirm_delete_feature(),
             KeyCode::Char('x') => self.confirm_remove_project(),
             KeyCode::Char('r') => {
@@ -1873,6 +1905,54 @@ impl App {
     pub(crate) fn open_help(&mut self) {
         self.help_scroll = 0;
         self.mode = Mode::Help;
+    }
+
+    /// Open the predefined-message modal on the selected shell. With
+    /// nothing to show — no shell selected, or no configured messages —
+    /// say so instead of opening an empty box.
+    fn open_messages(&mut self) {
+        if self.selected_shell().is_none() {
+            self.notify("select a shell to send a predefined message");
+            return;
+        }
+        if self.cfg.messages.is_empty() {
+            self.notify("no predefined messages configured");
+            return;
+        }
+        self.mode = Mode::Messages { index: 0 };
+    }
+
+    /// Send the configured message at `index` to the selected shell — the
+    /// same paste path as the quick-send textarea, so a preset and a typed
+    /// prompt are indistinguishable to the agent.
+    fn send_predefined(&mut self, index: usize) {
+        let Some(text) = self.cfg.messages.get(index).map(|m| m.text.clone()) else {
+            return;
+        };
+        let Some((pi, fi, si)) = self.selected_shell() else {
+            self.notify("select a shell to send a predefined message");
+            return;
+        };
+        if let Err(e) = self.quick_send(pi, fi, si, &text) {
+            self.fail(&e);
+        }
+    }
+
+    /// The cursor of the open predefined-message modal (0 when it is not
+    /// open — callers only ask while it is).
+    fn messages_index(&self) -> usize {
+        match self.mode {
+            Mode::Messages { index } => index,
+            _ => 0,
+        }
+    }
+
+    /// Move the modal cursor to `n`, clamped to the configured list.
+    fn messages_to(&mut self, n: usize) {
+        let last = self.cfg.messages.len().saturating_sub(1);
+        if let Mode::Messages { index } = &mut self.mode {
+            *index = n.min(last);
+        }
     }
 
     /// Close the startup diagnostics overlay.
@@ -2004,6 +2084,8 @@ impl App {
                     self.help_scroll_to(self.help_scroll + 3);
                 } else if matches!(self.mode, Mode::Diagnostics) {
                     self.diag_scroll_to(self.diag_scroll + 3);
+                } else if matches!(self.mode, Mode::Messages { .. }) {
+                    self.messages_to(self.messages_index().saturating_add(3));
                 } else if matches!(self.mode, Mode::ThemePicker { .. }) {
                     self.picker_to(self.picker_index().saturating_add(3));
                 } else {
@@ -2015,6 +2097,8 @@ impl App {
                     self.help_scroll_to(self.help_scroll.saturating_sub(3));
                 } else if matches!(self.mode, Mode::Diagnostics) {
                     self.diag_scroll_to(self.diag_scroll.saturating_sub(3));
+                } else if matches!(self.mode, Mode::Messages { .. }) {
+                    self.messages_to(self.messages_index().saturating_sub(3));
                 } else if matches!(self.mode, Mode::ThemePicker { .. }) {
                     self.picker_to(self.picker_index().saturating_sub(3));
                 } else {
@@ -2047,6 +2131,29 @@ impl App {
         // a click inside keeps keyboard as the way in. The theme picker is
         // the exception: clicking a theme row selects + previews it, and a
         // double-click keeps it (Enter).
+        if let Mode::Messages { index } = &mut self.mode {
+            let inside = self
+                .popup_area
+                .map(|r| x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height)
+                .unwrap_or(false);
+            if !inside {
+                self.mode = Mode::Normal; // click outside = Esc
+                return;
+            }
+            // Rows start one line below the popup border; a click on one
+            // selects it, a double-click sends it (Enter).
+            if let Some(r) = self.popup_area {
+                let row = y.saturating_sub(r.y + 1) as usize;
+                if row < self.cfg.messages.len() {
+                    *index = row;
+                    if dbl {
+                        self.mode = Mode::Normal;
+                        self.send_predefined(row);
+                    }
+                }
+            }
+            return;
+        }
         if let Mode::ThemePicker { index } = &mut self.mode {
             let inside = self
                 .popup_area
@@ -2148,6 +2255,7 @@ impl App {
                     };
                 }
             }
+            BarAction::PredefinedSend => self.open_messages(),
             BarAction::DeleteFeature => self.confirm_delete_feature(),
             BarAction::RemoveProject => self.confirm_remove_project(),
             BarAction::Attach => {
@@ -2172,7 +2280,10 @@ impl App {
     /// theme picker is open they move the picker cursor. Same code path
     /// as the tree motions, so the two spellings cannot drift.
     fn move_view(&mut self, half_pages: i32) {
-        if let Mode::ThemePicker { index } = &mut self.mode {
+        if matches!(self.mode, Mode::Messages { .. }) {
+            let step = 5 * half_pages;
+            self.messages_to(self.messages_index().saturating_add_signed(step as isize));
+        } else if let Mode::ThemePicker { index } = &mut self.mode {
             let step = 5 * half_pages;
             *index = (index.saturating_add_signed(step as isize))
                 .min(self.theme_names.len().saturating_sub(1));
@@ -2209,7 +2320,9 @@ impl App {
     }
 
     fn move_view_first(&mut self) {
-        if let Mode::ThemePicker { index } = &mut self.mode {
+        if matches!(self.mode, Mode::Messages { .. }) {
+            self.messages_to(0);
+        } else if let Mode::ThemePicker { index } = &mut self.mode {
             *index = 0;
             self.preview_picker_theme();
         } else if matches!(self.mode, Mode::Help) {
@@ -2222,7 +2335,9 @@ impl App {
     }
 
     fn move_view_last(&mut self) {
-        if let Mode::ThemePicker { index } = &mut self.mode {
+        if matches!(self.mode, Mode::Messages { .. }) {
+            self.messages_to(usize::MAX);
+        } else if let Mode::ThemePicker { index } = &mut self.mode {
             *index = self.theme_names.len().saturating_sub(1);
             self.preview_picker_theme();
         } else if matches!(self.mode, Mode::Help) {
@@ -3890,5 +4005,215 @@ mod tests {
         app.mode = Mode::Diagnostics;
         app.on_mouse(click(22, 6));
         assert!(matches!(app.mode, Mode::Diagnostics));
+    }
+
+    // ---- M11 — predefined messages (`p`) ----
+
+    /// `p` on a shell opens the predefined-message modal; anywhere else it
+    /// says what to select instead (same shape as `s`).
+    #[test]
+    fn p_opens_predefined_messages_only_on_a_shell() {
+        let mut app = app_with_shell();
+        app.sel = Sel::Project(0);
+        app.on_key(key(KeyCode::Char('p'), false));
+        assert!(matches!(app.mode, Mode::Normal), "no modal on a project");
+        assert!(
+            app.message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("select a shell")),
+            "a hint is shown instead"
+        );
+
+        app.sel = Sel::Shell(0, 0, 0);
+        app.on_key(key(KeyCode::Char('p'), false));
+        assert!(
+            matches!(app.mode, Mode::Messages { index: 0 }),
+            "p opens the modal on the first entry"
+        );
+    }
+
+    /// A folded one-shell feature row IS its shell (M11), so `p` opens
+    /// the modal there exactly like `s` sends from it.
+    #[test]
+    fn p_opens_from_a_folded_feature_row() {
+        let mut app = app_with_shell();
+        app.sel = Sel::Feature(0, 0);
+        assert!(
+            app.solo_shell(0, 0).is_some(),
+            "the fixture's feature is folded"
+        );
+        app.on_key(key(KeyCode::Char('p'), false));
+        assert!(
+            matches!(app.mode, Mode::Messages { index: 0 }),
+            "the folded row opens the modal"
+        );
+    }
+
+    /// The modal is a list: j/k move the cursor, Esc closes it without
+    /// sending anything.
+    #[test]
+    fn predefined_modal_moves_and_esc_cancels() {
+        let mut app = app_with_shell();
+        app.on_key(key(KeyCode::Char('p'), false));
+        app.on_key(key(KeyCode::Char('j'), false));
+        assert!(matches!(app.mode, Mode::Messages { index: 1 }));
+        // clamped at the end of the list
+        app.on_key(key(KeyCode::Char('j'), false));
+        assert!(matches!(app.mode, Mode::Messages { index: 1 }));
+        app.on_key(key(KeyCode::Char('k'), false));
+        assert!(matches!(app.mode, Mode::Messages { index: 0 }));
+        app.on_key(key(KeyCode::Esc, false));
+        assert!(matches!(app.mode, Mode::Normal), "Esc closes the modal");
+    }
+
+    /// Without configured messages there is nothing to show — say so
+    /// rather than opening an empty box.
+    #[test]
+    fn p_without_configured_messages_notifies() {
+        let mut app = app_with_shell();
+        app.cfg.messages.clear();
+        app.on_key(key(KeyCode::Char('p'), false));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(
+            app.message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("no predefined messages")),
+        );
+    }
+
+    /// Enter sends the selected entry to the shell's pane — the same paste
+    /// path as `s`, so the agent sees exactly what a human would have typed.
+    #[test]
+    fn predefined_modal_enter_sends_the_selected_text() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_standalone(sock);
+            let mut app = app_with(tmux.clone());
+            let (_wid, pid) = seed_project_with_shell(&tmux, &mut app);
+            app.build_tree_flags();
+            app.sel = Sel::Shell(0, 0, 0);
+            app.cfg.messages = vec![
+                crate::config::MessageConfig {
+                    label: "first".into(),
+                    text: "lw-first-message".into(),
+                },
+                crate::config::MessageConfig {
+                    label: "second".into(),
+                    text: "lw-second-message".into(),
+                },
+            ];
+
+            app.on_key(key(KeyCode::Char('p'), false));
+            app.on_key(key(KeyCode::Char('j'), false));
+            app.on_key(key(KeyCode::Enter, false));
+            assert!(matches!(app.mode, Mode::Normal), "sending closes the modal");
+
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let capture = tmux.capture_pane(&pid, 50).unwrap();
+            assert!(
+                capture.contains("lw-second-message"),
+                "the selected entry was sent, capture: {capture}"
+            );
+            assert!(
+                !capture.contains("lw-first-message"),
+                "only the selected entry is sent, capture: {capture}"
+            );
+        });
+    }
+
+    /// Digits are the list's own shortcuts: `2` sends the second entry
+    /// without moving the cursor there first.
+    #[test]
+    fn predefined_modal_digit_sends_that_entry() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_standalone(sock);
+            let mut app = app_with(tmux.clone());
+            let (_wid, pid) = seed_project_with_shell(&tmux, &mut app);
+            app.build_tree_flags();
+            app.sel = Sel::Shell(0, 0, 0);
+            app.cfg.messages = vec![
+                crate::config::MessageConfig {
+                    label: "first".into(),
+                    text: "lw-digit-one".into(),
+                },
+                crate::config::MessageConfig {
+                    label: "second".into(),
+                    text: "lw-digit-two".into(),
+                },
+            ];
+
+            app.on_key(key(KeyCode::Char('p'), false));
+            app.on_key(key(KeyCode::Char('2'), false));
+            assert!(matches!(app.mode, Mode::Normal));
+
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let capture = tmux.capture_pane(&pid, 50).unwrap();
+            assert!(
+                capture.contains("lw-digit-two"),
+                "digit 2 sent the second entry, capture: {capture}"
+            );
+
+            // a digit past the end of the list does nothing
+            app.on_key(key(KeyCode::Char('p'), false));
+            app.on_key(key(KeyCode::Char('9'), false));
+            assert!(
+                matches!(app.mode, Mode::Messages { .. }),
+                "an out-of-range digit leaves the modal open"
+            );
+        });
+    }
+
+    /// Mouse: a click inside the modal selects that row, a double-click
+    /// sends it, and a click outside dismisses (Esc semantics).
+    #[test]
+    fn messages_modal_mouse_selects_and_dismisses() {
+        let mut app = app_with_shell();
+        app.on_key(key(KeyCode::Char('p'), false));
+        let rect = Rect::new(20, 5, 40, app.cfg.messages.len() as u16 + 3);
+        app.popup_area = Some(rect);
+
+        // click the second row (border + row index) → selects, stays open
+        app.on_mouse(click(rect.x + 5, rect.y + 1 + 1));
+        let Mode::Messages { index } = app.mode else {
+            panic!("modal must still be open after a single click");
+        };
+        assert_eq!(index, 1);
+
+        // click outside → dismissed, nothing sent
+        app.on_mouse(click(2, 2));
+        assert!(matches!(app.mode, Mode::Normal), "outside click dismisses");
+    }
+
+    /// The wheel and the page/Home/End motions move the modal cursor
+    /// instead of the tree — the overlay owns the viewport while it is up.
+    #[test]
+    fn messages_modal_owns_the_motion_keys() {
+        let mut app = app_with_shell();
+        let before = app.sel;
+        app.on_key(key(KeyCode::Char('p'), false));
+
+        app.on_key(key(KeyCode::End, false));
+        let Mode::Messages { index } = app.mode else {
+            panic!("modal must still be open");
+        };
+        assert_eq!(index, app.cfg.messages.len() - 1, "End = last entry");
+
+        app.on_key(key(KeyCode::Home, false));
+        let Mode::Messages { index } = app.mode else {
+            panic!("modal must still be open");
+        };
+        assert_eq!(index, 0, "Home = first entry");
+
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 40,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+        let Mode::Messages { index } = app.mode else {
+            panic!("modal must still be open");
+        };
+        assert_eq!(index, app.cfg.messages.len() - 1, "wheel moves the cursor");
+
+        assert_eq!(app.sel, before, "the tree never moved");
     }
 }
