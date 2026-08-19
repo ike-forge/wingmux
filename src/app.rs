@@ -1684,7 +1684,7 @@ impl App {
                     if dirty {
                         format!(
                             "{} worktree has uncommitted changes — force delete will discard them",
-                            crate::ui::warn_mark(self.ascii)
+                            crate::ui::warn_mark(&self.cfg.icons)
                         )
                     } else {
                         "worktree is clean".into()
