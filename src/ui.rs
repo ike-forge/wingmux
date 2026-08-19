@@ -20,11 +20,6 @@ const WIDE_MIN: (u16, u16) = (64, 12);
 const SPLIT_MIN: (u16, u16) = (44, 9);
 const TREE_MIN: (u16, u16) = (26, 7);
 
-/// Blank rows kept between the last captured line and the preview panel's
-/// bottom border. Without the gap the agent's newest output sits flush on
-/// the border and reads as truncated mid-sentence.
-const PREVIEW_BOTTOM_PAD: usize = 3;
-
 /// Which panels fit in a frame of `(width, height)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tier {
@@ -508,8 +503,8 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// The slice of a pane capture the preview shows in a panel of
-/// `inner_height` rows: the *newest* lines, with [`PREVIEW_BOTTOM_PAD`]
-/// rows left blank beneath them.
+/// `inner_height` rows: the *newest* lines, filling the panel down to its
+/// bottom border.
 ///
 /// `capture-pane -S -N` returns a window that starts N lines back in the
 /// scrollback and ends with the blank padding of the pane's empty area, so
@@ -520,7 +515,7 @@ fn preview_tail(capture: &str, inner_height: usize) -> String {
     while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
         lines.pop();
     }
-    let rows = inner_height.saturating_sub(PREVIEW_BOTTOM_PAD).max(1);
+    let rows = inner_height.max(1);
     let start = lines.len().saturating_sub(rows);
     lines[start..].join("\n")
 }
@@ -2135,23 +2130,26 @@ mod tests {
     }
 
     /// `preview_tail` edge cases: a capture shorter than the panel keeps
-    /// every line, and a panel too short for the pad still shows a row.
+    /// every line, and a zero-row panel still shows a row.
     #[test]
     fn preview_tail_handles_short_captures_and_tiny_panels() {
         assert_eq!(preview_tail("a\nb\nc\n\n\n", 20), "a\nb\nc");
         assert_eq!(preview_tail("", 20), "");
-        // 10 rows of panel, 3 reserved as pad → the last 7 lines
-        let ten: String = (1..=10).map(|i| format!("l{i}\n")).collect();
-        assert_eq!(preview_tail(&ten, 10), "l4\nl5\nl6\nl7\nl8\nl9\nl10");
-        // a panel smaller than the pad degrades to a single newest line
-        assert_eq!(preview_tail(&ten, 2), "l10");
+        // 10 rows of panel → the last 10 lines, flush to the bottom border
+        let ten: String = (1..=15).map(|i| format!("l{i}\n")).collect();
+        assert_eq!(
+            preview_tail(&ten, 10),
+            "l6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15"
+        );
+        assert_eq!(preview_tail(&ten, 2), "l14\nl15");
+        assert_eq!(preview_tail(&ten, 0), "l15");
     }
 
     /// The preview shows the *tail* of the capture (what the agent just
-    /// printed), not the head of the scrollback window — and leaves a few
-    /// blank rows below the last line so the output does not read as cut off.
+    /// printed), not the head of the scrollback window — with the newest
+    /// line sitting on the row just above the panel's bottom border.
     #[test]
-    fn preview_shows_tail_with_bottom_buffer() {
+    fn preview_shows_tail_flush_to_bottom_border() {
         let mut capture: String = (1..=200)
             .map(|i| format!("cap-line-{i:03}\n"))
             .collect::<String>();
@@ -2175,9 +2173,10 @@ mod tests {
 
         // the panel's bottom border is the last row before the statusbar
         let bottom_border = rows.len() - 2;
-        assert!(
-            bottom_border - last > PREVIEW_BOTTOM_PAD,
-            "expected >= {PREVIEW_BOTTOM_PAD} blank rows under the last line \
+        assert_eq!(
+            last,
+            bottom_border - 1,
+            "newest line must sit flush above the bottom border \
              (last at {last}, border at {bottom_border})"
         );
     }
