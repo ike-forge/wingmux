@@ -1167,32 +1167,31 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
         width: area.width.saturating_sub(2),
         height: area.height.saturating_sub(2),
     };
-    // Row layout inside the border: label, content, hint.
-    let label_y = inner.y;
-    let hint_y = inner.y + inner.height.saturating_sub(1);
-    let content_top = label_y + 1;
-    let _content_bottom = hint_y; // exclusive — reserved for future use
+    // Row layout inside the border: content, spacer, hint. The popup
+    // title already says "quick-send", so the content starts flush at
+    // the top border — no label row.
+    let content_top = inner.y;
 
+    // Long lines soft-wrap instead of overflowing the border, so the
+    // window scrolls in VISUAL rows, not logical lines.
+    let wrap_width = crate::app::textarea_wrap_width(app.viewport.0)
+        .min(inner.width as usize)
+        .max(1);
+    let rows = buf.visual_rows(wrap_width);
     let mut lines: Vec<Line> = Vec::new();
-    // Label row.
-    lines.push(Line::from(vec![
-        Span::styled("send to agent:", fg(theme.accent)),
-        Span::styled(format!(" ({content_lines} rows)"), fg(theme.dim)),
-    ]));
     // Content rows: the visible window of the buffer.
     let scroll = buf.scroll();
     for i in 0..content_lines {
-        let idx = scroll + i;
-        if idx >= buf.line_count() {
-            lines.push(Line::from(""));
-        } else {
-            let line = buf.line(idx).to_string();
+        match rows.get(scroll + i) {
             // Expand tabs to four spaces for stable rendering.
-            let rendered = line.replace('\t', "    ");
-            lines.push(Line::from(rendered));
+            Some(&(row, start, end)) => {
+                lines.push(Line::from(buf.line(row)[start..end].replace('\t', "    ")))
+            }
+            None => lines.push(Line::from("")),
         }
     }
-    // Hint row.
+    // Spacer, then the hint row.
+    lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("enter newline", fg(theme.accent)),
         Span::styled(sep(app.ascii), fg(theme.dim)),
@@ -1211,21 +1210,12 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
     if app.ascii {
         asciify(f, area);
     }
-    // Cursor: row relative to the content window; column counts the
-    // rendered characters (tabs expanded to 4).
-    let cur_row = buf.cursor_row();
-    let cur_col = buf.cursor_col();
-    let rel_row = cur_row.saturating_sub(scroll);
-    if rel_row < content_lines {
-        let line_prefix = buf.line(cur_row)[..cur_col].chars().count();
-        let render_col = line_prefix
-            + buf.line(cur_row)[..cur_col]
-                .chars()
-                .filter(|&c| c == '\t')
-                .count()
-                * 3;
+    // Cursor: the visual row relative to the content window, and the
+    // rendered column within that row (tabs expanded to 4).
+    let (cur_row, render_col) = buf.visual_cursor(wrap_width);
+    if cur_row >= scroll && cur_row - scroll < content_lines {
         let cursor_x = inner.x + render_col as u16;
-        let cursor_y = (content_top as usize + rel_row) as u16;
+        let cursor_y = (content_top as usize + (cur_row - scroll)) as u16;
         if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
             f.set_cursor_position(Position::new(cursor_x, cursor_y));
         }
@@ -1427,7 +1417,10 @@ mod tests {
             }
             buf.newline();
         }
-        buf.ensure_visible(crate::app::textarea_visible_lines(40));
+        buf.ensure_visible(
+            crate::app::textarea_visible_lines(40),
+            crate::app::textarea_wrap_width(120),
+        );
         app.mode = Mode::Textarea { buf };
 
         let backend = ratatui::backend::TestBackend::new(120, 40);
@@ -1441,6 +1434,82 @@ mod tests {
             assert!(text.contains(line), "popup must still show {line:?}");
         }
         assert!(text.contains("ctrl-s send"), "hint names the send key");
+    }
+
+    /// The popup wraps a line too long for its width instead of letting
+    /// it run past the border, drops the old "send to agent (N rows)"
+    /// label, and keeps a blank row between the text and the hint.
+    #[test]
+    fn textarea_popup_wraps_long_lines_and_spaces_the_hint() {
+        let cfg = Config::default();
+        let theme = theme::load("ansi", false).unwrap();
+        let mut app = App::new(cfg, theme, None);
+        app.startup().unwrap();
+        app.viewport = (120, 40);
+
+        let mut buf = crate::app::TextBuf::new();
+        let long = "wrap ".repeat(60);
+        for c in long.chars() {
+            buf.insert_char(c);
+        }
+        buf.ensure_visible(
+            crate::app::textarea_visible_lines(40),
+            crate::app::textarea_wrap_width(120),
+        );
+        app.mode = Mode::Textarea { buf };
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app))
+            .expect("draw must not fail");
+        let text = buffer_text(&terminal);
+        let cells = terminal.backend().buffer().clone();
+        let rows: Vec<String> = (0..40)
+            .map(|y| (0..120).map(|x| cells[(x, y)].symbol()).collect())
+            .collect();
+
+        assert!(
+            !text.contains("send to agent"),
+            "the label row is gone: {text}"
+        );
+
+        // The popup border stays intact on every row it owns: nothing
+        // spills past the right edge.
+        let w = crate::app::textarea_width(120);
+        let h = crate::app::textarea_height(40);
+        let x0 = (120 - w) / 2;
+        let y0 = (40 - h) / 2;
+        for y in y0..y0 + h {
+            let row: Vec<char> = rows[y as usize].chars().collect();
+            assert!(
+                row[x0 as usize] == '\u{2502}' || y == y0 || y == y0 + h - 1,
+                "left border missing on row {y}"
+            );
+            assert!(
+                row[(x0 + w - 1) as usize] == '\u{2502}' || y == y0 || y == y0 + h - 1,
+                "text overflowed the right border on row {y}"
+            );
+        }
+
+        // The wrapped text really is spread over several rows, and the
+        // row above the hint is blank.
+        let hint_y = (y0 + h - 2) as usize;
+        assert!(rows[hint_y].contains("ctrl-s send"), "hint on the last row");
+        let spacer: String = rows[hint_y - 1]
+            .chars()
+            .skip(x0 as usize + 1)
+            .take(w as usize - 2)
+            .collect();
+        assert!(
+            spacer.trim().is_empty(),
+            "a spacer separates the text from the hint, got {spacer:?}"
+        );
+        let filled = rows[(y0 + 1) as usize..hint_y - 1]
+            .iter()
+            .filter(|r| r.contains("wrap"))
+            .count();
+        assert!(filled > 1, "the long line wrapped over {filled} rows");
     }
 
     // ---- M8.4a — small terminals, resize, ASCII fallback ----
