@@ -239,6 +239,16 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
 - **M8.4a — crossterm here reports no `click_count`** on MouseEvent, so
   double-click = two left clicks at the same spot within 400 ms, tracked on
   the App.
+- **Mouse capture is the app's job, not ratatui's.** `ratatui::init()`
+  enables raw mode and the alternate screen only, so the whole mouse layer
+  above was dead until `term_init()`/`term_restore()` added
+  `EnableMouseCapture`/`DisableMouseCapture` around it (also on the attach
+  handoff, and in a panic hook — mouse reporting left on would spray escape
+  sequences into the shell we hand the terminal back to). Consequence,
+  accepted: while the dashboard runs, the terminal's native text selection
+  needs the usual Shift override, as in every other mouse-driven TUI.
+  One event is read then matched — never matched inside the `read()`
+  let-chain, which silently swallowed every mouse event.
 - **M8.4a — small terminals**: layout tiers (Full / NoPreview / TreeOnly /
   message) at fixed thresholds; overlays that don't fit are refused with a
   "frame too small" box instead of drawing garbage; the input cursor is only

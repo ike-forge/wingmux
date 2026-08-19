@@ -15,6 +15,9 @@ whenever a milestone runs long.
 does not match) so the Telegram ping fires. No further work; future runs
 reply [SILENT].
 
+Post-M9 fix (user report): **mouse input was dead** — see the fix entry at
+the top of the progress log.
+
 ## M8 — plan (user feedback: hide agent panes in separate sessions, project
 ## discovery, follow agent-common-instructions, work inside AND outside tmux)
 
@@ -86,6 +89,45 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### Fix — mouse input never reached the app (COMPLETE)
+
+Reported by the user: clicking a project/feature neither selects nor opens
+it. Two independent defects, both in `app.rs`; the M8.4a mouse tests passed
+throughout because they call `App::on_mouse` directly and so exercised
+neither of them.
+
+1. **Mouse reporting was never enabled.** `ratatui::init()` turns on raw
+   mode and the alternate screen but NOT mouse capture (verified in
+   ratatui 0.30.2 `init.rs`), and `EnableMouseCapture` appeared nowhere in
+   the tree — so the terminal never emitted a single mouse event. Evidence:
+   the running binary in a throwaway tmux server reported
+   `#{mouse_any_flag}=0`.
+2. **The event loop dropped mouse events.** It read inside a let-chain —
+   `if event::poll(..)? && let Event::Key(k) = event::read()?` — so a mouse
+   event was *consumed* by `read()`, failed the `Event::Key` pattern, and
+   was discarded; the `else if` arm then polled and read a *different*
+   event. Mouse handling could only ever fire by accident.
+
+Fix: `term_init()` / `term_restore()` wrap ratatui's init/restore with
+`EnableMouseCapture` / `DisableMouseCapture` (used on the attach-handoff
+suspend/resume path too), plus a once-installed panic hook that turns mouse
+reporting off before ratatui leaves the alternate screen — otherwise the
+shell we hand the terminal back to keeps receiving mouse escapes. The loop
+now reads once and matches after, in `dispatch_event()`.
+
+- Regression test `event_dispatch_routes_mouse_events` drives
+  `dispatch_event` (the loop's own path), not `on_mouse`.
+- LIVE SMOKE (real binary, throwaway tmux server, SGR clicks injected with
+  `tmux send-keys -H`): `#{mouse_any_flag}=1` / `#{mouse_sgr_flag}=1`;
+  a click on tree row 3 moved the selection cursor there; a double-click
+  toggled the project's expansion.
+- Gate: fmt clean, clippy -D warnings clean, 150 tests pass with
+  `--test-threads=1`. Pre-existing, unrelated to this fix:
+  `legacy_root_back_key_is_unbound_but_user_binding_survives` fails on the
+  untouched baseline too (the developer's own `~/.tmux.conf` root bindings
+  leak into the test server), and a few `ui::` tests race each other on the
+  shared `state.json` when tests run in parallel.
 
 ### M9 — back-key prefix, textarea quick-send, scope discovery, mise, UI pass (COMPLETE)
 

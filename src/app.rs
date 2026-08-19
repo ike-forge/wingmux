@@ -5,8 +5,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
 };
+use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
 
 use crate::config::{Config, ProjectConfig};
@@ -2226,10 +2228,46 @@ pub fn run(cfg: Config, theme: Theme, tmux: Tmux) -> Result<()> {
     // not a log line nobody reads). If a startup confirm (scan prompt) was
     // armed by boot_discovery, it resumes after the overlay is dismissed.
     app.open_startup_diagnostics();
-    let mut terminal = ratatui::init();
+    let mut terminal = term_init();
     let res = event_loop(&mut terminal, &mut app);
-    ratatui::restore();
+    term_restore();
     res
+}
+
+/// Take over the terminal: ratatui's `init` enables raw mode and the
+/// alternate screen but NOT mouse reporting, so nothing would ever send us
+/// a `MouseEvent`. Turn it on here — and off again in [`term_restore`] and
+/// on the panic path, or the shell we hand the terminal back to keeps
+/// receiving mouse escape sequences.
+fn term_init() -> ratatui::DefaultTerminal {
+    let terminal = ratatui::init();
+    // After `ratatui::init`, so this hook wraps ratatui's: mouse reporting
+    // is turned off before ratatui leaves the alternate screen. Once only —
+    // the attach handoff re-inits the terminal and must not stack hooks.
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            disable_mouse();
+            prev(info);
+        }));
+    });
+    if let Err(e) = execute!(std::io::stdout(), EnableMouseCapture) {
+        // Not fatal: keyboard-only operation still works.
+        log::error!("cannot enable mouse reporting: {e}");
+    }
+    terminal
+}
+
+/// Hand the terminal back: mouse reporting off first, then ratatui's own
+/// restore (raw mode off, leave the alternate screen).
+fn term_restore() {
+    disable_mouse();
+    ratatui::restore();
+}
+
+fn disable_mouse() {
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
 }
 
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
@@ -2238,10 +2276,10 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
         // resume the TUI when the user detaches.
         if let Some(session) = app.pending_attach.take() {
             let res = (|| -> Result<()> {
-                ratatui::restore();
+                term_restore();
                 let tmux = app.require_tmux()?;
                 let r = tmux.attach_handoff(&session);
-                ratatui::init();
+                term_init();
                 r
             })();
             if let Err(e) = res {
@@ -2263,17 +2301,22 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
         let since = app.last_poll.elapsed();
         let until_poll = Duration::from_millis(app.cfg.poll_interval_ms).saturating_sub(since);
         let timeout = until_poll.min(Duration::from_millis(100));
-        if event::poll(timeout)?
-            && let Event::Key(key) = event::read()?
-        {
-            app.on_key(key);
-        } else if event::poll(Duration::ZERO)?
-            && let Event::Mouse(m) = event::read()?
-        {
-            app.on_mouse(m);
+        if event::poll(timeout)? {
+            dispatch_event(app, event::read()?);
         }
     }
     Ok(())
+}
+
+/// Route one terminal event. Split out of the loop so tests drive exactly
+/// the path the loop takes: reading first and matching after is what keeps
+/// a mouse event from being consumed by the key branch and lost.
+fn dispatch_event(app: &mut App, ev: Event) {
+    match ev {
+        Event::Key(key) => app.on_key(key),
+        Event::Mouse(m) => app.on_mouse(m),
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -3069,6 +3112,22 @@ mod tests {
         assert!(
             !app.proj_expanded[3],
             "double-click must toggle the project expansion"
+        );
+    }
+
+    /// Regression: the event loop must route a mouse event to `on_mouse`.
+    /// It used to `read()` inside a `let Event::Key(..)` chain, which
+    /// consumed mouse events and then dropped them on the floor, so every
+    /// click was silently lost.
+    #[test]
+    fn event_dispatch_routes_mouse_events() {
+        let mut app = app_with_projects(5);
+        app.viewport = (120, 40);
+        dispatch_event(&mut app, Event::Mouse(click(5, 4)));
+        assert_eq!(
+            app.sel,
+            Sel::Project(3),
+            "a mouse event must reach on_mouse through the event loop"
         );
     }
 
