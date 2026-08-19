@@ -2,6 +2,7 @@
 //! `docs/superpowers/specs/2026-08-19-semantic-agent-monitoring-design.md`).
 
 use crate::status::Status;
+use std::path::{Path, PathBuf};
 
 /// tmux pane user option carrying the agent's self-reported state.
 #[allow(dead_code)] // wired up when the poll loop reads the overlay (later task)
@@ -90,6 +91,102 @@ pub fn action_for(event: &str, payload: &serde_json::Value) -> Action {
             }
         }
         _ => Action::Ignore,
+    }
+}
+
+/// Name of the generated settings file. User-facing: it appears in the
+/// pane's visible command line and is the disclosure that instrumentation
+/// happened, so it must stay self-explanatory.
+#[allow(dead_code)] // read by write_settings_file and app startup (later task)
+pub const SETTINGS_FILE_NAME: &str = "lazywingman-activity-hooks.json";
+
+/// Events we subscribe to. `PreToolUse`, `SubagentStop` and `PreCompact`
+/// are deliberately absent: they add nothing the three states express, and
+/// tool hooks are the highest-frequency events.
+const SUBSCRIBED: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "Notification",
+    "Stop",
+    "SessionEnd",
+];
+
+#[allow(dead_code)] // called by write_settings_file and app startup (later task)
+pub fn settings_path() -> PathBuf {
+    crate::util::state_dir().join(SETTINGS_FILE_NAME)
+}
+
+/// The `--settings` payload: one matcher-less group per subscribed event,
+/// each running `<exe> [--socket <s>] hook <Event>`.
+#[allow(dead_code)] // called by write_settings_file (later task wires startup call)
+pub fn settings_json(exe: &str, socket: Option<&str>) -> String {
+    let sock = match socket {
+        Some(s) => format!(" --socket {s}"),
+        None => String::new(),
+    };
+    let mut hooks = serde_json::Map::new();
+    for event in SUBSCRIBED {
+        hooks.insert(
+            (*event).to_string(),
+            serde_json::json!([{
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{exe}{sock} hook {event}"),
+                }]
+            }]),
+        );
+    }
+    serde_json::json!({ "hooks": hooks }).to_string()
+}
+
+/// Regenerate the settings file. Called once at startup so a moved binary
+/// or a changed socket self-heals.
+#[allow(dead_code)] // called from app::run at startup (later task)
+pub fn write_settings_file() -> crate::error::Result<PathBuf> {
+    let exe = std::env::current_exe()
+        .map_err(|e| crate::error::Error::Config(format!("cannot resolve own path: {e}")))?;
+    let socket = std::env::var("LAZYWINGMAN_TMUX_SOCKET")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let json = settings_json(&exe.to_string_lossy(), socket.as_deref());
+    let path = settings_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| crate::error::Error::Config(format!("cannot create state dir: {e}")))?;
+    }
+    std::fs::write(&path, json).map_err(|e| {
+        crate::error::Error::Config(format!("cannot write {}: {e}", path.display()))
+    })?;
+    Ok(path)
+}
+
+/// Add `--settings <path>` to a command, if and only if it is recognisably
+/// Claude. The flag goes immediately after the binary token, never at the
+/// end: `claude` takes a positional prompt, and trailing flags after it
+/// are needlessly fragile.
+///
+/// Recognition is deliberately narrow — the first token's file name must be
+/// exactly `claude`. Wrapper scripts and aliases are not instrumented and
+/// fall back to the regex heuristics.
+#[allow(dead_code)] // called from the spawn sites (later task)
+pub fn instrument(command: &str, settings: &Path) -> String {
+    let mut parts = command.split_whitespace();
+    let Some(bin) = parts.next() else {
+        return command.to_string();
+    };
+    if Path::new(bin).file_name().and_then(|f| f.to_str()) != Some("claude") {
+        return command.to_string();
+    }
+    if command.contains(SETTINGS_FILE_NAME) {
+        return command.to_string();
+    }
+    let rest: Vec<&str> = parts.collect();
+    let flag = format!("--settings {}", settings.display());
+    if rest.is_empty() {
+        format!("{bin} {flag}")
+    } else {
+        format!("{bin} {flag} {}", rest.join(" "))
     }
 }
 
@@ -218,5 +315,98 @@ mod tests {
         for e in ["PreToolUse", "SubagentStop", "PreCompact", "Whatever"] {
             assert_eq!(action_for(e, &none()), Action::Ignore, "event {e}");
         }
+    }
+
+    #[test]
+    fn settings_json_registers_exactly_the_subscribed_events() {
+        let s = settings_json("/opt/bin/lazywingman", None);
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+        let hooks = v["hooks"].as_object().expect("hooks object");
+        let mut keys: Vec<_> = hooks.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "Notification",
+                "PostToolUse",
+                "SessionEnd",
+                "SessionStart",
+                "Stop",
+                "UserPromptSubmit"
+            ]
+        );
+        let cmd = hooks["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .expect("command string");
+        assert_eq!(cmd, "/opt/bin/lazywingman hook Stop");
+        assert_eq!(
+            hooks["Stop"][0]["hooks"][0]["type"].as_str(),
+            Some("command")
+        );
+    }
+
+    #[test]
+    fn settings_json_passes_the_socket_through() {
+        let s = settings_json("/opt/bin/lazywingman", Some("lwtest"));
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+        assert_eq!(
+            v["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
+            Some("/opt/bin/lazywingman --socket lwtest hook Stop")
+        );
+    }
+
+    #[test]
+    fn instrument_inserts_the_flag_after_the_binary_not_at_the_end() {
+        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
+        assert_eq!(
+            instrument("claude", p),
+            "claude --settings /s/lazywingman-activity-hooks.json"
+        );
+        // A positional prompt must stay last.
+        assert_eq!(
+            instrument("claude --resume", p),
+            "claude --settings /s/lazywingman-activity-hooks.json --resume"
+        );
+        assert_eq!(
+            instrument("/usr/local/bin/claude -c", p),
+            "/usr/local/bin/claude --settings /s/lazywingman-activity-hooks.json -c"
+        );
+    }
+
+    /// Anything we do not positively recognise as Claude is left alone —
+    /// injecting flags into a command we do not understand is worse than
+    /// falling back to the heuristics.
+    #[test]
+    fn non_claude_commands_are_left_untouched() {
+        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
+        for cmd in [
+            "codex",
+            "codex exec --yolo",
+            "my-wrapper.sh",
+            "vibe",
+            "claude-wrapper",
+            "notclaude",
+            "",
+        ] {
+            assert_eq!(instrument(cmd, p), cmd, "must not instrument {cmd:?}");
+        }
+    }
+
+    #[test]
+    fn already_instrumented_commands_are_not_instrumented_twice() {
+        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
+        let once = instrument("claude", p);
+        assert_eq!(instrument(&once, p), once);
+    }
+
+    #[test]
+    fn write_settings_file_writes_under_state_dir() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let path = write_settings_file().expect("writes settings file");
+            assert_eq!(path, crate::util::state_dir().join(SETTINGS_FILE_NAME));
+            let contents = std::fs::read_to_string(&path).expect("file exists");
+            let v: serde_json::Value = serde_json::from_str(&contents).expect("valid json");
+            assert!(v["hooks"]["Stop"][0]["hooks"][0]["command"].is_string());
+        });
     }
 }
