@@ -103,6 +103,7 @@ fn status_color(theme: &ResolvedColors, st: Status) -> Color {
     match st {
         Status::Working => theme.status_working,
         Status::Waiting => theme.status_waiting,
+        Status::Blocked => theme.status_waiting,
         Status::Idle => theme.status_idle,
         Status::Failed => theme.status_failed,
         Status::Ended => theme.status_ended,

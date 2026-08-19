@@ -24,6 +24,8 @@ use crate::tmux::{PaneInfo, is_shell_command};
 pub enum Status {
     Working,
     Waiting,
+    #[allow(dead_code)] // constructed by the poll loop reading the overlay (later task)
+    Blocked,
     Idle,
     Failed,
     Ended,
@@ -35,6 +37,7 @@ impl Status {
         match self {
             Status::Working => "working",
             Status::Waiting => "waiting",
+            Status::Blocked => "blocked",
             Status::Idle => "idle",
             Status::Failed => "failed",
             Status::Ended => "ended",
@@ -114,6 +117,11 @@ fn any_match(regexes: &[Regex], text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blocked_has_its_own_label() {
+        assert_eq!(Status::Blocked.label(), "blocked");
+    }
 
     fn pane(current_command: &str, dead: bool) -> PaneInfo {
         PaneInfo {

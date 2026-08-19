@@ -12,6 +12,7 @@ mod config;
 mod discovery;
 mod error;
 mod git;
+mod hooks;
 mod logging;
 mod state;
 mod status;
