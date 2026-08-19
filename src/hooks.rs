@@ -11,9 +11,9 @@ pub const OVERLAY_KEY: &str = "@lw_agent";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Overlay {
     pub status: Status,
-    /// Unix seconds. Recorded for age-out and time-in-state display; the
-    /// staleness guard that matters today is the login-shell check in
-    /// `status::classify`.
+    /// Unix seconds. Recorded for age-out and time-in-state display; two
+    /// staleness guards consume it today — the 60-second age-out and the
+    /// login-shell check, both in `status::classify`.
     pub at: u64,
 }
 
@@ -145,7 +145,7 @@ fn shell_quote(s: &str) -> String {
 /// each running `<exe> [--socket <s>] hook <Event>`.
 pub fn settings_json(exe: &str, socket: Option<&str>) -> String {
     let sock = match socket {
-        Some(s) => format!(" --socket {s}"),
+        Some(s) => format!(" --socket {}", shell_quote(s)),
         None => String::new(),
     };
     let exe = shell_quote(exe);
@@ -234,9 +234,10 @@ fn next_shell_token(s: &str) -> Option<(String, usize)> {
 /// `instrument` to silently skip a command that has never been instrumented.
 ///
 /// The path token is read shell-quote-aware (`next_shell_token`):
-/// `instrument` single-quotes a settings path that contains whitespace, so
-/// a naive `split_whitespace` would see only the first fragment of that
-/// path and miss the match, double-instrumenting on every subsequent spawn.
+/// `instrument` always single-quotes the settings path it inserts, so a
+/// naive `split_whitespace` would see only the first fragment of a path
+/// containing whitespace and miss the match, double-instrumenting on every
+/// subsequent spawn.
 fn already_carries_our_settings_flag(command: &str) -> bool {
     let mut rest = command;
     while let Some(idx) = rest.find("--settings") {
@@ -477,7 +478,20 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
         assert_eq!(
             v["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
-            Some("'/opt/bin/lazywingman' --socket lwtest hook Stop")
+            Some("'/opt/bin/lazywingman' --socket 'lwtest' hook Stop")
+        );
+    }
+
+    /// `LAZYWINGMAN_TMUX_SOCKET` is user-controlled; a socket name
+    /// containing a space must not split into two argv tokens once Claude
+    /// runs the generated command through a shell.
+    #[test]
+    fn settings_json_quotes_a_socket_containing_a_space() {
+        let s = settings_json("/opt/bin/lazywingman", Some("my socket"));
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+        assert_eq!(
+            v["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
+            Some("'/opt/bin/lazywingman' --socket 'my socket' hook Stop")
         );
     }
 

@@ -275,7 +275,7 @@ merged **additively** on top of your own Claude settings — nothing is
 written there, nothing persists — and registers hooks that report
 Claude's real state onto the pane as it happens, ahead of the regex
 guess. Instrumentation is disclosed, not hidden: an instrumented pane's
-command line literally shows `--settings …/lazywingman-activity-hooks.json`.
+command line literally shows `--settings '…/lazywingman-activity-hooks.json'`.
 A hook-reported state is trusted for up to 60 seconds past its own
 timestamp unconditionally; past that, it is only overridden if the pane's
 own tail *also* looks like a prompt — a mid-turn agent, however long its

@@ -381,7 +381,7 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
 - **M17 — instrumentation is automatic, with no consent modal.**
   Disclosure comes from the injected flag itself: a new shell shows its
   command at the top of the pane, and it reads `claude --settings
-  ~/.local/state/lazywingman/lazywingman-activity-hooks.json` — the
+  '~/.local/state/lazywingman/lazywingman-activity-hooks.json'` — the
   settings file is named so that line is self-explanatory. A first-run
   "hello/docs" modal explaining it may come later; it was explicitly out
   of scope for this milestone. `[defaults] agent_hooks = true` is the

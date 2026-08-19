@@ -201,11 +201,11 @@ fn run_hook_subcommand(event: &str, socket: Option<String>) -> Result<()> {
     if let Some(s) = socket {
         // Tmux::detect reads this; setting it keeps socket handling in one
         // place rather than threading an override through the API.
-        // SAFETY: this call happens before any thread is spawned (we are
-        // still on the single-threaded startup path: only `logging::init`
-        // and a `log::info!` have run before it, neither of which spawns a
-        // thread), which is the documented safety condition for
-        // `std::env::set_var`.
+        // SAFETY: this call happens before any thread is spawned — hook
+        // dispatch runs before `logging::init()` (and thus before any
+        // other startup code) on this single-threaded path, so nothing has
+        // had a chance to spawn a thread yet, which is the documented
+        // safety condition for `std::env::set_var`.
         unsafe { std::env::set_var("LAZYWINGMAN_TMUX_SOCKET", s) };
     }
     let Some(pane_id) = std::env::var("TMUX_PANE").ok().filter(|p| !p.is_empty()) else {
