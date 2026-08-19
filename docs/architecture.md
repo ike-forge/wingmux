@@ -481,8 +481,8 @@ the same commit as the change.
   configuration rule "make the resolved config inspectable".
 - **`[[messages]]` replaces the built-ins, like every other list**: a config
   that defines any entry defines the whole list (the layering rule "maps merge
-  deeply, lists are replaced outright"). The two defaults ("continue", "merge
-  to master, drop the worktree") therefore only apply when no layer mentions
+  deeply, lists are replaced outright"). The two defaults ("continue", "merge to
+  <base_branch>, delete current branch and worktree") therefore only apply when no layer mentions
   `[[messages]]` — and they are written out verbatim on first run, so editing
   them is editing a visible list, not fighting an invisible one. `label` is
   optional: an entry without it is listed by the text it sends.

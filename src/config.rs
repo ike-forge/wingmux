@@ -116,7 +116,7 @@ text = "continue"
 
 [[messages]]
 label = "merge + drop worktree"
-text = "merge to master, drop the worktree"
+text = "merge to <base_branch>, delete current branch and worktree"
 
 # Agent presets, selectable per project via `agent = "<name>"`.
 # The `patterns` regexes are matched against the tail of a pane's capture
@@ -1514,7 +1514,7 @@ pub fn default_messages() -> Vec<MessageConfig> {
         },
         MessageConfig {
             label: "merge + drop worktree".into(),
-            text: "merge to master, drop the worktree".into(),
+            text: "merge to <base_branch>, delete current branch and worktree".into(),
         },
     ]
 }
@@ -2152,7 +2152,10 @@ mod tests {
             let labels: Vec<&str> = cfg.messages.iter().map(|m| m.label.as_str()).collect();
             assert_eq!(labels, vec!["continue", "merge + drop worktree"]);
             assert_eq!(cfg.messages[0].text, "continue");
-            assert_eq!(cfg.messages[1].text, "merge to master, drop the worktree");
+            assert_eq!(
+                cfg.messages[1].text,
+                "merge to <base_branch>, delete current branch and worktree"
+            );
         });
     }
 
