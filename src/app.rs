@@ -2757,7 +2757,7 @@ mod tests {
         ));
         assert_eq!(
             app.agent_command_for_spawn("claude"),
-            "claude --settings /s/lazywingman-activity-hooks.json"
+            "claude --settings '/s/lazywingman-activity-hooks.json'"
         );
         assert_eq!(app.agent_command_for_spawn("codex exec"), "codex exec");
     }

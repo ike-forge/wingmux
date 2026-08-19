@@ -130,6 +130,17 @@ pub fn settings_path() -> PathBuf {
     crate::util::state_dir().join(SETTINGS_FILE_NAME)
 }
 
+/// Single-quote `s` for a POSIX shell: wrap it in `'...'`, escaping any
+/// embedded `'` with the standard `'\''` sequence (close quote, escaped
+/// quote, reopen quote). `settings_json`'s `command` is run through a
+/// shell by Claude, and `instrument`'s output is typed into a live shell
+/// by `send_keys` — without this, a space in `$HOME` or
+/// `$XDG_STATE_HOME` breaks both silently (worse than pre-M17, where the
+/// plain unquoted command simply worked).
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 /// The `--settings` payload: one matcher-less group per subscribed event,
 /// each running `<exe> [--socket <s>] hook <Event>`.
 pub fn settings_json(exe: &str, socket: Option<&str>) -> String {
@@ -137,6 +148,7 @@ pub fn settings_json(exe: &str, socket: Option<&str>) -> String {
         Some(s) => format!(" --socket {s}"),
         None => String::new(),
     };
+    let exe = shell_quote(exe);
     let mut hooks = serde_json::Map::new();
     for event in SUBSCRIBED {
         hooks.insert(
@@ -172,20 +184,73 @@ pub fn write_settings_file() -> crate::error::Result<PathBuf> {
     Ok(path)
 }
 
+/// Read one shell-quote-aware token from the start of `s`. Handles the one
+/// quoting form this crate ever emits — single quotes, with the standard
+/// `'\''` escape for an embedded `'` — and otherwise falls back to a plain
+/// whitespace-delimited token, so a pre-quoting-fix (or hand-typed) unquoted
+/// path still parses. Returns the unescaped token and how many bytes of `s`
+/// it consumed; `None` if `s` is empty.
+fn next_shell_token(s: &str) -> Option<(String, usize)> {
+    if s.is_empty() {
+        return None;
+    }
+    if !s.starts_with('\'') {
+        let end = s.find(char::is_whitespace).unwrap_or(s.len());
+        return Some((s[..end].to_string(), end));
+    }
+    let mut token = String::new();
+    let mut chars = s.char_indices();
+    chars.next(); // opening quote
+    while let Some((i, c)) = chars.next() {
+        if c != '\'' {
+            token.push(c);
+            continue;
+        }
+        // `'\''`: closing quote + escaped quote + reopening quote — the
+        // standard way to embed a literal `'` inside a single-quoted run.
+        if s[i + 1..].starts_with("\\''") {
+            token.push('\'');
+            chars.next(); // backslash
+            chars.next(); // escaped quote
+            chars.next(); // reopening quote
+            continue;
+        }
+        // Closing quote: the token ends here.
+        return Some((token, i + 1));
+    }
+    // Unterminated quote: never produced by our own quoting, but treat the
+    // rest as the token rather than panicking.
+    Some((token, s.len()))
+}
+
 /// Whether `command` already carries a `--settings <path>` pair whose path
 /// ends in our settings file name. Token-precise: unlike a raw substring
 /// search, this does not false-positive on a command that merely *mentions*
 /// the file name (e.g. inside a quoted prompt), which would otherwise cause
 /// `instrument` to silently skip a command that has never been instrumented.
+///
+/// The path token is read shell-quote-aware (`next_shell_token`):
+/// `instrument` single-quotes a settings path that contains whitespace, so
+/// a naive `split_whitespace` would see only the first fragment of that
+/// path and miss the match, double-instrumenting on every subsequent spawn.
 fn already_carries_our_settings_flag(command: &str) -> bool {
-    let mut tokens = command.split_whitespace();
-    while let Some(tok) = tokens.next() {
-        if tok == "--settings"
-            && let Some(path_tok) = tokens.next()
-            && Path::new(path_tok).file_name().and_then(|f| f.to_str()) == Some(SETTINGS_FILE_NAME)
+    let mut rest = command;
+    while let Some(idx) = rest.find("--settings") {
+        let before_ok = idx == 0
+            || rest[..idx]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_whitespace());
+        let after = &rest[idx + "--settings".len()..];
+        let flag_is_whole_token = after.chars().next().is_none_or(char::is_whitespace);
+        if before_ok
+            && flag_is_whole_token
+            && let Some((path_tok, _)) = next_shell_token(after.trim_start())
+            && Path::new(&path_tok).file_name().and_then(|f| f.to_str()) == Some(SETTINGS_FILE_NAME)
         {
             return true;
         }
+        rest = after;
     }
     false
 }
@@ -225,7 +290,7 @@ pub fn instrument(command: &str, settings: &Path) -> String {
     let remainder = &command[bin_end..];
     format!(
         "{leading}{bin} --settings {}{remainder}",
-        settings.display()
+        shell_quote(&settings.display().to_string())
     )
 }
 
@@ -377,7 +442,7 @@ mod tests {
         let cmd = hooks["Stop"][0]["hooks"][0]["command"]
             .as_str()
             .expect("command string");
-        assert_eq!(cmd, "/opt/bin/lazywingman hook Stop");
+        assert_eq!(cmd, "'/opt/bin/lazywingman' hook Stop");
         assert_eq!(
             hooks["Stop"][0]["hooks"][0]["type"].as_str(),
             Some("command")
@@ -390,7 +455,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
         assert_eq!(
             v["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
-            Some("/opt/bin/lazywingman --socket lwtest hook Stop")
+            Some("'/opt/bin/lazywingman' --socket lwtest hook Stop")
         );
     }
 
@@ -399,16 +464,16 @@ mod tests {
         let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
         assert_eq!(
             instrument("claude", p),
-            "claude --settings /s/lazywingman-activity-hooks.json"
+            "claude --settings '/s/lazywingman-activity-hooks.json'"
         );
         // A positional prompt must stay last.
         assert_eq!(
             instrument("claude --resume", p),
-            "claude --settings /s/lazywingman-activity-hooks.json --resume"
+            "claude --settings '/s/lazywingman-activity-hooks.json' --resume"
         );
         assert_eq!(
             instrument("/usr/local/bin/claude -c", p),
-            "/usr/local/bin/claude --settings /s/lazywingman-activity-hooks.json -c"
+            "/usr/local/bin/claude --settings '/s/lazywingman-activity-hooks.json' -c"
         );
     }
 
@@ -460,7 +525,7 @@ mod tests {
         let cmd = r#"claude "explain what lazywingman-activity-hooks.json is for""#;
         assert_eq!(
             instrument(cmd, p),
-            r#"claude --settings /s/lazywingman-activity-hooks.json "explain what lazywingman-activity-hooks.json is for""#
+            r#"claude --settings '/s/lazywingman-activity-hooks.json' "explain what lazywingman-activity-hooks.json is for""#
         );
     }
 
@@ -474,7 +539,7 @@ mod tests {
         let cmd = "claude \"line one    line two\"";
         assert_eq!(
             instrument(cmd, p),
-            "claude --settings /s/lazywingman-activity-hooks.json \"line one    line two\""
+            "claude --settings '/s/lazywingman-activity-hooks.json' \"line one    line two\""
         );
     }
 
@@ -489,18 +554,22 @@ mod tests {
         assert_eq!(instrument("   ", p), "   ");
         assert_eq!(
             instrument("./claude", p),
-            "./claude --settings /s/lazywingman-activity-hooks.json"
+            "./claude --settings '/s/lazywingman-activity-hooks.json'"
         );
         assert_eq!(
             instrument("/usr/local/bin/claude/", p),
-            "/usr/local/bin/claude/ --settings /s/lazywingman-activity-hooks.json"
+            "/usr/local/bin/claude/ --settings '/s/lazywingman-activity-hooks.json'"
         );
     }
 
     #[test]
     fn hook_ignores_unknown_events_without_touching_tmux() {
-        // No tmux server needed: an Ignore action must not shell out.
-        let tmux = crate::tmux::Tmux::detect().expect("detect");
+        // No tmux server needed: an Ignore action must not shell out. Built
+        // via `testutil::tmux_standalone` rather than `Tmux::detect()` so
+        // this test never reads TMUX/TMUX_PANE/LAZYWINGMAN_TMUX_SOCKET —
+        // other tests mutate those outside TMUX_TEST_LOCK, and this test
+        // was the one place in the suite reading them unguarded.
+        let tmux = crate::tmux::testutil::tmux_standalone("lwtest-hooks-ignore");
         let r = run_hook(
             "PreToolUse",
             "%nonexistent",
@@ -508,6 +577,48 @@ mod tests {
             &serde_json::Value::Null,
         );
         assert!(r.is_ok(), "ignored events must be a no-op, got {r:?}");
+    }
+
+    /// A settings path with a space (e.g. `$HOME` contains one) must
+    /// round-trip through `instrument` as a single shell token — unquoted,
+    /// Claude would see `--settings /home/my` plus a stray positional
+    /// argument, which is worse than pre-M17, where the plain command
+    /// simply worked.
+    #[test]
+    fn instrument_quotes_a_settings_path_containing_a_space() {
+        let p = Path::new("/home/my user/.local/state/lazywingman/lazywingman-activity-hooks.json");
+        assert_eq!(
+            instrument("claude", p),
+            "claude --settings '/home/my user/.local/state/lazywingman/lazywingman-activity-hooks.json'"
+        );
+    }
+
+    /// The exe path interpolated into the generated hook `command` string
+    /// must also be a single shell token once Claude runs it through a
+    /// shell — otherwise a space in the binary's own path (e.g. inside
+    /// `$XDG_STATE_HOME`) breaks every hook invocation silently.
+    #[test]
+    fn settings_json_quotes_an_exe_path_containing_a_space() {
+        let s = settings_json("/opt/my bin/lazywingman", None);
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+        assert_eq!(
+            v["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
+            Some("'/opt/my bin/lazywingman' hook Stop")
+        );
+    }
+
+    /// The idempotence guard must still recognise an already-instrumented
+    /// command once its settings path is quoted — otherwise every spawn
+    /// after the first would double-instrument.
+    #[test]
+    fn idempotence_guard_recognises_a_quoted_already_instrumented_command() {
+        let p = Path::new("/home/my user/.local/state/lazywingman/lazywingman-activity-hooks.json");
+        let once = instrument("claude", p);
+        assert_eq!(
+            instrument(&once, p),
+            once,
+            "must not double-instrument a quoted settings path"
+        );
     }
 
     #[test]
