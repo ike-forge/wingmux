@@ -50,6 +50,14 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   ratatui-widgets / ratatui-crossterm): Color::Rgb is a tuple, 256-colour is
   Color::Indexed, ANSI colors render as `38;5;0..15` through the crossterm
   backend (still the terminal palette).
+- **M15 — dead entries are muted whole** (user feedback: "when a shell is
+  closed/dead, mute the whole entry in the tree"). Colouring only the status
+  word left a dead row as visually loud as a working one, so the eye had to
+  read the end of every row to find what was still alive. A dead row now
+  draws entirely in `status_dead`, and the rule aggregates upward (feature
+  dead = all its shells dead; project dead = all its features dead) so the
+  muting matches how the tree folds. Empty containers are excluded: a
+  feature with no shells is unstarted, not finished.
 - Status classification order settled empirically during acceptance:
   dead > failed > working > waiting(last-line-priority) > ended > idle;
   tail is checked before the shell-foreground heuristic because agents are

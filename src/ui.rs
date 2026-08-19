@@ -120,6 +120,28 @@ fn shell_status(app: &App, sh: &crate::state::Shell) -> Status {
         .unwrap_or(Status::Idle)
 }
 
+/// A feature is dead once every shell under it is — a feature with no
+/// shells at all is not dead, it was simply never started.
+fn feature_dead(app: &App, feat: &crate::state::Feature) -> bool {
+    !feat.shells.is_empty()
+        && feat
+            .shells
+            .iter()
+            .all(|sh| shell_status(app, sh) == Status::Dead)
+}
+
+/// A project is dead once every feature under it is.
+fn project_dead(app: &App, proj: &crate::state::Project) -> bool {
+    !proj.features.is_empty() && proj.features.iter().all(|f| feature_dead(app, f))
+}
+
+/// The colour a tree row draws in: a dead entry is muted *whole* — guide,
+/// icon, name and count all take the dead colour — so the eye skips it
+/// instead of re-reading a row that carries no live agent.
+fn row_color(theme: &ResolvedColors, dead: bool, live: Color) -> Color {
+    if dead { theme.status_dead } else { live }
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     app.viewport = (area.width, area.height);
@@ -381,16 +403,17 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             let expanded = app.proj_expanded.get(pi).copied().unwrap_or(false);
             let marker = if expanded { exp } else { coll };
             let count = proj.features.len();
+            let pdead = project_dead(app, proj);
             let mut spans = vec![Span::styled(
                 format!("{marker} {proj_icon} {} ", proj.name),
-                fg(theme.tree_project).add_modifier(Modifier::BOLD),
+                fg(row_color(theme, pdead, theme.tree_project)).add_modifier(Modifier::BOLD),
             )];
             if proj.missing {
                 spans.push(Span::styled("(missing) ", fg(theme.dim)));
             }
             spans.push(Span::styled(
                 format!("({count} feature{})", if count == 1 { "" } else { "s" }),
-                fg(theme.dim),
+                fg(row_color(theme, pdead, theme.dim)),
             ));
             items.push(ListItem::new(Line::from(spans)));
             if app.sel == Sel::Project(pi) {
@@ -413,6 +436,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             // folded for good — no marker, no child row, and its own row
             // carries that shell's status instead of a shell count.
             let solo = app.solo_shell(pi, fi);
+            let fdead = feature_dead(app, feat);
             let marker = match solo {
                 // a blank of the marker's width keeps the names aligned
                 Some(_) => " ".repeat(exp.chars().count()),
@@ -431,16 +455,23 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 (format!("{guide}{marker} "), format!("{icon} "))
             };
             items.push(ListItem::new(Line::from(vec![
-                Span::styled(prefix, fg(theme.tree_feature)),
+                Span::styled(prefix, fg(row_color(theme, fdead, theme.tree_feature))),
                 Span::styled(
                     icon_span,
-                    fg(if dirty {
-                        theme.status_waiting
-                    } else {
-                        theme.tree_feature
-                    }),
+                    fg(row_color(
+                        theme,
+                        fdead,
+                        if dirty {
+                            theme.status_waiting
+                        } else {
+                            theme.tree_feature
+                        },
+                    )),
                 ),
-                Span::styled(feat.name.clone(), fg(theme.tree_feature)),
+                Span::styled(
+                    feat.name.clone(),
+                    fg(row_color(theme, fdead, theme.tree_feature)),
+                ),
                 match solo {
                     Some(si) => {
                         let st = shell_status(app, &feat.shells[si]);
@@ -448,7 +479,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     }
                     None => Span::styled(
                         format!(" [{n} shell{}]", if n == 1 { "" } else { "s" }),
-                        fg(theme.dim),
+                        fg(row_color(theme, fdead, theme.dim)),
                     ),
                 },
             ])));
@@ -481,7 +512,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 items.push(ListItem::new(Line::from(vec![
                     Span::styled(
                         format!("{guide}{shell_icon}#{}", sh.index),
-                        fg(theme.tree_shell),
+                        fg(row_color(theme, st == Status::Dead, theme.tree_shell)),
                     ),
                     Span::raw(" "),
                     Span::styled(st.label(), fg(status_color(theme, st))),
@@ -1888,6 +1919,97 @@ mod tests {
         for r in &rows {
             assert!(!r.contains('@'), "tree must not show window ids: {r:?}");
         }
+    }
+
+    /// A dead entry is muted *whole*: once every shell under it has
+    /// exited, the row's guide, icon, name and status all take the dead
+    /// colour instead of only the status word, so the eye skips a feature
+    /// that carries no live agent.
+    #[test]
+    fn a_dead_entry_is_muted_across_the_whole_row() {
+        let mut app = seeded_app();
+        let shell = |i: usize| crate::state::Shell {
+            index: i,
+            window_name: format!("lw:f/{i}"),
+            window_id: Some(format!("@{}", i + 7)),
+            pane_id: Some(format!("%{i}")),
+        };
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "gone-one".into(),
+            branch: "gone-one".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-gone"),
+            created_at: String::new(),
+            shells: vec![shell(0)],
+        });
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "half-gone".into(),
+            branch: "half-gone".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-half"),
+            created_at: String::new(),
+            shells: vec![shell(1), shell(2)],
+        });
+        app.statuses.insert("%0".into(), Status::Dead);
+        app.statuses.insert("%1".into(), Status::Dead);
+        app.statuses.insert("%2".into(), Status::Working);
+        app.build_tree_flags();
+        app.proj_expanded[0] = true;
+        let n = app.state.projects[0].features.len();
+        app.feat_expanded[0][n - 1] = true; // the mixed feature is open
+        app.sel = Sel::Project(1); // keep the highlight off the rows asserted on
+
+        let dead = app.theme.colors.status_dead;
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        // (text, colour of every non-blank cell) per row, inside the tree
+        // panel's borders — the borders carry the panel's own colour.
+        let tree_w = tree_width(app.viewport).unwrap();
+        let rows: Vec<(String, Vec<Color>)> = (0..buf.area.height)
+            .map(|y| {
+                let mut text = String::new();
+                let mut colors = Vec::new();
+                for x in 1..tree_w - 1 {
+                    let cell = &buf[(x, y)];
+                    text.push_str(cell.symbol());
+                    if cell.symbol().trim() != "" {
+                        colors.push(cell.fg);
+                    }
+                }
+                (text, colors)
+            })
+            .collect();
+        let row = |needle: &str| {
+            rows.iter()
+                .find(|(t, _)| t.contains(needle))
+                .unwrap_or_else(|| panic!("no row for {needle:?}"))
+                .clone()
+        };
+
+        let (text, colors) = row("gone-one");
+        assert!(text.contains(Status::Dead.label()), "row reads: {text:?}");
+        assert!(
+            colors.iter().all(|c| *c == dead),
+            "a solo dead feature is muted whole: {text:?} {colors:?}"
+        );
+        // The shell row of a dead shell is muted the same way...
+        let (text, colors) = row(" #1");
+        assert!(
+            colors.iter().all(|c| *c == dead),
+            "a dead shell row is muted whole: {text:?} {colors:?}"
+        );
+        // ...while its live sibling, and the feature holding it, keep
+        // their normal colours.
+        let (text, colors) = row(" #2");
+        assert!(
+            colors.iter().any(|c| *c != dead),
+            "a live shell row is not muted: {text:?} {colors:?}"
+        );
+        let (text, colors) = row("half-gone");
+        assert!(
+            colors.iter().any(|c| *c != dead),
+            "a feature with one live shell is not muted: {text:?} {colors:?}"
+        );
     }
 
     /// The help overlay scrolls: on a short frame the title advertises

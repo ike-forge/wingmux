@@ -263,6 +263,13 @@ the dashboard — is `dead`, as is a pane whose process died with
 Heuristics only — the live preview panel lets you confirm what's really
 happening.
 
+A `dead` entry is **muted whole**: the row's guide, icon, name and status
+all take the dead colour instead of only the status word. The rule climbs
+the tree — a feature is muted once every one of its shells is dead, a
+project once every one of its features is (a feature with no shells is not
+dead, it was simply never started) — so a finished feature reads as history
+at a glance without hunting for the status word at the end of the row.
+
 ## How it works with tmux
 
 - LazyWingman detects its own coordinates (`TMUX` env, `display-message -t
