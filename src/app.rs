@@ -395,6 +395,25 @@ pub struct App {
     last_dirty_poll: Option<Instant>,
 }
 
+/// The slice of a pane capture status classification runs on: the last
+/// [`RECENT_TAIL_LINES`] non-blank lines, as plain text.
+///
+/// Stale lines from an agent's banner would otherwise keep a waiting agent
+/// "working", and `capture-pane` pads the pane's empty area with blank
+/// lines, so trailing blanks go first. The capture carries the pane's escape
+/// sequences (the preview renders them) while the status patterns match
+/// plain text — a coloured "Thinking…" must classify like an uncoloured one,
+/// so the escapes are stripped here.
+fn recent_tail(capture: &str) -> String {
+    let plain = crate::ansi::strip(capture);
+    let mut lines: Vec<&str> = plain.lines().collect();
+    while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+        lines.pop();
+    }
+    let start = lines.len().saturating_sub(RECENT_TAIL_LINES);
+    lines[start..].join("\n")
+}
+
 impl App {
     pub fn new(cfg: Config, theme: Theme, tmux: Option<Tmux>) -> App {
         App {
@@ -1562,20 +1581,7 @@ impl App {
                     continue;
                 }
             };
-            // Classify on the *recent* tail only — stale lines from the
-            // banner would otherwise keep a waiting agent "working".
-            // capture-pane pads the pane's empty area with blank lines, so
-            // trailing blanks are trimmed first.
-            let mut tail_lines: Vec<&str> = tail.lines().collect();
-            while tail_lines
-                .last()
-                .map(|l| l.trim().is_empty())
-                .unwrap_or(false)
-            {
-                tail_lines.pop();
-            }
-            let start = tail_lines.len().saturating_sub(RECENT_TAIL_LINES);
-            let recent = tail_lines[start..].join("\n");
+            let recent = recent_tail(&tail);
             let pat = self.patterns_for(&path, &cmd);
             let st = status::classify(&pat, &recent, &current_cmd, dead);
             self.statuses.insert(pid.clone(), st);
@@ -3994,6 +4000,35 @@ mod tests {
     }
 
     /// Clicking outside the diagnostics overlay dismisses it.
+    /// Classification runs on plain text: a capture whose status line is
+    /// coloured (every agent colours its spinner) must classify exactly like
+    /// the uncoloured one, and the trailing pad lines must not push the real
+    /// output out of the recent window.
+    #[test]
+    fn recent_tail_strips_colours_and_padding() {
+        let coloured = "banner\n\x1b[33m⠋ Thinking…\x1b[0m\n\x1b[49m\n\n";
+        assert_eq!(recent_tail(coloured), "banner\n⠋ Thinking…");
+        assert_eq!(
+            recent_tail("banner\n⠋ Thinking…\n\n"),
+            recent_tail(coloured)
+        );
+
+        let pat = crate::status::Compiled::compile(&crate::config::generic_patterns());
+        assert_eq!(
+            crate::status::classify(&pat, &recent_tail(coloured), "node", false),
+            crate::status::classify(&pat, "⠋ Thinking…", "node", false),
+        );
+
+        // only the last RECENT_TAIL_LINES lines survive
+        let long: String = (1..=40)
+            .map(|i| format!("\x1b[32mline-{i}\x1b[0m\n"))
+            .collect();
+        let tail = recent_tail(&long);
+        assert_eq!(tail.lines().count(), RECENT_TAIL_LINES);
+        assert!(tail.ends_with("line-40"));
+        assert!(!tail.contains('\x1b'));
+    }
+
     #[test]
     fn diagnostics_click_outside_dismisses() {
         let mut app = app_with_diagnostics(2);

@@ -9,7 +9,16 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M12 — predefined messages (COMPLETE).** User request: `s` writes a
+**M13 — the preview shows the pane's own colours (COMPLETE).** User
+question: "is it possible to have colours in the preview, or is it text
+only?" Panes are now captured with `capture-pane -e` and the escapes are
+parsed into styled text, so the preview shows exactly what the agent
+painted. `[preview].colors` picks how much survives: `full` (default),
+`foreground` (text colours kept, backgrounds dropped), `none` (raw text).
+Gating green (fmt clean, clippy -D warnings clean, 192 tests with
+`--test-threads=1`) — see the progress log entry.
+
+Before that: **M12 — predefined messages (COMPLETE).** User request: `s` writes a
 message, `p` should open a modal of configurable canned messages, with
 "continue" and "merge to master, drop the worktree" as the defaults.
 Gating green (fmt clean, clippy -D warnings clean, 181 tests with
@@ -106,6 +115,56 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M13 — colours in the preview (COMPLETE)
+
+User question: "is it possible to have colours in the preview, or is it
+text only?" It was text-only by choice — `capture-pane -p` strips the
+escapes and the panel rendered one flat `Text`. Now the capture keeps them
+and the preview renders them, with a config for how much.
+
+- `tmux.rs`: `capture_pane` gained `-e`, so the capture carries the pane's
+  SGR sequences. tmux re-emits the active attributes at the start of every
+  line, which is what keeps `preview_tail`'s line-wise slicing safe — the
+  tail cannot inherit a colour from a line that scrolled off.
+- New `ansi.rs`: `strip` (a small CSI/OSC state machine), `is_blank` (a
+  padding line may now carry the pane's colours and no text), and
+  `styled_text(capture, mode)` which parses the escapes into a ratatui
+  `Text` via `ansi-to-tui` 8.0.1 — it sits on `ratatui-core 0.1`, the same
+  core ratatui 0.30 uses, so no version split. Default features off
+  (`zero-copy` only) keeps `simdutf8` out of the tree. A capture that fails
+  to parse degrades to plain text; terminal output is not a protocol we
+  control, so it must never blank the panel.
+- `config.rs`: `[preview].colors` = `full` (default) | `foreground` |
+  `none`, with `no-background` and `text` accepted as aliases. Lenient like
+  every other key: `colors = "rainbow"` drops to the default with a
+  diagnostic instead of failing startup. Listed in `--config-dump`.
+- `app.rs`: the classification tail moved into `recent_tail()`, which
+  strips the escapes first — the status patterns match plain text, so a
+  coloured `⠋ Thinking…` must classify like an uncoloured one. This was the
+  real trap in the change: without it every agent that colours its spinner
+  would have gone unclassified.
+- `ui.rs`: `draw_preview` renders `ansi::styled_text(&tail, cfg)`. The
+  paragraph's theme style stays the base, so uncoloured output still reads
+  as part of the panel.
+- Tests: `ansi::` unit tests (strip incl. OSC/truncated sequences, blank
+  detection, the three modes, modifiers surviving the background drop),
+  `ui::preview_colors_follow_the_configured_mode` (buffer cell fg/bg per
+  mode + no escape ever reaching the screen), `app::recent_tail_strips_
+  colours_and_padding` (a coloured tail classifies like a plain one),
+  `tmux::capture_keeps_pane_colours_for_the_preview` (real tmux server,
+  end to end), plus config parse/salvage/dump tests.
+- LIVE SMOKE (real release binary, throwaway `tmux -L lwsmoke`, scratch
+  repo + scratch XDG dirs, agent command printing red text and a green
+  background): with `full` the dashboard pane came back with
+  `^[[38;5;1mRED-SMOKE` and `^[[48;5;2mGREEN-BG`; with `foreground` the red
+  fg stayed and no `48;` background was emitted; with `none` the line
+  rendered in the theme foreground only.
+- Gate: fmt clean, clippy -D warnings clean, 192 tests pass with
+  `--test-threads=1`. Pre-existing, unrelated:
+  `legacy_root_back_key_is_unbound_but_user_binding_survives` fails on the
+  untouched baseline here too (verified with `git stash`), and the `ui::` /
+  `state::` tests race each other on the shared XDG state in parallel.
 
 ### M12 — predefined messages: the `p` modal + `[[messages]]` config (COMPLETE)
 

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ansi-to-tui = { version = "8.0.1", default-features = false, features = ["zero-copy"] }
 log = { version = "0.4.33", features = ["std"] }
 ratatui = "0.30.2"
 regex = "1.13.1"

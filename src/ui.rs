@@ -512,7 +512,11 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
 /// agent's output — the trailing blanks are dropped and the tail wins.
 fn preview_tail(capture: &str, inner_height: usize) -> String {
     let mut lines: Vec<&str> = capture.lines().collect();
-    while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+    while lines
+        .last()
+        .map(|l| crate::ansi::is_blank(l))
+        .unwrap_or(false)
+    {
         lines.pop();
     }
     let rows = inner_height.max(1);
@@ -527,8 +531,10 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         Some(_) => {
             if let Some(pid) = app.selected_shell_pane() {
                 if let Some(cap) = app.captures.get(&pid) {
-                    // borders take two rows off the panel
-                    Text::from(preview_tail(cap, area.height.saturating_sub(2) as usize))
+                    // borders take two rows off the panel; the capture keeps
+                    // the pane's escapes, rendered per [preview].colors
+                    let tail = preview_tail(cap, area.height.saturating_sub(2) as usize);
+                    crate::ansi::styled_text(&tail, app.cfg.preview.colors)
                 } else {
                     Text::from(if app.ascii {
                         "capturing... (select the shell in the tree)"
@@ -2129,11 +2135,61 @@ mod tests {
         app
     }
 
+    /// The preview renders the pane's own colours per `[preview].colors`:
+    /// `full` paints foreground and background, `foreground` keeps the text
+    /// colour only, `none` leaves the panel's plain theme style. The escapes
+    /// themselves never reach the screen in any mode.
+    #[test]
+    fn preview_colors_follow_the_configured_mode() {
+        let capture = "plain line\n\x1b[31;44mred on blue\x1b[0m\n";
+        let cell_of = |mode: crate::config::PreviewColors| {
+            let mut app = app_with_capture(capture);
+            app.cfg.preview.colors = mode;
+            let backend = ratatui::backend::TestBackend::new(120, 40);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            let rows = buffer_rows(&terminal);
+            let y = rows
+                .iter()
+                .position(|r| r.contains("red on blue"))
+                .unwrap_or_else(|| panic!("coloured line must render:\n{}", rows.join("\n")))
+                as u16;
+            assert!(
+                !rows
+                    .iter()
+                    .any(|r| r.contains("31;44") || r.contains("[0m")),
+                "escape sequences must never reach the screen:\n{}",
+                rows.join("\n")
+            );
+            let x = rows[y as usize].find("red on blue").unwrap() as u16;
+            buf[(x, y)].clone()
+        };
+
+        let full = cell_of(crate::config::PreviewColors::Full);
+        assert_eq!(full.fg, Color::Red);
+        assert_eq!(full.bg, Color::Blue);
+
+        let no_bg = cell_of(crate::config::PreviewColors::Foreground);
+        assert_eq!(no_bg.fg, Color::Red);
+        assert_ne!(no_bg.bg, Color::Blue, "background must be dropped");
+
+        let plain = cell_of(crate::config::PreviewColors::None);
+        assert_ne!(plain.fg, Color::Red, "no colour survives text-only mode");
+        assert_ne!(plain.bg, Color::Blue);
+    }
+
     /// `preview_tail` edge cases: a capture shorter than the panel keeps
     /// every line, and a zero-row panel still shows a row.
     #[test]
     fn preview_tail_handles_short_captures_and_tiny_panels() {
         assert_eq!(preview_tail("a\nb\nc\n\n\n", 20), "a\nb\nc");
+        // capture-pane -e pads with lines that carry the pane's colours but
+        // no visible text — those are padding too
+        assert_eq!(
+            preview_tail("a\nb\n\x1b[49m\x1b[39m\n\x1b[49m   \n", 20),
+            "a\nb"
+        );
         assert_eq!(preview_tail("", 20), "");
         // 10 rows of panel → the last 10 lines, flush to the bottom border
         let ten: String = (1..=15).map(|i| format!("l{i}\n")).collect();

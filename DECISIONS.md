@@ -24,7 +24,7 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
 
 ## Architecture
 - Single binary crate, no lib.rs; modules: `error`, `util`, `logging`,
-  `config`, `theme`, `git`, `tmux`, `state`, `status`, `app`, `ui`.
+  `config`, `theme`, `git`, `tmux`, `state`, `status`, `ansi`, `app`, `ui`.
 - No async runtime: single-threaded crossterm event loop, status polling on a
   timer inside the loop (tmux CLI calls are fast enough at 500ms cadence).
 - State file: JSON at `$XDG_STATE_HOME/lazywingman/state.json` (state, not
@@ -326,3 +326,19 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   out verbatim on first run, so editing them is editing a visible list,
   not fighting an invisible one. `label` is optional: an entry without it
   is listed by the text it sends.
+- **M13 — the preview keeps the pane's colours, and the classifier does
+  not**: `capture-pane -e` is the single capture, used twice. The preview
+  parses the escapes (agents encode meaning in colour — a red diff, a
+  yellow spinner — and throwing it away threw away information the user
+  reads in the real pane), while status classification strips them first,
+  because the pattern regexes describe words, not styled words. Capturing
+  twice (once with `-e`, once without) would have doubled the tmux calls
+  per shell per poll for the same result.
+- **M13 — three colour modes, not a boolean**: "colours on/off" misses the
+  case the panel actually suffers from, a pane background fighting the
+  theme's. `[preview].colors = full | foreground | none` splits it: `full`
+  is the default because the point is to see what the agent painted,
+  `foreground` keeps the information (text colour, bold, underline) while
+  the panel keeps the theme's background, `none` is the escape hatch.
+  Config-only — the modes are a preference, not a per-moment decision, so
+  they take no keybinding.

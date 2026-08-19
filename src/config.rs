@@ -52,6 +52,16 @@ poll_interval_ms = 500
 # Ask for confirmation before deleting a feature.
 confirm_on_delete = true
 
+[preview]
+# How much of the agent's own colouring the preview panel shows. The pane is
+# captured with its escape sequences, so by default you see exactly what the
+# agent painted — spinners, diffs, syntax highlighting.
+#   "full"       — every colour exactly as the pane emits it (default)
+#   "foreground" — text colours kept, background colours dropped (the panel
+#                  keeps the theme's background; also "no-background")
+#   "none"       — raw text, no colours at all (also "text")
+colors = "full"
+
 [tmux]
 # Keybinding (tmux syntax) pressed AFTER the tmux prefix (e.g. `C-b C-o`)
 # inside an agent window to jump straight back to the LazyWingman
@@ -145,6 +155,7 @@ pub struct Config {
     pub theme: String,
     pub poll_interval_ms: u64,
     pub confirm_on_delete: bool,
+    pub preview: PreviewConfig,
     pub tmux: TmuxConfig,
     pub worktrees: WorktreeConfig,
     pub discovery: DiscoveryConfig,
@@ -163,6 +174,42 @@ pub struct Config {
     /// — which layer (default/user/project/local) provided each key.
     #[serde(skip)]
     pub sources: Vec<(String, &'static str)>,
+}
+
+/// The pane preview panel.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct PreviewConfig {
+    pub colors: PreviewColors,
+}
+
+/// How much of a pane's own colouring the preview shows. Panes are captured
+/// with `capture-pane -e`, so the escapes are always there — this only says
+/// how much of them survives into the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PreviewColors {
+    /// Every colour exactly as the pane emits it.
+    #[default]
+    Full,
+    /// Text colours and modifiers kept, background colours dropped — the
+    /// panel keeps the theme's background.
+    #[serde(alias = "no-background", alias = "no_background")]
+    Foreground,
+    /// Raw text, no colours at all.
+    #[serde(alias = "text", alias = "off")]
+    None,
+}
+
+impl PreviewColors {
+    /// The config spelling of this mode (used by `--config-dump`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PreviewColors::Full => "full",
+            PreviewColors::Foreground => "foreground",
+            PreviewColors::None => "none",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -246,6 +293,7 @@ impl Default for Config {
             theme: crate::theme::DEFAULT_THEME.into(),
             poll_interval_ms: 500,
             confirm_on_delete: true,
+            preview: PreviewConfig::default(),
             tmux: TmuxConfig {
                 back_key: "C-o".into(),
             },
@@ -466,6 +514,7 @@ const TOP_KEYS: &[&str] = &[
     "theme",
     "poll_interval_ms",
     "confirm_on_delete",
+    "preview",
     "tmux",
     "worktrees",
     "discovery",
@@ -474,6 +523,7 @@ const TOP_KEYS: &[&str] = &[
     "projects",
     "messages",
 ];
+const PREVIEW_KEYS: &[&str] = &["colors"];
 const TMUX_KEYS: &[&str] = &["back_key"];
 const WORKTREES_KEYS: &[&str] = &["root", "base_branch", "delete_branch"];
 const DISCOVERY_KEYS: &[&str] = &["scan_root", "max_depth", "skip_dirs"];
@@ -646,6 +696,10 @@ impl Config {
         line("theme", format!("\"{}\"", self.theme));
         line("poll_interval_ms", self.poll_interval_ms.to_string());
         line("confirm_on_delete", self.confirm_on_delete.to_string());
+        line(
+            "preview.colors",
+            format!("\"{}\"", self.preview.colors.as_str()),
+        );
         line("tmux.back_key", format!("\"{}\"", self.tmux.back_key));
         line("worktrees.root", format!("\"{}\"", self.worktrees.root));
         line(
@@ -926,6 +980,7 @@ fn report_unknown_keys(table: &toml::Table, file: &Path, diags: &mut Vec<String>
             diags.push(format!("{}: unknown key '{key}' ignored", file.display()));
         }
         let section_keys = match key.as_str() {
+            "preview" => Some(PREVIEW_KEYS),
             "tmux" => Some(TMUX_KEYS),
             "worktrees" => Some(WORKTREES_KEYS),
             "discovery" => Some(DISCOVERY_KEYS),
@@ -1034,6 +1089,14 @@ fn deserialize_lenient(
 
     // sections — each field salvaged individually (one bad binding does not
     // drop the whole [tmux] block).
+    cfg.preview = take_section(
+        merged,
+        "preview",
+        PreviewConfig::default(),
+        layer_paths,
+        sources,
+        diags,
+    );
     cfg.tmux = take_section(
         merged,
         "tmux",
@@ -1181,6 +1244,14 @@ where
 /// Sections implement field-by-field salvage (see [`take_section`]).
 trait SectionSalvage: Default {
     fn salvage(table: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self;
+}
+
+impl SectionSalvage for PreviewConfig {
+    fn salvage(t: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self {
+        PreviewConfig {
+            colors: salvage_field(t, "colors", PreviewColors::default(), file, diags),
+        }
+    }
 }
 
 impl SectionSalvage for TmuxConfig {
@@ -1723,6 +1794,41 @@ mod tests {
     }
 
     #[test]
+    fn preview_colors_default_to_full_and_parse_every_mode() {
+        assert_eq!(Config::default().preview.colors, PreviewColors::Full);
+        let mode = |text: &str| Config::from_str(text).unwrap().preview.colors;
+        assert_eq!(mode("[preview]\ncolors = \"full\"\n"), PreviewColors::Full);
+        assert_eq!(
+            mode("[preview]\ncolors = \"foreground\"\n"),
+            PreviewColors::Foreground
+        );
+        assert_eq!(mode("[preview]\ncolors = \"none\"\n"), PreviewColors::None);
+        // forgiving spellings for the same two modes
+        assert_eq!(
+            mode("[preview]\ncolors = \"no-background\"\n"),
+            PreviewColors::Foreground
+        );
+        assert_eq!(mode("[preview]\ncolors = \"text\"\n"), PreviewColors::None);
+    }
+
+    /// The shipped default config parses and keeps the documented default.
+    #[test]
+    fn default_config_template_declares_full_preview_colors() {
+        let cfg = Config::from_str(DEFAULT_CONFIG).unwrap();
+        assert_eq!(cfg.preview.colors, PreviewColors::Full);
+    }
+
+    #[test]
+    fn unknown_preview_mode_is_dropped_not_fatal() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(cwd.path(), "[preview]\ncolors = \"rainbow\"\n");
+            assert_eq!(cfg.preview.colors, PreviewColors::Full);
+            assert!(cfg.diagnostics.iter().any(|d| d.contains("'colors'")));
+        });
+    }
+
+    #[test]
     fn bad_section_is_dropped_per_field() {
         with_fresh_xdg(|| {
             let cwd = tempfile::TempDir::new().unwrap();
@@ -1971,6 +2077,7 @@ mod tests {
             let dump = cfg.dump_string();
             assert!(dump.contains("theme = \"dracula\"  # from user"));
             assert!(dump.contains("poll_interval_ms = 250  # from user"));
+            assert!(dump.contains("preview.colors = \"full\"  # from defaults"));
             assert!(dump.contains("worktrees.base_branch = \"develop\"  # from project"));
             assert!(dump.contains("tmux.back_key = \"C-o\"  # from defaults"));
         });
