@@ -113,15 +113,48 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   get rows; projects from other scopes stay in state but are hidden. When
   you start INSIDE a git repo, that repo is the scope and its features are
   shown flat at the top level (no project row — `flatten`); a lone MISSING
-  project still shows its row. >5 projects collapse by default (≤5 expand,
-  so the user sees features immediately). The startup scan prompt and the
+  project still shows its row. Everything unfolds by default up to
+  `UNFOLD_CAP = 30` projects in scope (see the M15 entry). The startup scan prompt and the
   discovered.json cache are GONE: finding `.git` entries is a few stats per
   dir, done live at boot and on `I` — no stale cache to trust, no prompt to
   dismiss, even at hundreds of folders. The expensive part — `git worktree
   list` per project — is lazy (`ensure_worktrees`): it runs ONCE per project
   when the project is expanded (or for the flattened single project at
   boot), and `prune` skips worktree verification for projects whose
-  worktrees were never loaded, so boot never pays 200 git calls.
+  worktrees were never loaded, so boot never pays 200 git calls. Since M15
+  the unfolded projects' listings are queued rather than run at boot.
+- **M15 — unfold by default; the cap is readability, not cost.** Folding
+  hides the shells the dashboard exists to supervise, so the tree now
+  starts fully unfolded. The old `≤5 projects` rule existed because
+  unfolding a project triggers its `git worktree list`, and a scope with
+  dozens of repos would have paid all of them before the first frame. That
+  is now decoupled: boot loads the FIRST visible project synchronously and
+  queues the rest, and the event loop drains one per iteration
+  (`drain_pending_worktrees`), so the tree paints immediately and fills in
+  over the next frames. No threads — the loop is single-threaded and one
+  `git worktree list` per frame is invisible. `UNFOLD_CAP = 30` survives
+  purely as a readability backstop: past it the tree is longer than any
+  terminal and folding is the better default.
+- **M15 — quick-send drafts are per shell, in memory, and dropped only on
+  delivery.** A half-written prompt is expensive to retype, so `Esc` parks
+  the buffer against the shell's pane id (the key `captures` and `statuses`
+  already use) and `s` resumes it, cursor included. Two deliberate limits:
+  drafts do NOT go into `state.json` — they are working state, not
+  configuration, and a prompt half-written three days ago is noise, not a
+  feature — and a draft is dropped only when the send actually SUCCEEDED.
+  `submit_input` toasts and swallows its error, so clearing on submit would
+  lose the text exactly when the user most needs it (dead pane, no server).
+  `TEXTBUF_MAX_BYTES = 1_000_000` is a runaway-paste backstop, not a limit
+  anyone types into; past it input is dropped silently, because an error
+  toast per keystroke would be worse than a buffer that stops growing.
+- **M15 — panel titles are Title Case names, body text is not.** Titles
+  name a thing (`Preview`, `Quick Send`, `Projects`), so they read as
+  proper names; hints, statusbar and body text stay lowercase, which is
+  the LazyGit register this project follows. The preview title lost its
+  `(capture-pane)` suffix: it named the implementation, not the panel. The
+  tree title follows the tree's actual contents — `Features (n)` when a
+  single repo is flattened, `Projects (n)` otherwise — and counts only
+  in-scope projects, since out-of-scope ones have no rows.
 - **M9 — UI pass from the screenshots (rounded corners, bare titles,
   tree guides, icons).** Panels and popups switch to `BorderType::Rounded`
   (╭ ╮ ╰ ╯). Titles render foreground-only — the background fill under

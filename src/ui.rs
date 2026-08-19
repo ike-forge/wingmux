@@ -456,7 +456,11 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 sel_row = Some(row);
             }
             row += 1;
-            if !fexp {
+            // A solo feature emits no child row whatever its flag says —
+            // `App::visible_nodes` skips it the same way, and the two must
+            // never drift (the cursor and mouse hit-testing map rows to
+            // nodes by index).
+            if !fexp || solo.is_some() {
                 continue;
             }
             for (si, sh) in feat.shells.iter().enumerate() {
@@ -494,11 +498,21 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    let block = panel_block(
-        theme,
-        &format!("projects/features ({})", app.state.projects.len()),
-        true,
-    );
+    // Flatten mode lists a single repo's features, so the title names
+    // what the rows actually are. The count follows the tree: only
+    // in-scope projects have rows, so out-of-scope ones must not be
+    // counted.
+    let vis = app.visible_projects();
+    let title = if app.flatten {
+        let n = vis
+            .first()
+            .map(|&pi| app.state.projects[pi].features.len())
+            .unwrap_or(0);
+        format!("Features ({n})")
+    } else {
+        format!("Projects ({})", vis.len())
+    };
+    let block = panel_block(theme, &title, true);
     let list = List::new(items)
         .block(block)
         .highlight_style(on(theme.selection_fg, theme.selection_bg))
@@ -535,7 +549,7 @@ fn preview_tail(capture: &str, inner_height: usize) -> String {
 
 fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
-    let block = panel_block(theme, "preview (capture-pane)", false);
+    let block = panel_block(theme, "Preview", false);
     let text = match app.selected_shell() {
         Some(_) => {
             if let Some(pid) = app.selected_shell_pane() {
@@ -740,7 +754,7 @@ fn draw_help(f: &mut Frame, app: &App) -> Rect {
     let max_scroll = lines.len().saturating_sub(inner_h);
     let scroll = app.help_scroll.min(max_scroll);
     let window: Vec<Line> = lines.iter().skip(scroll).take(inner_h).cloned().collect();
-    let mut title_text = " help ".to_string();
+    let mut title_text = " Help ".to_string();
     if max_scroll > 0 {
         // The separator follows the ASCII fallback like every other label.
         if app.ascii {
@@ -912,7 +926,7 @@ fn draw_diagnostics(f: &mut Frame, app: &App) -> Rect {
     let max_scroll = lines.len().saturating_sub(inner_h);
     let scroll = app.diag_scroll.min(max_scroll);
     let window: Vec<Line> = lines.iter().skip(scroll).take(inner_h).cloned().collect();
-    let mut title_text = format!(" startup diagnostics ({}) ", app.cfg.diagnostics.len());
+    let mut title_text = format!(" Startup Diagnostics ({}) ", app.cfg.diagnostics.len());
     if max_scroll > 0 {
         if app.ascii {
             title_text.push_str("- j/k scrolls");
@@ -1019,7 +1033,7 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
         if app.ascii { "-" } else { " · " }
     );
     lines.push(Line::from(Span::styled(footer, fg(theme.dim))));
-    let block = popup_block(theme, " themes ");
+    let block = popup_block(theme, " Themes ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     if app.ascii {
         asciify(f, area);
@@ -1086,7 +1100,7 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
     }
     let footer = format!(" Enter send{}Esc cancel ", sep(app.ascii));
     lines.push(Line::from(Span::styled(footer, fg(theme.dim))));
-    let block = popup_block(theme, " messages ");
+    let block = popup_block(theme, " Messages ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     if app.ascii {
         asciify(f, area);
@@ -1098,9 +1112,9 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
     let theme = &app.theme.colors;
     let (title, label) = match &app.mode {
         Mode::Input { kind, .. } => match kind {
-            InputKind::ImportProject => ("import project", "repo path (absolute): "),
-            InputKind::NewFeature => ("new feature", "feature name: "),
-            InputKind::QuickSend => ("quick-send", "send to agent: "),
+            InputKind::ImportProject => ("Import Project", "repo path (absolute): "),
+            InputKind::NewFeature => ("New Feature", "feature name: "),
+            InputKind::QuickSend => ("Quick Send", "send to agent: "),
         },
         _ => unreachable!(),
     };
@@ -1160,7 +1174,7 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
         return area;
     };
     let content_lines = crate::app::textarea_visible_lines(app.viewport.1).max(1);
-    let block = popup_block(theme, " quick-send ");
+    let block = popup_block(theme, " Quick Send ");
     let inner = Rect {
         x: area.x + 1,
         y: area.y + 1,
@@ -1295,7 +1309,8 @@ mod tests {
         let cfg = Config::default();
         let theme = theme::load("ansi", false).unwrap();
         let mut app = App::new(cfg, theme, None);
-        app.startup().unwrap();
+        // No `startup()` — see `seeded_app`: it would load and rewrite the
+        // real `state.json`.
 
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -1337,7 +1352,8 @@ mod tests {
         let cfg = Config::default();
         let theme = theme::load("ansi", false).unwrap();
         let mut app = App::new(cfg, theme, None);
-        app.startup().unwrap();
+        // No `startup()` — see `seeded_app`: it would load and rewrite the
+        // real `state.json`.
         app.state.projects.push(crate::state::Project {
             name: "gone".into(),
             path: std::path::PathBuf::from("/gone"),
@@ -1374,7 +1390,8 @@ mod tests {
         let cfg = Config::default();
         let theme = theme::load("ansi", false).unwrap();
         let mut app = App::new(cfg, theme, None);
-        app.startup().unwrap();
+        // No `startup()` — see `seeded_app`: it would load and rewrite the
+        // real `state.json`.
 
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -1418,7 +1435,8 @@ mod tests {
         let cfg = Config::default();
         let theme = theme::load("ansi", false).unwrap();
         let mut app = App::new(cfg, theme, None);
-        app.startup().unwrap();
+        // No `startup()` — see `seeded_app`: it would load and rewrite the
+        // real `state.json`.
 
         let mut buf = crate::app::TextBuf::new();
         for line in ["alpha", "beta", "gamma"] {
@@ -1448,8 +1466,11 @@ mod tests {
     fn seeded_app() -> App {
         let cfg = Config::default();
         let theme = theme::load("ansi", false).unwrap();
+        // No `startup()`: it loads AND rewrites the real `state.json`, so
+        // the fixture would inherit the developer's projects (dozens of
+        // them, past the unfold cap these render tests rely on) and race
+        // with every other test doing the same.
         let mut app = App::new(cfg, theme, None);
-        app.startup().unwrap();
         app.state.projects.push(crate::state::Project {
             name: "repo-a".into(),
             path: std::path::PathBuf::from("/tmp/repo-a"),
@@ -1499,33 +1520,124 @@ mod tests {
         };
 
         let wide = at(120, 40);
+        assert!(wide.contains("Preview"), "the wide tier is tree + preview");
         assert!(
-            wide.contains("preview (capture-pane)"),
-            "the wide tier is tree + preview"
-        );
-        assert!(
-            wide.contains("projects/features"),
+            wide.contains("Projects"),
             "the wide tier still shows the tree"
         );
 
         let split = at(50, 10);
         assert!(
-            split.contains("preview (capture-pane)"),
+            split.contains("Preview"),
             "the narrow split tier keeps the preview"
         );
 
         let tree_only = at(30, 8);
         assert!(
-            tree_only.contains("projects/features"),
+            tree_only.contains("Projects"),
             "tree-only tier still shows the tree"
         );
-        assert!(!tree_only.contains("preview"), "the preview hides first");
+        assert!(!tree_only.contains("Preview"), "the preview hides first");
 
         let message = at(20, 5);
         assert!(
             message.contains("terminal too small"),
             "below the tree threshold a message shows instead: {message:?}"
         );
+    }
+
+    /// A fixture with no disk state: `seeded_app` runs `startup()`, which
+    /// loads (and rewrites) the real `state.json`, so any assertion on
+    /// exact counts or on flatten mode must build its own app.
+    fn bare_app(features: Vec<crate::state::Feature>) -> App {
+        let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
+        app.state.projects.push(crate::state::Project {
+            name: "repo-a".into(),
+            path: std::path::PathBuf::from("/tmp/repo-a"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: false,
+            features,
+        });
+        app.build_tree_flags();
+        app.clamp_sel();
+        app
+    }
+
+    fn render_wide(app: &mut App) -> String {
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        buffer_text(&terminal)
+    }
+
+    /// Panel and overlay titles read as Title Case proper names (the M14
+    /// UI pass). Counts stay; the preview drops its `(capture-pane)`
+    /// implementation detail.
+    #[test]
+    fn panel_and_popup_titles_are_title_case() {
+        let mut app = bare_app(vec![]);
+        let base = render_wide(&mut app);
+        assert!(
+            base.contains("Projects (1)"),
+            "tree keeps its count: {base:?}"
+        );
+        assert!(base.contains("Preview"), "preview panel: {base:?}");
+        assert!(
+            !base.contains("capture-pane)"),
+            "the implementation detail is gone from the title: {base:?}"
+        );
+
+        for (mode, want) in [
+            (
+                Mode::Textarea {
+                    buf: crate::app::TextBuf::new(),
+                },
+                "Quick Send",
+            ),
+            (Mode::Help, "Help"),
+            (Mode::Messages { index: 0 }, "Messages"),
+            (
+                Mode::Input {
+                    kind: InputKind::NewFeature,
+                    text: String::new(),
+                },
+                "New Feature",
+            ),
+            (
+                Mode::Input {
+                    kind: InputKind::ImportProject,
+                    text: String::new(),
+                },
+                "Import Project",
+            ),
+        ] {
+            app.mode = mode;
+            let text = render_wide(&mut app);
+            assert!(text.contains(want), "overlay title {want:?}: {text:?}");
+        }
+    }
+
+    /// A single git repo flattens to its features, so the tree names what
+    /// it actually lists: `Features (n)`, not `Projects`.
+    #[test]
+    fn tree_title_says_features_when_flattened() {
+        let mut app = bare_app(vec![crate::state::Feature {
+            name: "feat".into(),
+            branch: "feat".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/repo-a/feat"),
+            created_at: String::new(),
+            shells: vec![],
+        }]);
+        assert!(app.flatten, "one project with features flattens");
+        let text = render_wide(&mut app);
+        assert!(
+            text.contains("Features (1)"),
+            "flattened tree title: {text:?}"
+        );
+        assert!(!text.contains("Projects"), "no project wording: {text:?}");
     }
 
     /// An overlay on a frame too small for it is refused with a message,
@@ -1963,7 +2075,7 @@ mod tests {
         ] {
             assert!(text.contains(name), "picker lists {name:?}");
         }
-        assert!(text.contains("themes"), "picker has a title");
+        assert!(text.contains("Themes"), "picker has a title");
         assert!(
             app.popup_area.is_some(),
             "picker must register its dismissable rect"
@@ -2011,9 +2123,9 @@ mod tests {
         for i in 0..n {
             cfg.diagnostics.push(format!("config problem {i}"));
         }
-        let mut app = App::new(cfg, theme::load("ansi", false).unwrap(), None);
-        app.startup().unwrap();
-        app
+        // No `startup()` — see `seeded_app`: it would load and rewrite the
+        // real `state.json`.
+        App::new(cfg, theme::load("ansi", false).unwrap(), None)
     }
 
     /// The diagnostics overlay renders every diagnostic with the warn mark,
@@ -2026,7 +2138,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
-        assert!(text.contains("startup diagnostics (3)"), "title has count");
+        assert!(text.contains("Startup Diagnostics (3)"), "title has count");
         assert!(text.contains("config problem 0"));
         assert!(text.contains("config problem 1"));
         assert!(text.contains("config problem 2"));
@@ -2259,7 +2371,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
-        assert!(text.contains("messages"), "modal has a title");
+        assert!(text.contains("Messages"), "modal has a title");
         assert!(text.contains("1 continue"), "first entry is numbered");
         assert!(
             text.contains("2 merge + drop worktree"),

@@ -32,6 +32,14 @@ const TOAST_TTL_ERR: Duration = Duration::from_secs(6);
 /// every tmux poll.
 const DIRTY_INTERVAL: Duration = Duration::from_secs(3);
 
+/// Hard ceiling on one quick-send draft. Not a limit anyone types into —
+/// a backstop so a runaway paste cannot grow the buffer without bound.
+const TEXTBUF_MAX_BYTES: usize = 1_000_000;
+
+/// Projects unfold by default up to this many in scope. Past it the tree
+/// is longer than any terminal and folding is the readable default.
+const UNFOLD_CAP: usize = 30;
+
 /// A transient notice. Rendered as a small box above the statusbar and
 /// gone on its own after [`TOAST_TTL`] — nothing on the bar is permanent.
 #[derive(Debug, Clone)]
@@ -94,14 +102,24 @@ pub enum Mode {
 }
 
 /// A multiline text buffer for the quick-send editor: lines + a cursor
-/// (`row`, `col` in characters) + a viewport scroll (first visible line).
+/// (`row`, and `col` as a BYTE offset into that line — the popup slices
+/// `line[..col]` to place the caret) + a viewport scroll (first visible
+/// line). Every motion lands on a char boundary: prompts are full of
+/// em-dashes and typographic quotes, and a `col` inside a multi-byte
+/// character panics the next edit that indexes with it.
 /// Editing happens at the cursor; `text()` joins the lines for sending.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TextBuf {
     lines: Vec<String>,
     row: usize,
     col: usize,
     scroll: usize,
+}
+
+impl Default for TextBuf {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TextBuf {
@@ -145,12 +163,31 @@ impl TextBuf {
         visible.saturating_sub(1).max(1)
     }
 
+    /// Bytes the buffer would send, newlines included — what
+    /// [`TEXTBUF_MAX_BYTES`] bounds.
+    fn byte_len(&self) -> usize {
+        self.lines.iter().map(String::len).sum::<usize>() + self.lines.len().saturating_sub(1)
+    }
+
+    /// Is there room for `n` more bytes? Growth past the cap is dropped
+    /// silently: an error toast per keystroke would be worse than a buffer
+    /// that stops accepting input a megabyte in.
+    fn has_room(&self, n: usize) -> bool {
+        self.byte_len() + n <= TEXTBUF_MAX_BYTES
+    }
+
     pub fn insert_char(&mut self, c: char) {
+        if !self.has_room(c.len_utf8()) {
+            return;
+        }
         self.lines[self.row].insert(self.col, c);
-        self.col += 1;
+        self.col += c.len_utf8();
     }
 
     pub fn newline(&mut self) {
+        if !self.has_room(1) {
+            return;
+        }
         let rest = self.lines[self.row].split_off(self.col);
         self.lines.insert(self.row + 1, rest);
         self.row += 1;
@@ -165,8 +202,9 @@ impl TextBuf {
     /// with the previous line.
     pub fn backspace(&mut self) {
         if self.col > 0 {
-            self.lines[self.row].remove(self.col - 1);
-            self.col -= 1;
+            let prev = prev_boundary(&self.lines[self.row], self.col);
+            self.lines[self.row].remove(prev);
+            self.col = prev;
         } else if self.row > 0 {
             let prev_len = self.lines[self.row - 1].len();
             let rest = self.lines.remove(self.row);
@@ -190,7 +228,7 @@ impl TextBuf {
 
     pub fn move_left(&mut self) {
         if self.col > 0 {
-            self.col -= 1;
+            self.col = prev_boundary(&self.lines[self.row], self.col);
         } else if self.row > 0 {
             self.row -= 1;
             self.col = self.lines[self.row].len();
@@ -199,7 +237,7 @@ impl TextBuf {
 
     pub fn move_right(&mut self) {
         if self.col < self.lines[self.row].len() {
-            self.col += 1;
+            self.col = next_boundary(&self.lines[self.row], self.col);
         } else if self.row + 1 < self.lines.len() {
             self.row += 1;
             self.col = 0;
@@ -244,8 +282,16 @@ impl TextBuf {
         true
     }
 
+    /// Clamp the cursor into the current line, then back onto a char
+    /// boundary — moving between lines of different widths can otherwise
+    /// drop it inside a multi-byte character.
     fn clamp_col(&mut self) {
-        self.col = self.col.min(self.lines[self.row].len());
+        let line = &self.lines[self.row];
+        let mut col = self.col.min(line.len());
+        while col > 0 && !line.is_char_boundary(col) {
+            col -= 1;
+        }
+        self.col = col;
     }
 
     /// Keep the cursor row visible within a `visible`-line viewport:
@@ -262,6 +308,25 @@ impl TextBuf {
             self.scroll = self.row + 1 - view;
         }
     }
+}
+
+/// Byte offset of the char boundary before `col` (the start of the char
+/// the cursor sits after), or 0.
+fn prev_boundary(line: &str, col: usize) -> usize {
+    line[..col]
+        .chars()
+        .next_back()
+        .map(|c| col - c.len_utf8())
+        .unwrap_or(0)
+}
+
+/// Byte offset of the char boundary after `col`, or `col` at end of line.
+fn next_boundary(line: &str, col: usize) -> usize {
+    line[col..]
+        .chars()
+        .next()
+        .map(|c| col + c.len_utf8())
+        .unwrap_or(col)
 }
 
 /// Height of the quick-send textarea popup for a viewport height. Grows
@@ -327,11 +392,19 @@ pub struct App {
     pub tmux: Option<Tmux>,
     pub state: State,
     pub sel: Sel,
+    /// Projects whose `git worktree list` is still owed, drained one per
+    /// event-loop iteration by [`App::drain_pending_worktrees`].
+    pub pending_worktrees: std::collections::VecDeque<usize>,
     pub proj_expanded: Vec<bool>,
     pub feat_expanded: Vec<Vec<bool>>,
     pub mode: Mode,
     pub panes: HashMap<String, PaneInfo>,
     pub captures: HashMap<String, String>,
+    /// Unsent quick-send text, per shell (keyed by pane id, like
+    /// `captures` and `statuses`). Closing the editor parks the buffer
+    /// here so the next `s` on that shell resumes where it left off;
+    /// delivering the message drops it.
+    pub drafts: HashMap<String, TextBuf>,
     pub statuses: HashMap<String, Status>,
     pattern_cache: HashMap<String, Compiled>,
     pub last_poll: Instant,
@@ -422,11 +495,13 @@ impl App {
             tmux,
             state: State::default(),
             sel: Sel::Project(0),
+            pending_worktrees: std::collections::VecDeque::new(),
             proj_expanded: Vec::new(),
             feat_expanded: Vec::new(),
             mode: Mode::Normal,
             panes: HashMap::new(),
             captures: HashMap::new(),
+            drafts: HashMap::new(),
             statuses: HashMap::new(),
             pattern_cache: HashMap::new(),
             last_poll: Instant::now(),
@@ -630,10 +705,12 @@ impl App {
             );
         }
         self.build_tree_flags();
-        // Load worktrees for the projects that are already visible in
-        // their expanded state: the flattened single project, and every
-        // unfolded project when the count is ≤5. Collapsed (>5 projects)
-        // stay untouched — that is the lazy part.
+        // Worktrees for every unfolded project (and for the flattened
+        // single project, whose features ARE the tree). Only the first one
+        // is loaded here: it is what the first frame draws, and blocking
+        // boot on one `git worktree list` per repo would cost seconds in a
+        // scope with dozens of them. The rest are queued and drained by the
+        // event loop, so the tree paints immediately and fills in.
         let vis = self.visible_projects();
         let mut to_load: Vec<usize> = vis
             .iter()
@@ -646,9 +723,11 @@ impl App {
         {
             to_load.push(pi);
         }
-        for pi in to_load {
+        let mut queued = to_load.into_iter();
+        if let Some(pi) = queued.next() {
             self.ensure_worktrees(pi)?;
         }
+        self.pending_worktrees.extend(queued);
         // Re-decide flatten now that features are known (a lone project
         // with NO features still shows its row — a blank tree would be
         // worse than a redundant row).
@@ -737,17 +816,33 @@ impl App {
         }
     }
 
+    /// Load the next queued project's worktrees. Returns false when the
+    /// queue is empty. One project per call: the event loop redraws
+    /// between calls, so a slow scope fills the tree in visibly instead of
+    /// freezing before the first frame.
+    pub fn drain_pending_worktrees(&mut self) -> bool {
+        let Some(pi) = self.pending_worktrees.pop_front() else {
+            return false;
+        };
+        if let Err(e) = self.ensure_worktrees(pi) {
+            log::warn!("background worktree load for project {pi}: {e}");
+        }
+        true
+    }
+
     pub(crate) fn build_tree_flags(&mut self) {
-        // Scope-aware: only in-scope projects get rows, and >5 projects
-        // stay collapsed by default (per the discovery rework — many repos
-        // must not unfold everything on boot). ≤5 projects expand so the
-        // user sees their features immediately.
+        // Scope-aware: only in-scope projects get rows, and everything
+        // unfolds by default — the dashboard exists to show the shells, and
+        // a folded tree hides them. The cap is a readability backstop for
+        // scopes with a wild number of repos, not a cost guard: the
+        // `git worktree list` each unfolded project owes is queued and
+        // drained in the background (see `boot_discovery_from`).
         let vis = self.visible_projects();
         // Flatten: exactly one project in scope WITH features → its
         // features ARE the tree, no project row. A lone project with no
         // features (missing, or nothing linked yet) still shows its row.
         self.flatten = vis.len() == 1 && !self.state.projects[vis[0]].features.is_empty();
-        let expand = vis.len() <= 5;
+        let expand = vis.len() <= UNFOLD_CAP;
         self.proj_expanded = self
             .state
             .projects
@@ -759,7 +854,7 @@ impl App {
             .state
             .projects
             .iter()
-            .map(|p| vec![false; p.features.len()])
+            .map(|p| vec![true; p.features.len()])
             .collect();
         // Keep the loaded flag parallel to projects.
         self.worktrees_loaded
@@ -837,6 +932,12 @@ impl App {
         }
         if let Some(flag) = self.worktrees_loaded.get_mut(pi) {
             *flag = true;
+        }
+        // `feat_expanded` is index-parallel to `features`; a short vector
+        // reads as folded, so the rows this just discovered would arrive
+        // collapsed. They unfold like every other row.
+        if let Some(flags) = self.feat_expanded.get_mut(pi) {
+            flags.resize(self.state.projects[pi].features.len(), true);
         }
         if added > 0 {
             log::info!("lazy worktree load: {added} feature(s) for '{}'", proj.name);
@@ -983,6 +1084,30 @@ impl App {
             Sel::Shell(pi, fi, si) => Some((pi, fi, si)),
             Sel::Feature(pi, fi) => self.solo_shell(pi, fi).map(|si| (pi, fi, si)),
             _ => None,
+        }
+    }
+
+    /// Open the quick-send editor on the selected shell, resuming that
+    /// shell's parked draft. Shells with no live pane get no draft: they
+    /// cannot receive a message, so there is nothing to resume.
+    fn open_quick_send(&mut self) {
+        let buf = self
+            .selected_shell_pane()
+            .and_then(|pid| self.drafts.get(&pid).cloned())
+            .unwrap_or_default();
+        self.mode = Mode::Textarea { buf };
+    }
+
+    /// Park an unsent buffer against its shell. An empty one is not a
+    /// draft — it is cleared so a stale entry never shadows a fresh start.
+    fn park_draft(&mut self, buf: TextBuf) {
+        let Some(pid) = self.selected_shell_pane() else {
+            return;
+        };
+        if buf.text().is_empty() {
+            self.drafts.remove(&pid);
+        } else {
+            self.drafts.insert(pid, buf);
         }
     }
 
@@ -1461,7 +1586,7 @@ impl App {
         let feat = &self.state.projects[pi].features[fi];
         self.mode = Mode::Confirm {
             confirm: Confirm {
-                title: "delete feature".into(),
+                title: "Delete Feature".into(),
                 body: format!(
                     "Delete feature '{}'?\nworktree: {}\n{}",
                     feat.name,
@@ -1496,7 +1621,7 @@ impl App {
         let proj = &self.state.projects[pi];
         self.mode = Mode::Confirm {
             confirm: Confirm {
-                title: "remove project".into(),
+                title: "Remove Project".into(),
                 body: format!(
                     "Remove '{}' from LazyWingman?\n{}\nAgent windows are killed; worktrees stay on disk.",
                     proj.name,
@@ -1702,11 +1827,22 @@ impl App {
                     && (key.modifiers.contains(KeyModifiers::ALT) || ctrl))
                     || (key.code == KeyCode::Char('s') && ctrl);
                 if send_chord {
+                    let parked = buf.clone();
                     let text = buf.text();
                     self.mode = Mode::Normal;
-                    self.submit_input(InputKind::QuickSend, text);
+                    // Park first, drop only on delivery: `submit_input`
+                    // toasts and swallows the error, so a send that never
+                    // reached the pane must not take the text with it.
+                    self.park_draft(parked);
+                    if self.submit_input(InputKind::QuickSend, text)
+                        && let Some(pid) = self.selected_shell_pane()
+                    {
+                        self.drafts.remove(&pid);
+                    }
                 } else if key.code == KeyCode::Esc {
+                    let parked = buf.clone();
                     self.mode = Mode::Normal;
+                    self.park_draft(parked);
                 } else {
                     match key.code {
                         KeyCode::Enter => buf.newline(),
@@ -1892,9 +2028,7 @@ impl App {
             }
             KeyCode::Char('s') => {
                 if self.selected_shell().is_some() {
-                    self.mode = Mode::Textarea {
-                        buf: TextBuf::new(),
-                    };
+                    self.open_quick_send();
                 } else {
                     self.notify("select a shell to quick-send");
                 }
@@ -2260,9 +2394,7 @@ impl App {
             }
             BarAction::QuickSend => {
                 if self.selected_shell().is_some() {
-                    self.mode = Mode::Textarea {
-                        buf: TextBuf::new(),
-                    };
+                    self.open_quick_send();
                 }
             }
             BarAction::PredefinedSend => self.open_messages(),
@@ -2432,7 +2564,10 @@ impl App {
         log::error!("action failed: {e}");
     }
 
-    fn submit_input(&mut self, kind: InputKind, text: String) {
+    /// Run a submitted input. Returns whether it succeeded — the quick-send
+    /// path needs to know, to tell a delivered message from a draft it must
+    /// keep. Failures are toasted here either way.
+    fn submit_input(&mut self, kind: InputKind, text: String) -> bool {
         let res = match kind {
             InputKind::ImportProject => self.import_project(&text),
             InputKind::NewFeature => match self.sel {
@@ -2447,7 +2582,9 @@ impl App {
         };
         if let Err(e) = res {
             self.fail(&e);
+            return false;
         }
+        true
     }
 
     fn run_confirm(&mut self, action: ConfirmAction, force: bool) {
@@ -2569,13 +2706,22 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
         if app.quit {
             break;
         }
+        // Background worktree discovery: one project per iteration, so a
+        // scope with dozens of repos fills the tree in over the next few
+        // frames instead of freezing before the first one.
+        let loading = app.drain_pending_worktrees();
         if app.last_poll.elapsed() >= Duration::from_millis(app.cfg.poll_interval_ms) {
             app.poll();
         }
-        // wait for input, at most until the next poll is due
+        // wait for input, at most until the next poll is due — but never
+        // while there is still a project to load: that work owes a redraw.
         let since = app.last_poll.elapsed();
         let until_poll = Duration::from_millis(app.cfg.poll_interval_ms).saturating_sub(since);
-        let timeout = until_poll.min(Duration::from_millis(100));
+        let timeout = if loading {
+            Duration::ZERO
+        } else {
+            until_poll.min(Duration::from_millis(100))
+        };
         if event::poll(timeout)? {
             dispatch_event(app, event::read()?);
         }
@@ -2788,13 +2934,15 @@ mod tests {
             assert!(matches!(app.mode, Mode::Normal));
             assert_eq!(app.state.projects.len(), 2);
             assert_eq!(app.scope_root, crate::util::normalize_path(r));
-            // Two projects → not flattened, both expanded (≤5), and their
-            // worktrees ARE loaded at boot (they are the visible rows).
+            // Two projects → not flattened, both unfolded; the first
+            // project's worktrees load at boot and the second's is queued.
             assert!(!app.flatten);
             assert!(app.visible_projects().len() == 2);
+            assert_eq!(app.pending_worktrees.len(), 1, "the second is queued");
+            while app.drain_pending_worktrees() {}
             assert!(
                 app.worktrees_loaded.iter().all(|f| *f),
-                "≤5 expanded projects load worktrees at boot"
+                "draining the queue loads every unfolded project"
             );
             // the import is persisted — a restart must not lose it
             let loaded = State::load().unwrap();
@@ -2808,7 +2956,7 @@ mod tests {
         crate::util::testutil::with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             let r = root.path();
-            // 6 repos → collapsed by default → worktrees NOT loaded at boot
+            // 6 repos → only the first loads at boot, the rest are queued
             let mut repos = Vec::new();
             for i in 0..6 {
                 repos.push(repo_with_commit(r, &format!("repo-{i}")));
@@ -2817,35 +2965,45 @@ mod tests {
             let mut app = app_with(tmux_standalone("unused"));
             app.boot_discovery_from(r).unwrap();
             assert!(!app.flatten, "6 projects → not flattened");
-            assert!(
-                app.worktrees_loaded.iter().all(|f| !*f),
-                ">5 collapsed projects keep worktrees lazy at boot"
+            assert_eq!(
+                app.worktrees_loaded.iter().filter(|f| **f).count(),
+                1,
+                "boot loads the first project only; the rest wait in the queue"
             );
-            // Expanding a project loads ITS worktrees, once.
-            let pi = app.visible_projects()[0];
+            // Expanding a project the drain has not reached yet loads ITS
+            // worktrees there and then, once.
+            let pi = *app.pending_worktrees.back().unwrap();
             app.proj_expanded[pi] = false; // ensure collapsed
             app.sel = Sel::Project(pi);
             app.expand_or_attach();
             assert!(app.worktrees_loaded[pi], "expand loads worktrees");
-            let n_loaded = app.worktrees_loaded.iter().filter(|f| **f).count();
-            assert_eq!(n_loaded, 1, "only the expanded project loads");
+            assert_eq!(
+                app.worktrees_loaded.iter().filter(|f| **f).count(),
+                2,
+                "only the boot project and the expanded one"
+            );
             // collapsing + expanding again does not re-run the listing
             app.proj_expanded[pi] = false;
             app.expand_or_attach();
             assert_eq!(
                 app.worktrees_loaded.iter().filter(|f| **f).count(),
-                1,
+                2,
                 "loaded exactly once"
             );
+            // …and the background drain skips what expanding already did
+            while app.drain_pending_worktrees() {}
+            assert!(app.worktrees_loaded.iter().all(|f| *f));
         });
     }
 
-    /// >5 projects stay collapsed by default; ≤5 expand.
+    /// Everything unfolds by default up to the cap: >30 projects stay
+    /// collapsed (the tree would be unreadable and every row costs a
+    /// `git worktree list`), ≤30 expand.
     #[test]
     fn many_projects_collapse_by_default_few_expand() {
         let mut app = app_with(tmux_standalone("unused"));
         app.scope_root = PathBuf::from("/");
-        for i in 0..6 {
+        for i in 0..31 {
             app.state.projects.push(Project {
                 name: format!("p{i}"),
                 path: PathBuf::from(format!("/tmp/p{i}")),
@@ -2858,13 +3016,13 @@ mod tests {
             });
         }
         app.build_tree_flags();
-        // 6 projects → collapsed, not flattened
+        // 31 projects → collapsed, not flattened
         assert!(!app.flatten);
         assert!(app.proj_expanded.iter().all(|e| !*e));
 
         let mut few = app_with(tmux_standalone("unused"));
         few.scope_root = PathBuf::from("/");
-        for i in 0..3 {
+        for i in 0..30 {
             few.state.projects.push(Project {
                 name: format!("p{i}"),
                 path: PathBuf::from(format!("/tmp/p{i}")),
@@ -2877,7 +3035,7 @@ mod tests {
             });
         }
         few.build_tree_flags();
-        // 3 projects → expanded
+        // 30 projects → expanded
         assert!(few.proj_expanded.iter().all(|e| *e));
 
         // 1 project WITH features → flattened (features are the tree)
@@ -2918,6 +3076,113 @@ mod tests {
         });
         empty.build_tree_flags();
         assert!(!empty.flatten, "no features → keep the project row");
+    }
+
+    /// Features unfold by default too — a folded feature hides the very
+    /// shells the dashboard exists to supervise, and expanding one costs
+    /// nothing (its shells are already in state).
+    #[test]
+    fn features_are_expanded_by_default() {
+        let mut app = app_with(tmux_standalone("unused"));
+        app.scope_root = PathBuf::from("/");
+        for i in 0..2 {
+            app.state.projects.push(Project {
+                name: format!("p{i}"),
+                path: PathBuf::from(format!("/tmp/p{i}")),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: false,
+                features: vec![Feature {
+                    name: "f".into(),
+                    branch: "f".into(),
+                    worktree_path: PathBuf::from(format!("/tmp/p{i}/f")),
+                    created_at: String::new(),
+                    shells: vec![],
+                }],
+            });
+        }
+        app.build_tree_flags();
+        assert!(
+            app.feat_expanded.iter().flatten().all(|e| *e),
+            "every feature starts unfolded"
+        );
+    }
+
+    /// Boot does not block on one `git worktree list` per project: only
+    /// the first visible project loads synchronously (it is what the first
+    /// frame draws), the rest are queued and drained by the event loop.
+    #[test]
+    fn boot_queues_worktree_loading_instead_of_blocking() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let r = root.path();
+            for i in 0..6 {
+                repo_with_commit(r, &format!("repo-{i}"));
+            }
+
+            let mut app = app_with(tmux_standalone("unused"));
+            app.boot_discovery_from(r).unwrap();
+            assert!(
+                app.proj_expanded.iter().all(|e| *e),
+                "6 projects are under the cap → all unfolded"
+            );
+            assert_eq!(
+                app.worktrees_loaded.iter().filter(|f| **f).count(),
+                1,
+                "boot loads only the first project's worktrees"
+            );
+            assert_eq!(app.pending_worktrees.len(), 5, "the rest are queued");
+
+            // The event loop drains one project per iteration.
+            let mut steps = 0;
+            while app.drain_pending_worktrees() {
+                steps += 1;
+                assert!(steps <= 10, "draining must terminate");
+            }
+            assert_eq!(steps, 5, "one project per drain step");
+            assert!(
+                app.worktrees_loaded.iter().all(|f| *f),
+                "every project is loaded once the queue is drained"
+            );
+        });
+    }
+
+    /// Features discovered by a lazy worktree load are unfolded like every
+    /// other row: `ensure_worktrees` pushes onto `features`, so the
+    /// parallel `feat_expanded` must grow with it (it used to stay short,
+    /// and a missing entry reads as folded).
+    #[test]
+    fn lazily_loaded_features_are_expanded() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let r = root.path();
+            let repo = repo_with_commit(r, "repo-a");
+            git(&repo, &["worktree", "add", "-b", "wt", "../repo-a-wt"]);
+            repo_with_commit(r, "repo-b");
+
+            let mut app = app_with(tmux_standalone("unused"));
+            app.boot_discovery_from(r).unwrap();
+            while app.drain_pending_worktrees() {}
+
+            let pi = app
+                .visible_projects()
+                .into_iter()
+                .find(|&i| app.state.projects[i].name == "repo-a")
+                .expect("repo-a imported");
+            assert_eq!(
+                app.state.projects[pi].features.len(),
+                1,
+                "the linked worktree became a feature"
+            );
+            assert_eq!(
+                app.feat_expanded[pi].len(),
+                1,
+                "feat_expanded stays parallel to features"
+            );
+            assert!(app.feat_expanded[pi][0], "the new feature is unfolded");
+        });
     }
 
     /// Out-of-scope projects (other scopes' leftovers in state) stay saved
@@ -3109,6 +3374,138 @@ mod tests {
         )
     }
 
+    /// A half-written prompt is not lost by leaving the editor: each
+    /// shell keeps its own draft, restored (cursor included) the next time
+    /// quick-send opens on it.
+    #[test]
+    fn quick_send_drafts_are_kept_per_shell() {
+        let mut app = app_with_shell();
+        app.viewport = (120, 40);
+        app.state.projects[0].features[0].shells.push(Shell {
+            index: 1,
+            window_name: "lw:feat/1".into(),
+            window_id: Some("@2".into()),
+            pane_id: Some("%2".into()),
+        });
+        app.build_tree_flags();
+
+        let typed = |app: &mut App, text: &str| {
+            app.on_key(key(KeyCode::Char('s'), false));
+            for c in text.chars() {
+                app.on_key(key(KeyCode::Char(c), false));
+            }
+            app.on_key(key(KeyCode::Esc, false));
+        };
+
+        app.sel = Sel::Shell(0, 0, 0);
+        typed(&mut app, "hello");
+        app.sel = Sel::Shell(0, 0, 1);
+        app.on_key(key(KeyCode::Char('s'), false));
+        let Mode::Textarea { buf } = &app.mode else {
+            panic!("quick-send must open");
+        };
+        assert_eq!(buf.text(), "", "another shell starts from a blank draft");
+        app.on_key(key(KeyCode::Esc, false));
+        typed(&mut app, "world");
+
+        app.sel = Sel::Shell(0, 0, 0);
+        app.on_key(key(KeyCode::Char('s'), false));
+        let Mode::Textarea { buf } = &app.mode else {
+            panic!("quick-send must open");
+        };
+        assert_eq!(buf.text(), "hello", "the first shell's draft came back");
+        assert_eq!(buf.cursor_col(), 5, "and the cursor sits where it was left");
+    }
+
+    /// A send that failed (dead pane, no tmux) must not swallow the text —
+    /// the draft is what the user would have to retype.
+    #[test]
+    fn a_failed_send_keeps_the_draft() {
+        // `tmux_standalone("unused")` has no server: `paste_keys` errors.
+        let mut app = app_with_shell();
+        app.viewport = (120, 40);
+        app.on_key(key(KeyCode::Char('s'), false));
+        for c in "retry me".chars() {
+            app.on_key(key(KeyCode::Char(c), false));
+        }
+        app.on_key(key(KeyCode::Char('s'), true));
+        assert!(matches!(app.mode, Mode::Normal), "the editor closes");
+
+        app.on_key(key(KeyCode::Char('s'), false));
+        let Mode::Textarea { buf } = &app.mode else {
+            panic!("quick-send must open");
+        };
+        assert_eq!(buf.text(), "retry me", "a failed send keeps the text");
+    }
+
+    /// A delivered message is not a draft any more.
+    #[test]
+    fn a_delivered_draft_is_cleared() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_standalone(sock);
+            let mut app = app_with(tmux.clone());
+            seed_project_with_shell(&tmux, &mut app);
+            app.build_tree_flags();
+            app.viewport = (120, 40);
+            app.sel = Sel::Feature(0, 0);
+            app.clamp_sel();
+
+            app.on_key(key(KeyCode::Char('s'), false));
+            for c in "ship it".chars() {
+                app.on_key(key(KeyCode::Char(c), false));
+            }
+            app.on_key(key(KeyCode::Char('s'), true));
+            let toast = app.toast().map(|t| t.text.clone()).unwrap_or_default();
+            assert!(
+                !toast.contains("failed"),
+                "the send must succeed: {toast:?}"
+            );
+
+            app.on_key(key(KeyCode::Char('s'), false));
+            let Mode::Textarea { buf } = &app.mode else {
+                panic!("quick-send must open");
+            };
+            assert_eq!(buf.text(), "", "a sent message leaves no draft");
+        });
+    }
+
+    /// Typing non-ASCII must not blow up the TUI. `col` is a BYTE offset
+    /// (the popup slices `line[..col]` to place the cursor), so advancing
+    /// it by one per char leaves it mid-character and the next edit hits a
+    /// non-char-boundary panic.
+    #[test]
+    fn the_quick_send_buffer_handles_non_ascii() {
+        let mut buf = TextBuf::new();
+        for c in "please — do".chars() {
+            buf.insert_char(c);
+        }
+        assert_eq!(buf.text(), "please — do");
+        buf.backspace();
+        assert_eq!(buf.text(), "please — d");
+        buf.move_home();
+        buf.move_end();
+        assert_eq!(buf.cursor_col(), "please — d".len());
+    }
+
+    /// Drafts are unbounded in practice but not in principle: the buffer
+    /// refuses to grow past the cap rather than eating memory.
+    #[test]
+    fn the_quick_send_buffer_stops_at_the_cap() {
+        let mut buf = TextBuf::new();
+        for _ in 0..TEXTBUF_MAX_BYTES {
+            buf.insert_char('x');
+        }
+        assert_eq!(buf.text().len(), TEXTBUF_MAX_BYTES);
+        buf.insert_char('y');
+        buf.newline();
+        assert_eq!(buf.text().len(), TEXTBUF_MAX_BYTES, "the cap holds");
+        assert!(!buf.text().contains('y'), "the refused char is not stored");
+        // deleting makes room again
+        buf.backspace();
+        buf.insert_char('z');
+        assert!(buf.text().ends_with('z'), "the cap is not a one-way door");
+    }
+
     /// The nominal case is one worktree, one agent: a feature with a
     /// single shell is folded — it gets no child row (whatever its expand
     /// flag says) and the selection resolves to that shell. A second shell
@@ -3165,8 +3562,8 @@ mod tests {
                 "Enter on a folded feature must attach its shell"
             );
             assert!(
-                !app.feat_expanded[0][0],
-                "a folded feature must never expand"
+                !app.visible_nodes().contains(&Sel::Shell(0, 0, 0)),
+                "a folded feature must never grow a child row"
             );
 
             app.pending_attach = None;

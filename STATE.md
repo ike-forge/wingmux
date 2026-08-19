@@ -9,7 +9,15 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M14 — tree width cap + dead-shell detection (COMPLETE).** User feedback:
+**M15 — UI polish: Title Case panels, unfold by default, per-shell
+quick-send drafts (COMPLETE).** User feedback: title-case every pane title,
+unfold everything by default, and keep a per-shell quick-send buffer so a
+half-written prompt survives `Esc`. Gating: fmt clean, clippy -D warnings
+clean, tests green apart from the pre-existing
+`legacy_root_back_key_is_unbound_but_user_binding_survives` failure, which
+already fails on the untouched baseline in this environment.
+
+Before that: **M14 — tree width cap + dead-shell detection (COMPLETE).** User feedback:
 the left panel gets "overly wide" on a wide screen, and a shell killed with
 ctrl-d "does not get detected (still shows as waiting)". Gating: fmt clean,
 clippy -D warnings clean, tests green apart from the pre-existing
@@ -122,6 +130,84 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M15 — Title Case panels, unfold by default, per-shell drafts (COMPLETE)
+
+User feedback, verbatim: "Title case for each pane title (Preview / Quick
+Send / Projects (Or just Features if in a single git repo))", "Unfold
+everything by default", and "Keep a buffor of the quick send (PER SHELL) …
+we can have a guardrail … of for instance 1 million chars".
+
+- **Title Case**: every panel and popup title is a proper name now —
+  `Preview` (the `(capture-pane)` implementation detail is gone),
+  `Quick Send`, `Themes`, `Messages`, `Help`, `Startup Diagnostics (n)`,
+  `New Feature`, `Import Project`, `Delete Feature`, `Remove Project`.
+  Body text, hints and the statusbar stay lowercase — only titles changed.
+  The tree title follows what the tree actually lists: `Features (n)` in
+  flatten mode (a single git repo), `Projects (n)` otherwise, and the count
+  is now `visible_projects().len()` rather than every project in state
+  (out-of-scope projects have no rows, so they must not be counted).
+- **Unfold by default**: `UNFOLD_CAP = 30` replaces the old `≤5` rule and
+  `feat_expanded` starts `true`. The cap is now a readability backstop, not
+  a cost guard, because boot no longer pays for it: `boot_discovery_from`
+  loads only the FIRST visible project's worktrees synchronously (that is
+  what the first frame draws) and queues the rest in
+  `App::pending_worktrees`. The event loop calls
+  `drain_pending_worktrees()` once per iteration — one `git worktree list`
+  per frame, with a zero input timeout while the queue is non-empty — so a
+  scope with dozens of repos paints immediately and fills in. No threads;
+  the loop stays single-threaded.
+  - `ensure_worktrees` now resizes `feat_expanded` to match `features`.
+    It used to push features without it, and a short vector reads as
+    folded, so lazily-discovered features arrived collapsed.
+  - **Bug found by the change**: `draw_tree` emitted child rows on `fexp`
+    alone while `App::visible_nodes` also skips solo features (one shell →
+    the feature row IS the shell). They only agreed because features used
+    to default to folded; unfolding by default made the renderer and the
+    navigation model disagree on the row count, which breaks the cursor
+    and mouse hit-testing. `draw_tree` now skips solo children too.
+- **Per-shell quick-send drafts**: `App::drafts: HashMap<String, TextBuf>`
+  keyed by pane id — the key `captures` and `statuses` already use. `Esc`
+  parks the buffer (cursor and scroll included, so `s` resumes exactly
+  where it left off); an empty buffer is removed rather than parked.
+  `submit_input` now returns whether it succeeded, and the draft is dropped
+  only on delivery — a send that failed (dead pane, no server) keeps the
+  text instead of swallowing it. Shells with no live pane get no draft;
+  they cannot receive a message. In-memory only: drafts do not go into
+  `state.json` and do not survive a quit. Guardrail:
+  `TEXTBUF_MAX_BYTES = 1_000_000`, enforced in `insert_char`/`newline`,
+  which drop silently past the cap (an error toast per keystroke would be
+  worse).
+- **Crash fix (pre-existing, in the buffer this milestone extends)**:
+  `TextBuf::col` is a BYTE offset — the popup slices `line[..col]` to place
+  the caret — but `insert_char` advanced it by 1 and `backspace` removed at
+  `col - 1`. Typing any non-ASCII character (an em-dash, a typographic
+  quote — routine in agent prompts) left `col` inside a multi-byte
+  character, and the next edit panicked the whole TUI on a non-char-boundary
+  index. `insert_char` now advances by `len_utf8()`, and `backspace`,
+  `move_left`, `move_right` and `clamp_col` go through `prev_boundary`/
+  `next_boundary` so every motion lands on a char boundary.
+- **Test isolation**: the `ui` test module called `app.startup()`, which
+  loads AND rewrites the real `$XDG_STATE_HOME/.../state.json`. The
+  fixtures therefore inherited the developer's projects (49 of them here,
+  well past the unfold cap) and raced each other through the shared file,
+  which made several render tests flaky. None of them needed `startup()` —
+  they push their own projects — so it is gone from all five call sites
+  plus `seeded_app`. `app::tests` already had `with_fresh_xdg` for the
+  cases that genuinely need disk.
+- Tests: `panel_and_popup_titles_are_title_case`,
+  `tree_title_says_features_when_flattened`,
+  `features_are_expanded_by_default`,
+  `boot_queues_worktree_loading_instead_of_blocking`,
+  `lazily_loaded_features_are_expanded`,
+  `quick_send_drafts_are_kept_per_shell`, `a_failed_send_keeps_the_draft`,
+  `a_delivered_draft_is_cleared`, `the_quick_send_buffer_stops_at_the_cap`,
+  `the_quick_send_buffer_handles_non_ascii`; and the existing
+  `many_projects_collapse_by_default_few_expand`,
+  `expand_loads_worktrees_lazily_and_only_once`,
+  `boot_discovery_live_scans_folder_scope` and
+  `enter_on_a_folded_feature_attaches_its_shell` retargeted to the new
+  behaviour.
 
 ### M14 — tree width cap + dead-shell detection (COMPLETE)
 
