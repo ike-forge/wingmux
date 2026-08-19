@@ -436,3 +436,6 @@ mise run install    # release build + link into ~/.local/bin (test from anywhere
 
 Logs go to `$XDG_STATE_HOME/lazywingman/lazywingman.log` — never stdout
 (stdout belongs to the TUI).
+
+Design decisions — why each subsystem works the way it does — live in
+[`docs/architecture.md`](docs/architecture.md).
