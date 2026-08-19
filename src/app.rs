@@ -1498,7 +1498,7 @@ impl App {
             }
         }
         Self::kill_session_if_empty(&tmux, &proj);
-        Git.worktree_remove(&feat.worktree_path, force)?;
+        Git.worktree_remove(&proj.path, &feat.worktree_path, force)?;
         if self.cfg.worktrees.delete_branch {
             match Git.branch_delete(&proj.path, &feat.branch) {
                 Ok(()) => log::info!("deleted branch '{}'", feat.branch),

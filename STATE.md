@@ -9,7 +9,31 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M24 — worktrees with no shell are dimmed (COMPLETE).** User feedback:
+**fix — deleting a worktree whose directory is already gone (COMPLETE).**
+User report: a worktree created outside wingman (`tree1` in `filecture`) was
+deleted from the tree, the notification said it was deleted — and it was back
+after a restart. Root cause (log evidence: `worktree ... already gone,
+ignoring` at every attempt): `Git::worktree_remove` located the main repo
+solely through the worktree's own `.git` file and treated a missing one as
+"nothing to do", returning `Ok(())`. But a missing directory only means the
+CHECKOUT is gone; git still holds the admin entry under
+`<repo>/.git/worktrees/<id>` and still lists the worktree as `prunable` —
+and still holds its branch, so the follow-up `git branch -D` failed too.
+`delete_feature` then dropped the feature from state and reported success,
+and the next `ensure_worktrees` re-adopted it from `git worktree list`.
+Fix: `worktree_remove` takes the owning repo as its first argument and falls
+back to `main_repo(repo)` when the worktree cannot name its own main repo
+(only giving up, as before, when that is not a repo either). `git worktree
+remove` on a prunable entry succeeds without `--force`, so the registration
+and then the branch go. Regression test:
+`worktree_remove_clears_a_prunable_registration` (add a worktree, `rm -rf`
+its directory, remove it, assert the list is back to one and the branch can
+be deleted) — it fails on the old body with `left: 2`. Gate: fmt clean,
+clippy -D warnings clean, 228 pass apart from the pre-existing
+`legacy_root_back_key_is_unbound_but_user_binding_survives`, which fails the
+same way on the untouched baseline here.
+
+Before that: **M24 — worktrees with no shell are dimmed (COMPLETE).** User feedback:
 worktrees LazyWingman did not create get listed (good), but when there is no
 tmux window for them they are effectively outside it — no attach, no send, no
 preview — and the tree said nothing about that. Reframed during design: the
