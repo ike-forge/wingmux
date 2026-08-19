@@ -209,16 +209,28 @@ impl Git {
         Ok(())
     }
 
-    /// Remove a linked worktree. `force` is required when it has changes.
-    /// Removing something that isn't a worktree anymore is a no-op.
-    pub fn worktree_remove(&self, wt_path: &Path, force: bool) -> Result<()> {
+    /// Remove a linked worktree of `repo`. `force` is required when it has
+    /// changes. Removing something git no longer knows about is a no-op.
+    pub fn worktree_remove(&self, repo: &Path, wt_path: &Path, force: bool) -> Result<()> {
         // git refuses to remove a worktree from inside itself, and running
         // from an unrelated repo misidentifies it — so run from the worktree's
-        // main repo, discovered via its `.git` file. No `.git` file means the
-        // worktree is already gone.
-        let Some(main) = main_repo_of_worktree(wt_path) else {
-            log::warn!("worktree {} already gone, ignoring", wt_path.display());
-            return Ok(());
+        // main repo, discovered via its `.git` file. A missing `.git` file
+        // only means the DIRECTORY is gone (deleted outside wingman): git
+        // still lists the worktree as `prunable` and still holds its branch,
+        // so fall back to the project's own main repo and remove it there.
+        let main = match main_repo_of_worktree(wt_path) {
+            Some(m) => m,
+            None => match self.main_repo(repo) {
+                Some(m) => m,
+                None => {
+                    log::warn!(
+                        "worktree {} gone and {} is not a repo, ignoring",
+                        wt_path.display(),
+                        repo.display()
+                    );
+                    return Ok(());
+                }
+            },
         };
         let mut args = vec!["worktree", "remove"];
         if force {
@@ -383,7 +395,7 @@ mod tests {
         fs::create_dir_all(&nested).unwrap();
         assert_eq!(git.repo_root(&nested).unwrap(), wt);
         assert_eq!(git.main_repo(&nested).unwrap(), repo);
-        git.worktree_remove(&wt, false).unwrap();
+        git.worktree_remove(&repo, &wt, false).unwrap();
     }
 
     #[test]
@@ -426,13 +438,39 @@ mod tests {
         assert!(git.worktree_dirty(&wt_path).unwrap());
 
         // remove without force on a dirty worktree fails
-        assert!(git.worktree_remove(&wt_path, false).is_err());
-        git.worktree_remove(&wt_path, true).unwrap();
+        assert!(git.worktree_remove(&repo, &wt_path, false).is_err());
+        git.worktree_remove(&repo, &wt_path, true).unwrap();
         assert!(!wt_path.exists());
         assert_eq!(git.worktree_list(&repo).unwrap().len(), 1);
 
         // removing again is a no-op success
-        git.worktree_remove(&wt_path, false).unwrap();
+        git.worktree_remove(&repo, &wt_path, false).unwrap();
+    }
+
+    /// A worktree whose DIRECTORY was deleted outside wingman stays
+    /// registered in git (`prunable`) and keeps holding its branch.
+    /// Removing the feature has to clear that registration too — otherwise
+    /// `git worktree list` keeps reporting it and the feature reappears on
+    /// the next start.
+    #[test]
+    fn worktree_remove_clears_a_prunable_registration() {
+        let (_guard, repo) = temp_repo("proj");
+        let git = Git;
+        let wt_path = repo.parent().unwrap().join("wt-vanished");
+        git.worktree_add(&repo, &wt_path, "vanished", "main")
+            .unwrap();
+        fs::remove_dir_all(&wt_path).unwrap();
+        assert_eq!(
+            git.worktree_list(&repo).unwrap().len(),
+            2,
+            "the directory is gone but git still lists it"
+        );
+
+        git.worktree_remove(&repo, &wt_path, false).unwrap();
+
+        assert_eq!(git.worktree_list(&repo).unwrap().len(), 1);
+        // with the registration gone the branch is free to delete
+        git.branch_delete(&repo, "vanished").unwrap();
     }
 
     #[test]
