@@ -128,6 +128,7 @@ mod tests {
             pane_id: "%1".to_string(),
             current_command: current_command.to_string(),
             dead,
+            overlay_raw: String::new(),
         }
     }
 

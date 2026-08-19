@@ -4193,6 +4193,7 @@ mod tests {
             pane_id: "%1".into(),
             current_command: "node".into(),
             dead: false,
+            overlay_raw: String::new(),
         };
         assert_eq!(
             crate::status::classify(&pat, &recent_tail(coloured), Some(&pane)),
