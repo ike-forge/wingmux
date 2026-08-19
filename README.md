@@ -76,7 +76,7 @@ the help overlay (`?`).
 | `ctrl-f` / `ctrl-b` | full page up / down |
 | `h` | collapse / jump to parent |
 | `l` / `Enter` | expand, or **attach** to the selected shell (a one-shell feature attaches straight away — see the folded row below) |
-| `n` | new feature (worktree + branch + agent shell) |
+| `n` | new feature (worktree + branch + agent shell) — a prompt asks for the name and names the branch it will be cut from: the project's **base branch** (`worktrees.base_branch`, per-project override), never the branch the repo has checked out |
 | `a` | add a shell to the selected feature — a prompt asks which command it runs (empty = the project's default agent command, shown as a hint) |
 | `s` | **quick-send** a line to the selected shell (or to a one-shell feature's row). `Esc` keeps the unsent text as that shell's draft — `s` on it again picks up where you left off. The draft is dropped once the message is actually delivered, and lives only for this run of LazyWingman |
 | `p` | **predefined messages** for the selected shell (or a one-shell feature's row) — a modal of configured presets (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
@@ -294,6 +294,11 @@ at a glance without hunting for the status word at the end of the row.
   the PREFIX table to `switch-client` back to the dashboard window, rebound
   on every startup; legacy root-table bindings from earlier versions are
   removed on startup.
+- **New feature**: the branch and worktree are cut from the project's
+  **base branch** (`worktrees.base_branch`, or the project's override), not
+  from whatever the repo has checked out. The New Feature popup names that
+  branch under the name field; when the configured base branch does not
+  exist in the repo it warns that creation falls back to the current branch.
 - **Attach (standalone)**: the terminal is handed over to `tmux attach -t
   <agent-session>` (the shell's window is preselected); detaching with `C-b
   d` returns you to the dashboard.

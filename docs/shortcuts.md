@@ -63,13 +63,13 @@ overlay lists all of them grouped by context. Same words in both.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `n` | new feature (worktree + branch + agent shell) | create action |
+| `n` | new feature (worktree + branch cut from the project's base branch, + agent shell) | create action |
 
 ### Feature selected
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `n` | new feature (sibling) | create action |
+| `n` | new feature (sibling; branched from the base branch, not the checkout) | create action |
 | `a` | add a shell to the feature (prompts for the command; empty = the project default) | add action |
 | `d` | delete feature (kills windows, removes worktree; `f` = force when dirty) | vim `d` destructive, confirms; `f` differs by position (confirm mode, not navigation) |
 
@@ -82,6 +82,10 @@ overlay lists all of them grouped by context. Same words in both.
 | `d` | close this shell (kills its window; the feature and its other shells stay) | vim `d` destructive, confirms; the object is the selected row |
 
 ## Text input (new feature / add shell — single line)
+
+The New Feature prompt names the branch it will cut from under the name
+field (`branches from: <base> (base branch)`), and warns when the configured
+base branch is absent and creation falls back to the current checkout.
 
 || Key | Meaning | Rule satisfied |
 |---|---|---|

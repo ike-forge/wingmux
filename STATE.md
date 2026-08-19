@@ -9,8 +9,36 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M22 — `i import` and `I scan` are gone (COMPLETE).** User feedback: both
-were believed removed already and were not. Scope-based discovery (M9.3)
+**M23 — the New Feature popup states the base branch (COMPLETE).** User
+feedback: the popup asked for a feature name and nothing else, leaving it to
+folklore that the worktree branches from the project's BASE branch
+(`worktrees.base_branch`, per-project override), not from whatever the repo
+has checked out. The popup now shows `branches from: <base> (base branch)`
+under the name field, dimmed like the add-shell `default:` hint. The branch
+comes from the same `Git::resolve_base_branch` call `create_feature` makes,
+resolved once in the new `App::open_new_feature` (which also replaced the two
+duplicated popup-opening arms: the `n` key and `BarAction::NewFeature`) and
+parked in `App::new_feature_base` as a `BaseHint { branch, missing }` — no git
+call per keystroke or per frame. `missing` carries the configured base when
+that branch is absent from the repo: creation falls back to the current
+branch, so the popup names the checkout and warns
+`base branch '<configured>' not found — using current branch` in
+`status_waiting` instead of claiming a base that does not exist. A missing
+project gets no hint line at all (creation refuses it anyway). Tests (all four
+take `with_test_lock`, per M21 — they shell out to git):
+`new_feature_popup_names_the_base_branch_not_the_checkout` (repo sitting on an
+unrelated branch), `new_feature_popup_flags_a_missing_base_branch`,
+`new_feature_popup_has_no_base_hint_for_a_missing_project`, and the render
+test `ui::tests::new_feature_popup_states_the_base_branch` (asserts the line
+is on screen, the checked-out branch name is not, and the fallback warning
+renders). Docs: README (key table + a "New feature" bullet in the behaviour
+list), docs/shortcuts.md, DECISIONS. Gate: fmt clean, clippy -D warnings
+clean, 225 pass in parallel apart from the pre-existing
+`legacy_root_back_key_is_unbound_but_user_binding_survives` (the developer's
+own `~/.tmux.conf` root bindings — fails on the untouched baseline too).
+
+Before that: **M22 — `i import` and `I scan` are gone (COMPLETE).** User
+feedback: both were believed removed already and were not. Scope-based discovery (M9.3)
 imports every repo inside the scope at boot, so `i` (import one absolute
 path) and `I` (rescan that same root) were duplicating it for two top-level
 keys and two of the four statusbar slots on a project row. Removed: the `i`

@@ -154,6 +154,21 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   boot), and `prune` skips worktree verification for projects whose
   worktrees were never loaded, so boot never pays 200 git calls. Since M20
   the unfolded projects' listings are queued rather than run at boot.
+- **M23 — the New Feature popup names the base branch it cuts from.** A
+  feature's branch has always been cut from the project's base branch
+  (`worktrees.base_branch`, or the project's override), never from the
+  branch the repo happens to have checked out — but the popup asked for a
+  name and said nothing else, so the user had to know that. It now prints
+  `branches from: <base> (base branch)` under the name field. The branch is
+  resolved through the SAME `Git::resolve_base_branch` call `create_feature`
+  makes, so the popup cannot promise a base the creation then ignores, and
+  it is resolved ONCE when the popup opens — a git call per keystroke, or
+  per frame, for a line that cannot change while the popup is up, would be
+  the wrong trade. The fallback is spelled out rather than hidden: when the
+  configured base is absent from the repo, creation falls back to the
+  current branch, so the popup names that branch and warns
+  `base branch '<configured>' not found — using current branch` instead of
+  claiming a base branch that does not exist.
 - **M22 — no `i import` / `I scan`: discovery is the only way in.** Both
   keys predate scope-based discovery (M9.3), which already imports every repo
   inside the scope at boot, live and without a cache. `i` (type an absolute

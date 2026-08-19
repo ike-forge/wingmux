@@ -1165,6 +1165,23 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
             fg(theme.dim),
         )));
     }
+    // new-feature only: the worktree is cut from the project's base
+    // branch, NOT from whatever the repo has checked out. Name the branch
+    // so nobody has to guess which one it is.
+    if *kind == InputKind::NewFeature
+        && let Some(hint) = app.new_feature_base()
+    {
+        lines.push(Line::from(Span::styled(
+            format!("branches from: {} (base branch)", hint.branch),
+            fg(theme.dim),
+        )));
+        if let Some(configured) = &hint.missing {
+            lines.push(Line::from(Span::styled(
+                format!("base branch '{configured}' not found — using current branch"),
+                fg(theme.status_waiting),
+            )));
+        }
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         format!("Enter to submit{}Esc to cancel", sep(app.ascii)),
@@ -1562,6 +1579,75 @@ mod tests {
             .filter(|r| r.contains("wrap"))
             .count();
         assert!(filled > 1, "the long line wrapped over {filled} rows");
+    }
+
+    /// The New Feature popup spells out where the branch comes from: the
+    /// project's base branch, not the branch the repo has checked out. The
+    /// hint is the one place a user can see it before hitting Enter.
+    #[test]
+    fn new_feature_popup_states_the_base_branch() {
+        crate::util::testutil::with_test_lock(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let repo = root.path().join("repo");
+            std::fs::create_dir_all(&repo).unwrap();
+            let git = |args: &[&str]| {
+                let ok = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success();
+                assert!(ok, "git {} failed", args.join(" "));
+            };
+            git(&["init", "-b", "main"]);
+            git(&["config", "user.name", "lw-test"]);
+            git(&["config", "user.email", "lw-test@example.com"]);
+            std::fs::write(repo.join("readme.md"), "# t\n").unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-m", "init"]);
+            git(&["checkout", "-b", "checked-out"]);
+
+            let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
+            app.state.projects.push(crate::state::Project {
+                name: "repo".into(),
+                path: repo.clone(),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: false,
+                features: vec![],
+            });
+            app.build_tree_flags();
+            app.clamp_sel();
+            app.sel = crate::app::Sel::Project(0);
+            app.open_new_feature();
+
+            let backend = ratatui::backend::TestBackend::new(120, 40);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let text = buffer_text(&terminal);
+            assert!(
+                text.contains("branches from: main (base branch)"),
+                "popup must name the base branch: {text:?}"
+            );
+            assert!(
+                !text.contains("checked-out"),
+                "the checked-out branch is not what a feature branches from: {text:?}"
+            );
+
+            // configured base missing from the repo: creation falls back to the
+            // checkout, and the popup warns instead of naming a phantom base.
+            app.state.projects[0].base_branch = "master".into();
+            app.open_new_feature();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let text = buffer_text(&terminal);
+            assert!(
+                text.contains("base branch 'master' not found"),
+                "popup must flag the fallback: {text:?}"
+            );
+        });
     }
 
     // ---- M8.4a — small terminals, resize, ASCII fallback ----

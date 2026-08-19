@@ -561,6 +561,20 @@ pub struct App {
     /// [`App::poll_dirty`] refills it every [`DIRTY_INTERVAL`].
     pub(crate) dirty: HashMap<PathBuf, bool>,
     last_dirty_poll: Option<Instant>,
+    /// What the New Feature popup says the branch will be cut from,
+    /// re-resolved every time the popup opens (a `git` call per keystroke
+    /// is not on). `None` when the project's repo could not be read.
+    new_feature_base: Option<BaseHint>,
+}
+
+/// The base branch a new feature would branch from, as shown in the New
+/// Feature popup. `missing` carries the configured base branch when it is
+/// absent from the repo and `branch` is therefore the current checkout —
+/// the one case where the popup must not claim a base branch.
+#[derive(Debug, Clone)]
+pub struct BaseHint {
+    pub branch: String,
+    pub missing: Option<String>,
 }
 
 /// The slice of a pane capture status classification runs on: the last
@@ -618,6 +632,7 @@ impl App {
             picker_original: crate::theme::DEFAULT_THEME.into(),
             bar_hits: Vec::new(),
             last_click: None,
+            new_feature_base: None,
         }
     }
 
@@ -1699,6 +1714,46 @@ impl App {
         }
     }
 
+    /// Open the New Feature popup for the selected project, resolving the
+    /// branch the worktree would be cut from up front so the popup can name
+    /// it. A feature always branches from the project's base branch, never
+    /// from whatever the repo currently has checked out.
+    pub(crate) fn open_new_feature(&mut self) {
+        let pi = match self.sel {
+            Sel::Project(pi) | Sel::Feature(pi, _) => pi,
+            Sel::Shell(..) => {
+                self.notify("select a project to add a feature");
+                return;
+            }
+        };
+        self.new_feature_base = self.base_hint(pi);
+        self.mode = Mode::Input {
+            kind: InputKind::NewFeature,
+            text: String::new(),
+        };
+    }
+
+    /// Resolve what `create_feature` would branch from for project `pi` —
+    /// same call, so the popup cannot promise a base the creation then
+    /// ignores. `None` for a missing repo (creation refuses it anyway).
+    fn base_hint(&self, pi: usize) -> Option<BaseHint> {
+        let proj = self.state.projects.get(pi)?;
+        if proj.missing {
+            return None;
+        }
+        let configured = proj.base_branch.trim().to_string();
+        let branch = Git.resolve_base_branch(&proj.path, &configured).ok()?;
+        // `resolve_base_branch` returns the configured branch when it
+        // exists, so anything else means it fell back to the checkout.
+        let missing = (!configured.is_empty() && branch != configured).then_some(configured);
+        Some(BaseHint { branch, missing })
+    }
+
+    /// What the New Feature popup should say the branch is cut from.
+    pub fn new_feature_base(&self) -> Option<&BaseHint> {
+        self.new_feature_base.as_ref()
+    }
+
     /// The command an empty add-shell submit would run: the selected
     /// project's default agent command. Drives the popup's hint line.
     pub fn add_shell_default(&self) -> Option<&str> {
@@ -2076,17 +2131,7 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
             KeyCode::Char('h') | KeyCode::Left => self.collapse_or_up(),
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.expand_or_attach(),
-            KeyCode::Char('n') => match self.sel {
-                Sel::Project(_) | Sel::Feature(_, _) => {
-                    self.mode = Mode::Input {
-                        kind: InputKind::NewFeature,
-                        text: String::new(),
-                    };
-                }
-                Sel::Shell(..) => {
-                    self.notify("select a project to add a feature");
-                }
-            },
+            KeyCode::Char('n') => self.open_new_feature(),
             KeyCode::Char('a') => self.open_add_shell(),
             KeyCode::Char('s') => {
                 if self.selected_shell().is_some() {
@@ -2430,15 +2475,7 @@ impl App {
     fn run_bar_action(&mut self, action: BarAction) {
         match action {
             BarAction::Help => self.open_help(),
-            BarAction::NewFeature => match self.sel {
-                Sel::Project(_) | Sel::Feature(_, _) => {
-                    self.mode = Mode::Input {
-                        kind: InputKind::NewFeature,
-                        text: String::new(),
-                    };
-                }
-                _ => {}
-            },
+            BarAction::NewFeature => self.open_new_feature(),
             BarAction::AddShell => self.open_add_shell(),
             BarAction::QuickSend => {
                 if self.selected_shell().is_some() {
@@ -3364,6 +3401,100 @@ mod tests {
         assert!(err.to_string().contains("missing"), "err: {err}");
         let err = app.add_shell(0, 0, "").unwrap_err();
         assert!(err.to_string().contains("missing"), "err: {err}");
+    }
+
+    /// The New Feature popup names the branch the worktree is cut from:
+    /// the project's base branch, even when the repo has something else
+    /// checked out. Same resolution `create_feature` runs, so the popup
+    /// cannot promise a base the creation then ignores.
+    #[test]
+    fn new_feature_popup_names_the_base_branch_not_the_checkout() {
+        crate::util::testutil::with_test_lock(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let path = repo_with_commit(root.path(), "repo");
+            // the repo sits on an unrelated branch — the popup must ignore it
+            git(&path, &["checkout", "-b", "some-other-branch"]);
+
+            let mut app = app_with(tmux_standalone("unused"));
+            app.state.projects.push(Project {
+                name: "repo".into(),
+                path: path.clone(),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: false,
+                features: vec![],
+            });
+            app.build_tree_flags();
+            app.sel = Sel::Project(0);
+            app.open_new_feature();
+
+            assert!(matches!(
+                app.mode,
+                Mode::Input {
+                    kind: InputKind::NewFeature,
+                    ..
+                }
+            ));
+            let hint = app.new_feature_base().expect("base hint");
+            assert_eq!(hint.branch, "main");
+            assert!(hint.missing.is_none(), "main exists: {hint:?}");
+        });
+    }
+
+    /// When the configured base branch is not in the repo, creation falls
+    /// back to the current branch — so the popup says so instead of naming
+    /// a base that would be a lie.
+    #[test]
+    fn new_feature_popup_flags_a_missing_base_branch() {
+        crate::util::testutil::with_test_lock(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let path = repo_with_commit(root.path(), "repo");
+
+            let mut app = app_with(tmux_standalone("unused"));
+            app.state.projects.push(Project {
+                name: "repo".into(),
+                path: path.clone(),
+                base_branch: "master".into(), // repo only has `main`
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: false,
+                features: vec![],
+            });
+            app.build_tree_flags();
+            app.sel = Sel::Project(0);
+            app.open_new_feature();
+
+            let hint = app.new_feature_base().expect("base hint");
+            assert_eq!(hint.branch, "main"); // the fallback: current branch
+            assert_eq!(hint.missing.as_deref(), Some("master"));
+        });
+    }
+
+    /// A missing repo has no base to name: the popup still opens (creation
+    /// is what rejects it) but shows no branch line.
+    #[test]
+    fn new_feature_popup_has_no_base_hint_for_a_missing_project() {
+        crate::util::testutil::with_test_lock(|| {
+            let mut app = app_with(tmux_standalone("unused"));
+            app.state.projects.push(Project {
+                name: "gone".into(),
+                path: PathBuf::from("/definitely/not/here"),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: true,
+                features: vec![],
+            });
+            app.build_tree_flags();
+            app.sel = Sel::Project(0);
+            app.open_new_feature();
+
+            assert!(app.new_feature_base().is_none());
+        });
     }
 
     // ---- M8.4a — accessibility keys ----
