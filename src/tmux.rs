@@ -38,8 +38,6 @@ pub struct PaneInfo {
     pub pane_id: String,
     pub current_command: String,
     pub dead: bool,
-    pub width: u32,
-    pub height: u32,
 }
 
 /// One tmux session (agent sessions only, filtered by the caller).
@@ -398,7 +396,7 @@ impl Tmux {
     /// A server with no sessions yet (fresh standalone boot) yields an empty
     /// list, not an error.
     pub fn list_panes(&self) -> Result<Vec<PaneInfo>> {
-        let fmt = "#{pane_id}|#{pane_current_command}|#{pane_dead}|#{pane_width}|#{pane_height}|#{session_name}";
+        let fmt = "#{pane_id}|#{pane_current_command}|#{pane_dead}|#{session_name}";
         let out = match self.run(&["list-panes", "-a", "-F", fmt]) {
             Ok(o) => o,
             // list-panes -a has no target when the server has zero sessions.
@@ -571,13 +569,13 @@ impl Tmux {
 }
 
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
-    let mut it = line.splitn(6, '|');
+    // The trailing session name is only used to filter the list — the
+    // dashboard keeps no per-pane geometry.
+    let mut it = line.splitn(4, '|');
     Some(PaneInfo {
         pane_id: it.next()?.to_string(),
         current_command: it.next()?.to_string(),
         dead: it.next()? == "1",
-        width: it.next()?.parse().unwrap_or(0),
-        height: it.next()?.parse().unwrap_or(0),
     })
 }
 
@@ -651,13 +649,12 @@ mod tests {
 
     #[test]
     fn pane_line_parsing() {
-        let line = "%3|claude|0|120|40|wingman-session-p";
+        let line = "%3|claude|0|wingman-session-p";
         let p = parse_pane_line(line).unwrap();
         assert_eq!(p.pane_id, "%3");
         assert_eq!(p.current_command, "claude");
         assert!(!p.dead);
-        assert_eq!(p.width, 120);
-        let dead = parse_pane_line("%9|sh|1|80|24|wingman-session-p").unwrap();
+        let dead = parse_pane_line("%9|sh|1|wingman-session-p").unwrap();
         assert!(dead.dead);
     }
 

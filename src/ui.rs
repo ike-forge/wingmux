@@ -1,4 +1,4 @@
-//! TUI rendering: tree, detail, preview, status bar, overlays.
+//! TUI rendering: tree, preview, status bar, toast, overlays.
 //!
 //! All colours come from the resolved [`Theme`]; the renderer never hardcodes
 //! a colour.
@@ -14,19 +14,20 @@ use crate::status::Status;
 use crate::theme::ResolvedColors;
 
 /// Minimum sizes for the layout tiers. Resize is normal, not an edge case:
-/// the UI degrades gracefully — preview hides first, then detail, then the
-/// bar — and a too-small frame shows a message instead of drawing garbage.
-const FULL_MIN: (u16, u16) = (64, 12);
-const NO_PREVIEW_MIN: (u16, u16) = (44, 9);
+/// the UI degrades gracefully — the preview hides first, then the bar —
+/// and a too-small frame shows a message instead of drawing garbage.
+const WIDE_MIN: (u16, u16) = (64, 12);
+const SPLIT_MIN: (u16, u16) = (44, 9);
 const TREE_MIN: (u16, u16) = (26, 7);
 
 /// Which panels fit in a frame of `(width, height)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tier {
-    /// Tree + detail + preview + statusbar.
-    Full,
-    /// Tree + detail + statusbar (preview hidden).
-    NoPreview,
+    /// Tree + preview + statusbar, tree at its roomy width.
+    Wide,
+    /// Tree + preview + statusbar, tree taking a bigger share of a
+    /// narrower frame.
+    Split,
     /// Tree + statusbar only.
     TreeOnly,
     /// Too small for the tree — a message instead of the UI.
@@ -34,10 +35,10 @@ pub(crate) enum Tier {
 }
 
 pub(crate) fn tier_impl(w: u16, h: u16) -> Tier {
-    if w >= FULL_MIN.0 && h >= FULL_MIN.1 {
-        Tier::Full
-    } else if w >= NO_PREVIEW_MIN.0 && h >= NO_PREVIEW_MIN.1 {
-        Tier::NoPreview
+    if w >= WIDE_MIN.0 && h >= WIDE_MIN.1 {
+        Tier::Wide
+    } else if w >= SPLIT_MIN.0 && h >= SPLIT_MIN.1 {
+        Tier::Split
     } else if w >= TREE_MIN.0 && h >= TREE_MIN.1 {
         Tier::TreeOnly
     } else {
@@ -50,8 +51,8 @@ pub(crate) fn tier_impl(w: u16, h: u16) -> Tier {
 pub(crate) fn tree_width(viewport: (u16, u16)) -> Option<u16> {
     let (w, h) = viewport;
     match tier_impl(w, h) {
-        Tier::Full => Some(w * 32 / 100),
-        Tier::NoPreview => Some(w * 42 / 100),
+        Tier::Wide => Some(w * 32 / 100),
+        Tier::Split => Some(w * 42 / 100),
         Tier::TreeOnly => Some(w),
         Tier::Message => None,
     }
@@ -113,8 +114,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_too_small(f, area, app);
             return;
         }
-        Tier::Full => draw_full(f, area, app),
-        Tier::NoPreview => draw_no_preview(f, area, app),
+        Tier::Wide => draw_split(f, area, app, 32),
+        Tier::Split => draw_split(f, area, app, 42),
         Tier::TreeOnly => draw_tree_only(f, area, app),
     }
     // Overlays render last (on top). popup_area is (re)computed every
@@ -186,10 +187,6 @@ fn fits(area: Rect, min: (u16, u16)) -> bool {
 
 /// App-generated glyphs with ASCII fallbacks (the user's pane content is
 /// never rewritten — only our own labels).
-pub(crate) fn arrow(ascii: bool) -> &'static str {
-    if ascii { "->" } else { "→" }
-}
-
 pub(crate) fn warn_mark(ascii: bool) -> &'static str {
     if ascii { "!" } else { "⚠" }
 }
@@ -218,30 +215,17 @@ fn asciify(f: &mut Frame, area: Rect) {
     }
 }
 
-/// The full layout: tree | detail / preview, statusbar below.
-fn draw_full(f: &mut Frame, area: Rect, app: &mut App) {
+/// Tree | preview, statusbar below. `tree_pct` must match [`tree_width`]
+/// for the tier — the same math drives mouse hit-testing.
+fn draw_split(f: &mut Frame, area: Rect, app: &mut App, tree_pct: u16) {
     let [main, statusbar] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
-    let [tree, right] =
-        Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)]).areas(main);
-    let [detail, preview] =
-        Layout::vertical([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(right);
+    let [tree, preview] =
+        Layout::horizontal([Constraint::Percentage(tree_pct), Constraint::Fill(1)]).areas(main);
 
     draw_tree(f, tree, app);
-    draw_detail(f, detail, app);
     draw_preview(f, preview, app);
-    draw_statusbar(f, statusbar, app);
-}
-
-/// Tree + detail, no preview.
-fn draw_no_preview(f: &mut Frame, area: Rect, app: &mut App) {
-    let [main, statusbar] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
-    let [tree, detail] =
-        Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(main);
-
-    draw_tree(f, tree, app);
-    draw_detail(f, detail, app);
+    draw_toast(f, main, app);
     draw_statusbar(f, statusbar, app);
 }
 
@@ -250,6 +234,7 @@ fn draw_tree_only(f: &mut Frame, area: Rect, app: &mut App) {
     let [main, statusbar] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
     draw_tree(f, main, app);
+    draw_toast(f, main, app);
     draw_statusbar(f, statusbar, app);
 }
 
@@ -345,11 +330,14 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     } else {
         ("     ├─ ", "     └─ ")
     };
-    // Per-type icons (aesthetic pass; ASCII keeps plain markers).
-    let (proj_icon, feat_icon, shell_icon) = if app.ascii {
-        ("*", "-", "")
+    // Per-type icons (aesthetic pass; ASCII keeps plain markers). The
+    // feature icon carries the worktree's state: hollow = clean, filled =
+    // uncommitted changes. Since each feature owns its worktree (and its
+    // branch), that is the one fact about it the tree cannot infer.
+    let (proj_icon, feat_icon, dirty_icon, shell_icon) = if app.ascii {
+        ("*", "-", "*", "")
     } else {
-        ("▣", "◇", "● ")
+        ("▣", "◇", "◆", "● ")
     };
     let mut items: Vec<ListItem> = Vec::new();
     let mut sel_row: Option<usize> = None;
@@ -393,16 +381,26 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 .unwrap_or(false);
             let marker = if fexp { exp } else { coll };
             let n = feat.shells.len();
+            let dirty = app.feature_dirty_cached(pi, fi);
+            let icon = if dirty { dirty_icon } else { feat_icon };
             // In flatten mode the features are the top level (no guide);
             // otherwise they hang off the project with a tree branch.
-            let prefix = if app.flatten {
-                format!("{marker} {feat_icon} ")
+            let (prefix, icon_span) = if app.flatten {
+                (format!("{marker} "), format!("{icon} "))
             } else {
                 let guide = if fi + 1 == n_feat { last_child } else { child };
-                format!("{guide}{marker} {feat_icon} ")
+                (format!("{guide}{marker} "), format!("{icon} "))
             };
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(prefix, fg(theme.tree_feature)),
+                Span::styled(
+                    icon_span,
+                    fg(if dirty {
+                        theme.status_waiting
+                    } else {
+                        theme.tree_feature
+                    }),
+                ),
                 Span::styled(feat.name.clone(), fg(theme.tree_feature)),
                 Span::styled(
                     format!(" [{n} shell{}]", if n == 1 { "" } else { "s" }),
@@ -477,213 +475,6 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
-    let theme = &app.theme.colors;
-    let lines: Vec<Line> = match app.sel {
-        Sel::Project(pi) => {
-            if let Some(p) = app.state.projects.get(pi) {
-                vec![
-                    Line::from(Span::styled(
-                        &p.name,
-                        fg(theme.tree_project).add_modifier(Modifier::BOLD),
-                    )),
-                    Line::from(""),
-                    Line::from(vec![
-                        Span::styled("path: ", fg(theme.accent)),
-                        Span::raw(p.path.display().to_string()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("status: ", fg(theme.accent)),
-                        Span::styled(
-                            if p.missing {
-                                "missing — path is not a git repo"
-                            } else {
-                                "active"
-                            },
-                            fg(if p.missing {
-                                theme.status_failed
-                            } else {
-                                theme.status_working
-                            }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("base branch: ", fg(theme.accent)),
-                        Span::raw(&p.base_branch),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("agent: ", fg(theme.accent)),
-                        Span::raw(&p.agent_command),
-                        Span::styled(format!(" (shell {})", p.agent_shell), fg(theme.dim)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("worktrees: ", fg(theme.accent)),
-                        Span::raw(app.cfg.worktree_root_for(&p.path).display().to_string()),
-                    ]),
-                    Line::from(""),
-                    Line::from(Span::styled("features:", fg(theme.accent))),
-                ]
-                .into_iter()
-                .chain(p.features.iter().map(|ft| {
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(&ft.name, fg(theme.tree_feature)),
-                        Span::styled(
-                            format!(" {} {}", arrow(app.ascii), ft.branch),
-                            fg(theme.dim),
-                        ),
-                    ])
-                }))
-                .collect()
-            } else {
-                vec![Line::from("no project selected")]
-            }
-        }
-        Sel::Feature(pi, fi) => {
-            if let Some(ft) = app.state.projects.get(pi).and_then(|p| p.features.get(fi)) {
-                let dirty = app.feature_is_dirty(pi, fi);
-                vec![
-                    Line::from(Span::styled(
-                        &ft.name,
-                        fg(theme.tree_feature).add_modifier(Modifier::BOLD),
-                    )),
-                    Line::from(""),
-                    Line::from(vec![
-                        Span::styled("branch: ", fg(theme.accent)),
-                        Span::raw(&ft.branch),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("worktree: ", fg(theme.accent)),
-                        Span::raw(ft.worktree_path.display().to_string()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("created: ", fg(theme.accent)),
-                        Span::raw(if ft.created_at.is_empty() {
-                            "unknown".into()
-                        } else {
-                            ft.created_at.clone()
-                        }),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("status: ", fg(theme.accent)),
-                        Span::styled(
-                            if dirty {
-                                "dirty (uncommitted changes)"
-                            } else {
-                                "clean"
-                            },
-                            fg(if dirty {
-                                theme.status_failed
-                            } else {
-                                theme.status_working
-                            }),
-                        ),
-                    ]),
-                    Line::from(""),
-                    Line::from(Span::styled("shells:", fg(theme.accent))),
-                ]
-                .into_iter()
-                .chain(ft.shells.iter().map(|sh| {
-                    let st = sh
-                        .pane_id
-                        .as_ref()
-                        .and_then(|p| app.statuses.get(p))
-                        .copied()
-                        .unwrap_or(Status::Idle);
-                    let cmd = sh
-                        .pane_id
-                        .as_ref()
-                        .and_then(|p| app.panes.get(p))
-                        .map(|p| p.current_command.clone())
-                        .unwrap_or_default();
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(format!("#{}", sh.index), fg(theme.tree_shell)),
-                        Span::raw("  "),
-                        Span::styled(st.label(), fg(status_color(theme, st))),
-                        Span::styled(format!("  {cmd}"), fg(theme.dim)),
-                    ])
-                }))
-                .collect()
-            } else {
-                vec![Line::from("no feature selected")]
-            }
-        }
-        Sel::Shell(pi, fi, si) => {
-            let sh = app
-                .state
-                .projects
-                .get(pi)
-                .and_then(|p| p.features.get(fi))
-                .and_then(|ft| ft.shells.get(si));
-            if let Some(sh) = sh {
-                let st = sh
-                    .pane_id
-                    .as_ref()
-                    .and_then(|p| app.statuses.get(p))
-                    .copied()
-                    .unwrap_or(Status::Idle);
-                let pinfo = sh.pane_id.as_ref().and_then(|p| app.panes.get(p));
-                vec![
-                    Line::from(Span::styled(
-                        format!("shell #{}", sh.index),
-                        fg(theme.tree_shell).add_modifier(Modifier::BOLD),
-                    )),
-                    Line::from(""),
-                    Line::from(vec![
-                        Span::styled("window: ", fg(theme.accent)),
-                        Span::raw(&sh.window_name),
-                        Span::styled(
-                            format!(" ({})", sh.window_id.as_deref().unwrap_or("-")),
-                            fg(theme.dim),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("pane: ", fg(theme.accent)),
-                        Span::raw(sh.pane_id.as_deref().unwrap_or("-")),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("status: ", fg(theme.accent)),
-                        Span::styled(st.label(), fg(status_color(theme, st))),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("process: ", fg(theme.accent)),
-                        Span::raw(
-                            pinfo
-                                .map(|p| p.current_command.clone())
-                                .unwrap_or_else(|| "-".into()),
-                        ),
-                        Span::styled(
-                            format!(
-                                "  {}x{}",
-                                pinfo.map(|p| p.width).unwrap_or(0),
-                                pinfo.map(|p| p.height).unwrap_or(0)
-                            ),
-                            fg(theme.dim),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("keys: ", fg(theme.accent)),
-                        Span::raw(format!(
-                            "Enter attach{}s quick-send{}d delete feature",
-                            sep(app.ascii),
-                            sep(app.ascii)
-                        )),
-                    ]),
-                ]
-            } else {
-                vec![Line::from("no shell selected")]
-            }
-        }
-    };
-    let block = panel_block(theme, "detail", false);
-    let p = Paragraph::new(Text::from(lines)).block(block);
-    f.render_widget(p, area);
-    if app.ascii {
-        asciify(f, area);
-    }
-}
-
 fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
     let block = panel_block(theme, "preview (capture-pane)", false);
@@ -748,62 +539,93 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
     }
 }
 
+/// The statusbar: the contextual shortcuts, and nothing else. No app
+/// name, no session, no project count, no sticky message — anything that
+/// is not actionable is noise on a row the user reads constantly.
+/// Notices live in [`draw_toast`] and fade by themselves.
 fn draw_statusbar(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = &app.theme.colors;
-    let session = match &app.tmux {
-        Some(t) => match &t.inside {
-            Some(i) => format!("dashboard: {}", i.session_name),
-            None => "standalone".into(),
-        },
-        None => "no tmux".into(),
-    };
-    let left = format!(
-        " lazywingman{} {session}: {} project(s) ",
-        sep(app.ascii),
-        app.state.projects.len()
-    );
-    // Right side: contextual shortcut entries, each with a hit range so a
-    // mouse click can run it. Truncated (never wrapped) on narrow frames —
-    // the tail just drops off the screen.
+    // Each entry gets a hit range so a mouse click can run it. Truncated
+    // (never wrapped) on narrow frames — the tail just drops off.
     let entries = bar_entries(app);
     let sp = sep(app.ascii);
-    let mut right = String::new();
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
     let mut hits: Vec<(u16, u16, BarAction)> = Vec::new();
-    let mut cx: u16 = 0;
+    let mut cx: u16 = 1;
     for (i, (label, action)) in entries.iter().enumerate() {
         if i > 0 {
-            right.push_str(sp);
+            spans.push(Span::styled(sp, fg(theme.dim)));
             cx += sp.chars().count() as u16;
         }
         let start = cx;
-        right.push_str(label);
         cx += label.chars().count() as u16;
+        spans.push(Span::styled(label.clone(), fg(theme.foreground)));
         hits.push((start, cx, *action));
     }
-    let right_x = area.width.saturating_sub(cx);
-    app.bar_hits = hits
-        .into_iter()
-        .map(|(a, b, act)| (right_x + a, right_x + b, act))
-        .collect();
-    let msg = app.message.clone().unwrap_or_else(|| {
-        format!(
-            "j/k move{} Enter attach{} i import{} I scan{} n feature{} s send{} d delete",
-            sep(app.ascii),
-            sep(app.ascii),
-            sep(app.ascii),
-            sep(app.ascii),
-            sep(app.ascii),
-            sep(app.ascii)
-        )
-    });
-    let line = Line::from(vec![
-        Span::styled(left, on(theme.title_fg, theme.title_bg)),
-        Span::styled(format!(" {msg} "), fg(theme.foreground)),
-        Span::styled(right, fg(theme.dim)),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
+    app.bar_hits = hits;
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
     if app.ascii {
         asciify(f, area);
+    }
+}
+
+/// Cut a notice to `max` columns, marking the cut with an ellipsis.
+fn truncate(text: &str, max: usize, ascii: bool) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mark = if ascii { "..." } else { "…" };
+    let keep = max.saturating_sub(mark.chars().count());
+    text.chars().take(keep).collect::<String>() + mark
+}
+
+/// A transient notice, bottom-right above the statusbar. It expires on
+/// its own (see [`App::toast`]) and never covers an open overlay — the
+/// log and the diagnostics overlay keep the permanent record.
+fn draw_toast(f: &mut Frame, area: Rect, app: &App) {
+    if !matches!(app.mode, Mode::Normal) {
+        return;
+    }
+    let Some(toast) = app.toast() else {
+        return;
+    };
+    let theme = &app.theme.colors;
+    let color = if toast.error {
+        theme.status_failed
+    } else {
+        theme.accent
+    };
+    // Fit inside the frame: the text, plus borders and one space either
+    // side, capped at two thirds of the width. It floats one cell inside
+    // the panel below it, so no panel border is left half-covered.
+    let max_text = (area.width.saturating_sub(6)).min(area.width * 2 / 3) as usize;
+    if max_text < 8 || area.height < 5 {
+        return;
+    }
+    let text = truncate(&toast.text, max_text, app.ascii);
+    let w = text.chars().count() as u16 + 4;
+    let rect = Rect {
+        x: area.right().saturating_sub(w + 2),
+        y: area.bottom().saturating_sub(4),
+        width: w,
+        height: 3,
+    };
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(if app.ascii {
+            BorderType::Plain
+        } else {
+            BorderType::Rounded
+        })
+        .border_style(fg(color))
+        .style(on(theme.title_fg, theme.title_bg));
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(format!(" {text} "), fg(color)))).block(block),
+        rect,
+    );
+    if app.ascii {
+        asciify(f, rect);
     }
 }
 
@@ -1484,9 +1306,9 @@ mod tests {
             .collect()
     }
 
-    /// Layout tiers degrade gracefully instead of drawing garbage: full
-    /// layout at 120x40 (detail + preview present), tree-only below the
-    /// detail threshold, a plain message below the tree threshold.
+    /// Layout tiers degrade gracefully instead of drawing garbage: tree +
+    /// preview while the frame is wide enough, tree-only below the split
+    /// threshold, a plain message below the tree threshold.
     #[test]
     fn small_terminals_degrade_gracefully() {
         let mut app = seeded_app();
@@ -1497,18 +1319,20 @@ mod tests {
             buffer_text(&terminal)
         };
 
-        let full = at(120, 40);
-        assert!(full.contains("detail"), "full layout has the detail panel");
+        let wide = at(120, 40);
         assert!(
-            full.contains("preview (capture-pane)"),
-            "full layout has the preview panel"
+            wide.contains("preview (capture-pane)"),
+            "the wide tier is tree + preview"
+        );
+        assert!(
+            wide.contains("projects/features"),
+            "the wide tier still shows the tree"
         );
 
-        let no_preview = at(50, 10);
-        assert!(no_preview.contains("detail"), "tree+detail tier");
+        let split = at(50, 10);
         assert!(
-            !no_preview.contains("preview"),
-            "preview hides first on a small frame"
+            split.contains("preview (capture-pane)"),
+            "the narrow split tier keeps the preview"
         );
 
         let tree_only = at(30, 8);
@@ -1516,7 +1340,7 @@ mod tests {
             tree_only.contains("projects/features"),
             "tree-only tier still shows the tree"
         );
-        assert!(!tree_only.contains("detail"), "detail hides second");
+        assert!(!tree_only.contains("preview"), "the preview hides first");
 
         let message = at(20, 5);
         assert!(
@@ -1725,6 +1549,93 @@ mod tests {
                 panic!("unmapped bar label: {label:?}");
             }
         }
+    }
+
+    /// The statusbar carries the shortcuts and nothing else: no app name,
+    /// no session, no project count, no sticky notice. Anything the user
+    /// cannot act on is noise on the row they read constantly.
+    #[test]
+    fn statusbar_is_shortcuts_only() {
+        let mut app = seeded_app();
+        app.notify("feature 'foo' created");
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let last: String = (0..buf.area.width)
+            .map(|x| buf[(x, buf.area.height - 1)].symbol())
+            .collect();
+
+        assert!(!last.contains("lazywingman"), "no app name: {last:?}");
+        assert!(!last.contains("project(s)"), "no project count: {last:?}");
+        assert!(!last.contains("standalone"), "no session chip: {last:?}");
+        assert!(
+            !last.contains("created"),
+            "notices are not on the bar: {last:?}"
+        );
+        for (label, _) in bar_entries(&app) {
+            assert!(last.contains(&label), "bar shows {label:?}: {last:?}");
+        }
+    }
+
+    /// A notice is a toast above the bar, and it is gone once it expires —
+    /// a message that never leaves is exactly the clutter the bar shed.
+    #[test]
+    fn toast_shows_then_expires() {
+        let mut app = seeded_app();
+        app.notify("feature 'foo' created");
+        let render = |app: &mut App| {
+            let backend = ratatui::backend::TestBackend::new(120, 40);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw(f, app)).unwrap();
+            buffer_text(&terminal)
+        };
+        assert!(
+            render(&mut app).contains("feature 'foo' created"),
+            "a fresh notice is drawn as a toast"
+        );
+        app.expire_toast_for_test();
+        assert!(
+            !render(&mut app).contains("feature 'foo' created"),
+            "the toast is gone once its TTL has passed"
+        );
+    }
+
+    /// The feature icon carries the worktree state: hollow when clean,
+    /// filled when there are uncommitted changes.
+    #[test]
+    fn dirty_feature_gets_a_filled_icon() {
+        let mut app = seeded_app();
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "clean-one".into(),
+            branch: "clean-one".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-clean"),
+            created_at: String::new(),
+            shells: vec![],
+        });
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "dirty-one".into(),
+            branch: "dirty-one".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-dirty"),
+            created_at: String::new(),
+            shells: vec![],
+        });
+        app.dirty
+            .insert(std::path::PathBuf::from("/tmp/wt-dirty"), true);
+        app.build_tree_flags();
+        app.proj_expanded[0] = true;
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let rows: Vec<String> = (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let clean = rows.iter().find(|r| r.contains("clean-one")).unwrap();
+        let dirty = rows.iter().find(|r| r.contains("dirty-one")).unwrap();
+        assert!(clean.contains("◇ clean-one"), "clean feature: {clean:?}");
+        assert!(dirty.contains("◆ dirty-one"), "dirty feature: {dirty:?}");
     }
 
     /// The help overlay scrolls: on a short frame the title advertises

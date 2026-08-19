@@ -239,7 +239,7 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
 - **M8.4a — crossterm here reports no `click_count`** on MouseEvent, so
   double-click = two left clicks at the same spot within 400 ms, tracked on
   the App.
-- **M8.4a — small terminals**: layout tiers (Full / NoPreview / TreeOnly /
+- **M8.4a — small terminals**: layout tiers (Wide / Split / TreeOnly /
   message) at fixed thresholds; overlays that don't fit are refused with a
   "frame too small" box instead of drawing garbage; the input cursor is only
   set when on-buffer.
@@ -252,3 +252,22 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   own labels; user pane content is never rewritten.
 - **M8.4a — statusbar**: contextual, clickable shortcut entries computed per
   selection; hjkl/Esc/q deliberately take no slot (assumed knowledge).
+- **M10 — the detail panel is gone**: every field it showed was either
+  already in the tree (name, status, shell count), config the user wrote
+  themselves (path, base branch, agent command, worktree root), or noise
+  (pane geometry, process name, a keys line duplicating the statusbar).
+  The branch was redundant by construction — a feature owns its worktree
+  and therefore its branch. The one fact it held alone, an uncommitted
+  worktree, moved into the tree as the feature icon (`◇` clean, `◆`
+  dirty), so the layout is now tree | preview. `PaneInfo` lost its
+  width/height with its only reader.
+- **M10 — the statusbar is shortcuts and nothing else**: the app name,
+  the session chip and the project count never changed anything the user
+  could act on, and the message slot was never cleared, so the last
+  notice stayed on screen for the rest of the session. Notices are now
+  toasts above the bar with their own TTL (4s, 6s for errors) — the log
+  and the diagnostics overlay stay the permanent record.
+- **M10 — dirty flags are polled, not rendered**: `git status` per
+  feature per frame would fork a process per row per redraw, so the tree
+  reads a cache refreshed on the poll tick at most every 3s (and
+  immediately after a feature is created or deleted).

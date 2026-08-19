@@ -9,11 +9,15 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M8 + M9 — COMPLETE.** All milestones committed and pushed; gating green
-(fmt clean, clippy -D warnings clean, 149 tests). Marker corrected to
-"M8 COMPLETE" (the previous run wrote "M9 COMPLETE", which the watchdog
-does not match) so the Telegram ping fires. No further work; future runs
-reply [SILENT].
+**M10 — screen decluttering (COMPLETE).** User feedback: the detail panel
+repeated what the tree and the user's own config already said, and the
+statusbar carried three things nobody can act on plus a notice that never
+went away. Layout is now tree | preview; the bar is shortcuts only;
+notices are transient toasts. Gating green (fmt clean, clippy -D warnings
+clean, 151 tests) — see the progress log below for the one pre-existing
+environment failure.
+
+Before that: **M8 + M9 — COMPLETE**, all committed and pushed.
 
 ## M8 — plan (user feedback: hide agent panes in separate sessions, project
 ## discovery, follow agent-common-instructions, work inside AND outside tmux)
@@ -86,6 +90,54 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M10 — screen decluttering: detail panel out, bar down to shortcuts (COMPLETE)
+
+User feedback, verbatim: the detail panel "honestly does not bring
+anything to the table" (its fields are already elsewhere, "process is
+kinda noise"), and on the bottom bar "I only want the shortcuts".
+
+- **Detail panel deleted** (`draw_detail`, ~200 lines). The right column
+  is the preview alone. Layout tiers renamed with the panel they lost:
+  `Wide` (≥64x12, tree 32%) / `Split` (≥44x9, tree 42%) / `TreeOnly`
+  (≥26x7) / `Message`; both split tiers now keep the preview, which used
+  to hide first. `tree_width` thresholds are unchanged, so mouse
+  hit-testing needed no adjustment.
+- **Dirty state folded into the tree.** The feature icon carries it: `◇`
+  clean, `◆` uncommitted (ASCII `-` / `*`), dirty tinted with the waiting
+  colour. The branch was NOT kept — a feature owns its worktree and thus
+  its branch, so the name already says it (user's call).
+- **Dirty is cached, never rendered live.** `App::poll_dirty` refills a
+  `worktree path → bool` map from the poll tick, at most every 3s, and
+  immediately (`force`) after a feature is created or deleted. The
+  renderer only reads `feature_dirty_cached`. `feature_is_dirty` (a live
+  `git status`) stays for the delete-confirm's `--force` offer.
+- **Statusbar is shortcuts only** — the `lazywingman` chip, the session
+  name, the project count and the message slot are gone; entries moved to
+  the left edge, click hit-ranges preserved.
+- **Notices became toasts.** `App::message` is a private `Toast`
+  (text + error flag + `Instant`), written through `notify` /
+  `notify_err` (which also log) and read through `toast()`, which returns
+  `None` past the TTL (4s, 6s for errors). Rendered bottom-right, one
+  cell inside the panel below it, suppressed while any overlay is open.
+  Previously the field was never cleared — the last notice stayed for the
+  whole session, which is what the user was looking at.
+- **Dead code that the panel had been keeping alive**: `ui::arrow()`,
+  `PaneInfo::{width,height}` (and the `pane_width`/`pane_height` fields in
+  the `list-panes` format), and `theme.title_bg`, which now paints the
+  toast body instead of the old bar chip — no theme-schema change.
+- Tests: `statusbar_is_shortcuts_only`, `toast_shows_then_expires`,
+  `dirty_feature_gets_a_filled_icon`; `small_terminals_degrade_gracefully`
+  rewritten for the new tiers. 151 pass.
+- Verified in a real tmux (`tmux -L lwdemo`, 100x20, this repo): dirty
+  worktree renders `◆`, clean ones `◇`, the toast appears on `s` with no
+  shell selected and is gone five seconds later.
+- **Pre-existing failure, untouched:**
+  `tmux::tests::legacy_root_back_key_is_unbound_but_user_binding_survives`
+  fails on this machine — confirmed identical on the unmodified HEAD
+  (`git stash`), so it is environmental, not from this work. Note also
+  that `cargo test` in parallel is flaky here (tests share XDG env
+  globals); `cargo test -- --test-threads=1` is reliable.
 
 ### M9 — back-key prefix, textarea quick-send, scope discovery, mise, UI pass (COMPLETE)
 

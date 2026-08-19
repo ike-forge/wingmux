@@ -289,25 +289,35 @@ only — the live preview panel lets you confirm what's really happening.
 
 ## Layout
 
-Rounded corners, bare titles (no background fill), tree guides and icons:
+Rounded corners, bare titles (no background fill), tree guides and icons.
+Two panels and a bar — the tree says what exists, the preview says what
+is happening, the bar says what you can press:
 
 ```
-╭ projects/features ──────╮╭ detail ────────────────────────────╮
-│▾ ▣ repo-a (2 features)  ││ feat-x                              │
-│  ├─ ▸ ◇ feat-a [1 shell]││ branch: feat-x                      │
-│  └─ ▾ ◇ feat-b [2 shells]││ worktree: …/.lazywingman-worktrees │
-│      ├─ ● #0 working  @5││ status: clean                       │
-│      └─ ● #1 waiting  @6││ shells: #0 working bash …           │
-╰─────────────────────────╯╰─────────────────────────────────────╯
-╭ preview (capture-pane) ──────────────────────────────────────────╮
-│ live tail of the selected shell, refreshed every poll            │
-╰───────────────────────────────────────────────────────────────────╯
- lazywingman · dashboard: work   …messages…   poll 500ms · ? help · q quit
+╭ projects/features ───────╮╭ preview (capture-pane) ─────────────╮
+│▾ ▣ repo-a (2 features)   ││ live tail of the selected shell,    │
+│  ├─ ▸ ◇ feat-a [1 shell] ││ refreshed every poll                │
+│  └─ ▾ ◆ feat-b [2 shells]││                                     │
+│      ├─ ● #0 working  @5 ││     ╭────────────────────────╮      │
+│      └─ ● #1 waiting  @6 ││     │ feature 'feat-b' crea… │      │
+│                          ││     ╰────────────────────────╯      │
+╰──────────────────────────╯╰─────────────────────────────────────╯
+ n feature · a shell · d delete · ? help
 ```
 
-Icons: `▣` project, `◇` feature (worktree), `●` shell. Missing projects
-show `(missing)` dimmed. When only ONE project is in scope its feature
-rows replace the project row entirely (the flat layout).
+Icons: `▣` project, `◇` feature with a clean worktree, `◆` feature with
+uncommitted changes, `●` shell. Missing projects show `(missing)`
+dimmed. When only ONE project is in scope its feature rows replace the
+project row entirely (the flat layout).
+
+The statusbar carries the contextual shortcuts and nothing else — no app
+name, no session chip, no project count. Notices ("feature 'x' created",
+"attach failed: …") appear as a toast above the bar and fade after a few
+seconds; the log and the diagnostics overlay (`D`) keep the record.
+
+Below 64x12 the tree takes a larger share of the width; below 44x9 the
+preview hides and the tree fills the frame; below 26x7 a "terminal too
+small" message replaces the UI.
 
 ## Development
 
