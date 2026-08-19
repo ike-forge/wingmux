@@ -246,6 +246,10 @@ pub struct DiscoveryConfig {
 pub struct DefaultsConfig {
     pub agent_command: String,
     pub agent_shell: String,
+    /// Inject Claude Code hooks into recognised `claude` commands for
+    /// accurate status (M17). Nothing is written to the user's config;
+    /// the flag is visible in the pane's own command line.
+    pub agent_hooks: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -315,6 +319,7 @@ impl Default for Config {
             defaults: DefaultsConfig {
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
+                agent_hooks: true,
             },
             agents: vec![
                 AgentConfig {
@@ -376,6 +381,7 @@ impl Default for DefaultsConfig {
         DefaultsConfig {
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
+            agent_hooks: true,
         }
     }
 }
@@ -527,7 +533,7 @@ const PREVIEW_KEYS: &[&str] = &["colors"];
 const TMUX_KEYS: &[&str] = &["back_key"];
 const WORKTREES_KEYS: &[&str] = &["root", "base_branch", "delete_branch"];
 const DISCOVERY_KEYS: &[&str] = &["scan_root", "max_depth", "skip_dirs"];
-const DEFAULTS_KEYS: &[&str] = &["agent_command", "agent_shell"];
+const DEFAULTS_KEYS: &[&str] = &["agent_command", "agent_shell", "agent_hooks"];
 const AGENT_KEYS: &[&str] = &["name", "command", "shell", "patterns"];
 const PATTERN_KEYS: &[&str] = &["working", "waiting", "failed"];
 const PROJECT_KEYS: &[&str] = &["path", "base_branch", "agent", "agent_command"];
@@ -734,6 +740,10 @@ impl Config {
         line(
             "defaults.agent_shell",
             format!("\"{}\"", self.defaults.agent_shell),
+        );
+        line(
+            "defaults.agent_hooks",
+            self.defaults.agent_hooks.to_string(),
         );
         line(
             "agents",
@@ -1287,6 +1297,7 @@ impl SectionSalvage for DefaultsConfig {
         DefaultsConfig {
             agent_command: salvage_field(t, "agent_command", "claude".to_string(), file, diags),
             agent_shell: salvage_field(t, "agent_shell", "bash".to_string(), file, diags),
+            agent_hooks: salvage_field(t, "agent_hooks", true, file, diags),
         }
     }
 }
@@ -1726,6 +1737,32 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, text).unwrap();
         Config::load_from(cwd, override_path).unwrap()
+    }
+
+    #[test]
+    fn agent_hooks_defaults_to_on() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(cwd.path(), "");
+            assert!(
+                cfg.defaults.agent_hooks,
+                "instrumentation must be on unless the user turns it off"
+            );
+        });
+    }
+
+    #[test]
+    fn agent_hooks_can_be_turned_off() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(cwd.path(), "[defaults]\nagent_hooks = false\n");
+            assert!(!cfg.defaults.agent_hooks);
+        });
+    }
+
+    #[test]
+    fn agent_hooks_is_a_recognised_defaults_key() {
+        assert!(DEFAULTS_KEYS.contains(&"agent_hooks"));
     }
 
     #[test]
