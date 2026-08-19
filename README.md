@@ -108,6 +108,9 @@ theme = "catppuccin-mocha"  # 7 built-ins; ctrl-t switches live (saved to state)
 poll_interval_ms = 500       # status/preview refresh
 confirm_on_delete = true
 
+[preview]
+colors = "full"              # pane colours as-is; "foreground" drops backgrounds, "none" = plain text
+
 [tmux]
 back_key = "C-o"             # prefix + C-o jumps back to the dashboard (prefix table)
 
@@ -305,6 +308,15 @@ is happening, the bar says what you can press:
 ╰──────────────────────────╯╰─────────────────────────────────────╯
  n feature · a shell · d delete · ? help
 ```
+
+**The preview panel** shows the tail of `capture-pane -e` for the selected
+shell — escape sequences included, so the agent's own colouring (spinners,
+diffs, syntax highlighting) is what you see. `[preview].colors` decides how
+much of it survives: `full` (default) takes every colour exactly as the pane
+emits it, `foreground` keeps the text colours but drops background colours
+so the panel keeps the theme's background, and `none` renders raw text.
+Status classification always runs on the stripped text, so colouring never
+changes how a pane is classified.
 
 Icons: `▣` project, `◇` feature with a clean worktree, `◆` feature with
 uncommitted changes, `●` shell. Missing projects show `(missing)`

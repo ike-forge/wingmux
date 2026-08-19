@@ -6,6 +6,7 @@
 //! inside tmux (as a pane of the user's session) or standalone in a plain
 //! terminal; both are supported.
 
+mod ansi;
 mod app;
 mod config;
 mod discovery;

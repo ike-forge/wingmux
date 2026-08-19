@@ -444,11 +444,17 @@ impl Tmux {
         Ok(())
     }
 
-    /// Last `lines` lines of a pane's visible content (escape codes stripped).
+    /// Last `lines` lines of a pane's visible content, **with** its escape
+    /// sequences (`-e`): the preview renders the agent's own colours, so the
+    /// capture has to carry them. Consumers that want plain text (status
+    /// classification, the `none` preview mode) run it through
+    /// [`crate::ansi::strip`] — tmux re-emits the active attributes at the
+    /// start of every line, so the capture stays safe to slice line-wise.
     pub fn capture_pane(&self, pane_id: &str, lines: u32) -> Result<String> {
         let out = self.run(&[
             "capture-pane",
             "-p",
+            "-e",
             "-t",
             pane_id,
             "-S",
@@ -807,6 +813,44 @@ mod tests {
             // kill the last window → session gone
             tmux.kill_window(&w.window_id).unwrap();
             assert!(!tmux.session_exists("wingman-session-p"));
+        });
+    }
+
+    /// End-to-end colour path: a pane that prints SGR sequences comes back
+    /// from `capture-pane -e` with them intact, they survive into the
+    /// preview's styled text, and stripping leaves the plain line the status
+    /// patterns match against.
+    #[test]
+    fn capture_keeps_pane_colours_for_the_preview() {
+        with_tmux_server(|_sock, tmux| {
+            let w = tmux
+                .new_session("wingman-session-p", "lw:f/0", Path::new("/tmp"), "bash")
+                .unwrap();
+            tmux.send_keys(&w.pane_id, r#"printf '\033[31mlw-red\033[0m\n'"#, true)
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let capture = tmux.capture_pane(&w.pane_id, 50).unwrap();
+
+            assert!(
+                capture.contains("\x1b[31m"),
+                "capture must carry the pane's escapes: {capture:?}"
+            );
+            assert!(crate::ansi::strip(&capture).contains("lw-red"));
+
+            let text = crate::ansi::styled_text(&capture, crate::config::PreviewColors::Full);
+            // (the echoed command line also contains "lw-red", but as the
+            // literal text the shell was sent — only the pane's *output*
+            // carries a real escape and comes back styled)
+            assert!(
+                text.lines
+                    .iter()
+                    .flat_map(|l| l.spans.iter())
+                    .any(|s| s.content.contains("lw-red")
+                        && s.style.fg == Some(ratatui::style::Color::Red)),
+                "coloured output must reach the preview: {capture:?}"
+            );
+
+            tmux.kill_window(&w.window_id).unwrap();
         });
     }
 
