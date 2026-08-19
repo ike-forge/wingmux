@@ -256,9 +256,12 @@ is carried by symbols, labels and position, not by colour.
 
 Every `poll_interval_ms`, LazyWingman captures each agent pane
 (`capture-pane`) and classifies it against the per-agent regex patterns:
-`dead` → `failed` → `working` → `waiting` → `ended` → `idle`. A pane whose
-process died is `dead`; a shell with no agent activity is `ended`. Heuristics
-only — the live preview panel lets you confirm what's really happening.
+`dead` → `failed` → `working` → `waiting` → `ended` → `idle`. A shell whose
+pane is gone from tmux — it exited (ctrl-d) or its window was killed outside
+the dashboard — is `dead`, as is a pane whose process died with
+`remain-on-exit` set; a live shell with no agent activity is `ended`.
+Heuristics only — the live preview panel lets you confirm what's really
+happening.
 
 ## How it works with tmux
 
@@ -344,9 +347,11 @@ name, no session chip, no project count. Notices ("feature 'x' created",
 "attach failed: …") appear as a toast above the bar and fade after a few
 seconds; the log and the diagnostics overlay (`D`) keep the record.
 
-Below 64x12 the tree takes a larger share of the width; below 44x9 the
-preview hides and the tree fills the frame; below 26x7 a "terminal too
-small" message replaces the UI.
+The tree takes a percentage of the frame width, capped at 48 columns — it
+holds short names, so on a wide screen the extra width goes to the preview
+instead of to empty tree padding. Below 64x12 the tree takes a larger share
+of the width; below 44x9 the preview hides and the tree fills the frame;
+below 26x7 a "terminal too small" message replaces the UI.
 
 ## Development
 

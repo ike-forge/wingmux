@@ -1567,25 +1567,29 @@ impl App {
             }
         }
         for (path, cmd, pid) in shells {
-            let Some((current_cmd, dead)) = self
-                .panes
-                .get(&pid)
-                .map(|p| (p.current_command.clone(), p.dead))
-            else {
-                continue;
-            };
-            let tail = match tmux.capture_pane(&pid, 120) {
-                Ok(t) => t,
-                Err(e) => {
-                    log::debug!("capture-pane {pid}: {e}");
-                    continue;
-                }
+            // A pane tmux no longer lists is a dead shell (ctrl-d, or the
+            // window killed outside the dashboard): there is nothing to
+            // capture, and the classifier reads `None` as dead. Skipping
+            // it instead would leave the last live status on screen
+            // forever.
+            let pane = self.panes.get(&pid).cloned();
+            let tail = match &pane {
+                None => String::new(),
+                Some(_) => match tmux.capture_pane(&pid, 120) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        log::debug!("capture-pane {pid}: {e}");
+                        continue;
+                    }
+                },
             };
             let recent = recent_tail(&tail);
             let pat = self.patterns_for(&path, &cmd);
-            let st = status::classify(&pat, &recent, &current_cmd, dead);
+            let st = status::classify(&pat, &recent, pane.as_ref());
             self.statuses.insert(pid.clone(), st);
-            if Some(&pid) == sel_pane.as_ref() {
+            // A gone pane captured nothing — keep the last capture around
+            // so the preview still shows how the shell ended.
+            if pane.is_some() && Some(&pid) == sel_pane.as_ref() {
                 self.captures.insert(pid.clone(), tail);
             }
         }
@@ -4014,9 +4018,14 @@ mod tests {
         );
 
         let pat = crate::status::Compiled::compile(&crate::config::generic_patterns());
+        let pane = PaneInfo {
+            pane_id: "%1".into(),
+            current_command: "node".into(),
+            dead: false,
+        };
         assert_eq!(
-            crate::status::classify(&pat, &recent_tail(coloured), "node", false),
-            crate::status::classify(&pat, "⠋ Thinking…", "node", false),
+            crate::status::classify(&pat, &recent_tail(coloured), Some(&pane)),
+            crate::status::classify(&pat, "⠋ Thinking…", Some(&pane)),
         );
 
         // only the last RECENT_TAIL_LINES lines survive
