@@ -9,12 +9,19 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M14 — tree width cap + dead-shell detection (COMPLETE).** User feedback:
-the left panel gets "overly wide" on a wide screen, and a shell killed with
-ctrl-d "does not get detected (still shows as waiting)". Gating: fmt clean,
+**M15 — quick-send polish (COMPLETE).** User feedback: the textarea must
+autowrap instead of overflowing, the "send to agent (14 rows)" label is
+useless, and the shortcut row needs a spacer above it. Gating: fmt clean,
 clippy -D warnings clean, tests green apart from the pre-existing
-`legacy_root_back_key_is_unbound_but_user_binding_survives` failure, which
-already fails on the untouched baseline in this environment.
+`legacy_root_back_key_is_unbound_but_user_binding_survives` failure (it
+reads the user's real tmux config and already fails on the untouched
+baseline here). Note: `cargo test` in parallel flakes on a rotating handful
+of `ui::tests` render tests on this machine, baseline included;
+`cargo test -- --test-threads=1` is green apart from the tmux one.
+
+Before that: **M14 — tree width cap + dead-shell detection (COMPLETE).**
+User feedback: the left panel gets "overly wide" on a wide screen, and a
+shell killed with ctrl-d "does not get detected (still shows as waiting)".
 
 Before that: **M13 — the preview shows the pane's own colours (COMPLETE).**
 User question: "is it possible to have colours in the preview, or is it text
@@ -122,6 +129,40 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M15 — quick-send polish: wrapping, no label, spaced hint (COMPLETE)
+
+User feedback, verbatim: "The quick-send needs some improvements: Autowrap
+lines (currently it overflows), remove the 'send to agent (14 rows)'
+useless, Add a spacer before the shortcuts at the bottom".
+
+- **Soft wrap**: `wrap_line()` in `app.rs` splits a logical line into byte
+  ranges that each render within the wrap width, breaking after a space
+  where the line offers one and hard-breaking words longer than the width.
+  Tabs count as four columns, matching how the renderer expands them.
+  `TextBuf` gained `visual_rows()` / `visual_len()` / `visual_cursor()`
+  on top of it, and `ensure_visible(visible, width)` now scrolls in
+  *visual* rows — a single long line can fill the whole window on its own,
+  which the old logical-line scroll could not express. Cursor motions stay
+  logical (up/down step a whole line, as in a plain editor); only display
+  and scrolling wrap.
+- `textarea_wrap_width(viewport_w)` = popup width − 2 borders − 1 column,
+  the reserved column being where the cursor sits at the end of a full
+  row. Renderer and key handler both call it, so the width that decides
+  the scroll can never drift from the width that draws.
+- **Label row gone**: the popup title already says "quick-send", so
+  "send to agent: (N rows)" was saying it twice and counting rows nobody
+  asked about. Content now starts flush under the top border.
+- **Spacer before the hint**: the freed label row became a blank row above
+  "enter newline · ctrl-s send · esc cancel". `textarea_visible_lines()` is
+  unchanged at height − 4 (2 borders + spacer + hint instead of 2 borders
+  + label + hint), so the content height did not move.
+- Tests: `textbuf_wraps_long_lines_at_spaces`,
+  `textbuf_visual_cursor_follows_the_wrap`,
+  `textbuf_scrolls_by_visual_rows`, and
+  `textarea_popup_wraps_long_lines_and_spaces_the_hint` — the last one
+  asserts the popup's right border survives every row (i.e. nothing
+  overflows), the label is gone and the row above the hint is blank.
 
 ### M14 — tree width cap + dead-shell detection (COMPLETE)
 

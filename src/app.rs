@@ -119,6 +119,9 @@ impl TextBuf {
         self.lines.join("\n")
     }
 
+    /// Logical line count. The renderer walks `visual_rows` instead —
+    /// this is the buffer-level view, used by the editing tests.
+    #[cfg(test)]
     pub fn line_count(&self) -> usize {
         self.lines.len()
     }
@@ -127,10 +130,14 @@ impl TextBuf {
         self.lines.get(i).map(String::as_str).unwrap_or("")
     }
 
+    /// Logical cursor position. The renderer uses `visual_cursor`, which
+    /// accounts for soft-wrapping; these stay for the editing tests.
+    #[cfg(test)]
     pub fn cursor_row(&self) -> usize {
         self.row
     }
 
+    #[cfg(test)]
     pub fn cursor_col(&self) -> usize {
         self.col
     }
@@ -248,20 +255,94 @@ impl TextBuf {
         self.col = self.col.min(self.lines[self.row].len());
     }
 
-    /// Keep the cursor row visible within a `visible`-line viewport:
-    /// scroll down if the cursor moved above the viewport, up if it moved
-    /// below it. The key handler calls this once per key — only it knows
-    /// the popup's real content height, and scrolling inside the editing
-    /// methods (with a hardcoded one-line window) pushed every earlier
-    /// line out of the textarea.
-    pub fn ensure_visible(&mut self, visible: usize) {
+    /// Keep the cursor row visible within a `visible`-row viewport, in
+    /// VISUAL rows (soft-wrapped at `width` columns): scroll down if the
+    /// cursor moved above the viewport, up if it moved below it. The key
+    /// handler calls this once per key — only it knows the popup's real
+    /// content height, and scrolling inside the editing methods (with a
+    /// hardcoded one-line window) pushed every earlier line out of the
+    /// textarea.
+    pub fn ensure_visible(&mut self, visible: usize, width: usize) {
         let view = visible.max(1);
-        if self.row < self.scroll {
-            self.scroll = self.row;
-        } else if self.row >= self.scroll + view {
-            self.scroll = self.row + 1 - view;
+        let total = self.visual_len(width);
+        self.scroll = self.scroll.min(total.saturating_sub(view));
+        let (row, _) = self.visual_cursor(width);
+        if row < self.scroll {
+            self.scroll = row;
+        } else if row >= self.scroll + view {
+            self.scroll = row + 1 - view;
         }
     }
+
+    /// Every visual row of the buffer at `width` columns, as
+    /// `(logical row, byte start, byte end)` — what the renderer walks
+    /// from `scroll()` down.
+    pub fn visual_rows(&self, width: usize) -> Vec<(usize, usize, usize)> {
+        let mut out = Vec::new();
+        for (r, line) in self.lines.iter().enumerate() {
+            for (s, e) in wrap_line(line, width) {
+                out.push((r, s, e));
+            }
+        }
+        out
+    }
+
+    /// Number of visual rows at `width` columns.
+    pub fn visual_len(&self, width: usize) -> usize {
+        self.lines.iter().map(|l| wrap_line(l, width).len()).sum()
+    }
+
+    /// The cursor as `(visual row, rendered column)` at `width` columns.
+    pub fn visual_cursor(&self, width: usize) -> (usize, usize) {
+        let before: usize = self.lines[..self.row]
+            .iter()
+            .map(|l| wrap_line(l, width).len())
+            .sum();
+        let line = self.line(self.row);
+        let segs = wrap_line(line, width);
+        for (i, &(s, e)) in segs.iter().enumerate() {
+            if self.col < e || i + 1 == segs.len() {
+                return (before + i, display_width(&line[s..self.col.max(s)]));
+            }
+        }
+        (before, 0)
+    }
+}
+
+/// Rendered width of `s`: tabs take four columns, every other character
+/// one (the textarea renders tabs as four spaces).
+fn display_width(s: &str) -> usize {
+    s.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum()
+}
+
+/// Soft-wrap one logical line into byte ranges `[start, end)` that each
+/// render within `width` columns. Breaks after a space where the line
+/// offers one, hard-breaks words longer than the width. Always yields at
+/// least one range, so an empty line still occupies one visual row.
+fn wrap_line(line: &str, width: usize) -> Vec<(usize, usize)> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut cols = 0;
+    // Byte index just past the last space seen in the current row — the
+    // preferred break point.
+    let mut last_break: Option<usize> = None;
+    for (i, c) in line.char_indices() {
+        let w = if c == '\t' { 4 } else { 1 };
+        if cols + w > width && i > start {
+            let cut = last_break.filter(|&b| b > start && b <= i).unwrap_or(i);
+            out.push((start, cut));
+            start = cut;
+            cols = display_width(&line[cut..i]);
+            last_break = None;
+        }
+        cols += w;
+        if c == ' ' || c == '\t' {
+            last_break = Some(i + c.len_utf8());
+        }
+    }
+    out.push((start, line.len()));
+    out
 }
 
 /// Height of the quick-send textarea popup for a viewport height. Grows
@@ -276,10 +357,17 @@ pub(crate) fn textarea_width(viewport_w: u16) -> u16 {
     (viewport_w * 70 / 100).clamp(40, 96)
 }
 
-/// Content rows of the textarea popup (inside the border, between the
-/// label row and the hint row): height − 4 (2 borders + label + hint).
+/// Content rows of the textarea popup (inside the border, above the
+/// spacer and the hint row): height − 4 (2 borders + spacer + hint).
 pub(crate) fn textarea_visible_lines(viewport_h: u16) -> usize {
     textarea_height(viewport_h) as usize - 4
+}
+
+/// Soft-wrap width of the textarea content: the popup width minus the
+/// two borders, minus one column so a cursor sitting at the end of a
+/// full row still has a cell of its own inside the border.
+pub(crate) fn textarea_wrap_width(viewport_w: u16) -> usize {
+    (textarea_width(viewport_w).saturating_sub(3) as usize).max(1)
 }
 
 /// An action reachable from the statusbar shortcut entries (and by mouse
@@ -1670,8 +1758,10 @@ impl App {
                 _ => {}
             }
         }
-        // The textarea's page size = its visible content rows.
+        // The textarea's page size = its visible content rows; its
+        // soft-wrap width decides how many visual rows those hold.
         let visible_lines = textarea_visible_lines(self.viewport.1);
+        let wrap_width = textarea_wrap_width(self.viewport.0);
         match &mut self.mode {
             Mode::Input { kind, text } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
@@ -1749,8 +1839,9 @@ impl App {
                         _ => {}
                     }
                     // Scrolling is decided here, where the popup's real
-                    // content height is known — never inside TextBuf.
-                    buf.ensure_visible(visible_lines);
+                    // content height and wrap width are known — never
+                    // inside TextBuf.
+                    buf.ensure_visible(visible_lines, wrap_width);
                 }
             }
             Mode::Confirm { confirm } => match key.code {
@@ -3382,6 +3473,86 @@ mod tests {
         let moved = buf.move_page(-1, 5);
         assert!(moved);
         assert!(buf.cursor_row() <= buf.scroll() + 5);
+    }
+
+    /// Long lines soft-wrap instead of overflowing the popup border:
+    /// the segments cover the line exactly, none is wider than the wrap
+    /// width, and the break lands after a space where one exists.
+    #[test]
+    fn textbuf_wraps_long_lines_at_spaces() {
+        let line = "the quick brown fox jumps over the lazy dog";
+        let segs = wrap_line(line, 10);
+        let joined: String = segs.iter().map(|&(s, e)| &line[s..e]).collect();
+        assert_eq!(joined, line, "the segments cover the line exactly");
+        for &(s, e) in &segs {
+            assert!(
+                display_width(&line[s..e]) <= 10,
+                "segment {:?} is wider than 10",
+                &line[s..e]
+            );
+        }
+        assert_eq!(&line[segs[0].0..segs[0].1], "the quick ");
+
+        // A word longer than the width hard-breaks rather than overflow.
+        let long = "aaaaaaaaaaaaaaa";
+        let segs = wrap_line(long, 6);
+        assert_eq!(segs.len(), 3);
+        assert!(segs.iter().all(|&(s, e)| e - s <= 6));
+
+        // An empty line still occupies exactly one visual row.
+        assert_eq!(wrap_line("", 10), vec![(0, 0)]);
+    }
+
+    /// The cursor follows the wrap: past the break it renders on the next
+    /// visual row, at the column it occupies inside that row.
+    #[test]
+    fn textbuf_visual_cursor_follows_the_wrap() {
+        let mut buf = TextBuf::new();
+        for c in "the quick brown fox".chars() {
+            buf.insert_char(c);
+        }
+        // "the quick " / "brown fox" at width 10; the cursor sits at the
+        // end of the buffer, i.e. row 1, column 9.
+        assert_eq!(buf.visual_len(10), 2);
+        assert_eq!(buf.visual_cursor(10), (1, 9));
+
+        buf.move_home();
+        assert_eq!(buf.visual_cursor(10), (0, 0));
+        // Column 10 is the start of the second visual row, not the end
+        // of the first.
+        for _ in 0..10 {
+            buf.move_right();
+        }
+        assert_eq!(buf.visual_cursor(10), (1, 0));
+    }
+
+    /// Scrolling counts visual rows: one wrapped line can fill the whole
+    /// window on its own.
+    #[test]
+    fn textbuf_scrolls_by_visual_rows() {
+        let mut buf = TextBuf::new();
+        for _ in 0..12 {
+            for c in "wrap me ".chars() {
+                buf.insert_char(c);
+            }
+        }
+        // One logical line, many visual rows.
+        assert_eq!(buf.line_count(), 1);
+        let visible = 4;
+        let total = buf.visual_len(10);
+        assert!(
+            total > visible,
+            "{total} visual rows must exceed the window"
+        );
+        buf.ensure_visible(visible, 10);
+        assert_eq!(
+            buf.scroll(),
+            total - visible,
+            "the window ends on the cursor's visual row"
+        );
+        buf.move_home();
+        buf.ensure_visible(visible, 10);
+        assert_eq!(buf.scroll(), 0, "Home scrolls back to the first row");
     }
 
     /// The textarea: plain Enter inserts a newline, Alt+Enter sends,
