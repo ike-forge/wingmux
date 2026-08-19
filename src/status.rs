@@ -6,11 +6,11 @@
 //! `dead` (the pane is gone from tmux, or tmux says its process died) →
 //! the agent's own hook-reported state, when the pane carries a live
 //! `@lw_agent` overlay and an agent is still the foreground command →
-//! `failed` (any line matches a
-//! failure pattern) → `waiting` if the *last* line matches a prompt pattern
-//! (the freshest signal) → `working` (any line matches a busy pattern) →
-//! `waiting` (any line) → `ended` (foreground command is a login shell *and*
-//! the tail shows no agent activity) → `idle`.
+//! `failed` (any line matches a failure pattern) → `waiting` if the *last*
+//! line matches a prompt pattern (the freshest signal) → `working` (any
+//! line matches a busy pattern) → `waiting` (any line) → `ended`
+//! (foreground command is a login shell *and* the tail shows no agent
+//! activity) → `idle`.
 //!
 //! The tail is checked before the shell heuristic because agents are often
 //! launched *from* a shell (e.g. `bash` running a script): the tail carries

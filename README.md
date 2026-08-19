@@ -128,6 +128,7 @@ skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
 [defaults]
 agent_command = "claude"     # spawned in every new feature shell by default
 agent_shell = "bash"
+agent_hooks = true           # instrument recognised `claude` commands for accurate status
 
 [[messages]]                 # `p` modal: canned prompts for the selected shell
 label = "continue"           # what the modal lists (optional — defaults to text)
@@ -262,6 +263,28 @@ the dashboard — is `dead`, as is a pane whose process died with
 `remain-on-exit` set; a live shell with no agent activity is `ended`.
 Heuristics only — the live preview panel lets you confirm what's really
 happening.
+
+**Claude Code shells report their own state.** `[defaults] agent_hooks`
+(default `true`) injects `--settings <state_dir>/lazywingman-activity-hooks.json`
+into any spawned command recognised as `claude` (the first token's file
+name must be exactly `claude`; wrapper scripts and aliases stay on the
+regex heuristics above, like any other agent). That settings file is
+merged **additively** on top of your own Claude settings — nothing is
+written there, nothing persists — and registers hooks that report
+Claude's real state onto the pane as it happens, ahead of the regex
+guess. Instrumentation is disclosed, not hidden: an instrumented pane's
+command line literally shows `--settings …/lazywingman-activity-hooks.json`.
+This adds one status the regex ladder alone cannot express:
+
+- **`blocked`** — the agent needs **you**, right now (a permission
+  prompt). Distinct from `waiting`, which means the agent finished its
+  turn and is idle at the prompt with nothing owed.
+
+Set `agent_hooks = false` to disable injection entirely; every agent,
+Claude included, then classifies purely from `capture-pane`, exactly as
+before this feature existed. `failed` stays regex-based either way —
+Claude has no "I failed" hook event — so a failing turn only surfaces
+once the session ends and the overlay clears.
 
 A `dead` entry is **muted whole**: the row's guide, icon, name and status
 all take the dead colour instead of only the status word. The rule climbs

@@ -2521,4 +2521,37 @@ mod tests {
             .collect();
         assert!(rows.contains(&"p"), "help lists the p key: {rows:?}");
     }
+
+    /// A folded solo feature shows its shell's status, so `blocked` has to
+    /// survive all the way to a rendered row — not just to the enum.
+    #[test]
+    fn a_blocked_shell_reads_as_blocked_in_the_tree() {
+        let mut app = seeded_app();
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "needs-me".into(),
+            branch: "needs-me".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-blocked"),
+            created_at: String::new(),
+            shells: vec![crate::state::Shell {
+                index: 0,
+                window_name: "lw:needs-me/0".into(),
+                window_id: Some("@7".into()),
+                pane_id: Some("%0".into()),
+            }],
+        });
+        app.statuses.insert("%0".into(), Status::Blocked);
+        app.build_tree_flags();
+        app.proj_expanded[0] = true;
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let rows: Vec<String> = (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+
+        let row = rows.iter().find(|r| r.contains("needs-me")).unwrap();
+        assert!(row.contains(Status::Blocked.label()), "row reads: {row:?}");
+    }
 }

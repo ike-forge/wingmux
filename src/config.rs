@@ -97,6 +97,12 @@ skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
 agent_command = "claude"
 # Shell used for agent windows.
 agent_shell = "bash"
+# Inject Claude Code hooks (--settings <generated file>) into recognised
+# `claude` commands, so status is read from the agent's own hook events
+# instead of guessed from regex patterns on the pane's output. Nothing is
+# written to your own Claude config; the flag is visible in the pane's
+# command line. Set to false to disable and always use the regex heuristics.
+agent_hooks = true
 
 # Predefined messages, offered by the `p` modal on a selected shell:
 # pick one and it is sent to the agent exactly as if you had typed it.

@@ -352,3 +352,45 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   the panel keeps the theme's background, `none` is the escape hatch.
   Config-only — the modes are a preference, not a per-moment decision, so
   they take no keybinding.
+- **M17 — a tmux pane user option carries the agent's self-reported state,
+  not a per-shell state file or a Unix socket.** Both alternatives were
+  considered and rejected:
+  - A per-shell state file (written by the hook, read by the poll loop)
+    would be a *second* source of truth alongside tmux, when every other
+    piece of live status data in the app — panes, captures, dirty flags —
+    is already re-derived from tmux/git on each poll rather than trusted
+    from a cache. It would also need its own garbage collection: nothing
+    guarantees the file for a dead pane ever gets removed, unlike a tmux
+    pane option, which is destroyed automatically with the pane it
+    belongs to (the same "dead = gone from tmux" model M14 already
+    established).
+  - A Unix socket needs a listener running continuously to accept hook
+    connections, which conflicts with the app's explicit no-async,
+    single-threaded event-loop architecture — and a listener dies with
+    the dashboard process, so hooks firing while LazyWingman is closed
+    (or mid-restart) would be lost. The tmux server already outlives
+    LazyWingman and is the one thing both the hook process and the
+    dashboard can always reach without coordinating a socket path or
+    handling "is anyone listening" races.
+  - The pane option needs no daemon and no cleanup: the hook subcommand's
+    entire write is one `tmux set-option` call, matching the existing
+    rule that all tmux interaction goes through the CLI. It survives a
+    LazyWingman restart with zero recovery code (read straight back out
+    of the next `list-panes` call) and disappears with the pane, so
+    nothing is ever left to reconcile or expire.
+- **M17 — instrumentation is automatic and disclosed by the visible
+  command line, not gated behind a consent modal.** A modal firing on
+  every feature/shell creation using `claude` would interrupt the exact
+  "spin up a feature workspace instantly" workflow the tool exists for,
+  and the consent decision already has a home: `[defaults] agent_hooks`
+  is a one-time, global, config-layer opt-out, not a per-spawn decision.
+  The instrumentation itself is low-risk by construction — it adds six
+  additive hooks that only ever write a tmux pane option, no prompt
+  injection, no data leaves the machine — so it fits the app's existing
+  confirmation policy: destructive actions (delete feature, remove
+  project, delete a dirty worktree) get a confirm dialog, additive ones
+  (create a feature, add a shell, quick-send) do not. Disclosure instead
+  takes the form the app already uses for "what is this shell actually
+  running": the spawned command's `--settings
+  …/lazywingman-activity-hooks.json` flag is as visible in the pane and
+  in `tmux list-panes` as any other argument on the command line.

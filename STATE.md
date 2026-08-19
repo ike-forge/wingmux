@@ -9,7 +9,18 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M16 — dead entries are muted whole (COMPLETE).** User feedback: "when a
+**M17 — semantic agent monitoring via Claude hooks (COMPLETE).** The regex
+classifier could only guess an agent's state from what scrolled past in the
+pane; Claude Code shells now report their own state via `claude --settings
+<file>` hooks (merged additively over the user's own config, nothing
+persisted), landing as the tmux pane user option `@lw_agent`. New status
+`blocked` = "the agent needs you right now" (a permission prompt), distinct
+from `waiting` = "finished its turn, nothing owed". Gating: fmt clean,
+clippy -D warnings clean, tests green apart from the pre-existing
+`legacy_root_back_key_is_unbound_but_user_binding_survives` failure, which
+already fails on the untouched baseline in this environment.
+
+Before that: **M16 — dead entries are muted whole (COMPLETE).** User feedback: "when a
 shell/agent is closed, dead, please mute the whole entry in the tree" —
 `<myfeature> dead` should read all-muted, not just the status word. Gating:
 fmt clean, clippy -D warnings clean, tests green apart from the pre-existing
@@ -133,6 +144,150 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M17 — semantic agent monitoring via Claude hooks (COMPLETE)
+
+What was wrong: status classification was pure regex guessing over
+`capture-pane` output ("Thinking…", "❯", "Error:") — one bad pattern match
+away from lying, and with no way to represent "the agent is waiting *on
+you*, right now" separately from "the agent finished its turn and is idle
+at the prompt with nothing owed". Both read as `waiting`.
+
+- **The enabling fact**: `claude --settings <file>` accepts a *second*
+  settings file per invocation, merged **additively** on top of the user's
+  own Claude settings — hooks defined there run in addition to the user's,
+  nothing is overwritten, nothing is written to disk on the user's behalf.
+  This is the single biggest assumption the milestone rested on, and it was
+  verified against a real `claude` binary, not a mock (see LIVE
+  VERIFICATION below).
+- **Hooks registered** (`src/hooks.rs`): `SessionStart`, `UserPromptSubmit`,
+  `PostToolUse`, `Notification`, `Stop`, `SessionEnd`, each running
+  `<lazywingman-binary> [--socket <name>] hook <Event>`. `PreToolUse`,
+  `SubagentStop`, `PreCompact` are deliberately not subscribed: they add
+  nothing the three reportable states express, and tool hooks are the
+  highest-frequency events.
+- **The transport**: `lazywingman hook <Event>` writes the resulting state
+  onto the pane as the tmux **pane user option** `@lw_agent`, value
+  `<state>:<unix_seconds>` — only `working`/`waiting`/`blocked` are
+  accepted back over the wire (`dead`/`failed`/`ended`/`idle` are
+  LazyWingman's own judgements and are rejected if they ever came back).
+  This lives in the **tmux server**, not in LazyWingman's process or state
+  file: a dashboard restart sees the current overlay immediately in its
+  next `list-panes` call, with no recovery code, and a hook that fires
+  while the dashboard is closed still lands. It dies with the pane —
+  nothing to garbage-collect.
+- **New status `blocked`**: a `Notification` hook whose message matches
+  "needs your permission" / "permission required" (case-insensitive). The
+  60-second idle nudge Claude also sends through `Notification` is
+  deliberately *not* a block — `Stop` already parked the pane at
+  `waiting`, and promoting the nudge to `blocked` would blur the exact
+  distinction this milestone exists to draw. Gets its own theme colour
+  role, `status_blocked` (falls back to `status_waiting` for themes
+  written before M17, so old theme files stay valid).
+- **Spawn-time instrumentation** (`hooks::instrument`, wired in
+  `App::agent_command_for_spawn`): `--settings
+  <state_dir>/lazywingman-activity-hooks.json` is injected into a spawn
+  command if and only if the first token's file name is exactly `claude`
+  — wrappers, aliases and other agents (Codex, Mistral Vibe) are left
+  untouched and keep classifying through the regex ladder exactly as
+  before M17. The flag goes right after the binary token, never appended
+  (`claude` takes a free-text positional prompt), and the insertion is
+  byte-surgical — everything after the binary token is copied verbatim so
+  internal spacing/quoting in a prompt survives. Disclosure is the visible
+  command line itself: an instrumented pane's command shows `--settings
+  …/lazywingman-activity-hooks.json`; no consent modal, nothing hidden.
+- **`[defaults] agent_hooks`** (default `true`) turns the whole thing off:
+  no settings file is written, no command is instrumented, behaviour is
+  byte-for-byte the pre-M17 regex ladder. The settings file is written
+  once at startup (`run()` → `hooks::write_settings_file()`), never from
+  `App::new`, so a moved binary or a changed `--socket` self-heals on the
+  next launch and constructing an `App` in a test touches no disk.
+- **`classify()` precedence** (`src/status.rs`): `dead` (pane gone from
+  tmux) still wins over everything; next, the hook overlay — but only
+  while the pane's foreground command is not a login shell (the staleness
+  guard below); then the regex ladder exactly as before. An instrumented
+  Claude session is believed over its own regex patterns, which stay
+  registered as the fallback the moment the overlay is stale, missing, or
+  the pane is running something else.
+- **The login-shell staleness guard, and its accepted trade-off**:
+  `@lw_agent` only outranks the regex ladder while the pane's *foreground
+  command* is not a login shell. This exists to catch a `SIGKILL`ed Claude
+  process — without `SessionEnd` firing, the overlay is never cleared, and
+  without the guard a killed agent would read `working` forever. The
+  trade-off: an agent running under a wrapper whose foreground command
+  genuinely is a shell has its *live* overlay discarded the same way and
+  degrades to the regex ladder. Deliberate: degrade to guesswork rather
+  than ever report a dead agent as working.
+- **Status ordering**: searched `ui.rs`/`app.rs` for anywhere statuses are
+  ranked or aggregated (`rg -n 'Status::(Working|Waiting|Failed)'`). None
+  exists — the `Status::` matches in `ui.rs` are colour lookups and
+  dead/live test fixtures, `classify()` is a single-value decision, not a
+  multi-shell aggregate, and no code sorts tree rows by status. `Blocked`
+  therefore needed no ordering change; per the task brief, none was added
+  (YAGNI).
+
+Known limitations, carried forward on purpose rather than fixed:
+
+1. **`failed` stays heuristic.** Claude emits no error hook event, so
+   failure detection is still regex-based; while a live overlay is
+   present it outranks the heuristic `failed`, so a failing turn only
+   surfaces once `SessionEnd` clears the overlay and the regex ladder
+   takes back over.
+2. **The `Notification` message match is the design's only coupling to
+   Claude's exact wording** (`"needs your permission"` / `"permission
+   required"`, case-insensitive substrings). It fails safe: wording
+   LazyWingman does not recognise leaves the pane's existing state
+   standing rather than guessing.
+3. **The login-shell staleness guard has a false-negative side** (see
+   above): a live agent running under a shell-fronted wrapper degrades to
+   the regex ladder instead of showing its real hook state.
+4. **Recognition is narrow by design**: only a command whose first
+   token's file name is exactly `claude` is instrumented; wrappers and
+   aliases fall back to heuristics like any other agent.
+
+LIVE VERIFICATION (controller, real `claude` binary, not a mock): built the
+release binary, generated a settings file in the exact shape
+`settings_json` emits, pointed it at the real binary via `--socket`, and
+ran `claude --settings <file> -p 'reply with the single word ok'` inside a
+real tmux pane. `claude` exited 0, printed `ok`, stderr empty — the
+generated settings schema is accepted by real Claude, confirming the
+biggest unverified assumption behind the whole milestone. Observed pane
+overlay transitions (a run with `SessionEnd` temporarily omitted from the
+hook file, to make the intermediate states observable):
+```
+t=4s  @lw_agent = working:1787152741   (UserPromptSubmit)
+t=8s  @lw_agent = waiting:1787152743   (Stop)
+```
+A run with the full six-event file ended with an empty overlay, which is
+correct: `-p` mode ends the session, `SessionEnd` fires, and clearing the
+overlay is by design.
+
+- Tests: `hooks.rs` (overlay round-trip for every emittable status,
+  junk/non-overlay-status rejection, lifecycle event mapping, permission
+  vs. idle-nudge `Notification` wording, unsubscribed events inert,
+  settings JSON shape + socket threading, `instrument()`
+  recognition/idempotence/byte-surgical spacing/edge cases, settings file
+  written under the state dir), `status.rs` (`blocked` label, overlay
+  preferred over the regex ladder, login-shell staleness guard),
+  `config.rs` (`agent_hooks` default-on/off/recognised key), `app.rs`
+  (spawn command instrumented iff hooks are on), `main.rs` (`hook <Event>`
+  CLI parsing, stdin-tty guard so a hook invoked with no piped JSON can
+  never hang the agent it's blocking, tmux integration), `ui.rs`
+  (`a_blocked_shell_reads_as_blocked_in_the_tree` — a folded solo feature
+  renders its shell's `blocked` status all the way to the drawn row, not
+  just to the enum).
+- Gate: fmt clean, clippy -D warnings clean, tests green with
+  `--test-threads=1` apart from the pre-existing
+  `legacy_root_back_key_is_unbound_but_user_binding_survives` failure
+  (confirmed unrelated — it fails on the untouched baseline in this
+  environment too).
+- Deferred documentation fixes folded into this pass: `status.rs`'s
+  module doc paragraph re-wrapped (a stray one-word line broke it after
+  the `blocked`-state insertion); `main.rs`'s `print_usage` synopsis line
+  now includes `hook <Event>` and documents `--socket` (it previously
+  matched neither the detail block below it nor reality); the embedded
+  `DEFAULT_CONFIG` first-run template's `[defaults]` block now documents
+  `agent_hooks`, matching the surrounding comment style.
 
 ### M16 — dead entries are muted whole (COMPLETE)
 

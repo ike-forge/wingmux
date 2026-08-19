@@ -94,6 +94,7 @@ fn print_usage() {
         "lazywingman — a control centre for supervising coding agents\n\
          \n\
          usage: lazywingman [--config <path>] [--config-dump] [--help]\n\
+                          | lazywingman hook <Event> [--socket <name>]\n\
          \n\
            --config <path>   use this file as the user config (default:\n\
                            $XDG_CONFIG_HOME/lazywingman/config.toml; LW_CONFIG\n\
@@ -103,6 +104,11 @@ fn print_usage() {
          hook <Event>       internal: apply one Claude Code hook event to\n\
                            this pane's status (used by the generated\n\
                            lazywingman-activity-hooks.json; not for manual use)\n\
+         --socket <name>    tmux socket name for `hook <Event>` to talk to,\n\
+                           matching the dashboard's own socket; set\n\
+                           automatically in the generated hook commands via\n\
+                           $LAZYWINGMAN_TMUX_SOCKET, not meant to be passed\n\
+                           by hand\n\
          -h, --help         show this help"
     );
 }
