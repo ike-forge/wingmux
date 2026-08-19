@@ -127,6 +127,11 @@ agent_command = "claude"     # spawned in every new feature shell by default
 agent_shell = "bash"
 agent_hooks = true           # instrument recognised `claude` commands for accurate status
 
+[icons]
+preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "ascii" | "none"
+feature_dirty = "󰘬"          # any key overrides the preset; "" draws nothing
+border = "rounded"           # "rounded" | "plain" | "ascii"
+
 [[messages]]                 # `p` modal: canned prompts for the selected shell
 label = "continue"           # what the modal lists (optional — defaults to text)
 text = "continue"            # what is sent, exactly as if you had typed it
@@ -362,12 +367,12 @@ is happening, the bar says what you can press:
 
 ```
 ╭ Projects (2) ────────────╮╭ Preview ────────────────────────────╮
-│▾ ▣ repo-a                ││ live tail of the selected shell,    │
-│  ├─   ◇ feat-a  waiting  ││ refreshed every poll                │
-│  └─ ▾ ◆ feat-b           ││                                     │
-│      ├─ ● #0 working     ││     ╭────────────────────────╮      │
-│      └─ ● #1 waiting     ││     │ feature 'feat-b' crea… │      │
-│▸ ▢ repo-b                ││     ╰────────────────────────╯      │
+│▣ repo-a                  ││ live tail of the selected shell,    │
+│  ├─     feat-a  waiting  ││ refreshed every poll                │
+│  └─ ▾ 󰘬 feat-b           ││                                     │
+│     ├─ ● #0 working      ││     ╭────────────────────────╮      │
+│     └─ ● #1 waiting      ││     │ feature 'feat-b' crea… │      │
+│▢ repo-b                  ││     ╰────────────────────────╯      │
 ╰──────────────────────────╯╰─────────────────────────────────────╯
  n feature · a shell · d delete · ? help
 ```
@@ -385,14 +390,24 @@ so the panel keeps the theme's background, and `none` renders raw text.
 Status classification always runs on the stripped text, so colouring never
 changes how a pane is classified.
 
-Icons: `▣` project holding features, `▢` empty project, `◇` feature with a
-clean worktree, `◆` feature with uncommitted changes, `●` shell. Rows carry
-no counts — the tree is expanded by default, so the children *are* the
-count, and the project icon says whether a folded project holds anything.
-Missing projects show `(missing)` dimmed. A worktree LazyWingman has no tmux
-window for is dimmed *whole* — see **Worktrees without a shell** below. When
-only ONE project is in scope its feature rows replace the project row
-entirely (the flat layout).
+Icons come from `[icons]` (default preset `nerdfont`): `▣` project holding
+features, `▢` empty project, `󰘬` feature with uncommitted changes, nothing
+for a clean one, `●` shell. A clean feature keeps its column, so names stay
+aligned. No patched font? Set `preset = "unicode"` for `◇`/`◆`, or
+`preset = "ascii"`. Rows carry meaning in symbols, labels and position as
+well as colour.
+
+> A Nerd Font glyph is drawn single-width by the Mono font variants, which
+> is what the default assumes. If your font draws it double-width, add a
+> trailing space to the `feature_dirty` value — config values are used
+> verbatim and the column pads around them.
+
+Rows carry no counts — the tree is expanded by default, so the children
+*are* the count, and the project icon says whether a folded project holds
+anything. Missing projects show `(missing)` dimmed. A worktree LazyWingman
+has no tmux window for is dimmed *whole* — see **Worktrees without a
+shell** below. When only ONE project is in scope its feature rows replace
+the project row entirely (the flat layout).
 
 **Worktrees without a shell**: every worktree `git worktree list` reports
 gets a row, whether LazyWingman created it or you did. A worktree it has no
