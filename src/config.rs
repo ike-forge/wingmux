@@ -106,6 +106,14 @@ agent_shell = "bash"
 # command line. Set to false to disable and always use the regex heuristics.
 agent_hooks = true
 
+[icons]
+preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "ascii" | "none"
+# Any key below overrides the preset. An empty string draws nothing; names
+# stay aligned because the column keeps its width.
+# feature = ""               # clean worktree
+# feature_dirty = "󰘬"        # uncommitted changes (nf-md-source_branch)
+# border = "rounded"         # "rounded" | "plain" | "ascii"
+
 # Predefined messages, offered by the `p` modal on a selected shell:
 # pick one and it is sent to the agent exactly as if you had typed it.
 # `label` is what the modal lists, `text` is what gets sent (label may be
@@ -169,6 +177,7 @@ pub struct Config {
     pub worktrees: WorktreeConfig,
     pub discovery: DiscoveryConfig,
     pub defaults: DefaultsConfig,
+    pub icons: IconsConfig,
     pub agents: Vec<AgentConfig>,
     pub projects: Vec<ProjectConfig>,
     /// Predefined messages offered by the `p` modal (quick-send presets).
@@ -264,11 +273,6 @@ pub struct DefaultsConfig {
 /// Border style for popups and panels. Not a glyph string: ratatui's
 /// `BorderType` owns the corner set, and pure ASCII is not one of its
 /// variants — it is a post-render buffer rewrite (`ui::asciify`).
-///
-/// Not wired in yet (task 1 of the configurable-icons plan adds the data
-/// type only); `#[allow(dead_code)]` comes off once `Config` grows an
-/// `icons` field in a later task.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BorderStyle {
@@ -279,7 +283,6 @@ pub enum BorderStyle {
 }
 
 /// Preset names accepted by `[icons].preset`.
-#[allow(dead_code)]
 pub const ICON_PRESETS: &[&str] = &["nerdfont", "unicode", "ascii", "none"];
 
 /// Every glyph LazyWingman draws itself. Resolved: each field is the exact
@@ -288,7 +291,6 @@ pub const ICON_PRESETS: &[&str] = &["nerdfont", "unicode", "ascii", "none"];
 /// This replaced a `LW_ASCII` boolean. That boolean answered "can this
 /// terminal draw box characters?", which is not the question users have —
 /// theirs is "which glyphs suit my font?", and the two are independent.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IconsConfig {
     pub project: String,
@@ -308,7 +310,6 @@ pub struct IconsConfig {
     pub border: BorderStyle,
 }
 
-#[allow(dead_code)]
 impl Default for IconsConfig {
     fn default() -> Self {
         IconsConfig::preset("nerdfont")
@@ -319,7 +320,6 @@ impl IconsConfig {
     /// The named preset, padded and ready to render. An unknown name falls
     /// back to `nerdfont`; the caller reports the diagnostic (this is also
     /// reached from `Deserialize`, which has no diagnostics vec).
-    #[allow(dead_code)]
     pub fn preset(name: &str) -> IconsConfig {
         let mut i = IconsConfig::raw_preset(name);
         i.pad();
@@ -328,7 +328,6 @@ impl IconsConfig {
 
     /// The preset before padding. Overrides are layered onto this, then
     /// padded once — padding an already-padded value would compound.
-    #[allow(dead_code)]
     fn raw_preset(name: &str) -> IconsConfig {
         let nerdfont = IconsConfig {
             project: "▣".into(),
@@ -388,7 +387,6 @@ impl IconsConfig {
     /// concatenate icon and name directly and an empty column costs
     /// nothing. Keys with no sibling (`shell`, `cursor`, `separator`,
     /// `warn`, `ellipsis`) are used verbatim.
-    #[allow(dead_code)]
     fn pad(&mut self) {
         pad_pair(&mut self.project, &mut self.project_empty);
         pad_pair(&mut self.feature, &mut self.feature_dirty);
@@ -397,7 +395,6 @@ impl IconsConfig {
     }
 }
 
-#[allow(dead_code)]
 fn pad_pair(a: &mut String, b: &mut String) {
     let w = UnicodeWidthStr::width(a.as_str()).max(UnicodeWidthStr::width(b.as_str()));
     if w == 0 {
@@ -406,6 +403,78 @@ fn pad_pair(a: &mut String, b: &mut String) {
     for s in [a, b] {
         let pad = w - UnicodeWidthStr::width(s.as_str());
         s.push_str(&" ".repeat(pad + 1));
+    }
+}
+
+/// Raw `[icons]` as written in the file: every key optional, so an
+/// override can be told apart from a preset value.
+#[derive(Deserialize)]
+#[serde(default)]
+struct IconsFile {
+    preset: String,
+    project: Option<String>,
+    project_empty: Option<String>,
+    feature: Option<String>,
+    feature_dirty: Option<String>,
+    shell: Option<String>,
+    expand_open: Option<String>,
+    expand_closed: Option<String>,
+    cursor: Option<String>,
+    guide_branch: Option<String>,
+    guide_last: Option<String>,
+    guide_vertical: Option<String>,
+    separator: Option<String>,
+    warn: Option<String>,
+    ellipsis: Option<String>,
+    border: Option<BorderStyle>,
+}
+
+impl Default for IconsFile {
+    fn default() -> Self {
+        IconsFile {
+            preset: "nerdfont".into(),
+            project: None,
+            project_empty: None,
+            feature: None,
+            feature_dirty: None,
+            shell: None,
+            expand_open: None,
+            expand_closed: None,
+            cursor: None,
+            guide_branch: None,
+            guide_last: None,
+            guide_vertical: None,
+            separator: None,
+            warn: None,
+            ellipsis: None,
+            border: None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for IconsConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let f = IconsFile::deserialize(d)?;
+        let b = IconsConfig::raw_preset(&f.preset);
+        let mut i = IconsConfig {
+            project: f.project.unwrap_or(b.project),
+            project_empty: f.project_empty.unwrap_or(b.project_empty),
+            feature: f.feature.unwrap_or(b.feature),
+            feature_dirty: f.feature_dirty.unwrap_or(b.feature_dirty),
+            shell: f.shell.unwrap_or(b.shell),
+            expand_open: f.expand_open.unwrap_or(b.expand_open),
+            expand_closed: f.expand_closed.unwrap_or(b.expand_closed),
+            cursor: f.cursor.unwrap_or(b.cursor),
+            guide_branch: f.guide_branch.unwrap_or(b.guide_branch),
+            guide_last: f.guide_last.unwrap_or(b.guide_last),
+            guide_vertical: f.guide_vertical.unwrap_or(b.guide_vertical),
+            separator: f.separator.unwrap_or(b.separator),
+            warn: f.warn.unwrap_or(b.warn),
+            ellipsis: f.ellipsis.unwrap_or(b.ellipsis),
+            border: f.border.unwrap_or(b.border),
+        };
+        i.pad();
+        Ok(i)
     }
 }
 
@@ -478,6 +547,7 @@ impl Default for Config {
                 agent_shell: "bash".into(),
                 agent_hooks: true,
             },
+            icons: IconsConfig::default(),
             agents: vec![
                 AgentConfig {
                     name: "claude".into(),
@@ -682,6 +752,7 @@ const TOP_KEYS: &[&str] = &[
     "worktrees",
     "discovery",
     "defaults",
+    "icons",
     "agents",
     "projects",
     "messages",
@@ -691,6 +762,24 @@ const TMUX_KEYS: &[&str] = &["back_key"];
 const WORKTREES_KEYS: &[&str] = &["root", "base_branch", "delete_branch"];
 const DISCOVERY_KEYS: &[&str] = &["scan_root", "max_depth", "skip_dirs"];
 const DEFAULTS_KEYS: &[&str] = &["agent_command", "agent_shell", "agent_hooks"];
+const ICONS_KEYS: &[&str] = &[
+    "preset",
+    "project",
+    "project_empty",
+    "feature",
+    "feature_dirty",
+    "shell",
+    "expand_open",
+    "expand_closed",
+    "cursor",
+    "guide_branch",
+    "guide_last",
+    "guide_vertical",
+    "separator",
+    "warn",
+    "ellipsis",
+    "border",
+];
 const AGENT_KEYS: &[&str] = &["name", "command", "shell", "patterns"];
 const PATTERN_KEYS: &[&str] = &["working", "waiting", "failed"];
 const PROJECT_KEYS: &[&str] = &["path", "base_branch", "agent", "agent_command"];
@@ -1152,6 +1241,7 @@ fn report_unknown_keys(table: &toml::Table, file: &Path, diags: &mut Vec<String>
             "worktrees" => Some(WORKTREES_KEYS),
             "discovery" => Some(DISCOVERY_KEYS),
             "defaults" => Some(DEFAULTS_KEYS),
+            "icons" => Some(ICONS_KEYS),
             _ => None,
         };
         if let Some(known) = section_keys
@@ -1292,6 +1382,14 @@ fn deserialize_lenient(
         merged,
         "defaults",
         DefaultsConfig::default(),
+        layer_paths,
+        sources,
+        diags,
+    );
+    cfg.icons = take_section(
+        merged,
+        "icons",
+        IconsConfig::default(),
         layer_paths,
         sources,
         diags,
@@ -1456,6 +1554,37 @@ impl SectionSalvage for DefaultsConfig {
             agent_shell: salvage_field(t, "agent_shell", "bash".to_string(), file, diags),
             agent_hooks: salvage_field(t, "agent_hooks", true, file, diags),
         }
+    }
+}
+
+impl SectionSalvage for IconsConfig {
+    fn salvage(t: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self {
+        let preset = salvage_field(t, "preset", "nerdfont".to_string(), file, diags);
+        if !ICON_PRESETS.contains(&preset.as_str()) {
+            diags.push(format!(
+                "{file}: '[icons].preset' unknown value '{preset}' — using 'nerdfont'"
+            ));
+        }
+        let b = IconsConfig::raw_preset(&preset);
+        let mut i = IconsConfig {
+            project: salvage_field(t, "project", b.project, file, diags),
+            project_empty: salvage_field(t, "project_empty", b.project_empty, file, diags),
+            feature: salvage_field(t, "feature", b.feature, file, diags),
+            feature_dirty: salvage_field(t, "feature_dirty", b.feature_dirty, file, diags),
+            shell: salvage_field(t, "shell", b.shell, file, diags),
+            expand_open: salvage_field(t, "expand_open", b.expand_open, file, diags),
+            expand_closed: salvage_field(t, "expand_closed", b.expand_closed, file, diags),
+            cursor: salvage_field(t, "cursor", b.cursor, file, diags),
+            guide_branch: salvage_field(t, "guide_branch", b.guide_branch, file, diags),
+            guide_last: salvage_field(t, "guide_last", b.guide_last, file, diags),
+            guide_vertical: salvage_field(t, "guide_vertical", b.guide_vertical, file, diags),
+            separator: salvage_field(t, "separator", b.separator, file, diags),
+            warn: salvage_field(t, "warn", b.warn, file, diags),
+            ellipsis: salvage_field(t, "ellipsis", b.ellipsis, file, diags),
+            border: salvage_field(t, "border", b.border, file, diags),
+        };
+        i.pad();
+        i
     }
 }
 
@@ -1780,6 +1909,58 @@ mod tests {
             "",
             "empty column: no space"
         );
+    }
+
+    #[test]
+    fn icons_preset_and_per_key_override() {
+        let cfg = Config::from_str("[icons]\npreset = \"ascii\"\nfeature_dirty = \"D\"\n").unwrap();
+        // the override wins...
+        assert_eq!(cfg.icons.feature_dirty.trim_end(), "D");
+        // ...and the rest of the preset survives
+        assert_eq!(cfg.icons.guide_branch.trim_end(), "|-");
+        assert_eq!(cfg.icons.border, BorderStyle::Ascii);
+        // padding is applied once, after the override is layered on
+        assert_eq!(
+            UnicodeWidthStr::width(cfg.icons.feature.as_str()),
+            UnicodeWidthStr::width(cfg.icons.feature_dirty.as_str())
+        );
+    }
+
+    #[test]
+    fn icons_default_when_absent() {
+        let cfg = Config::from_str("theme = \"gruvbox\"\n").unwrap();
+        assert_eq!(cfg.icons, IconsConfig::preset("nerdfont"));
+    }
+
+    #[test]
+    fn an_unknown_icons_preset_is_reported_and_defaults() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(cwd.path(), "[icons]\npreset = \"emoji\"\n");
+            assert_eq!(cfg.icons, IconsConfig::preset("nerdfont"));
+            assert!(
+                cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("'[icons].preset'")),
+                "diagnostics: {:?}",
+                cfg.diagnostics
+            );
+        });
+    }
+
+    #[test]
+    fn an_unknown_icons_key_is_reported_and_ignored() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(cwd.path(), "[icons]\nsparkle = \"x\"\n");
+            assert!(
+                cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("'icons.sparkle'")),
+                "diagnostics: {:?}",
+                cfg.diagnostics
+            );
+        });
     }
 
     #[test]
