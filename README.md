@@ -133,7 +133,7 @@ text = "continue"            # what is sent, exactly as if you had typed it
 
 [[messages]]
 label = "merge + drop worktree"
-text = "merge to master, drop the worktree"
+text = "merge to <base_branch>, delete current branch and worktree"
 
 [[agents]]                   # presets: patterns classify pane status
 name = "codex"
