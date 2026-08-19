@@ -27,7 +27,6 @@ impl Overlay {
     /// Parse a value read back from tmux. Only the three states a hook can
     /// emit are accepted: `dead`, `failed`, `ended` and `idle` are
     /// LazyWingman's own judgements and must never arrive over the wire.
-    #[allow(dead_code)] // called by the poll loop (later task)
     pub fn parse(s: &str) -> Option<Overlay> {
         let (label, ts) = s.split_once(':')?;
         let status = match label {

@@ -41,7 +41,6 @@ pub struct PaneInfo {
     /// Raw `@lw_agent` value, empty when the pane carries none. Parsed by
     /// `hooks::Overlay::parse`; kept as a string here so tmux stays
     /// ignorant of what the value means.
-    #[allow(dead_code)] // read by status::classify once it prefers the overlay (later task)
     pub overlay_raw: String,
 }
 

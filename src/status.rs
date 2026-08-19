@@ -4,6 +4,8 @@
 //! what the classifier guessed. Order of checks:
 //!
 //! `dead` (the pane is gone from tmux, or tmux says its process died) →
+//! the agent's own hook-reported state, when the pane carries a live
+//! `@lw_agent` overlay and an agent is still the foreground command →
 //! `failed` (any line matches a
 //! failure pattern) → `waiting` if the *last* line matches a prompt pattern
 //! (the freshest signal) → `working` (any line matches a busy pattern) →
@@ -24,7 +26,6 @@ use crate::tmux::{PaneInfo, is_shell_command};
 pub enum Status {
     Working,
     Waiting,
-    #[allow(dead_code)] // constructed by the poll loop reading the overlay (later task)
     Blocked,
     Idle,
     Failed,
@@ -89,6 +90,15 @@ pub fn classify(patterns: &Compiled, tail: &str, pane: Option<&PaneInfo>) -> Sta
     if pane.dead {
         return Status::Dead;
     }
+    // An instrumented agent reports its own state; believe it over the
+    // regexes. The login-shell guard drops a value stranded by an agent
+    // that died without firing SessionEnd — the option lives in the tmux
+    // server, so it would otherwise outlive the process that wrote it.
+    if !is_shell_command(&pane.current_command)
+        && let Some(o) = crate::hooks::Overlay::parse(&pane.overlay_raw)
+    {
+        return o.status;
+    }
     if any_match(&patterns.failed, tail) {
         return Status::Failed;
     }
@@ -129,6 +139,15 @@ mod tests {
             current_command: current_command.to_string(),
             dead,
             overlay_raw: String::new(),
+        }
+    }
+
+    fn pane_with(current_command: &str, dead: bool, overlay: &str) -> PaneInfo {
+        PaneInfo {
+            pane_id: "%1".to_string(),
+            current_command: current_command.to_string(),
+            dead,
+            overlay_raw: overlay.to_string(),
         }
     }
 
@@ -236,6 +255,71 @@ mod tests {
             classify(&p, "nothing matches", Some(&pane("claude", false))),
             Status::Idle
         );
+    }
+
+    /// The whole point: hooks beat the regexes when they disagree.
+    #[test]
+    fn a_live_overlay_beats_the_heuristics() {
+        let p = c(&["Thinking"], &["❯"], &["Error:"]);
+        // The tail screams "working"; the agent says it is blocked on us.
+        assert_eq!(
+            classify(
+                &p,
+                "Thinking...",
+                Some(&pane_with("claude", false, "blocked:99"))
+            ),
+            Status::Blocked
+        );
+        // The tail looks like a failure; the agent says it is still working.
+        assert_eq!(
+            classify(
+                &p,
+                "Error: boom",
+                Some(&pane_with("claude", false, "working:99"))
+            ),
+            Status::Working
+        );
+    }
+
+    /// tmux's judgement is the one thing an agent cannot override.
+    #[test]
+    fn dead_beats_the_overlay() {
+        let p = c(&["Thinking"], &["❯"], &["Error:"]);
+        assert_eq!(
+            classify(&p, "", Some(&pane_with("claude", true, "working:99"))),
+            Status::Dead
+        );
+        assert_eq!(classify(&p, "", None), Status::Dead);
+    }
+
+    /// A SIGKILLed agent never fires SessionEnd, stranding its overlay on a
+    /// pane that has fallen back to a login shell. Because the value lives
+    /// in the tmux server it survives restarts, so it must be discarded on
+    /// read rather than trusted.
+    #[test]
+    fn a_stale_overlay_on_a_login_shell_is_discarded() {
+        let p = c(&["Thinking"], &["❯"], &["Error:"]);
+        assert_eq!(
+            classify(
+                &p,
+                "nothing matches",
+                Some(&pane_with("bash", false, "working:99"))
+            ),
+            Status::Ended
+        );
+    }
+
+    /// Garbage, or a state only LazyWingman may assign, falls through.
+    #[test]
+    fn unparsable_overlays_fall_through_to_the_ladder() {
+        let p = c(&["Thinking"], &["❯"], &["Error:"]);
+        for raw in ["", "garbage", "dead:99"] {
+            assert_eq!(
+                classify(&p, "Thinking...", Some(&pane_with("claude", false, raw))),
+                Status::Working,
+                "overlay {raw:?} should not be believed"
+            );
+        }
     }
 
     #[test]
