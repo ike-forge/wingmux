@@ -213,7 +213,19 @@ the same commit as the change.
   '~/.local/state/lazywingman/lazywingman-activity-hooks.json'` — the settings
   file is named so that line is self-explanatory. A first-run "hello/docs"
   modal explaining it may come later; it was explicitly out of scope.
-  `[defaults] agent_hooks = true` is the opt-out.
+  `[defaults] agent_hooks = true` is the opt-out. The enabling fact is that
+  `claude --settings <file>` takes per-invocation settings that merge
+  additively with the user's own and persist nothing, so instrumenting a
+  shell changes no file the user owns.
+- **Two limitations are known and accepted.** `failed` stays heuristic —
+  Claude fires no error event, so there is nothing for a hook to report and
+  the regex ladder remains the only signal. And the `Notification` handler
+  matches `BLOCKING_NOTIFICATIONS` substrings against the message text, which
+  is the one place the app is coupled to Claude's wording — it distinguishes
+  "blocked on the user" from the 60-second idle nudge. Wording that stops
+  matching is `Ignore`d rather than misapplied, so the pane keeps its last
+  reported state instead of flipping to `blocked`; the failure mode is a
+  missed `blocked`, never a wrong one.
 
 ## The tree
 
