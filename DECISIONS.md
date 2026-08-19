@@ -154,6 +154,19 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   boot), and `prune` skips worktree verification for projects whose
   worktrees were never loaded, so boot never pays 200 git calls. Since M20
   the unfolded projects' listings are queued rather than run at boot.
+- **M21 — one reentrant lock for every process-global test fixture.** Two
+  locks (`XDG_LOCK`, `TMUX_TEST_LOCK`) guarding the same kind of thing —
+  process-wide env vars — is a lock-order inversion waiting to happen, and it
+  happened: the fixtures nest in both orders, so parallel `cargo test` could
+  hang forever. The alternative fix, "always take them in the same order",
+  was rejected: it is a rule nobody can see from a call site, and the failure
+  mode is a hang with no message. One lock removes the ordering question
+  entirely. The cost is that tmux tests and XDG tests no longer run
+  concurrently with each other — worth ~0s on an 8.7s suite, since both were
+  already serialised within their own group. Reentrancy is per thread
+  (`DEPTH` + a `DepthReset` drop guard, not a `ReentrantLock`) because the
+  fixtures must keep nesting, and because the guard has to be released only
+  after the depth is back to 0.
 - **M20 — unfold by default; the cap is readability, not cost.** Folding
   hides the shells the dashboard exists to supervise, so the tree now
   starts fully unfolded. The old `≤5 projects` rule existed because

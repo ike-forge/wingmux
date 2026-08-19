@@ -9,7 +9,26 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M20 — UI polish: Title Case panels, unfold by default, per-shell
+**M21 — the test fixtures share one lock (COMPLETE).** Found while gating
+M20, pre-existing since M8: `cargo test` in parallel could DEADLOCK.
+`tmux::testutil`'s `TMUX_TEST_LOCK` and `util::testutil`'s `XDG_LOCK` were
+taken in BOTH orders — `app::tests` nests `with_fresh_xdg(|| ..tmux..)` and
+`with_tmux_server(|| with_fresh_xdg(..))` — so two threads could hold one
+lock each and wait for the other. It hung forever (no timeout, no failure),
+leaving an orphaned `lwtest-<pid>-<n>` tmux server behind; the workaround was
+`--test-threads=1`. Now there is ONE lock, `util::testutil::TEST_LOCK`, taken
+through `with_test_lock`, which every process-global fixture goes through.
+One lock cannot invert, but it has to survive the nesting, so it is reentrant
+per thread: a `DEPTH` thread-local makes a nested call a no-op, and a
+`DepthReset` drop guard clears it before the mutex guard is released (so an
+unwinding test cannot leave a later fixture unlocked). Test:
+`the_shared_test_lock_is_reentrant` — it would hang, not fail, on a plain
+mutex. Result: `cargo test` (parallel, no flags) runs in ~8.7s, three times
+in a row, 220 pass. The "rotating handful of `ui::tests` render tests flake
+in parallel" note under the old M15 was the same root cause — those tests
+race on the process-global XDG/TMUX env vars — and is gone too.
+
+Before that: **M20 — UI polish: Title Case panels, unfold by default, per-shell
 quick-send drafts (COMPLETE).** User feedback: title-case every pane title,
 unfold everything by default, and keep a per-shell quick-send buffer so a
 half-written prompt survives `Esc`. Landed late: the work was finished on the
@@ -25,17 +44,6 @@ features)` counts M19 removed. Gating: fmt clean, clippy -D warnings clean,
 219 tests pass apart from the pre-existing
 `legacy_root_back_key_is_unbound_but_user_binding_survives` failure, which
 already fails on the untouched baseline in this environment.
-
-**Known issue found while gating this merge (pre-existing, NOT from the
-merge):** `cargo test` in parallel can DEADLOCK. `tmux::testutil`'s
-`TMUX_TEST_LOCK` and `util::testutil`'s `XDG_LOCK` are taken in both orders —
-`app.rs` has `with_fresh_xdg(|| with_tmux_server(..))` tests and
-`with_tmux_server(|| with_fresh_xdg(..))` tests — so two threads can hold one
-lock each and wait for the other. It hangs forever (no timeout), leaving a
-`lwtest-<pid>-<n>` tmux server behind. Both orders are already on `main`
-before this merge. Workaround: `cargo test -- --test-threads=1` (10s, and
-what the numbers above were measured with). Fix: put both helpers behind ONE
-lock, or make every nesting site use the same order.
 
 Before that: **M19 — `dd` confirms, tree rows drop their counts (COMPLETE).** Two pieces
 of user feedback: (1) the delete confirm now takes `d` as a yes alongside

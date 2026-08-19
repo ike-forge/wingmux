@@ -970,19 +970,18 @@ mod tests {
 /// Shared fixture for tests that need a real (throwaway) tmux server.
 ///
 /// Exposed to the app-level tests too, so the M8.2 handoff path can be
-/// verified at the command level. NOTE: the mutex MUST live at module level —
-/// a `static` inside the generic `with_tmux_server` would be duplicated per
-/// closure type, so tests would not serialize and would stomp each other's
-/// env vars.
+/// verified at the command level. Serialisation is NOT a lock of its own:
+/// these fixtures and `util::testutil::with_fresh_xdg` nest in both orders,
+/// so two locks could invert and hang the suite. They share one reentrant
+/// lock — see `util::testutil::with_test_lock`.
 #[cfg(test)]
 pub(crate) mod testutil {
     use std::process::Command;
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::{Inside, Tmux};
+    use crate::util::testutil::with_test_lock;
 
-    static TMUX_TEST_LOCK: Mutex<()> = Mutex::new(());
     static SOCK_COUNTER: AtomicU32 = AtomicU32::new(0);
 
     /// Run `f` against a throwaway tmux server on a unique socket.
@@ -997,8 +996,10 @@ pub(crate) mod testutil {
             eprintln!("skipping: tmux not available");
             return;
         }
-        // Recover from a previous test's panic (poisoned lock).
-        let _guard = TMUX_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        with_test_lock(|| with_tmux_server_locked(f));
+    }
+
+    fn with_tmux_server_locked(f: impl FnOnce(&str, Tmux)) {
         // Unique socket per invocation: zero cross-test server coupling.
         let n = SOCK_COUNTER.fetch_add(1, Ordering::SeqCst);
         let sock = format!("lwtest-{}-{n}", std::process::id());
@@ -1069,7 +1070,10 @@ pub(crate) mod testutil {
     /// body is expected to start one itself (e.g. via `ensure_server`).
     /// Serialises on the same lock as `with_tmux_server`.
     pub fn with_no_server(f: impl FnOnce(&str)) {
-        let _guard = TMUX_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        with_test_lock(|| with_no_server_locked(f));
+    }
+
+    fn with_no_server_locked(f: impl FnOnce(&str)) {
         let n = SOCK_COUNTER.fetch_add(1, Ordering::SeqCst);
         let sock = format!("lwtest-{}-{n}", std::process::id());
         // Clear any leftover server from a previous run on this socket.

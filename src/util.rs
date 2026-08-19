@@ -123,15 +123,65 @@ pub fn ascii_requested() -> bool {
 
 #[cfg(test)]
 pub mod testutil {
-    //! Shared helper so env-mutating tests don't race each other. All tests
-    //! that touch XDG env vars must go through [`with_fresh_xdg`].
+    //! Shared helpers so env-mutating tests don't race each other. All tests
+    //! that touch XDG env vars must go through [`with_fresh_xdg`]; every
+    //! other fixture that mutates process-global state serialises on the
+    //! same lock via [`with_test_lock`].
+    use std::cell::Cell;
     use std::sync::Mutex;
 
-    static XDG_LOCK: Mutex<()> = Mutex::new(());
+    /// The ONE lock every process-global test fixture takes.
+    ///
+    /// It used to be two — `XDG_LOCK` here and `TMUX_TEST_LOCK` in
+    /// `tmux::testutil` — and the fixtures nest in BOTH orders: some tests
+    /// wrap a tmux server around `with_fresh_xdg`, others the reverse. Two
+    /// threads could therefore take one lock each and wait for the other,
+    /// hanging the whole suite (no timeout) with an orphaned `lwtest-*`
+    /// tmux server behind it. A single lock cannot invert; it only has to
+    /// survive the nesting, which is what `DEPTH` is for.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    thread_local! {
+        /// Whether this thread already holds [`TEST_LOCK`]. A nested
+        /// fixture must NOT lock again — the thread would block on itself.
+        static DEPTH: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Reset on the way out, panic or not: an unwind that left `DEPTH` at 1
+    /// would make every later fixture on that thread skip the lock.
+    struct DepthReset;
+
+    impl Drop for DepthReset {
+        fn drop(&mut self) {
+            DEPTH.with(|d| d.set(0));
+        }
+    }
+
+    /// Run `f` holding the shared test lock, reentrantly.
+    ///
+    /// Nesting two DIFFERENT fixtures is the point (tmux around XDG and the
+    /// reverse). Nesting the same one twice still works, but the inner call
+    /// re-runs its own setup — `with_fresh_xdg` inside `with_fresh_xdg`
+    /// would wipe the outer test's temp dirs.
+    pub fn with_test_lock<R>(f: impl FnOnce() -> R) -> R {
+        if DEPTH.with(Cell::get) > 0 {
+            return f();
+        }
+        // Recover from a previous test's panic (poisoned lock).
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        DEPTH.with(|d| d.set(1));
+        // Drops before `_guard` (reverse declaration order), so the depth is
+        // back to 0 before another thread can take the lock.
+        let _reset = DepthReset;
+        f()
+    }
 
     /// Run `f` with XDG dirs pointed at fresh temp directories.
     pub fn with_fresh_xdg<R>(f: impl FnOnce() -> R) -> R {
-        let _guard = XDG_LOCK.lock().unwrap();
+        with_test_lock(|| with_fresh_xdg_locked(f))
+    }
+
+    fn with_fresh_xdg_locked<R>(f: impl FnOnce() -> R) -> R {
         let base = std::env::temp_dir().join(format!("lwtest-{}", std::process::id()));
         let cfg = base.join("config");
         let state = base.join("state");
@@ -154,6 +204,22 @@ pub mod testutil {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fixtures nest in both directions — `with_fresh_xdg` inside a
+    /// tmux server (`app::tests::d_confirms_the_delete_popup`) and a tmux
+    /// server inside `with_fresh_xdg` (`app::tests::boot_discovery_*`).
+    /// They now share ONE lock, so it has to be reentrant on a thread:
+    /// a plain mutex would block on itself here and hang the suite.
+    #[test]
+    fn the_shared_test_lock_is_reentrant() {
+        testutil::with_test_lock(|| {
+            testutil::with_fresh_xdg(|| {
+                testutil::with_test_lock(|| {
+                    assert_eq!(config_home().file_name().unwrap(), "config");
+                });
+            });
+        });
+    }
 
     #[test]
     fn xdg_defaults_used_when_env_unset() {
