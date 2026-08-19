@@ -8,6 +8,7 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, BarAction, InputKind, Mode, Sel};
 use crate::status::Status;
@@ -378,39 +379,18 @@ fn panel_block(theme: &ResolvedColors, title: &str, focused: bool) -> Block<'sta
 
 fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
-    // ASCII fallback (terminals that mangle box-drawing): plain markers.
-    let (exp, coll, hl) = if app.ascii {
-        ("v", ">", ">")
-    } else {
-        ("▾", "▸", "›")
-    };
-    // Tree guides: `├─ `/`└─ ` for children, `│` continuing parents.
-    let (child, last_child) = if app.ascii {
-        ("  |- ", "  `- ")
-    } else {
-        ("  ├─ ", "  └─ ")
-    };
-    let (grandchild, last_grandchild) = if app.ascii {
-        ("  |  |- ", "  |  `- ")
-    } else {
-        ("  │  ├─ ", "  │  └─ ")
-    };
-    let (no_grandchild, no_last_grandchild) = if app.ascii {
-        ("     |- ", "     `- ")
-    } else {
-        ("     ├─ ", "     └─ ")
-    };
-    // Per-type icons (aesthetic pass; ASCII keeps plain markers). Each
-    // icon carries the one fact its row cannot show otherwise: the
-    // project icon is filled when it holds features and hollow when it is
-    // empty; the feature icon is hollow for a clean worktree and filled
-    // when it has uncommitted changes. Counts stay out of the rows — the
-    // tree is expanded by default, so the children speak for themselves.
-    let (proj_icon, empty_proj_icon, feat_icon, dirty_icon, shell_icon) = if app.ascii {
-        ("*", "o", "-", "*", "")
-    } else {
-        ("▣", "▢", "◇", "◆", "● ")
-    };
+    let ic = &app.cfg.icons;
+    // Guides are composites: `[icons]` exposes three keys and the six
+    // shapes are built here. Six near-identical constants is not a
+    // configuration surface worth handing a user.
+    let child = format!("  {}", ic.guide_branch);
+    let last_child = format!("  {}", ic.guide_last);
+    let vbar = &ic.guide_vertical;
+    let vbar_blank = " ".repeat(UnicodeWidthStr::width(vbar.as_str()));
+    let grandchild = format!("  {vbar}  {}", ic.guide_branch);
+    let last_grandchild = format!("  {vbar}  {}", ic.guide_last);
+    let no_grandchild = format!("  {vbar_blank}  {}", ic.guide_branch);
+    let no_last_grandchild = format!("  {vbar_blank}  {}", ic.guide_last);
     let mut items: Vec<ListItem> = Vec::new();
     let mut sel_row: Option<usize> = None;
     let mut row: usize = 0;
@@ -421,15 +401,14 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
         let proj = &app.state.projects[pi];
         if !app.flatten {
             let expanded = app.proj_expanded.get(pi).copied().unwrap_or(false);
-            let marker = if expanded { exp } else { coll };
             let icon = if proj.features.is_empty() {
-                empty_proj_icon
+                &ic.project_empty
             } else {
-                proj_icon
+                &ic.project
             };
             let pdead = project_dead(app, proj);
             let mut spans = vec![Span::styled(
-                format!("{marker} {icon} {}", proj.name),
+                format!("{icon}{}", proj.name),
                 fg(row_color(theme, pdead, theme.tree_project)).add_modifier(Modifier::BOLD),
             )];
             if proj.missing {
@@ -459,20 +438,28 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             let fdead = feature_dead(app, feat);
             let marker = match solo {
                 // a blank of the marker's width keeps the names aligned
-                Some(_) => " ".repeat(exp.chars().count()),
-                None if fexp => exp.to_string(),
-                None => coll.to_string(),
+                Some(_) => " ".repeat(UnicodeWidthStr::width(ic.expand_open.as_str())),
+                None if fexp => ic.expand_open.clone(),
+                None => ic.expand_closed.clone(),
             };
             let n = feat.shells.len();
             let dirty = app.feature_dirty_cached(pi, fi);
-            let ficon = if dirty { dirty_icon } else { feat_icon };
+            let ficon = if dirty {
+                &ic.feature_dirty
+            } else {
+                &ic.feature
+            };
             // In flatten mode the features are the top level (no guide);
             // otherwise they hang off the project with a tree branch.
             let (prefix, icon_span) = if app.flatten {
-                (format!("{marker} "), format!("{ficon} "))
+                (marker.clone(), ficon.to_string())
             } else {
-                let guide = if fi + 1 == n_feat { last_child } else { child };
-                (format!("{guide}{marker} "), format!("{ficon} "))
+                let guide = if fi + 1 == n_feat {
+                    &last_child
+                } else {
+                    &child
+                };
+                (format!("{guide}{marker}"), ficon.to_string())
             };
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(
@@ -521,24 +508,24 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 let st = shell_status(app, sh);
                 let guide = if app.flatten {
                     if si + 1 == n {
-                        last_grandchild
+                        &last_grandchild
                     } else {
-                        grandchild
+                        &grandchild
                     }
                 } else if fi + 1 == n_feat {
                     if si + 1 == n {
-                        no_last_grandchild
+                        &no_last_grandchild
                     } else {
-                        no_grandchild
+                        &no_grandchild
                     }
                 } else if si + 1 == n {
-                    last_grandchild
+                    &last_grandchild
                 } else {
-                    grandchild
+                    &grandchild
                 };
                 items.push(ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{guide}{shell_icon}#{}", sh.index),
+                        format!("{guide}{}#{}", ic.shell, sh.index),
                         fg(row_color(theme, st == Status::Dead, theme.tree_shell)),
                     ),
                     Span::raw(" "),
@@ -570,7 +557,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let list = List::new(items)
         .block(block)
         .highlight_style(on(theme.selection_fg, theme.selection_bg))
-        .highlight_symbol(format!("{hl} "));
+        .highlight_symbol(format!("{} ", ic.cursor));
     let mut state = ListState::default();
     state.select(sel_row);
     f.render_stateful_widget(list, area, &mut state);
@@ -2016,6 +2003,13 @@ mod tests {
     fn ascii_fallback_renders_without_box_glyphs() {
         let mut app = seeded_app();
         app.ascii = true;
+        // `[icons]` (Task 2/3) replaced the `LW_ASCII` boolean and is
+        // deliberately independent of it (see config.rs's `IconsConfig`
+        // doc comment) — `app.ascii` alone no longer picks ascii glyphs
+        // for the tree, only the chrome sites Task 4 still gates on it.
+        // A terminal that needs `app.ascii` also wants the `ascii` icon
+        // preset, so give the fixture both (Ruling F1).
+        app.cfg.icons = crate::config::IconsConfig::preset("ascii");
         app.state.projects.push(crate::state::Project {
             name: "repo-b".into(),
             path: std::path::PathBuf::from("/tmp/repo-b"),
@@ -2026,7 +2020,25 @@ mod tests {
             missing: false,
             features: vec![],
         });
+        // The project row lost its expand marker in this task; give the
+        // first project a multi-shell, expanded feature so a feature-row
+        // marker (`expand_open` = "v" in the ascii preset) still renders.
+        let shell = |i: usize| crate::state::Shell {
+            index: i,
+            window_name: format!("lw:f/{i}"),
+            window_id: Some(format!("@{}", i + 1)),
+            pane_id: Some(format!("%{i}")),
+        };
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "many-shells".into(),
+            branch: "many-shells".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-many"),
+            created_at: String::new(),
+            shells: vec![shell(0), shell(1)],
+        });
         app.build_tree_flags();
+        app.proj_expanded[0] = true;
+        app.feat_expanded[0][0] = true;
         app.clamp_sel();
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -2048,6 +2060,27 @@ mod tests {
     #[test]
     fn unicode_mode_keeps_box_drawing() {
         let mut app = seeded_app();
+        // The project row no longer carries an expand marker (this task);
+        // give the first project a multi-shell, expanded feature so a
+        // feature-row marker (`expand_open` = "▾" in the default preset)
+        // still renders (Ruling F1's fix applied here for the same reason).
+        let shell = |i: usize| crate::state::Shell {
+            index: i,
+            window_name: format!("lw:f/{i}"),
+            window_id: Some(format!("@{}", i + 1)),
+            pane_id: Some(format!("%{i}")),
+        };
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "many-shells".into(),
+            branch: "many-shells".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-many"),
+            created_at: String::new(),
+            shells: vec![shell(0), shell(1)],
+        });
+        app.build_tree_flags();
+        app.proj_expanded[0] = true;
+        app.feat_expanded[0][0] = true;
+        app.clamp_sel();
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
@@ -2254,8 +2287,96 @@ mod tests {
             .collect();
         let clean = rows.iter().find(|r| r.contains("clean-one")).unwrap();
         let dirty = rows.iter().find(|r| r.contains("dirty-one")).unwrap();
-        assert!(clean.contains("◇ clean-one"), "clean feature: {clean:?}");
-        assert!(dirty.contains("◆ dirty-one"), "dirty feature: {dirty:?}");
+        assert!(
+            dirty.contains(&format!("{} dirty-one", '\u{f062c}')),
+            "dirty feature carries the branch glyph: {dirty:?}"
+        );
+        // `str::find` returns a byte offset, and the nerd-font glyph is
+        // 4 bytes in UTF-8 against 1 for an ASCII space — comparing byte
+        // offsets would report a false misalignment. Compare rendered
+        // column (char) position instead, which is what "aligned" means.
+        let char_col = |row: &str, needle: &str| row[..row.find(needle).unwrap()].chars().count();
+        let clean_col = char_col(clean, "clean-one");
+        let dirty_col = char_col(dirty, "dirty-one");
+        assert_eq!(
+            clean_col, dirty_col,
+            "clean draws no icon but keeps the column, so names align"
+        );
+    }
+
+    /// The project row's type icon is its only marker: `▾`/`▸` were removed
+    /// because the icon already sits there and the children show the state.
+    #[test]
+    fn the_project_row_has_no_expand_marker() {
+        let mut app = seeded_app();
+        // seeded_app's first project starts empty, which would render the
+        // hollow `▢` icon; give it a feature so it renders the filled `▣`
+        // this test asserts on (Ruling F2 — fixture adapted, assertions
+        // kept literal).
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "some-feature".into(),
+            branch: "some-feature".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-some-feature"),
+            created_at: String::new(),
+            shells: vec![],
+        });
+        app.build_tree_flags();
+        app.clamp_sel();
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let name = &app.state.projects[0].name.clone();
+        let row: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .find(|r| r.contains(name.as_str()))
+            .unwrap();
+        let upto = &row[..row.find(name.as_str()).unwrap()];
+        assert!(
+            !upto.contains('▾'),
+            "no open marker before the project: {row:?}"
+        );
+        assert!(
+            !upto.contains('▸'),
+            "no closed marker before the project: {row:?}"
+        );
+        assert!(upto.contains('▣'), "the icon is still there: {row:?}");
+    }
+
+    /// Row indices are the contract between `draw_tree`, `visible_nodes` and
+    /// mouse hit-testing. Dropping the project marker must not shift them.
+    #[test]
+    fn rendered_tree_rows_match_visible_nodes() {
+        let mut app = seeded_app();
+        app.build_tree_flags();
+        app.proj_expanded[0] = true;
+        app.clamp_sel();
+        let expected = app.visible_nodes_len_for_test();
+        let (w, h) = (120u16, 40u16);
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        // The brief's hand-rolled border filter (leading `╭`/`╰`/`│`) also
+        // excludes every tree content row, since the block's left border
+        // is `│` on those rows too (Ruling F2 — mechanics adapted).
+        // Instead, exclude the block's border rows/columns explicitly: the
+        // tree spans the full main area (frame minus the 1-row statusbar),
+        // and `tree_width` is the same math `draw_tree`/mouse hit-testing
+        // use, so this can't drift from the real layout.
+        let tw = tree_width((w, h)).unwrap();
+        let main_h = h - 1;
+        let non_empty = (1..main_h - 1)
+            .filter(|&y| {
+                let inner: String = (1..tw - 1).map(|x| buf[(x, y)].symbol()).collect();
+                !inner.trim().is_empty()
+            })
+            .count();
+        assert_eq!(non_empty, expected, "one rendered row per visible node");
     }
 
     /// The tree folds the nominal case: a feature with one shell shows
@@ -2858,6 +2979,10 @@ mod tests {
     fn messages_modal_ascii_fallback_is_clean() {
         let mut app = seeded_app();
         app.ascii = true;
+        // See `ascii_fallback_renders_without_box_glyphs`: `[icons]` is
+        // independent of `app.ascii`, so the tree needs the `ascii` preset
+        // too for the whole frame to render ASCII-only (Ruling F1).
+        app.cfg.icons = crate::config::IconsConfig::preset("ascii");
         app.mode = Mode::Messages { index: 0 };
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();

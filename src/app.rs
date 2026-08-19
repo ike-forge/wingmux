@@ -1075,6 +1075,13 @@ impl App {
         v
     }
 
+    /// Row-count contract for the UI tests: see
+    /// `ui::tests::rendered_tree_rows_match_visible_nodes`.
+    #[cfg(test)]
+    pub(crate) fn visible_nodes_len_for_test(&self) -> usize {
+        self.visible_nodes().len()
+    }
+
     /// Keep `sel` valid after tree mutations.
     pub(crate) fn clamp_sel(&mut self) {
         let nodes = self.visible_nodes();
