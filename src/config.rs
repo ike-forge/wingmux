@@ -76,8 +76,9 @@ root = ""
 # Branch that feature branches are cut from. Falls back to the repository's
 # current branch if this one doesn't exist in a project.
 base_branch = "master"
-# Also delete the feature branch when the feature is removed.
-delete_branch = false
+# Also delete the feature branch when the feature is removed. Set to
+# false to keep the branch behind after the worktree is gone.
+delete_branch = true
 
 [discovery]
 # The scope: only projects inside this directory are listed (scopes never
@@ -300,7 +301,7 @@ impl Default for Config {
             worktrees: WorktreeConfig {
                 root: String::new(),
                 base_branch: "master".into(),
-                delete_branch: false,
+                delete_branch: true,
             },
             discovery: DiscoveryConfig {
                 scan_root: String::new(),
@@ -351,7 +352,7 @@ impl Default for WorktreeConfig {
         WorktreeConfig {
             root: String::new(),
             base_branch: "master".into(),
-            delete_branch: false,
+            delete_branch: true,
         }
     }
 }
@@ -1267,7 +1268,7 @@ impl SectionSalvage for WorktreeConfig {
         WorktreeConfig {
             root: salvage_field(t, "root", String::new(), file, diags),
             base_branch: salvage_field(t, "base_branch", "master".to_string(), file, diags),
-            delete_branch: salvage_field(t, "delete_branch", false, file, diags),
+            delete_branch: salvage_field(t, "delete_branch", true, file, diags),
         }
     }
 }
@@ -1540,6 +1541,10 @@ mod tests {
             assert_eq!(cfg.tmux.back_key, "C-o");
             assert_eq!(cfg.defaults.agent_command, "claude");
             assert_eq!(cfg.worktrees.base_branch, "master");
+            assert!(
+                cfg.worktrees.delete_branch,
+                "the feature branch goes with the worktree by default"
+            );
             assert!(crate::util::config_path().exists());
             // themes copied too
             assert!(crate::util::themes_dir().join("dracula.toml").exists());

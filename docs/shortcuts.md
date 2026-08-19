@@ -66,7 +66,6 @@ overlay lists all of them grouped by context. Same words in both.
 | `I` | rescan the scope for new projects (discovery rescan, live, no cache) | shifted = stronger variant of `i` |
 | `i` | import a project by absolute path | import action |
 | `n` | new feature (worktree + branch + agent shell) | create action |
-| `x` | remove project (windows killed, worktrees kept) | menu/destructive action, confirms before acting |
 
 ### Feature selected
 
@@ -82,7 +81,7 @@ overlay lists all of them grouped by context. Same words in both.
 |---|---|---|
 | `Enter` / `l` | attach to the shell | domain convention (attach) |
 | `s` | quick-send a prompt to the agent (multiline editor, Alt+Enter sends) | send action |
-| `d` | delete the feature holding this shell | vim `d` destructive, confirms |
+| `d` | close this shell (kills its window; the feature and its other shells stay) | vim `d` destructive, confirms; the object is the selected row |
 
 ## Text input (import / new feature — single line)
 
@@ -117,7 +116,7 @@ Sending uses tmux's paste-buffer with bracketed paste, so multi-line prompts
 arrive as ONE paste (embedded newlines are content, not Enter presses) and
 the trailing Enter submits.
 
-## Confirm dialogs (delete feature / remove project)
+## Confirm dialogs (delete feature / close shell)
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|

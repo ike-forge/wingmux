@@ -613,7 +613,6 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
             ("I scan".into(), Scan),
             ("i import".into(), Import),
             ("n feature".into(), NewFeature),
-            ("x remove".into(), RemoveProject),
             ("? help".into(), Help),
         ],
         // A folded feature row is its shell: it offers the shell actions
@@ -637,7 +636,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
             ("↵ attach".into(), Attach),
             ("s send".into(), QuickSend),
             ("p predefined".into(), PredefinedSend),
-            ("d delete".into(), DeleteFeature),
+            ("d close".into(), DeleteShell),
             ("? help".into(), Help),
         ],
     }
@@ -816,10 +815,6 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             (&["i"], &["import project", "absolute path"]),
             (&["I"], &["scan for new projects", "discovery rescan"]),
             (&["n"], &["new feature", "worktree + agent shell"]),
-            (
-                &["x"],
-                &["remove project", "windows killed", "worktrees kept"],
-            ),
         ],
     ),
     (
@@ -844,7 +839,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             (&["Enter"], &["attach to shell"]),
             (&["s"], &["quick-send", "ctrl-s sends"]),
             (&["p"], &["predefined message", "Enter sends", "1-9 pick"]),
-            (&["d"], &["delete this feature"]),
+            (
+                &["d"],
+                &["close shell", "kills the window", "feature stays"],
+            ),
         ],
     ),
     (
@@ -1776,8 +1774,8 @@ mod tests {
             "new feature",
             "add shell",
             "delete feature",
+            "close shell",
             "quick-send",
-            "remove project",
             "refresh",
             "this help",
         ] {
@@ -1828,8 +1826,8 @@ mod tests {
                 );
             } else if word == "import" {
                 assert!(text.contains("import project"), "bar 'i import' ↔ help");
-            } else if word == "remove" {
-                assert!(text.contains("remove project"), "bar 'x remove' ↔ help");
+            } else if word == "close" {
+                assert!(text.contains("close shell"), "bar 'd close' ↔ help");
             } else {
                 panic!("unmapped bar label: {label:?}");
             }
@@ -2507,6 +2505,42 @@ mod tests {
                 .iter()
                 .any(|(_, a)| *a == BarAction::PredefinedSend),
             "the entry is clickable"
+        );
+    }
+
+    /// A shell row offers `d close` (the shell), a feature row `d delete`
+    /// (the feature) — the bar never offers to delete a feature from a
+    /// shell row. No selection offers a project removal any more.
+    #[test]
+    fn statusbar_delete_entry_is_contextual() {
+        let mut app = seeded_app();
+        app.sel = crate::app::Sel::Shell(0, 0, 0);
+        let entries = bar_entries(&app);
+        assert!(
+            entries
+                .iter()
+                .any(|(l, a)| l == "d close" && *a == BarAction::DeleteShell),
+            "a shell closes itself: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|(_, a)| *a == BarAction::DeleteFeature),
+            "a shell row must not offer the feature delete: {entries:?}"
+        );
+
+        app.sel = crate::app::Sel::Feature(0, 0);
+        let entries = bar_entries(&app);
+        assert!(
+            entries
+                .iter()
+                .any(|(l, a)| l == "d delete" && *a == BarAction::DeleteFeature),
+            "a feature deletes itself: {entries:?}"
+        );
+
+        app.sel = crate::app::Sel::Project(0);
+        let labels: Vec<String> = bar_entries(&app).into_iter().map(|(l, _)| l).collect();
+        assert!(
+            !labels.iter().any(|l| l.contains("remove")),
+            "the project removal entry is gone: {labels:?}"
         );
     }
 
