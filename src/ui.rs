@@ -378,7 +378,12 @@ fn border_type(icons: &crate::config::IconsConfig) -> BorderType {
     }
 }
 
-fn panel_block(theme: &ResolvedColors, title: &str, focused: bool) -> Block<'static> {
+fn panel_block(
+    theme: &ResolvedColors,
+    icons: &crate::config::IconsConfig,
+    title: &str,
+    focused: bool,
+) -> Block<'static> {
     let border = if focused {
         theme.border_focused
     } else {
@@ -386,7 +391,7 @@ fn panel_block(theme: &ResolvedColors, title: &str, focused: bool) -> Block<'sta
     };
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(border_type(icons))
         .border_style(fg(border))
         .title(Span::styled(format!(" {title} "), title_style(theme)))
 }
@@ -567,7 +572,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     } else {
         format!("Projects ({})", vis.len())
     };
-    let block = panel_block(theme, &title, true);
+    let block = panel_block(theme, &app.cfg.icons, &title, true);
     let list = List::new(items)
         .block(block)
         .highlight_style(on(theme.selection_fg, theme.selection_bg))
@@ -616,7 +621,7 @@ fn selected_feature_has_no_shell(app: &App) -> bool {
 
 fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
-    let block = panel_block(theme, "Preview", false);
+    let block = panel_block(theme, &app.cfg.icons, "Preview", false);
     let text = match app.selected_shell() {
         Some(_) => {
             if let Some(pid) = app.selected_shell_pane() {
@@ -2093,6 +2098,35 @@ mod tests {
         assert!(text.contains("▾"), "unicode render keeps the tree markers");
     }
 
+    /// `border = "plain"` must reach every panel, not just popups.
+    /// `panel_block` (tree + preview) used to hardcode `BorderType::Rounded`
+    /// while `popup_block` already read `icons.border`; a user who set
+    /// `border = "plain"` got plain popups and a rounded tree/preview — a
+    /// mixed-corner screen, exactly the defect they configured away from.
+    /// `ascii` masks this (asciify rewrites all corners to `+`), so this
+    /// test uses `plain`, which nothing else in the suite exercises.
+    #[test]
+    fn plain_border_reaches_tree_and_preview_panels() {
+        let mut app = seeded_app();
+        app.cfg.icons.border = crate::config::BorderStyle::Plain;
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        for glyph in ['╭', '╮', '╰', '╯'] {
+            assert!(
+                !text.contains(glyph),
+                "plain border must not draw rounded corner {glyph:?}: {text:?}"
+            );
+        }
+        for glyph in ['┌', '┐', '└', '┘'] {
+            assert!(
+                text.contains(glyph),
+                "plain border must draw plain corner {glyph:?}"
+            );
+        }
+    }
+
     /// tree_width matches the renderer's tier math (used by both drawing
     /// and mouse hit-testing — they must never drift).
     #[test]
@@ -2356,6 +2390,31 @@ mod tests {
     #[test]
     fn rendered_tree_rows_match_visible_nodes() {
         let mut app = seeded_app();
+        // A fixture with real depth: a multi-shell feature (renders a
+        // feature row plus one row per shell) and a solo feature (folds
+        // onto a single row, no child row at all). Two projects with zero
+        // features (the pre-fix fixture) would pass this assertion even if
+        // every feature/shell row were miscounted.
+        let shell = |i: usize| crate::state::Shell {
+            index: i,
+            window_name: format!("lw:f/{i}"),
+            window_id: Some(format!("@{}", i + 1)),
+            pane_id: Some(format!("%{i}")),
+        };
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "many-shells".into(),
+            branch: "many-shells".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-many"),
+            created_at: String::new(),
+            shells: vec![shell(0), shell(1)],
+        });
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "one-shell".into(),
+            branch: "one-shell".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-one"),
+            created_at: String::new(),
+            shells: vec![shell(2)],
+        });
         app.build_tree_flags();
         app.proj_expanded[0] = true;
         app.clamp_sel();

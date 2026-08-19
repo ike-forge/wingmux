@@ -401,16 +401,23 @@ the same commit as the change.
   fixed thresholds; overlays that don't fit are refused with a "frame too
   small" box instead of drawing garbage; the input cursor is only set when
   on-buffer.
-- **Icons**: every app-drawn glyph comes from `[icons]` (`src/config.rs`),
-  chosen by a preset (`nerdfont` default, plus `unicode`, `ascii`, `none`)
-  and overridable key by key. This replaced an `LW_ASCII` boolean, which
-  conflated two independent questions — whether the terminal draws box
-  characters, and which glyphs the user's font has. Keys that share a
-  rendered column are padded to equal width at resolution time, so an empty
-  icon still holds its column. `border = "ascii"` still rewrites buffer
+- **Icons**: `[icons]` (`src/config.rs`) covers the tree's type icons and
+  guides, the expand/cursor markers, the separator, the warn mark, the
+  ellipsis and the border style, chosen by a preset (`nerdfont` default,
+  plus `unicode`, `ascii`, `none`) and overridable key by key. This
+  replaced an `LW_ASCII` boolean, which conflated two independent
+  questions — whether the terminal draws box characters, and which glyphs
+  the user's font has. Keys that share a rendered column are padded to
+  equal width at resolution time, so an empty icon still holds its column.
+  A few incidental glyphs remain outside `[icons]` — the statusbar's `↵`
+  (`bar_entries`) and the help overlay's em dashes are not preset keys and
+  are not rewritten by `asciify`, so under `preset = "ascii"` a user still
+  sees `↵ attach` and literal em dashes. `border = "ascii"` rewrites buffer
   cells to `+ - |` (`ui::asciify`) because ratatui has no ASCII
-  `BorderType`; styles are untouched, and user pane content is never
-  rewritten. `LW_ASCII` is reported as retired in the startup diagnostics.
+  `BorderType`; it rewrites box-drawing across whichever rect it is given,
+  which for the preview panel and the quick-send textarea includes the
+  captured pane content and the user's typed buffer, not only the app's
+  own frame. `LW_ASCII` is reported as retired in the startup diagnostics.
 
 ## Input, mouse and accessibility
 

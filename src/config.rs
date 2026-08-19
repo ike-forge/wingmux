@@ -108,8 +108,13 @@ agent_hooks = true
 
 [icons]
 preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "ascii" | "none"
-# Any key below overrides the preset. An empty string draws nothing; names
-# stay aligned because the column keeps its width.
+# Any key below overrides the preset. An empty string draws nothing.
+# `project`/`project_empty`, `feature`/`feature_dirty`, `expand_open`/
+# `expand_closed` and `guide_branch`/`guide_last` are padded in pairs, so
+# names stay aligned when one side is empty. `shell`, `cursor`,
+# `separator`, `warn` and `ellipsis` have no sibling to pad against and are
+# used verbatim — add your own trailing space if you want a gap after one
+# (the default `shell = "● "` already has one baked in).
 # feature = ""               # clean worktree
 # feature_dirty = "󰘬"        # uncommitted changes (nf-md-source_branch)
 # border = "rounded"         # "rounded" | "plain" | "ascii"
@@ -453,6 +458,12 @@ impl Default for IconsFile {
 }
 
 impl<'de> Deserialize<'de> for IconsConfig {
+    // An unknown `preset` falls back to `nerdfont` silently here, while
+    // `SectionSalvage::salvage` below pushes a diagnostic for the same
+    // case. Not an oversight: both paths resolve to the same values: this
+    // `Deserialize` impl is the strict `Config::from_str` path, which is
+    // test-only and has no diagnostics vec by design; real config loading
+    // always goes through `salvage`, which is where the diagnostic lives.
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         let f = IconsFile::deserialize(d)?;
         let b = IconsConfig::raw_preset(&f.preset);
@@ -1031,6 +1042,49 @@ impl Config {
                     .map(|m| format!("\"{}\"", m.label))
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+        );
+        line("icons.project", format!("\"{}\"", self.icons.project));
+        line(
+            "icons.project_empty",
+            format!("\"{}\"", self.icons.project_empty),
+        );
+        line("icons.feature", format!("\"{}\"", self.icons.feature));
+        line(
+            "icons.feature_dirty",
+            format!("\"{}\"", self.icons.feature_dirty),
+        );
+        line("icons.shell", format!("\"{}\"", self.icons.shell));
+        line(
+            "icons.expand_open",
+            format!("\"{}\"", self.icons.expand_open),
+        );
+        line(
+            "icons.expand_closed",
+            format!("\"{}\"", self.icons.expand_closed),
+        );
+        line("icons.cursor", format!("\"{}\"", self.icons.cursor));
+        line(
+            "icons.guide_branch",
+            format!("\"{}\"", self.icons.guide_branch),
+        );
+        line("icons.guide_last", format!("\"{}\"", self.icons.guide_last));
+        line(
+            "icons.guide_vertical",
+            format!("\"{}\"", self.icons.guide_vertical),
+        );
+        line("icons.separator", format!("\"{}\"", self.icons.separator));
+        line("icons.warn", format!("\"{}\"", self.icons.warn));
+        line("icons.ellipsis", format!("\"{}\"", self.icons.ellipsis));
+        line(
+            "icons.border",
+            format!(
+                "\"{}\"",
+                match self.icons.border {
+                    BorderStyle::Rounded => "rounded",
+                    BorderStyle::Plain => "plain",
+                    BorderStyle::Ascii => "ascii",
+                }
             ),
         );
         out
@@ -2556,7 +2610,10 @@ mod tests {
     fn config_dump_lists_effective_values_with_layer_provenance() {
         with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
-            load_user(root.path(), "theme = \"dracula\"\npoll_interval_ms = 250\n");
+            load_user(
+                root.path(),
+                "theme = \"dracula\"\npoll_interval_ms = 250\n[icons]\nfeature_dirty = \"D\"\n",
+            );
             std::fs::write(
                 root.path().join(".lazywingman.toml"),
                 "[worktrees]\nbase_branch = \"develop\"\n",
@@ -2569,6 +2626,16 @@ mod tests {
             assert!(dump.contains("preview.colors = \"full\"  # from defaults"));
             assert!(dump.contains("worktrees.base_branch = \"develop\"  # from project"));
             assert!(dump.contains("tmux.back_key = \"C-o\"  # from defaults"));
+            // [icons] must appear too: a per-key override shows its own
+            // layer, and an untouched key still shows the resolved default.
+            assert!(
+                dump.contains("icons.feature_dirty = \"D \"  # from user"),
+                "dump: {dump}"
+            );
+            assert!(
+                dump.contains("icons.border = \"rounded\"  # from defaults"),
+                "dump: {dump}"
+            );
         });
     }
 
