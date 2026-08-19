@@ -114,15 +114,25 @@ fn print_usage() {
 }
 
 fn real_main() -> Result<()> {
+    // Argv is parsed, and the `hook` subcommand dispatched, before logging
+    // is ever initialised: `PostToolUse` fires once per tool call, so a
+    // normal Claude session runs `lazywingman hook <Event>` hundreds of
+    // times. Initialising the file logger on that path would append a
+    // session banner plus a "starting" line to the single unrotated
+    // `lazywingman.log` on every one of those invocations, spamming the one
+    // diagnostic channel AGENTS.md mandates. The hook subcommand's own
+    // errors already go to stderr (see `run_hook_subcommand`), so nothing
+    // is lost by skipping the log on this path.
+    let cli = parse_cli()?;
+    if let Some(event) = cli.hook_event {
+        return run_hook_subcommand(&event, cli.socket);
+    }
+
     if let Err(e) = logging::init() {
         eprintln!("lazywingman: warning: cannot open log file: {e}");
     }
     log::info!("lazywingman starting (pid {})", std::process::id());
 
-    let cli = parse_cli()?;
-    if let Some(event) = cli.hook_event {
-        return run_hook_subcommand(&event, cli.socket);
-    }
     if let Some(ref p) = cli.config {
         log::info!("user config override: {}", p.display());
     }
