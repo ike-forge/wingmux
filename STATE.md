@@ -9,21 +9,25 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M15 — quick-send polish (COMPLETE).** User feedback: the textarea must
-autowrap instead of overflowing, the "send to agent (14 rows)" label is
-useless, and the shortcut row needs a spacer above it. Gating: fmt clean,
-clippy -D warnings clean, tests green apart from the pre-existing
-`legacy_root_back_key_is_unbound_but_user_binding_survives` failure (it
-reads the user's real tmux config and already fails on the untouched
-baseline here). Note: `cargo test` in parallel flakes on a rotating handful
-of `ui::tests` render tests on this machine, baseline included;
-`cargo test -- --test-threads=1` is green apart from the tmux one.
+**M16 — dead entries are muted whole (COMPLETE).** User feedback: "when a
+shell/agent is closed, dead, please mute the whole entry in the tree" —
+`<myfeature> dead` should read all-muted, not just the status word. Gating:
+fmt clean, clippy -D warnings clean, tests green apart from the pre-existing
+`legacy_root_back_key_is_unbound_but_user_binding_survives` failure, which
+already fails on the untouched baseline in this environment.
+
+Before that: **M15 — quick-send polish (COMPLETE).** User feedback: the
+textarea must autowrap instead of overflowing, the "send to agent (14 rows)"
+label is useless, and the shortcut row needs a spacer above it. Note:
+`cargo test` in parallel flakes on a rotating handful of `ui::tests` render
+tests on this machine, baseline included; `cargo test -- --test-threads=1`
+is green apart from the tmux one.
 
 Before that: **M14 — tree width cap + dead-shell detection (COMPLETE).**
 User feedback: the left panel gets "overly wide" on a wide screen, and a
 shell killed with ctrl-d "does not get detected (still shows as waiting)".
 
-Before that: **M13 — the preview shows the pane's own colours (COMPLETE).**
+Earlier: **M13 — the preview shows the pane's own colours (COMPLETE).**
 User question: "is it possible to have colours in the preview, or is it text
 only?" Panes are now captured with `capture-pane -e` and the escapes are
 parsed into styled text, so the preview shows exactly what the agent
@@ -129,6 +133,29 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M16 — dead entries are muted whole (COMPLETE)
+
+User feedback, verbatim: "When a shell/agent is closed, dead, please mute
+the whole entry in the tree" — `"<myfeature> dead" <- all muted`.
+
+- M14 made death *detectable*; it was still only the status word that
+  changed colour, so a dead row was as visually loud as a working one.
+  `draw_tree` now picks every span's colour through `row_color()`, which
+  swaps in `theme.status_dead` for a dead row: guide, icon, name, shell
+  count and status label all mute together.
+- The rule aggregates upward, matching how the tree folds: `feature_dead()`
+  = the feature has shells and all of them are dead (so the solo-shell row
+  the user named is covered), `project_dead()` = the project has features
+  and all of them are dead. An *empty* feature or project is never muted —
+  it is unstarted, not finished.
+- No new theme key: dead rows reuse `status_dead`, which every built-in
+  theme already sets to its muted grey, so themes need no update.
+- Test: `a_dead_entry_is_muted_across_the_whole_row` renders a solo dead
+  feature next to a half-dead one and asserts, cell by cell inside the tree
+  panel's borders, that every glyph of the dead feature row and of the dead
+  shell row carries `status_dead`, while the live shell and the feature
+  holding it do not.
 
 ### M15 — quick-send polish: wrapping, no label, spaced hint (COMPLETE)
 
