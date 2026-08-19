@@ -421,6 +421,10 @@ pub struct App {
     pub panes: HashMap<String, PaneInfo>,
     pub captures: HashMap<String, String>,
     pub statuses: HashMap<String, Status>,
+    /// Path to the generated Claude hook settings file, when
+    /// instrumentation is enabled (`[defaults] agent_hooks`). `None`
+    /// disables injection entirely.
+    pub hook_settings: Option<std::path::PathBuf>,
     pattern_cache: HashMap<String, Compiled>,
     pub last_poll: Instant,
     /// The transient notice shown as a toast above the statusbar. Set by
@@ -516,6 +520,7 @@ impl App {
             panes: HashMap::new(),
             captures: HashMap::new(),
             statuses: HashMap::new(),
+            hook_settings: None,
             pattern_cache: HashMap::new(),
             last_poll: Instant::now(),
             message: None,
@@ -1091,6 +1096,16 @@ impl App {
             .ok_or_else(|| Error::Tmux("no tmux server available".into()))
     }
 
+    /// The command actually typed into a fresh pane: the user's
+    /// `agent_command`, plus `--settings` when it is a recognised `claude`
+    /// and instrumentation is on. The stored command is never rewritten.
+    pub fn agent_command_for_spawn(&self, command: &str) -> String {
+        match &self.hook_settings {
+            Some(p) => crate::hooks::instrument(command, p),
+            None => command.to_string(),
+        }
+    }
+
     /// The dedicated agent-session name for a project. Deterministic:
     /// `wingman-session-<slug>`, suffixed with a stable hash of the path
     /// when another project already owns that name or a foreign session
@@ -1225,7 +1240,8 @@ impl App {
             Some(w) => w,
             None => tmux.new_window(&session_name, &wname, &root, &proj.agent_shell)?,
         };
-        tmux.send_keys(&w.pane_id, &proj.agent_command, true)?;
+        let spawn_cmd = self.agent_command_for_spawn(&proj.agent_command);
+        tmux.send_keys(&w.pane_id, &spawn_cmd, true)?;
 
         self.state.projects[pi].session_name = Some(session_name.clone());
         self.state.projects[pi].features.push(Feature {
@@ -1289,7 +1305,8 @@ impl App {
                 &proj.agent_shell,
             )?,
         };
-        tmux.send_keys(&w.pane_id, &proj.agent_command, true)?;
+        let spawn_cmd = self.agent_command_for_spawn(&proj.agent_command);
+        tmux.send_keys(&w.pane_id, &spawn_cmd, true)?;
         self.state.projects[pi].session_name = Some(session_name.clone());
         self.state.projects[pi].features[fi].shells.push(Shell {
             index: idx,
@@ -2583,6 +2600,19 @@ pub fn run(cfg: Config, theme: Theme, tmux: Tmux) -> Result<()> {
     if app.ascii {
         log::info!("ascii-only rendering enabled (LW_ASCII or C locale)");
     }
+    if app.cfg.defaults.agent_hooks {
+        match crate::hooks::write_settings_file() {
+            Ok(p) => {
+                log::info!("agent hooks enabled: {}", p.display());
+                app.hook_settings = Some(p);
+            }
+            // Never fatal: without the file we simply fall back to the
+            // regex heuristics, which is exactly pre-M17 behaviour.
+            Err(e) => log::warn!("agent hooks disabled ({e})"),
+        }
+    } else {
+        log::info!("agent hooks disabled by config");
+    }
     if let Err(e) = app.startup() {
         // before the terminal is taken over, stderr is safe
         eprintln!("lazywingman: startup failed: {e}");
@@ -2703,6 +2733,26 @@ mod tests {
         // boot_discovery — make the whole filesystem the scope.
         app.scope_root = PathBuf::from("/");
         app
+    }
+
+    #[test]
+    fn spawn_command_is_instrumented_when_hooks_are_on() {
+        let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
+        app.hook_settings = Some(std::path::PathBuf::from(
+            "/s/lazywingman-activity-hooks.json",
+        ));
+        assert_eq!(
+            app.agent_command_for_spawn("claude"),
+            "claude --settings /s/lazywingman-activity-hooks.json"
+        );
+        assert_eq!(app.agent_command_for_spawn("codex exec"), "codex exec");
+    }
+
+    #[test]
+    fn spawn_command_is_untouched_when_hooks_are_off() {
+        let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
+        app.hook_settings = None;
+        assert_eq!(app.agent_command_for_spawn("claude"), "claude");
     }
 
     /// Seed state with one project whose agent session and first shell

@@ -112,7 +112,6 @@ pub fn run_hook(
 /// Name of the generated settings file. User-facing: it appears in the
 /// pane's visible command line and is the disclosure that instrumentation
 /// happened, so it must stay self-explanatory.
-#[allow(dead_code)] // read by write_settings_file and app startup (later task)
 pub const SETTINGS_FILE_NAME: &str = "lazywingman-activity-hooks.json";
 
 /// Events we subscribe to. `PreToolUse`, `SubagentStop` and `PreCompact`
@@ -127,14 +126,12 @@ const SUBSCRIBED: &[&str] = &[
     "SessionEnd",
 ];
 
-#[allow(dead_code)] // called by write_settings_file and app startup (later task)
 pub fn settings_path() -> PathBuf {
     crate::util::state_dir().join(SETTINGS_FILE_NAME)
 }
 
 /// The `--settings` payload: one matcher-less group per subscribed event,
 /// each running `<exe> [--socket <s>] hook <Event>`.
-#[allow(dead_code)] // called by write_settings_file (later task wires startup call)
 pub fn settings_json(exe: &str, socket: Option<&str>) -> String {
     let sock = match socket {
         Some(s) => format!(" --socket {s}"),
@@ -157,7 +154,6 @@ pub fn settings_json(exe: &str, socket: Option<&str>) -> String {
 
 /// Regenerate the settings file. Called once at startup so a moved binary
 /// or a changed socket self-heals.
-#[allow(dead_code)] // called from app::run at startup (later task)
 pub fn write_settings_file() -> crate::error::Result<PathBuf> {
     let exe = std::env::current_exe()
         .map_err(|e| crate::error::Error::Config(format!("cannot resolve own path: {e}")))?;
@@ -209,7 +205,6 @@ fn already_carries_our_settings_flag(command: &str) -> bool {
 /// space (as `split_whitespace` + `join(" ")` would) silently collapses any
 /// deliberate internal spacing (or quoting) in that prompt before Claude
 /// ever sees it.
-#[allow(dead_code)] // called from the spawn sites (later task)
 pub fn instrument(command: &str, settings: &Path) -> String {
     let Some(bin_start) = command.find(|c: char| !c.is_whitespace()) else {
         return command.to_string();
