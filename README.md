@@ -355,8 +355,18 @@ Icons: `▣` project holding features, `▢` empty project, `◇` feature with a
 clean worktree, `◆` feature with uncommitted changes, `●` shell. Rows carry
 no counts — the tree is expanded by default, so the children *are* the
 count, and the project icon says whether a folded project holds anything.
-Missing projects show `(missing)` dimmed. When only ONE project is in scope its feature rows replace the
-project row entirely (the flat layout).
+Missing projects show `(missing)` dimmed. A worktree LazyWingman has no tmux
+window for is dimmed *whole* — see **Worktrees without a shell** below. When
+only ONE project is in scope its feature rows replace the project row
+entirely (the flat layout).
+
+**Worktrees without a shell**: every worktree `git worktree list` reports
+gets a row, whether LazyWingman created it or you did. A worktree it has no
+tmux window for — one made by hand, or one whose agent shell you closed —
+has nothing to attach to, send to or capture, so its row is drawn dimmed and
+selecting it says so in the preview instead of showing a pane. It is a
+listing, not a dead end: `a` starts a shell in that worktree and it joins the
+rest, and `d` deletes it like any other.
 
 **The folded row** (`feat-a` above): the nominal case is one worktree, one
 agent, so a feature with a single shell has no child row at all — its own

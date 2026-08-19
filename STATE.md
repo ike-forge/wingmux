@@ -9,7 +9,32 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M22 — `i import` and `I scan` are gone (COMPLETE).** User feedback: both
+**M23 — worktrees with no shell are dimmed (COMPLETE).** User feedback:
+worktrees LazyWingman did not create get listed (good), but when there is no
+tmux window for them they are effectively outside it — no attach, no send, no
+preview — and the tree said nothing about that. Reframed during design: the
+honest predicate is not provenance but `shells.is_empty()`, because a
+wingman-made worktree whose last shell was closed is just as inert; the user
+agreed and dropped the "not managed by wingman" wording (and, with it, any
+special warning in the delete confirm). Landed in `src/ui.rs` only, no state
+schema change: `feature_color` mutes such a feature row whole in `theme.dim`
+(prefix, icon and name — the rule `row_color` already applies to dead rows,
+so the amber dirty-icon tint yields too; the `◇`/`◆` shape still marks the
+worktree state), and `draw_preview` gains a `None if
+selected_feature_has_no_shell(app)` arm explaining why there is nothing to
+show and pointing at `a`. Unchanged on purpose: the delete confirm, and
+`bar_entries`, whose non-solo `Sel::Feature` arm already omitted attach/send.
+Tests: `a_worktree_without_a_shell_renders_dim` (reads the cell fg through a
+new `row_fg` buffer helper, with the highlight parked on a shell row so the
+selection colours do not repaint the assertions) and
+`a_worktree_without_a_shell_explains_the_empty_preview`. Docs: README (icon
+paragraph + a "Worktrees without a shell" section), DECISIONS (why derived
+and not a persisted flag). Gate: fmt clean, clippy -D warnings clean, 223
+pass apart from the pre-existing
+`legacy_root_back_key_is_unbound_but_user_binding_survives`, which fails the
+same way on the untouched baseline in this environment.
+
+Before that: **M22 — `i import` and `I scan` are gone (COMPLETE).** User feedback: both
 were believed removed already and were not. Scope-based discovery (M9.3)
 imports every repo inside the scope at boot, so `i` (import one absolute
 path) and `I` (rescan that same root) were duplicating it for two top-level

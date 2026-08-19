@@ -142,6 +142,23 @@ fn row_color(theme: &ResolvedColors, dead: bool, live: Color) -> Color {
     if dead { theme.status_dead } else { live }
 }
 
+/// The colour a feature row draws in. A worktree wingman has no tmux
+/// window for gets muted whole: it cannot be attached to, sent to or
+/// previewed, so the row is a listing and nothing more. `live` is the
+/// colour the span would otherwise take.
+fn feature_color(
+    theme: &ResolvedColors,
+    feat: &crate::state::Feature,
+    dead: bool,
+    live: Color,
+) -> Color {
+    if feat.shells.is_empty() {
+        theme.dim
+    } else {
+        row_color(theme, dead, live)
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     app.viewport = (area.width, area.height);
@@ -457,11 +474,15 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 (format!("{guide}{marker} "), format!("{ficon} "))
             };
             items.push(ListItem::new(Line::from(vec![
-                Span::styled(prefix, fg(row_color(theme, fdead, theme.tree_feature))),
+                Span::styled(
+                    prefix,
+                    fg(feature_color(theme, feat, fdead, theme.tree_feature)),
+                ),
                 Span::styled(
                     icon_span,
-                    fg(row_color(
+                    fg(feature_color(
                         theme,
+                        feat,
                         fdead,
                         if dirty {
                             theme.status_waiting
@@ -472,7 +493,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 ),
                 Span::styled(
                     feat.name.clone(),
-                    fg(row_color(theme, fdead, theme.tree_feature)),
+                    fg(feature_color(theme, feat, fdead, theme.tree_feature)),
                 ),
                 match solo {
                     Some(si) => {
@@ -579,6 +600,18 @@ fn preview_tail(capture: &str, inner_height: usize) -> String {
     lines[start..].join("\n")
 }
 
+/// Is a feature row selected whose worktree has no shell at all?
+fn selected_feature_has_no_shell(app: &App) -> bool {
+    let Sel::Feature(pi, fi) = app.sel else {
+        return false;
+    };
+    app.state
+        .projects
+        .get(pi)
+        .and_then(|p| p.features.get(fi))
+        .is_some_and(|f| f.shells.is_empty())
+}
+
 fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
     let block = panel_block(theme, "Preview", false);
@@ -601,6 +634,15 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
                 Text::from("no live pane for this shell")
             }
         }
+        // A worktree with no shell: there is no pane to capture, and the
+        // generic hint below would send the user hunting for a child row
+        // that does not exist.
+        None if selected_feature_has_no_shell(app) => Text::from(
+            "no agent shell for this worktree\n\n\
+             wingman has no tmux window here, so there is nothing to\n\
+             preview, attach to or send to.\n\n\
+             press `a` to start a shell in this worktree.",
+        ),
         None => Text::from(
             "select a shell to preview its pane\n\n\
              the tail of `capture-pane` is shown here, updated on every poll.\n\
@@ -1741,6 +1783,84 @@ mod tests {
             "flattened tree title: {text:?}"
         );
         assert!(!text.contains("Projects"), "no project wording: {text:?}");
+    }
+
+    fn feature_with_shells(name: &str, n: usize) -> crate::state::Feature {
+        crate::state::Feature {
+            name: name.into(),
+            branch: name.into(),
+            worktree_path: std::path::PathBuf::from(format!("/tmp/repo-a/{name}")),
+            created_at: String::new(),
+            shells: (0..n)
+                .map(|index| crate::state::Shell {
+                    index,
+                    window_name: format!("lw:{name}/{index}"),
+                    window_id: Some(format!("@{index}")),
+                    pane_id: Some(format!("%{index}")),
+                })
+                .collect(),
+        }
+    }
+
+    /// The foreground colour the row holding `needle` is drawn in (read
+    /// off the needle's first cell).
+    fn row_fg(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>, needle: &str) -> Color {
+        let buf = terminal.backend().buffer();
+        for y in 0..buf.area.height {
+            let line: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            if let Some(byte_idx) = line.find(needle) {
+                let col = line[..byte_idx].chars().count() as u16;
+                return buf[(col, y)].fg;
+            }
+        }
+        panic!("{needle:?} is not on screen");
+    }
+
+    /// A worktree wingman has no tmux window for cannot be attached, sent
+    /// to or previewed. Its row mutes *whole* — the same "the eye skips
+    /// it" rule a dead row follows — while a worktree with shells keeps
+    /// the live colour.
+    #[test]
+    fn a_worktree_without_a_shell_renders_dim() {
+        let mut app = bare_app(vec![
+            feature_with_shells("alpha", 2),
+            feature_with_shells("beta", 0),
+        ]);
+        // Park the highlight on a row neither assertion reads: the
+        // selected row is repainted in the selection colours.
+        app.sel = Sel::Shell(0, 0, 0);
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        assert_eq!(
+            row_fg(&terminal, "beta"),
+            app.theme.colors.dim,
+            "a worktree with no shell is dim"
+        );
+        assert_eq!(
+            row_fg(&terminal, "alpha"),
+            app.theme.colors.tree_feature,
+            "a worktree with shells keeps the live colour"
+        );
+    }
+
+    /// Selecting such a worktree says why there is nothing to show,
+    /// instead of the generic "select a shell" placeholder that would
+    /// leave the user hunting for a row to select.
+    #[test]
+    fn a_worktree_without_a_shell_explains_the_empty_preview() {
+        let mut app = bare_app(vec![feature_with_shells("beta", 0)]);
+        app.sel = Sel::Feature(0, 0);
+        let text = render_wide(&mut app);
+        assert!(
+            text.contains("no agent shell for this worktree"),
+            "the preview names the state: {text:?}"
+        );
+        assert!(
+            !text.contains("select a shell to preview"),
+            "the generic placeholder does not apply here: {text:?}"
+        );
     }
 
     /// An overlay on a frame too small for it is refused with a message,
