@@ -79,7 +79,7 @@ the help overlay (`?`).
 | `i` | import a project (absolute repo path) |
 | `I` | **scan** `[discovery].scan_root` for new projects (discovery rescan) |
 | `n` | new feature (worktree + branch + agent shell) |
-| `a` | add a shell to the selected feature |
+| `a` | add a shell to the selected feature — a prompt asks which command it runs (empty = the project's default agent command, shown as a hint) |
 | `s` | **quick-send** a line to the selected shell (or to a one-shell feature's row) |
 | `p` | **predefined messages** for the selected shell (or a one-shell feature's row) — a modal of configured presets (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
 | `d` | delete feature (kills windows, removes worktree; `f` = force when dirty) |

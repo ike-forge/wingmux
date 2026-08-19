@@ -826,7 +826,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
         "features",
         &[
             (&["n"], &["new feature"]),
-            (&["a"], &["add shell"]),
+            (&["a"], &["add shell", "prompts for the command"]),
             (&["Enter"], &["attach", "one-shell feature"]),
             (
                 &["s", "p"],
@@ -1125,26 +1125,26 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
     area
 }
 
+/// Popup geometry for the input prompt: 60% of the frame wide and exactly
+/// as tall as its content (`lines` plus the two border rows). A fixed
+/// height percentage used to clip the footer off short frames.
+fn input_rect(area: Rect, lines: u16) -> Rect {
+    centered_rect_wh(area, area.width * 60 / 100, lines + 2)
+}
+
 fn draw_input(f: &mut Frame, app: &App) -> Rect {
     let theme = &app.theme.colors;
     let (title, label) = match &app.mode {
         Mode::Input { kind, .. } => match kind {
             InputKind::ImportProject => ("import project", "repo path (absolute): "),
             InputKind::NewFeature => ("new feature", "feature name: "),
+            InputKind::AddShell => ("add shell", "command: "),
             InputKind::QuickSend => ("quick-send", "send to agent: "),
         },
         _ => unreachable!(),
     };
-    let area = centered_rect(f.area(), 60, 18);
-    f.render_widget(Clear, area);
-    let Mode::Input { text, .. } = &app.mode else {
-        return area;
-    };
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
+    let Mode::Input { kind, text } = &app.mode else {
+        return input_rect(f.area(), 4);
     };
     let block = popup_block(theme, format!(" {title} "));
     let mut lines = vec![Line::from("")];
@@ -1152,11 +1152,29 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
         Span::styled(label, fg(theme.accent)),
         Span::raw(text.clone()),
     ]));
+    // add-shell only: an empty submit runs the project's default command,
+    // so name it right under the field instead of making it folklore.
+    if *kind == InputKind::AddShell
+        && let Some(def) = app.add_shell_default()
+    {
+        lines.push(Line::from(Span::styled(
+            format!("default: {def}"),
+            fg(theme.dim),
+        )));
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         format!("Enter to submit{}Esc to cancel", sep(app.ascii)),
         fg(theme.dim),
     )));
+    let area = input_rect(f.area(), lines.len() as u16);
+    f.render_widget(Clear, area);
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
     let popup_style = on(theme.popup_fg, theme.popup_bg);
     f.render_widget(
         Paragraph::new(Text::from(lines))
@@ -1392,22 +1410,25 @@ mod tests {
     /// the text in every input popup (new feature, quick-send, import).
     #[test]
     fn input_popup_cursor_sits_on_input_row() {
-        let cfg = Config::default();
-        let theme = theme::load("ansi", false).unwrap();
-        let mut app = App::new(cfg, theme, None);
-        app.startup().unwrap();
+        // seeded: the add-shell hint needs a project to name, and it adds
+        // a content line, which moves the (content-sized) popup.
+        let mut app = seeded_app();
+        app.sel = crate::app::Sel::Project(0);
 
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
-        for (kind, label, text) in [
+        for (kind, label, text, lines) in [
             (
                 InputKind::ImportProject,
                 "repo path (absolute): ",
                 "/tmp/repo",
+                4,
             ),
-            (InputKind::NewFeature, "feature name: ", "foo"),
-            (InputKind::QuickSend, "send to agent: ", "busy 2"),
+            (InputKind::NewFeature, "feature name: ", "foo", 4),
+            // + the `default: <cmd>` hint line
+            (InputKind::AddShell, "command: ", "ls -la", 5),
+            (InputKind::QuickSend, "send to agent: ", "busy 2", 4),
         ] {
             app.mode = Mode::Input {
                 kind,
@@ -1418,7 +1439,7 @@ mod tests {
                 .expect("draw must not fail");
 
             // popup area for this backend size, same math as draw_input
-            let area = centered_rect(terminal.size().unwrap().into(), 60, 18);
+            let area = input_rect(terminal.size().unwrap().into(), lines);
             let expected_x =
                 area.x + 1 + label.chars().count() as u16 + text.chars().count() as u16;
             let expected_y = area.y + 2; // input row = second content line below the border
@@ -2519,5 +2540,54 @@ mod tests {
             .flat_map(|(keys, _)| keys.iter().copied())
             .collect();
         assert!(rows.contains(&"p"), "help lists the p key: {rows:?}");
+    }
+
+    /// The add-shell prompt names the command it will run and shows the
+    /// project's default underneath — submitting empty runs that default,
+    /// so the user has to be able to see it.
+    #[test]
+    fn add_shell_popup_shows_the_default_command_hint() {
+        let mut app = seeded_app();
+        app.state.projects[0].agent_command = "codex exec --yolo".into();
+        app.sel = crate::app::Sel::Project(0);
+        app.mode = Mode::Input {
+            kind: InputKind::AddShell,
+            text: String::new(),
+        };
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("add shell"), "popup title: {text}");
+        assert!(text.contains("command: "), "command field label: {text}");
+        assert!(
+            text.contains("default: codex exec --yolo"),
+            "the project's default command must be shown as a hint: {text}"
+        );
+    }
+
+    /// The prompt is sized to its content, so the `Esc to cancel` footer
+    /// survives a short frame — the add-shell hint line used to push it out
+    /// of a popup whose height was a fixed percentage of the terminal.
+    #[test]
+    fn input_popup_keeps_its_footer_on_short_frames() {
+        let mut app = seeded_app();
+        app.sel = crate::app::Sel::Project(0);
+        for kind in [InputKind::AddShell, InputKind::NewFeature] {
+            app.mode = Mode::Input {
+                kind,
+                text: String::new(),
+            };
+            for height in [24, 30, 40] {
+                let backend = ratatui::backend::TestBackend::new(100, height);
+                let mut terminal = ratatui::Terminal::new(backend).unwrap();
+                terminal.draw(|f| draw(f, &mut app)).unwrap();
+                let text = buffer_text(&terminal);
+                assert!(
+                    text.contains("Esc to cancel"),
+                    "{kind:?} popup must keep its footer at height {height}: {text}"
+                );
+            }
+        }
     }
 }

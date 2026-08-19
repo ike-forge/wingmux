@@ -390,6 +390,9 @@ pub enum BarAction {
 pub enum InputKind {
     ImportProject,
     NewFeature,
+    /// The command the new shell should run. Empty means "the project's
+    /// default agent command" — the prompt shows it as a hint.
+    AddShell,
     QuickSend,
 }
 
@@ -1251,7 +1254,10 @@ impl App {
         Ok(())
     }
 
-    pub fn add_shell(&mut self, pi: usize, fi: usize) -> Result<()> {
+    /// Spawn one more shell under a feature, running `command`. An empty
+    /// (or whitespace-only) `command` means "whatever this project
+    /// normally runs" — the project's default agent command.
+    pub fn add_shell(&mut self, pi: usize, fi: usize, command: &str) -> Result<()> {
         let tmux = self.require_tmux()?;
         let proj = self
             .state
@@ -1289,7 +1295,11 @@ impl App {
                 &proj.agent_shell,
             )?,
         };
-        tmux.send_keys(&w.pane_id, &proj.agent_command, true)?;
+        let command = match command.trim() {
+            "" => proj.agent_command.as_str(),
+            c => c,
+        };
+        tmux.send_keys(&w.pane_id, command, true)?;
         self.state.projects[pi].session_name = Some(session_name.clone());
         self.state.projects[pi].features[fi].shells.push(Shell {
             index: idx,
@@ -1298,7 +1308,7 @@ impl App {
             pane_id: Some(w.pane_id),
         });
         self.save_state()?;
-        self.notify(format!("shell #{} added", idx));
+        self.notify(format!("shell #{} added ({})", idx, command));
         Ok(())
     }
 
@@ -1594,6 +1604,32 @@ impl App {
                 action: ConfirmAction::RemoveProject { project: pi },
             },
         };
+    }
+
+    /// Open the add-shell prompt (`a`). The field starts empty; the popup
+    /// shows the project's default command as a hint and an empty submit
+    /// falls back to it.
+    fn open_add_shell(&mut self) {
+        if self.selected_feature_ctx().is_some() {
+            self.mode = Mode::Input {
+                kind: InputKind::AddShell,
+                text: String::new(),
+            };
+        } else {
+            self.notify("select a feature to add a shell");
+        }
+    }
+
+    /// The command an empty add-shell submit would run: the selected
+    /// project's default agent command. Drives the popup's hint line.
+    pub fn add_shell_default(&self) -> Option<&str> {
+        let pi = match self.sel {
+            Sel::Project(pi) | Sel::Feature(pi, _) | Sel::Shell(pi, _, _) => pi,
+        };
+        self.state
+            .projects
+            .get(pi)
+            .map(|p| p.agent_command.as_str())
     }
 
     fn selected_feature_ctx(&self) -> Option<(usize, usize, Option<usize>)> {
@@ -1971,16 +2007,7 @@ impl App {
                     self.notify("select a project to add a feature");
                 }
             },
-            KeyCode::Char('a') => {
-                if let Some((pi, fi, _)) = self.selected_feature_ctx() {
-                    match self.add_shell(pi, fi) {
-                        Ok(()) => {}
-                        Err(e) => self.fail(&e),
-                    }
-                } else {
-                    self.notify("select a feature to add a shell");
-                }
-            }
+            KeyCode::Char('a') => self.open_add_shell(),
             KeyCode::Char('s') => {
                 if self.selected_shell().is_some() {
                     self.mode = Mode::Textarea {
@@ -2342,13 +2369,7 @@ impl App {
                 }
                 _ => {}
             },
-            BarAction::AddShell => {
-                if let Some((pi, fi, _)) = self.selected_feature_ctx()
-                    && let Err(e) = self.add_shell(pi, fi)
-                {
-                    self.fail(&e);
-                }
-            }
+            BarAction::AddShell => self.open_add_shell(),
             BarAction::QuickSend => {
                 if self.selected_shell().is_some() {
                     self.mode = Mode::Textarea {
@@ -2530,6 +2551,10 @@ impl App {
                 Sel::Project(pi) => self.create_feature(pi, &text),
                 Sel::Feature(pi, _) => self.create_feature(pi, &text),
                 _ => Err(Error::State("select a project first".into())),
+            },
+            InputKind::AddShell => match self.selected_feature_ctx() {
+                Some((pi, fi, _)) => self.add_shell(pi, fi, &text),
+                None => Err(Error::State("select a feature first".into())),
             },
             InputKind::QuickSend => match self.selected_shell() {
                 Some((pi, fi, si)) => self.quick_send(pi, fi, si, &text),
@@ -3130,7 +3155,7 @@ mod tests {
         });
         let err = app.create_feature(0, "new-feat").unwrap_err();
         assert!(err.to_string().contains("missing"), "err: {err}");
-        let err = app.add_shell(0, 0).unwrap_err();
+        let err = app.add_shell(0, 0, "").unwrap_err();
         assert!(err.to_string().contains("missing"), "err: {err}");
     }
 
@@ -4430,5 +4455,107 @@ mod tests {
         assert_eq!(index, app.cfg.messages.len() - 1, "wheel moves the cursor");
 
         assert_eq!(app.sel, before, "the tree never moved");
+    }
+
+    // ---- M16 — add-shell command prompt ----
+
+    /// Type a whole string into the open input popup, key by key.
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            app.on_key(key(KeyCode::Char(c), false));
+        }
+    }
+
+    /// `a` no longer spawns a shell on the spot: it opens a prompt asking
+    /// which command the new shell should run, starting empty. Esc backs
+    /// out without creating anything.
+    #[test]
+    fn a_opens_the_add_shell_prompt_instead_of_spawning() {
+        let mut app = app_with_shell();
+        app.on_key(key(KeyCode::Char('a'), false));
+        let Mode::Input { kind, text } = &app.mode else {
+            panic!("`a` must open the command prompt, got {:?}", app.mode);
+        };
+        assert_eq!(*kind, InputKind::AddShell);
+        assert!(text.is_empty(), "the command field starts empty: {text:?}");
+        assert_eq!(
+            app.state.projects[0].features[0].shells.len(),
+            1,
+            "nothing is spawned before the prompt is submitted"
+        );
+
+        app.on_key(key(KeyCode::Esc, false));
+        assert!(matches!(app.mode, Mode::Normal), "Esc closes the prompt");
+        assert_eq!(
+            app.state.projects[0].features[0].shells.len(),
+            1,
+            "Esc creates no shell"
+        );
+    }
+
+    /// The command typed into the prompt is what runs in the new shell —
+    /// not the project's default agent command.
+    #[test]
+    fn add_shell_prompt_runs_the_typed_command() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            with_tmux_server(|sock, _tmux| {
+                let tmux = tmux_standalone(sock);
+                let mut app = app_with(tmux.clone());
+                seed_project_with_shell(&tmux, &mut app);
+                app.state.projects[0].agent_command = "echo lw-default-marker".into();
+                app.state.projects[0].features[0].worktree_path = PathBuf::from("/tmp");
+                app.build_tree_flags();
+                app.sel = Sel::Feature(0, 0);
+
+                app.on_key(key(KeyCode::Char('a'), false));
+                type_str(&mut app, "echo lw-typed-marker");
+                app.on_key(key(KeyCode::Enter, false));
+                assert!(matches!(app.mode, Mode::Normal), "Enter closes the prompt");
+
+                let shells = &app.state.projects[0].features[0].shells;
+                assert_eq!(shells.len(), 2, "the shell was created");
+                let pid = shells[1].pane_id.clone().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let capture = tmux.capture_pane(&pid, 50).unwrap();
+                assert!(
+                    capture.contains("lw-typed-marker"),
+                    "the typed command must run, capture: {capture}"
+                );
+                assert!(
+                    !capture.contains("lw-default-marker"),
+                    "the project default must not run too, capture: {capture}"
+                );
+            });
+        });
+    }
+
+    /// Submitting the prompt empty means "whatever the project normally
+    /// runs" — the default agent command.
+    #[test]
+    fn add_shell_prompt_empty_falls_back_to_the_project_default() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            with_tmux_server(|sock, _tmux| {
+                let tmux = tmux_standalone(sock);
+                let mut app = app_with(tmux.clone());
+                seed_project_with_shell(&tmux, &mut app);
+                app.state.projects[0].agent_command = "echo lw-default-marker".into();
+                app.state.projects[0].features[0].worktree_path = PathBuf::from("/tmp");
+                app.build_tree_flags();
+                app.sel = Sel::Feature(0, 0);
+
+                app.on_key(key(KeyCode::Char('a'), false));
+                app.on_key(key(KeyCode::Enter, false));
+
+                let shells = &app.state.projects[0].features[0].shells;
+                assert_eq!(shells.len(), 2, "the shell was created");
+                let pid = shells[1].pane_id.clone().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let capture = tmux.capture_pane(&pid, 50).unwrap();
+                assert!(
+                    capture.contains("lw-default-marker"),
+                    "an empty command falls back to the default, capture: {capture}"
+                );
+            });
+        });
     }
 }

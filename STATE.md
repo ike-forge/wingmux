@@ -9,7 +9,16 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M16 — dead entries are muted whole (COMPLETE).** User feedback: "when a
+**M17 — `a` asks which command to run (COMPLETE).** User feedback: adding a
+second shell that runs the same default agent is not the realistic case —
+if the default agent is not enough you want a *different* command. `a` now
+opens a small prompt for the command; empty falls back to the project
+default, which the popup shows as a hint. Gating: fmt clean, clippy -D
+warnings clean, tests green apart from the pre-existing
+`legacy_root_back_key_is_unbound_but_user_binding_survives` failure, which
+already fails on the untouched baseline in this environment.
+
+Before that: **M16 — dead entries are muted whole (COMPLETE).** User feedback: "when a
 shell/agent is closed, dead, please mute the whole entry in the tree" —
 `<myfeature> dead` should read all-muted, not just the status word. Gating:
 fmt clean, clippy -D warnings clean, tests green apart from the pre-existing
@@ -133,6 +142,44 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M17 — `a` asks which command to run (COMPLETE)
+
+User feedback, verbatim: "Currently the default shell spawns the 'default
+command/agent' (good). When using 'a' (add shell), it's spawn a new shell
+with the same default command/agent. I think that use case is not realistic.
+If the default agent/shell is not sufficient, we might want to spawn a new
+shell with another command."
+
+- `a` no longer spawns on the spot. It opens the existing input popup under
+  a new `InputKind::AddShell` (title `add shell`, label `command: `), empty,
+  with the project's default agent command rendered underneath as a dim
+  `default: <cmd>` hint — an empty submit runs that default, so it has to be
+  visible. Esc creates nothing.
+- `App::add_shell` gained a `command: &str` parameter and owns the fallback
+  (`""`/whitespace → `proj.agent_command`), so both entry points — the `a`
+  key and the statusbar `AddShell` bar action, which now open the same
+  popup — cannot disagree. The tmux side is unchanged: the window is still
+  spawned with `agent_shell` and the command sent with `send_keys`. The
+  toast names what ran: `shell #1 added (ls -la)`.
+- `App::add_shell_default()` exposes the selected project's command to the
+  renderer; it resolves from the project index of any selection, so the hint
+  works whether a project, feature or shell row is selected.
+- Sizing fix found by rendering the popup: the prompt's height was a fixed
+  18% of the frame, so the extra hint line pushed `Enter to submit · Esc to
+  cancel` out of the box on a 24-row terminal. `input_rect()` now sizes the
+  popup to its content (lines + 2 border rows) at 60% width — every input
+  prompt keeps its footer on short frames, not just this one.
+- Tests: `a_opens_the_add_shell_prompt_instead_of_spawning` (prompt opens
+  empty, Esc creates no shell), `add_shell_prompt_runs_the_typed_command`
+  and `add_shell_prompt_empty_falls_back_to_the_project_default` (both drive
+  the real keys against a real tmux server and capture the new pane to check
+  which of two marker commands actually ran), plus
+  `add_shell_popup_shows_the_default_command_hint` and the new row in
+  `input_popup_cursor_sits_on_input_row` (the hint line sits *below* the
+  input row, so the caret must not move), and
+  `input_popup_keeps_its_footer_on_short_frames`, which renders both a
+  hinted and an unhinted prompt at 24/30/40 rows.
 
 ### M16 — dead entries are muted whole (COMPLETE)
 
