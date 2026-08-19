@@ -75,12 +75,12 @@ the help overlay (`?`).
 | `PgUp` / `PgDn`, `ctrl-u` / `ctrl-d` | half page up / down |
 | `ctrl-f` / `ctrl-b` | full page up / down |
 | `h` | collapse / jump to parent |
-| `l` / `Enter` | expand, or **attach** to the selected shell |
+| `l` / `Enter` | expand, or **attach** to the selected shell (a one-shell feature attaches straight away — see the folded row below) |
 | `i` | import a project (absolute repo path) |
 | `I` | **scan** `[discovery].scan_root` for new projects (discovery rescan) |
 | `n` | new feature (worktree + branch + agent shell) |
 | `a` | add a shell to the selected feature |
-| `s` | **quick-send** a line to the selected shell (no leaving the dashboard) |
+| `s` | **quick-send** a line to the selected shell (or to a one-shell feature's row) |
 | `d` | delete feature (kills windows, removes worktree; `f` = force when dirty) |
 | `x` | remove project from LazyWingman (windows killed, worktrees kept) |
 | `r` | refresh — reconcile state against reality |
@@ -297,10 +297,10 @@ is happening, the bar says what you can press:
 ```
 ╭ projects/features ───────╮╭ preview (capture-pane) ─────────────╮
 │▾ ▣ repo-a (2 features)   ││ live tail of the selected shell,    │
-│  ├─ ▸ ◇ feat-a [1 shell] ││ refreshed every poll                │
+│  ├─   ◇ feat-a  waiting  ││ refreshed every poll                │
 │  └─ ▾ ◆ feat-b [2 shells]││                                     │
-│      ├─ ● #0 working  @5 ││     ╭────────────────────────╮      │
-│      └─ ● #1 waiting  @6 ││     │ feature 'feat-b' crea… │      │
+│      ├─ ● #0 working     ││     ╭────────────────────────╮      │
+│      └─ ● #1 waiting     ││     │ feature 'feat-b' crea… │      │
 │                          ││     ╰────────────────────────╯      │
 ╰──────────────────────────╯╰─────────────────────────────────────╯
  n feature · a shell · d delete · ? help
@@ -310,6 +310,13 @@ Icons: `▣` project, `◇` feature with a clean worktree, `◆` feature with
 uncommitted changes, `●` shell. Missing projects show `(missing)`
 dimmed. When only ONE project is in scope its feature rows replace the
 project row entirely (the flat layout).
+
+**The folded row** (`feat-a` above): the nominal case is one worktree, one
+agent, so a feature with a single shell has no child row at all — its own
+row *is* that shell. It carries the shell's status instead of a shell
+count, has no expand marker, and `Enter` / `s` attach and quick-send to it
+directly. `a` gives the feature a second shell, and the subtree appears.
+Only features with several shells (or none) are expandable.
 
 The statusbar carries the contextual shortcuts and nothing else — no app
 name, no session chip, no project count. Notices ("feature 'x' created",

@@ -106,6 +106,16 @@ fn status_color(theme: &ResolvedColors, st: Status) -> Color {
     }
 }
 
+/// The polled status of a shell, keyed by its live pane; a shell with no
+/// pane (or none polled yet) reads as idle.
+fn shell_status(app: &App, sh: &crate::state::Shell) -> Status {
+    sh.pane_id
+        .as_ref()
+        .and_then(|p| app.statuses.get(p))
+        .copied()
+        .unwrap_or(Status::Idle)
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     app.viewport = (area.width, area.height);
@@ -384,7 +394,16 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 .and_then(|v| v.get(fi))
                 .copied()
                 .unwrap_or(false);
-            let marker = if fexp { exp } else { coll };
+            // One worktree, one agent: a feature with a single shell is
+            // folded for good — no marker, no child row, and its own row
+            // carries that shell's status instead of a shell count.
+            let solo = app.solo_shell(pi, fi);
+            let marker = match solo {
+                // a blank of the marker's width keeps the names aligned
+                Some(_) => " ".repeat(exp.chars().count()),
+                None if fexp => exp.to_string(),
+                None => coll.to_string(),
+            };
             let n = feat.shells.len();
             let dirty = app.feature_dirty_cached(pi, fi);
             let icon = if dirty { dirty_icon } else { feat_icon };
@@ -407,10 +426,16 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     }),
                 ),
                 Span::styled(feat.name.clone(), fg(theme.tree_feature)),
-                Span::styled(
-                    format!(" [{n} shell{}]", if n == 1 { "" } else { "s" }),
-                    fg(theme.dim),
-                ),
+                match solo {
+                    Some(si) => {
+                        let st = shell_status(app, &feat.shells[si]);
+                        Span::styled(format!("  {}", st.label()), fg(status_color(theme, st)))
+                    }
+                    None => Span::styled(
+                        format!(" [{n} shell{}]", if n == 1 { "" } else { "s" }),
+                        fg(theme.dim),
+                    ),
+                },
             ])));
             if app.sel == Sel::Feature(pi, fi) {
                 sel_row = Some(row);
@@ -420,12 +445,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 continue;
             }
             for (si, sh) in feat.shells.iter().enumerate() {
-                let st = sh
-                    .pane_id
-                    .as_ref()
-                    .and_then(|p| app.statuses.get(p))
-                    .copied()
-                    .unwrap_or(Status::Idle);
+                let st = shell_status(app, sh);
                 let guide = if app.flatten {
                     if si + 1 == n {
                         last_grandchild
@@ -450,10 +470,6 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     ),
                     Span::raw(" "),
                     Span::styled(st.label(), fg(status_color(theme, st))),
-                    Span::styled(
-                        format!("  {}", sh.window_id.as_deref().unwrap_or("no window")),
-                        fg(theme.dim),
-                    ),
                 ])));
                 if app.sel == Sel::Shell(pi, fi, si) {
                     sel_row = Some(row);
@@ -501,8 +517,8 @@ fn preview_tail(capture: &str, inner_height: usize) -> String {
 fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
     let block = panel_block(theme, "preview (capture-pane)", false);
-    let text = match app.sel {
-        Sel::Shell(_, _, _) => {
+    let text = match app.selected_shell() {
+        Some(_) => {
             if let Some(pid) = app.selected_shell_pane() {
                 if let Some(cap) = app.captures.get(&pid) {
                     // borders take two rows off the panel
@@ -518,7 +534,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
                 Text::from("no live pane for this shell")
             }
         }
-        _ => Text::from(
+        None => Text::from(
             "select a shell to preview its pane\n\n\
              the tail of `capture-pane` is shown here, updated on every poll.\n\
              status is classified from this text + the pane's foreground process.",
@@ -546,6 +562,16 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
             ("i import".into(), Import),
             ("n feature".into(), NewFeature),
             ("x remove".into(), RemoveProject),
+            ("? help".into(), Help),
+        ],
+        // A folded feature row is its shell: it offers the shell actions
+        // on top of the feature ones (`a` gives it a second shell, which
+        // unfolds the subtree).
+        Sel::Feature(pi, fi) if app.solo_shell(pi, fi).is_some() => vec![
+            ("↵ attach".into(), Attach),
+            ("s send".into(), QuickSend),
+            ("a shell".into(), AddShell),
+            ("d delete".into(), DeleteFeature),
             ("? help".into(), Help),
         ],
         Sel::Feature(..) => vec![
@@ -748,6 +774,8 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
         &[
             (&["n"], &["new feature"]),
             (&["a"], &["add shell"]),
+            (&["Enter"], &["attach", "one-shell feature"]),
+            (&["s"], &["quick-send", "one-shell feature"]),
             (
                 &["d"],
                 &["delete feature", "kills windows", "removes worktree"],
@@ -1696,6 +1724,73 @@ mod tests {
         assert!(dirty.contains("◆ dirty-one"), "dirty feature: {dirty:?}");
     }
 
+    /// The tree folds the nominal case: a feature with one shell shows
+    /// that shell's status on its own row and gets no child row, while a
+    /// feature with several keeps its count and its expanded subtree. No
+    /// row carries the tmux window id — that is plumbing, not information.
+    #[test]
+    fn solo_feature_row_carries_the_status_and_no_child_row() {
+        let mut app = seeded_app();
+        let shell = |i: usize| crate::state::Shell {
+            index: i,
+            window_name: format!("lw:f/{i}"),
+            window_id: Some(format!("@{}", i + 7)),
+            pane_id: Some(format!("%{i}")),
+        };
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "many-shells".into(),
+            branch: "many-shells".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-many"),
+            created_at: String::new(),
+            shells: vec![shell(0), shell(1)],
+        });
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "one-shell".into(),
+            branch: "one-shell".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-one"),
+            created_at: String::new(),
+            shells: vec![shell(2)],
+        });
+        app.statuses.insert("%0".into(), Status::Working);
+        app.statuses.insert("%1".into(), Status::Working);
+        app.statuses.insert("%2".into(), Status::Waiting);
+        app.build_tree_flags();
+        app.proj_expanded[0] = true;
+        let n = app.state.projects[0].features.len();
+        app.feat_expanded[0][n - 2] = true; // the many-shell feature is open
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let rows = buffer_rows(&terminal);
+
+        let solo = rows.iter().find(|r| r.contains("one-shell")).unwrap();
+        assert!(
+            solo.contains(Status::Waiting.label()),
+            "a folded feature shows its shell's status: {solo:?}"
+        );
+        assert!(
+            !solo.contains("shell]"),
+            "a folded feature drops the shell count: {solo:?}"
+        );
+        let many = rows.iter().find(|r| r.contains("many-shells")).unwrap();
+        assert!(
+            many.contains("[2 shells]"),
+            "a multi-shell feature keeps its count: {many:?}"
+        );
+        // the folded feature contributes no `#2` row; the open one does
+        let shell_rows: Vec<&String> = rows.iter().filter(|r| r.contains(" #")).collect();
+        assert_eq!(
+            shell_rows.len(),
+            2,
+            "only the open subtree has rows: {shell_rows:?}"
+        );
+        // and no row leaks a tmux window id
+        for r in &rows {
+            assert!(!r.contains('@'), "tree must not show window ids: {r:?}");
+        }
+    }
+
     /// The help overlay scrolls: on a short frame the title advertises
     /// 'j/k scrolls' and the content is clipped to the popup; on a tall
     /// frame everything fits and no scroll hint appears.
@@ -1938,12 +2033,14 @@ mod tests {
             }],
         });
         app.build_tree_flags();
-        app.feat_expanded[0][0] = true;
-        app.sel = crate::app::Sel::Shell(0, 0, 0);
+        // One shell → the feature row is folded onto it; that row is what
+        // the preview follows.
+        app.sel = crate::app::Sel::Feature(0, 0);
         app.clamp_sel();
-        assert!(
-            matches!(app.sel, crate::app::Sel::Shell(0, 0, 0)),
-            "fixture must leave the shell selected"
+        assert_eq!(
+            app.selected_shell(),
+            Some((0, 0, 0)),
+            "fixture must leave the folded feature's shell selected"
         );
         app.captures.insert("%1".into(), capture.to_string());
         app

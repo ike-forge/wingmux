@@ -297,3 +297,17 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   feature per frame would fork a process per row per redraw, so the tree
   reads a cache refreshed on the poll tick at most every 3s (and
   immediately after a feature is created or deleted).
+- **M11 — a one-shell feature is folded, not collapsed**: the nominal case
+  is one worktree, one agent, so a feature with a single shell gets no
+  child row at all — its own row carries the shell's status and acts as
+  that shell (`Enter` attaches, `s` quick-sends, the preview follows it).
+  Making it "collapsed by default" instead would still cost a keypress to
+  see a row that repeats the feature's name and nothing else. The rule
+  lives in one predicate, `App::solo_shell`, and is enforced in
+  `visible_nodes()` so navigation, mouse hits and `clamp_sel` cannot
+  disagree with what is drawn. `a` (add shell) is the way out: two shells
+  bring the subtree back.
+- **M11 — the tmux window id left the tree**: `@5` next to every shell was
+  the only thing on that row the user cannot act on — a handle for our own
+  `select-window` calls. It is still in `state.json`, which is where a
+  debugging session should look for it.

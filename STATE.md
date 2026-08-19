@@ -9,7 +9,15 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M10 — screen decluttering (COMPLETE).** User feedback: the detail panel
+**M11 — folded solo features (COMPLETE).** User feedback: the nominal case
+is one worktree, one agent, so a feature with a single shell should not ask
+to be unfolded — and the `@5` window ids next to every shell were plumbing,
+not information. A one-shell feature now has no child row at all: its own
+row carries the shell's status and acts as that shell (attach, quick-send,
+preview). Gating green (fmt clean, clippy -D warnings clean, 161 tests with
+`--test-threads=1`) — see the progress log entry.
+
+Before that: **M10 — screen decluttering (COMPLETE).** User feedback: the detail panel
 repeated what the tree and the user's own config already said, and the
 statusbar carried three things nobody can act on plus a notice that never
 went away. Layout is now tree | preview; the bar is shortcuts only;
@@ -93,6 +101,63 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M11 — folded solo features, window ids dropped (COMPLETE)
+
+User feedback on the tree: "the nominal case for a feature is a single
+shell (one worktree == one agent) — could we fold the subtree in that case?
+This avoids unnecessary unfolding and visual clutter." Plus: drop the `@XX`
+next to each shell.
+
+Model: **a feature with exactly one shell is folded for good.** It is not
+"collapsed by default" — there is no child row to unfold, ever, so the row
+*is* the agent:
+
+```
+▾ ▣ repo-a (2 features)
+  ├─   ◇ feat-a  waiting      ← folded: no marker, no child, shell status
+  └─ ▾ ◆ feat-b [2 shells]
+      ├─ ● #0 working
+      └─ ● #1 waiting
+```
+
+- `app.rs`: one helper, `App::solo_shell(pi, fi) -> Option<usize>`, is the
+  whole rule. `visible_nodes()` emits no `Sel::Shell` child for a solo
+  feature (whatever its expand flag says), which fixes navigation, mouse
+  row hits and `clamp_sel` in one place since all three read that list.
+  `expand_or_attach` attaches instead of toggling; `collapse_or_up` treats
+  a solo feature as collapsed so `h` walks to the parent rather than
+  flipping a flag nothing renders. `selected_shell()` resolves a folded
+  feature row to its shell — that is what makes the preview, `s`
+  quick-send, `Attach` and the quick-send submit path work on it; the three
+  sites that matched `Sel::Shell(..)` literally now go through it.
+- Feature actions are untouched: `a` on a folded feature gives it a second
+  shell and the subtree appears by itself.
+- `ui.rs`: folded feature rows render with a blank the width of the marker
+  (names stay aligned) and the shell's status where `[N shells]` was; shell
+  rows lost the `sh.window_id` span; new `shell_status()` helper shared by
+  both. `bar_entries` gives a folded row `↵ attach · s send · a shell ·
+  d delete · ? help`; the help overlay gained `Enter`/`s` rows under
+  *features* documenting the fold.
+- Tests: `solo_feature_folds_and_a_second_shell_unfolds_it`,
+  `enter_on_a_folded_feature_attaches_its_shell` (real tmux server),
+  `quick_send_works_from_a_folded_feature_row`,
+  `ui::solo_feature_row_carries_the_status_and_no_child_row` (asserts the
+  status, the missing child row, and that no tree row contains `@`). The
+  `app_with_shell` / `app_with_capture` fixtures now select the feature row
+  — with the fold, `Sel::Shell(0, 0, 0)` on a one-shell feature is not a
+  reachable state.
+- LIVE SMOKE (real binary, throwaway `tmux -L lwsmoke`, scratch repo +
+  scratch XDG dirs): a fresh feature rendered `◇ alpha  idle` with the
+  preview following it and the bar showing `↵ attach · s send · …`; `a`
+  turned the row into `▸ ◇ alpha [2 shells]` and `l` unfolded it to
+  `● #0 idle` / `● #1 idle` — no `@` anywhere.
+- Gate: fmt clean, clippy -D warnings clean, 161 tests pass with
+  `--test-threads=1`. Pre-existing, unrelated:
+  `legacy_root_back_key_is_unbound_but_user_binding_survives` fails on the
+  untouched baseline here too (verified again with `git stash`), and the
+  `ui::`/`state::` tests race each other on the shared XDG state when run
+  in parallel.
 
 ### M10 — screen decluttering: detail panel out, bar down to shortcuts (COMPLETE)
 

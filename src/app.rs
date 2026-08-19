@@ -819,6 +819,17 @@ impl App {
 
     // ---------------------------------------------------------- navigation
 
+    /// The shell a folded feature row stands for. The nominal case is one
+    /// worktree, one agent: a feature with exactly one shell gets no child
+    /// row at all — its own row *is* that shell (status, preview, attach,
+    /// quick-send). Features with none or several shells keep their
+    /// subtree, so `a` on a folded feature unfolds it by giving it a
+    /// second shell.
+    pub(crate) fn solo_shell(&self, pi: usize, fi: usize) -> Option<usize> {
+        let feat = self.state.projects.get(pi)?.features.get(fi)?;
+        (feat.shells.len() == 1).then_some(0)
+    }
+
     /// All visible tree nodes in display order (scope-filtered; in flatten
     /// mode the single project's features sit at the top level).
     fn visible_nodes(&self) -> Vec<Sel> {
@@ -839,7 +850,9 @@ impl App {
                     .and_then(|e| e.get(fi))
                     .copied()
                     .unwrap_or(false);
-                if !fexp {
+                // A solo feature is folded for good: its own row is the
+                // shell, so it never emits a child — whatever its flag says.
+                if !fexp || self.solo_shell(pi, fi).is_some() {
                     continue;
                 }
                 for si in 0..feat.shells.len() {
@@ -893,7 +906,11 @@ impl App {
                 }
             }
             Sel::Feature(pi, fi) => {
-                if let Some(e) = self.feat_expanded.get_mut(pi).and_then(|v| v.get_mut(fi)) {
+                // Folded feature: there is nothing to expand into, so the
+                // row acts as its shell and opens the agent.
+                if let Some(si) = self.solo_shell(pi, fi) {
+                    self.attach(pi, fi, si);
+                } else if let Some(e) = self.feat_expanded.get_mut(pi).and_then(|v| v.get_mut(fi)) {
                     *e = !*e;
                 }
             }
@@ -916,7 +933,8 @@ impl App {
                     .get(pi)
                     .and_then(|v| v.get(fi))
                     .copied()
-                    .unwrap_or(false);
+                    .unwrap_or(false)
+                    && self.solo_shell(pi, fi).is_none();
                 if fexp {
                     if let Some(e) = self.feat_expanded.get_mut(pi).and_then(|v| v.get_mut(fi)) {
                         *e = false;
@@ -931,9 +949,12 @@ impl App {
         }
     }
 
-    fn selected_shell(&self) -> Option<(usize, usize, usize)> {
+    /// The shell the selection acts on: an explicit shell row, or the
+    /// single shell a folded feature row stands for.
+    pub(crate) fn selected_shell(&self) -> Option<(usize, usize, usize)> {
         match self.sel {
             Sel::Shell(pi, fi, si) => Some((pi, fi, si)),
+            Sel::Feature(pi, fi) => self.solo_shell(pi, fi).map(|si| (pi, fi, si)),
             _ => None,
         }
     }
@@ -1828,16 +1849,15 @@ impl App {
                     self.notify("select a feature to add a shell");
                 }
             }
-            KeyCode::Char('s') => match self.sel {
-                Sel::Shell(..) => {
+            KeyCode::Char('s') => {
+                if self.selected_shell().is_some() {
                     self.mode = Mode::Textarea {
                         buf: TextBuf::new(),
                     };
-                }
-                _ => {
+                } else {
                     self.notify("select a shell to quick-send");
                 }
-            },
+            }
             KeyCode::Char('d') => self.confirm_delete_feature(),
             KeyCode::Char('x') => self.confirm_remove_project(),
             KeyCode::Char('r') => {
@@ -2122,7 +2142,7 @@ impl App {
                 }
             }
             BarAction::QuickSend => {
-                if let Sel::Shell(..) = self.sel {
+                if self.selected_shell().is_some() {
                     self.mode = Mode::Textarea {
                         buf: TextBuf::new(),
                     };
@@ -2295,9 +2315,9 @@ impl App {
                 Sel::Feature(pi, _) => self.create_feature(pi, &text),
                 _ => Err(Error::State("select a project first".into())),
             },
-            InputKind::QuickSend => match self.sel {
-                Sel::Shell(pi, fi, si) => self.quick_send(pi, fi, si, &text),
-                _ => Err(Error::State("select a shell first".into())),
+            InputKind::QuickSend => match self.selected_shell() {
+                Some((pi, fi, si)) => self.quick_send(pi, fi, si, &text),
+                None => Err(Error::State("select a shell first".into())),
             },
         };
         if let Err(e) = res {
@@ -2946,8 +2966,10 @@ mod tests {
             }],
         });
         app.build_tree_flags();
+        // One shell → the feature row is folded onto it, which is the only
+        // way this shell is reachable in the tree.
+        app.sel = Sel::Feature(0, 0);
         app.clamp_sel();
-        app.sel = Sel::Shell(0, 0, 0);
         app
     }
 
@@ -2960,6 +2982,98 @@ mod tests {
                 KeyModifiers::NONE
             },
         )
+    }
+
+    /// The nominal case is one worktree, one agent: a feature with a
+    /// single shell is folded — it gets no child row (whatever its expand
+    /// flag says) and the selection resolves to that shell. A second shell
+    /// unfolds the subtree again.
+    #[test]
+    fn solo_feature_folds_and_a_second_shell_unfolds_it() {
+        let mut app = app_with_shell();
+        assert_eq!(app.solo_shell(0, 0), Some(0));
+        // even flagged expanded, a folded feature emits no shell row
+        app.feat_expanded[0][0] = true;
+        let nodes = app.visible_nodes();
+        assert!(
+            !nodes.iter().any(|n| matches!(n, Sel::Shell(..))),
+            "a one-shell feature must not emit a child row: {nodes:?}"
+        );
+        // ...and the feature row acts as that shell
+        assert_eq!(app.sel, Sel::Feature(0, 0));
+        assert_eq!(app.selected_shell(), Some((0, 0, 0)));
+        assert_eq!(app.selected_shell_pane().as_deref(), Some("%1"));
+
+        // a second shell brings the subtree back
+        app.state.projects[0].features[0].shells.push(Shell {
+            index: 1,
+            window_name: "lw:feat/1".into(),
+            window_id: Some("@2".into()),
+            pane_id: Some("%2".into()),
+        });
+        assert_eq!(app.solo_shell(0, 0), None);
+        let nodes = app.visible_nodes();
+        assert!(
+            nodes.contains(&Sel::Shell(0, 0, 0)) && nodes.contains(&Sel::Shell(0, 0, 1)),
+            "two shells must show both rows: {nodes:?}"
+        );
+        // the feature row is no longer a shell — it expands again
+        assert_eq!(app.selected_shell(), None);
+    }
+
+    /// `l`/Enter on a folded feature attaches instead of expanding, and
+    /// `h` walks up to the project rather than toggling a flag nothing
+    /// renders.
+    #[test]
+    fn enter_on_a_folded_feature_attaches_its_shell() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_standalone(sock);
+            let mut app = app_with(tmux.clone());
+            seed_project_with_shell(&tmux, &mut app);
+            app.build_tree_flags();
+            app.sel = Sel::Feature(0, 0);
+
+            app.expand_or_attach();
+            assert_eq!(
+                app.pending_attach.as_deref(),
+                Some("wingman-session-p"),
+                "Enter on a folded feature must attach its shell"
+            );
+            assert!(
+                !app.feat_expanded[0][0],
+                "a folded feature must never expand"
+            );
+
+            app.pending_attach = None;
+            app.feat_expanded[0][0] = true; // stale flag must not eat the key
+            app.flatten = false; // `h` reaches a parent only when one has a row
+            app.collapse_or_up();
+            assert_eq!(app.sel, Sel::Project(0), "h walks up from a folded feature");
+        });
+    }
+
+    /// `s` on a folded feature row opens the textarea and the send lands on
+    /// its shell — the row IS the agent.
+    #[test]
+    fn quick_send_works_from_a_folded_feature_row() {
+        let mut app = app_with_shell();
+        app.viewport = (120, 40);
+        assert_eq!(app.sel, Sel::Feature(0, 0));
+        app.on_key(key(KeyCode::Char('s'), false));
+        assert!(
+            matches!(app.mode, Mode::Textarea { .. }),
+            "s on a folded feature must open the textarea"
+        );
+        // no tmux here: the send fails at the tmux call, not at the
+        // selection — "select a shell first" would mean the row did not
+        // resolve.
+        app.mode = Mode::Normal;
+        app.submit_input(InputKind::QuickSend, "hi".into());
+        let msg = app.toast().map(|t| t.text.clone()).unwrap_or_default();
+        assert!(
+            !msg.contains("select a shell"),
+            "the folded row must resolve to its shell, got: {msg:?}"
+        );
     }
 
     /// PageDown / PageUp and ctrl-d / ctrl-u move half a page; ctrl-f / b
