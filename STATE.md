@@ -9,7 +9,13 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M10 — screen decluttering (COMPLETE).** User feedback: the detail panel
+**M11 — predefined messages (COMPLETE).** User request: `s` writes a
+message, `p` should open a modal of configurable canned messages, with
+"continue" and "merge to master, drop the worktree" as the defaults.
+Gating green (fmt clean, clippy -D warnings clean, 176 tests, single
+pre-existing environment failure — see the log entry).
+
+Before that: **M10 — screen decluttering (COMPLETE).** User feedback: the detail panel
 repeated what the tree and the user's own config already said, and the
 statusbar carried three things nobody can act on plus a notice that never
 went away. Layout is now tree | preview; the bar is shortcuts only;
@@ -93,6 +99,48 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M11 — predefined messages: the `p` modal + `[[messages]]` config (COMPLETE)
+
+User request, verbatim: `s` "allows us to write a message", `p` should
+"open a modal with predefined messages. These must be configurable also",
+defaulting to "1. continue / 2. merge to master, drop the worktree".
+
+- **Config**: new `[[messages]]` list (`label` + `text`) with
+  `MessageConfig`, loaded through `take_message_list` — the same
+  smallest-unit salvage as `[[agents]]`/`[[projects]]`: an entry with
+  empty `text` is dropped with a diagnostic, an entry without a `label`
+  is listed by its text, a stray key inside an entry is reported
+  (`MESSAGE_KEYS`), and `messages` joined `TOP_KEYS` so the section
+  itself is not "unknown". Absent key = the two built-in defaults;
+  defining any entry replaces the list. `DEFAULT_CONFIG` writes the
+  defaults out on first run and `--config-dump` lists the labels.
+- **Modal**: `Mode::Messages { index }` opened by `p` on a shell (and by
+  the new `BarAction::PredefinedSend` statusbar entry). `j`/`k`/arrows
+  move, `Home`/`End`/`PgUp`/`PgDn`/ctrl-u/d/f/b move the cursor (the
+  overlay owns the viewport, the tree never moves), `Enter` or the
+  entry's digit `1`-`9` sends, `Esc`/`q` closes. No shell selected or no
+  configured messages → a toast, never an empty box.
+- **Sending** reuses `quick_send` (bracketed paste + Enter), so a preset
+  is indistinguishable from a typed prompt to the agent.
+- **Mouse**: click a row to select, double-click to send, click outside
+  to dismiss, wheel to move the cursor — same contract as the theme
+  picker.
+- **Render**: `draw_messages`, content-sized like the theme picker, rows
+  numbered with the digit that sends them, footer `Enter send · Esc
+  cancel`, min size 34x10 (refused with "too small" below that), ASCII
+  fallback clean.
+- Tests (11 new): config (defaults kept/replaced/label fallback/empty
+  text dropped/unknown key/dump/first-run file), app (`p` gated on a
+  shell, motion + Esc, empty list toast, Enter sends the selected text
+  and the digit sends its entry — both verified against a real tmux pane
+  capture, mouse select/dismiss, motion ownership), ui (numbered list,
+  tiny-frame refusal, ASCII, statusbar entry, help row). 176 pass.
+- **Pre-existing failure, untouched:**
+  `tmux::tests::legacy_root_back_key_is_unbound_but_user_binding_survives`
+  — the same environmental failure recorded under M10 (confirmed again on
+  unmodified HEAD via `git stash`). `cargo test -- --test-threads=1`
+  remains the reliable way to run the suite here.
 
 ### M10 — screen decluttering: detail panel out, bar down to shortcuts (COMPLETE)
 
