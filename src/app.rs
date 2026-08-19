@@ -1677,7 +1677,21 @@ impl App {
             // capture, and the classifier reads `None` as dead. Skipping
             // it instead would leave the last live status on screen
             // forever.
-            let pane = self.panes.get(&pid).cloned();
+            let mut pane = self.panes.get(&pid).cloned();
+            if !self.cfg.defaults.agent_hooks
+                && let Some(p) = pane.as_mut()
+            {
+                // The kill switch: `agent_hooks = false` must classify
+                // purely from `capture-pane`, exactly as before this
+                // feature existed. Turning the flag off only stops writing
+                // new overlays — a pane instrumented earlier (or by another
+                // LazyWingman instance sharing the tmux server) still
+                // carries one, and it outlives both a restart and this
+                // flag flip. `classify` has no way to know the flag is
+                // off, so silence the overlay here, the one seam every
+                // poll goes through, rather than scattering the check.
+                p.overlay_raw.clear();
+            }
             let tail = match &pane {
                 None => String::new(),
                 Some(_) => match tmux.capture_pane(&pid, 120) {
@@ -2783,6 +2797,35 @@ mod tests {
             }],
         });
         (w.window_id, w.pane_id)
+    }
+
+    /// `agent_hooks = false` must be a real kill switch: even a pane that
+    /// still carries a live `@lw_agent` overlay (written by an earlier
+    /// spawn, or by a second LazyWingman instance) must classify purely
+    /// from `capture-pane`, exactly as README/STATE promise. The overlay
+    /// says `blocked`, which a foreground `cat` (not a shell, so the
+    /// login-shell guard alone would not save this test) would otherwise
+    /// win outright.
+    #[test]
+    fn agent_hooks_off_ignores_a_live_overlay_during_poll() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_standalone(sock);
+            let mut app = app_with(tmux.clone());
+            app.cfg.defaults.agent_hooks = false;
+            let (_wid, pid) = seed_project_with_shell(&tmux, &mut app);
+            tmux.send_keys(&pid, "cat", true).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            tmux.set_pane_option(&pid, crate::hooks::OVERLAY_KEY, "blocked:9999999999")
+                .unwrap();
+
+            app.poll();
+
+            assert_eq!(
+                app.statuses.get(&pid),
+                Some(&Status::Idle),
+                "agent_hooks = false must classify from the ladder, ignoring the overlay"
+            );
+        });
     }
 
     /// M8.2 — the standalone handoff path, verified at the command level:
