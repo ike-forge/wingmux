@@ -22,6 +22,32 @@ use crate::tmux::{PaneInfo, Tmux};
 /// Lines of the capture used for status classification.
 const RECENT_TAIL_LINES: usize = 10;
 
+/// How long a toast stays on screen before it fades by itself. Errors get
+/// longer — they are the ones worth reading.
+const TOAST_TTL: Duration = Duration::from_secs(4);
+const TOAST_TTL_ERR: Duration = Duration::from_secs(6);
+
+/// How often the per-feature dirty flags are recomputed. Each one shells
+/// out to `git status`, so it runs on its own slow cadence rather than on
+/// every tmux poll.
+const DIRTY_INTERVAL: Duration = Duration::from_secs(3);
+
+/// A transient notice. Rendered as a small box above the statusbar and
+/// gone on its own after [`TOAST_TTL`] — nothing on the bar is permanent.
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub text: String,
+    pub error: bool,
+    at: Instant,
+}
+
+impl Toast {
+    fn expired(&self) -> bool {
+        let ttl = if self.error { TOAST_TTL_ERR } else { TOAST_TTL };
+        self.at.elapsed() >= ttl
+    }
+}
+
 /// A node in the projects/features/shells tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sel {
@@ -301,7 +327,12 @@ pub struct App {
     pub statuses: HashMap<String, Status>,
     pattern_cache: HashMap<String, Compiled>,
     pub last_poll: Instant,
-    pub message: Option<String>,
+    /// The transient notice shown as a toast above the statusbar. Set by
+    /// [`App::notify`] / [`App::notify_err`]; read through [`App::toast`],
+    /// which drops it once its TTL has passed — the statusbar is
+    /// shortcuts-only, so notices are never allowed to become permanent
+    /// furniture. Everything also goes to the log.
+    message: Option<Toast>,
     /// Set by `attach` when the dashboard runs standalone: the event loop
     /// hands the terminal over to `tmux attach -t <session>` and resumes.
     pub pending_attach: Option<String>,
@@ -349,6 +380,11 @@ pub struct App {
     /// Last left-click (time, x, y) — double-click detection, since this
     /// crossterm version does not report a click count on mouse events.
     last_click: Option<(Instant, u16, u16)>,
+    /// Worktree path → has uncommitted changes. The tree draws this as the
+    /// feature icon, so it must be a lookup, not a `git status` per frame;
+    /// [`App::poll_dirty`] refills it every [`DIRTY_INTERVAL`].
+    pub(crate) dirty: HashMap<PathBuf, bool>,
+    last_dirty_poll: Option<Instant>,
 }
 
 impl App {
@@ -368,6 +404,8 @@ impl App {
             pattern_cache: HashMap::new(),
             last_poll: Instant::now(),
             message: None,
+            dirty: HashMap::new(),
+            last_dirty_poll: None,
             pending_attach: None,
             interactive_boot: false,
             quit: false,
@@ -663,10 +701,9 @@ impl App {
                     log::warn!("save after scan: {e}");
                 }
                 if n > 0 {
-                    self.message = Some(format!("scan: {n} new project(s) added"));
+                    self.notify(format!("scan: {n} new project(s) added"));
                 } else {
-                    self.message =
-                        Some(format!("scan of {} found no new projects", root.display()));
+                    self.notify(format!("scan of {} found no new projects", root.display()));
                 }
             }
             Err(e) => self.fail(&e),
@@ -990,7 +1027,7 @@ impl App {
         self.build_tree_flags();
         self.clamp_sel();
         self.save_state()?;
-        self.message = Some(format!(
+        self.notify(format!(
             "imported project '{}'",
             self.state.projects.last().unwrap().name
         ));
@@ -1073,7 +1110,8 @@ impl App {
         self.sel = Sel::Feature(pi, self.state.projects[pi].features.len() - 1);
         self.clamp_sel();
         self.save_state()?;
-        self.message = Some(format!("feature '{}' created", name));
+        self.poll_dirty(true);
+        self.notify(format!("feature '{}' created", name));
         Ok(())
     }
 
@@ -1124,7 +1162,7 @@ impl App {
             pane_id: Some(w.pane_id),
         });
         self.save_state()?;
-        self.message = Some(format!("shell #{} added", idx));
+        self.notify(format!("shell #{} added", idx));
         Ok(())
     }
 
@@ -1139,11 +1177,11 @@ impl App {
             return;
         };
         let Some(wid) = &sh.window_id else {
-            self.message = Some("shell has no live window".into());
+            self.notify("shell has no live window");
             return;
         };
         let Some(session) = self.state.projects[pi].session_name.clone() else {
-            self.message = Some("project has no agent session".into());
+            self.notify("project has no agent session");
             return;
         };
         let res = match self.require_tmux() {
@@ -1161,7 +1199,7 @@ impl App {
             Err(e) => Err(e),
         };
         if let Err(e) = res {
-            self.message = Some(format!("attach failed: {e}"));
+            self.notify_err(format!("attach failed: {e}"));
             log::error!("attach failed: {e}");
         }
     }
@@ -1236,7 +1274,8 @@ impl App {
         }
         self.clamp_sel();
         self.save_state()?;
-        self.message = Some(format!("feature '{}' deleted", feat.name));
+        self.poll_dirty(true);
+        self.notify(format!("feature '{}' deleted", feat.name));
         Ok(())
     }
 
@@ -1268,11 +1307,91 @@ impl App {
         self.clamp_sel();
         self.save_state()?;
         // worktrees stay on disk (git manages them; LazyWingman never deletes)
-        self.message = Some(format!(
+        self.notify(format!(
             "project '{}' removed from LazyWingman (worktrees kept on disk)",
             proj.name
         ));
         Ok(())
+    }
+
+    // ---------------------------------------------------------- notices
+
+    /// Show a transient notice. It fades on its own; the log keeps the
+    /// permanent record.
+    pub fn notify(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        log::info!("{text}");
+        self.message = Some(Toast {
+            text,
+            error: false,
+            at: Instant::now(),
+        });
+    }
+
+    /// Same, for something that went wrong: longer TTL, error colours.
+    pub fn notify_err(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        log::warn!("{text}");
+        self.message = Some(Toast {
+            text,
+            error: true,
+            at: Instant::now(),
+        });
+    }
+
+    /// Age the current toast past its TTL (tests only — the renderer has
+    /// no clock to fake).
+    #[cfg(test)]
+    pub fn expire_toast_for_test(&mut self) {
+        if let Some(t) = self.message.as_mut() {
+            t.at = Instant::now() - TOAST_TTL_ERR - Duration::from_secs(1);
+        }
+    }
+
+    /// The notice to draw right now, or `None` once it has expired.
+    pub fn toast(&self) -> Option<&Toast> {
+        self.message.as_ref().filter(|t| !t.expired())
+    }
+
+    // ------------------------------------------------------- dirty flags
+
+    /// Cached dirty flag for the tree — filled by [`App::poll_dirty`],
+    /// never a `git status` on the render path.
+    pub fn feature_dirty_cached(&self, pi: usize, fi: usize) -> bool {
+        self.state
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .and_then(|f| self.dirty.get(&f.worktree_path))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Refresh the dirty cache, at most every [`DIRTY_INTERVAL`]. Called
+    /// from the poll tick; `force` skips the interval after a change that
+    /// invalidates it (feature created/deleted).
+    pub fn poll_dirty(&mut self, force: bool) {
+        if !force
+            && self
+                .last_dirty_poll
+                .is_some_and(|t| t.elapsed() < DIRTY_INTERVAL)
+        {
+            return;
+        }
+        self.last_dirty_poll = Some(Instant::now());
+        let paths: Vec<PathBuf> = self
+            .state
+            .projects
+            .iter()
+            .flat_map(|p| p.features.iter().map(|f| f.worktree_path.clone()))
+            .collect();
+        self.dirty = paths
+            .into_iter()
+            .map(|path| {
+                let d = Git.worktree_dirty(&path).unwrap_or(false);
+                (path, d)
+            })
+            .collect();
     }
 
     /// Is the feature's worktree dirty? (drives the --force confirm option)
@@ -1287,7 +1406,7 @@ impl App {
 
     pub fn confirm_delete_feature(&mut self) {
         let Some((pi, fi, _)) = self.selected_feature_ctx() else {
-            self.message = Some("select a feature first".into());
+            self.notify("select a feature first");
             return;
         };
         let dirty = self.feature_is_dirty(pi, fi);
@@ -1323,7 +1442,7 @@ impl App {
 
     pub fn confirm_remove_project(&mut self) {
         let Sel::Project(pi) = self.sel else {
-            self.message = Some("select a project first".into());
+            self.notify("select a project first");
             return;
         };
         let proj = &self.state.projects[pi];
@@ -1368,6 +1487,9 @@ impl App {
 
     /// Poll tmux: pane metadata + capture tail → statuses, preview.
     pub fn poll(&mut self) {
+        // Independent of tmux (and of its own cadence) — the tree draws
+        // the dirty flag whether or not a session exists.
+        self.poll_dirty(false);
         let Ok(tmux) = self.require_tmux() else {
             return;
         };
@@ -1693,7 +1815,7 @@ impl App {
                     };
                 }
                 Sel::Shell(..) => {
-                    self.message = Some("select a project to add a feature".into());
+                    self.notify("select a project to add a feature");
                 }
             },
             KeyCode::Char('a') => {
@@ -1703,7 +1825,7 @@ impl App {
                         Err(e) => self.fail(&e),
                     }
                 } else {
-                    self.message = Some("select a feature to add a shell".into());
+                    self.notify("select a feature to add a shell");
                 }
             }
             KeyCode::Char('s') => match self.sel {
@@ -1713,7 +1835,7 @@ impl App {
                     };
                 }
                 _ => {
-                    self.message = Some("select a shell to quick-send".into());
+                    self.notify("select a shell to quick-send");
                 }
             },
             KeyCode::Char('d') => self.confirm_delete_feature(),
@@ -1781,7 +1903,7 @@ impl App {
             Ok(t) => self.theme = t,
             Err(e) => {
                 log::warn!("theme preview '{}' failed: {e}", name);
-                self.message = Some(format!("theme '{}': {e}", name));
+                self.notify_err(format!("theme '{}': {e}", name));
             }
         }
     }
@@ -1819,9 +1941,9 @@ impl App {
         self.state.theme = Some(name.clone());
         if let Err(e) = self.save_state() {
             log::warn!("save theme '{}': {e}", name);
-            self.message = Some(format!("theme '{name}' (not saved: {e})"));
+            self.notify_err(format!("theme '{name}' (not saved: {e})"));
         } else {
-            self.message = Some(format!("theme: {name}"));
+            self.notify(format!("theme: {name}"));
         }
         self.mode = Mode::Normal;
     }
@@ -2151,17 +2273,17 @@ impl App {
                 if let Err(e) = self.save_state() {
                     log::warn!("save: {e}");
                 }
-                self.message = Some("refreshed".into());
+                self.notify("refreshed");
             } else {
-                self.message = Some("refresh had errors (see log)".into());
+                self.notify_err("refresh had errors (see log)");
             }
         } else {
-            self.message = Some("no tmux session".into());
+            self.notify_err("no tmux session");
         }
     }
 
     fn fail(&mut self, e: &Error) {
-        self.message = Some(format!("error: {e}"));
+        self.notify_err(format!("error: {e}"));
         log::error!("action failed: {e}");
     }
 
@@ -2291,7 +2413,7 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
                 r
             })();
             if let Err(e) = res {
-                app.message = Some(format!("attach handoff failed: {e}"));
+                app.notify_err(format!("attach handoff failed: {e}"));
                 log::error!("attach handoff failed: {e}");
             } else {
                 log::info!("returned from tmux attach ({session})");
@@ -2744,7 +2866,7 @@ mod tests {
             app.on_key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::NONE));
             assert_eq!(app.state.projects.len(), 1);
             assert_eq!(app.state.projects[0].name, "repo-a");
-            let msg = app.message.as_deref().unwrap();
+            let msg = &app.toast().unwrap().text;
             assert!(msg.contains("1 new project"), "message: {msg}");
         });
     }
