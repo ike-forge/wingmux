@@ -440,8 +440,6 @@ pub(crate) fn textarea_wrap_width(viewport_w: u16) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarAction {
     Help,
-    Import,
-    Scan,
     NewFeature,
     AddShell,
     QuickSend,
@@ -453,7 +451,6 @@ pub enum BarAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputKind {
-    ImportProject,
     NewFeature,
     /// The command the new shell should run. Empty means "the project's
     /// default agent command" — the prompt shows it as a hint.
@@ -749,16 +746,9 @@ impl App {
 
     // ---------------------------------------------------------- discovery
 
-    /// The root directory scanned by the `I` key and the startup scope:
-    /// `[discovery].scan_root`, or the directory LazyWingman was started
-    /// from when unset. Relative roots resolve against the cwd.
-    fn scan_root(&self) -> PathBuf {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        self.scan_root_from(&cwd)
-    }
-
-    /// [`Self::scan_root`] with an explicit base directory (the cwd is
-    /// injected here so tests don't have to `chdir`).
+    /// The startup scope: `[discovery].scan_root`, or the directory
+    /// LazyWingman was started from when unset. Relative roots resolve
+    /// against `cwd`, which is injected so tests don't have to `chdir`.
     fn scan_root_from(&self, cwd: &std::path::Path) -> PathBuf {
         let root = self.cfg.discovery.scan_root.trim();
         if root.is_empty() {
@@ -888,30 +878,6 @@ impl App {
             log::info!("discovery: {added} new project(s) under {}", root.display());
         }
         Ok(added)
-    }
-
-    /// Run a discovery scan and report the outcome in the statusbar;
-    /// also re-prunes so projects that came back from `missing` re-activate.
-    fn run_scan(&mut self, root: PathBuf) {
-        match self.discover_and_import(&root) {
-            Ok(n) => {
-                if let Some(tmux) = &self.tmux {
-                    let _ = self.state.prune(Some(tmux), &self.worktrees_loaded);
-                }
-                self.build_tree_flags();
-                self.clamp_sel();
-                // Persist: imports must survive a restart.
-                if let Err(e) = self.save_state() {
-                    log::warn!("save after scan: {e}");
-                }
-                if n > 0 {
-                    self.notify(format!("scan: {n} new project(s) added"));
-                } else {
-                    self.notify(format!("scan of {} found no new projects", root.display()));
-                }
-            }
-            Err(e) => self.fail(&e),
-        }
     }
 
     /// Load the next queued project's worktrees. Returns false when the
@@ -1275,34 +1241,6 @@ impl App {
             w.window_id
         );
         Ok((name, Some(w)))
-    }
-
-    pub fn import_project(&mut self, path: &str) -> Result<()> {
-        let path = PathBuf::from(path.trim());
-        if !path.is_absolute() {
-            return Err(Error::Config(format!(
-                "path must be absolute: {}",
-                path.display()
-            )));
-        }
-        if !Git.is_repo(&path) {
-            return Err(Error::Git(format!(
-                "{} is not a git repository",
-                path.display()
-            )));
-        }
-        if self.state.projects.iter().any(|p| p.path == path) {
-            return Err(Error::State("project already imported".into()));
-        }
-        self.add_project(path)?;
-        self.build_tree_flags();
-        self.clamp_sel();
-        self.save_state()?;
-        self.notify(format!(
-            "imported project '{}'",
-            self.state.projects.last().unwrap().name
-        ));
-        Ok(())
     }
 
     pub fn create_feature(&mut self, pi: usize, name: &str) -> Result<()> {
@@ -2138,18 +2076,6 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
             KeyCode::Char('h') | KeyCode::Left => self.collapse_or_up(),
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.expand_or_attach(),
-            KeyCode::Char('i') => {
-                self.mode = Mode::Input {
-                    kind: InputKind::ImportProject,
-                    text: String::new(),
-                };
-            }
-            // `I` — the stronger variant of `i`: scan a whole root for new
-            // projects (per the TUI guidelines, shifted = stronger).
-            KeyCode::Char('I') => {
-                let root = self.scan_root();
-                self.run_scan(root);
-            }
             KeyCode::Char('n') => match self.sel {
                 Sel::Project(_) | Sel::Feature(_, _) => {
                     self.mode = Mode::Input {
@@ -2504,16 +2430,6 @@ impl App {
     fn run_bar_action(&mut self, action: BarAction) {
         match action {
             BarAction::Help => self.open_help(),
-            BarAction::Import => {
-                self.mode = Mode::Input {
-                    kind: InputKind::ImportProject,
-                    text: String::new(),
-                };
-            }
-            BarAction::Scan => {
-                let root = self.scan_root();
-                self.run_scan(root);
-            }
             BarAction::NewFeature => match self.sel {
                 Sel::Project(_) | Sel::Feature(_, _) => {
                     self.mode = Mode::Input {
@@ -2701,7 +2617,6 @@ impl App {
     /// keep. Failures are toasted here either way.
     fn submit_input(&mut self, kind: InputKind, text: String) -> bool {
         let res = match kind {
-            InputKind::ImportProject => self.import_project(&text),
             InputKind::NewFeature => match self.sel {
                 Sel::Project(pi) => self.create_feature(pi, &text),
                 Sel::Feature(pi, _) => self.create_feature(pi, &text),
@@ -3403,21 +3318,24 @@ mod tests {
         });
     }
 
-    /// The `I` key scans the configured root and reports new projects.
+    /// `i` (import a repo by path) and `I` (rescan the discovery root) are
+    /// gone: projects come from boot discovery and `[[projects]]` in the
+    /// config. Both keys must be inert — no popup, no project.
     #[test]
-    fn i_key_scans_and_imports_new_projects() {
+    fn the_import_and_scan_keys_are_gone() {
         crate::util::testutil::with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             let r = root.path();
             repo_with_commit(r, "repo-a");
 
             let mut app = app_with(tmux_standalone("unused"));
+            // A root that HAS a repo to find, so a surviving scan would show.
             app.cfg.discovery.scan_root = r.to_string_lossy().into_owned();
-            app.on_key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::NONE));
-            assert_eq!(app.state.projects.len(), 1);
-            assert_eq!(app.state.projects[0].name, "repo-a");
-            let msg = &app.toast().unwrap().text;
-            assert!(msg.contains("1 new project"), "message: {msg}");
+            for k in ['i', 'I'] {
+                app.on_key(KeyEvent::new(KeyCode::Char(k), KeyModifiers::NONE));
+                assert!(matches!(app.mode, Mode::Normal), "`{k}` opened a mode");
+                assert!(app.state.projects.is_empty(), "`{k}` imported a project");
+            }
         });
     }
 

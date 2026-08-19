@@ -84,7 +84,7 @@ delete_branch = true
 # The scope: only projects inside this directory are listed (scopes never
 # mix). Empty = the directory LazyWingman was started from. When you start
 # inside a git repo, that repo is the scope and its features are shown
-# flat (no project row). The `I` key rescans this root live (no cache).
+# flat (no project row). The scan is live (no cache) and runs at startup.
 scan_root = ""
 # Maximum subdirectory depth of a scan (0 = the scan root itself only).
 max_depth = 4
@@ -142,7 +142,8 @@ working = [
 waiting = ["❯", "›", "codex>", "> $"]
 failed = ["Error", "error:", "✖"]
 
-# Imported projects. Add them from inside the TUI (`i` key) — they land here.
+# Projects declared by hand — the way to list a repo that discovery does not
+# find (outside the scope). Discovered projects live in state.json instead.
 # [[projects]]
 # path = "/absolute/path/to/repo"
 # base_branch = "main"       # optional: override [worktrees].base_branch

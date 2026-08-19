@@ -9,7 +9,29 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M21 — the test fixtures share one lock (COMPLETE).** Found while gating
+**M22 — `i import` and `I scan` are gone (COMPLETE).** User feedback: both
+were believed removed already and were not. Scope-based discovery (M9.3)
+imports every repo inside the scope at boot, so `i` (import one absolute
+path) and `I` (rescan that same root) were duplicating it for two top-level
+keys and two of the four statusbar slots on a project row. Removed: the `i`
+and `I` key arms, `BarAction::Import` / `BarAction::Scan` and their bar
+entries, `InputKind::ImportProject` with its popup arm, `App::import_project`,
+`App::run_scan`, the now-unused `App::scan_root` wrapper (`scan_root_from`
+stays — it resolves the boot scope), and both help rows. KEPT: boot discovery
+(`boot_discovery_from`, `import_cwd_repo`, `discover_and_import`), the
+`[discovery]` config block including `scan_root`, and `[[projects]]`.
+Consequence to know: a repo created while LazyWingman runs needs a restart to
+appear — `r` reconciles tmux state, not the repo list. Docs: README (key
+table, discovery section, config sample), docs/shortcuts.md, DECISIONS, the
+`config.toml` template comments. Tests: `i_key_scans_and_imports_new_projects`
+is replaced by `the_import_and_scan_keys_are_gone` (both keys inert against a
+root that HAS a findable repo), plus
+`the_project_bar_offers_no_scan_or_import`; the help/bar wording conformance
+tests lost their scan/import arms. Gate: fmt clean, clippy -D warnings clean,
+221 pass in parallel apart from the pre-existing
+`legacy_root_back_key_is_unbound_but_user_binding_survives`.
+
+Before that: **M21 — the test fixtures share one lock (COMPLETE).** Found while gating
 M20, pre-existing since M8: `cargo test` in parallel could DEADLOCK.
 `tmux::testutil`'s `TMUX_TEST_LOCK` and `util::testutil`'s `XDG_LOCK` were
 taken in BOTH orders — `app::tests` nests `with_fresh_xdg(|| ..tmux..)` and

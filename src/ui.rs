@@ -624,12 +624,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
 pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
     use BarAction::*;
     match app.sel {
-        Sel::Project(_) => vec![
-            ("I scan".into(), Scan),
-            ("i import".into(), Import),
-            ("n feature".into(), NewFeature),
-            ("? help".into(), Help),
-        ],
+        Sel::Project(_) => vec![("n feature".into(), NewFeature), ("? help".into(), Help)],
         // A folded feature row is its shell: it offers the shell actions
         // on top of the feature ones (`a` gives it a second shell, which
         // unfolds the subtree).
@@ -826,11 +821,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
     ),
     (
         "projects",
-        &[
-            (&["i"], &["import project", "absolute path"]),
-            (&["I"], &["scan for new projects", "discovery rescan"]),
-            (&["n"], &["new feature", "worktree + agent shell"]),
-        ],
+        &[(&["n"], &["new feature", "worktree + agent shell"])],
     ),
     (
         "features",
@@ -1149,7 +1140,6 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
     let theme = &app.theme.colors;
     let (title, label) = match &app.mode {
         Mode::Input { kind, .. } => match kind {
-            InputKind::ImportProject => ("Import Project", "repo path (absolute): "),
             InputKind::NewFeature => ("New Feature", "feature name: "),
             InputKind::AddShell => ("Add Shell", "command: "),
             InputKind::QuickSend => ("Quick Send", "send to agent: "),
@@ -1357,8 +1347,8 @@ mod tests {
             Mode::Normal,
             Mode::Help,
             Mode::Input {
-                kind: InputKind::ImportProject,
-                text: "/tmp/some/path".into(),
+                kind: InputKind::NewFeature,
+                text: "some-feature".into(),
             },
             Mode::Confirm {
                 confirm: Confirm {
@@ -1434,12 +1424,6 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
         for (kind, label, text, lines) in [
-            (
-                InputKind::ImportProject,
-                "repo path (absolute): ",
-                "/tmp/repo",
-                4,
-            ),
             (InputKind::NewFeature, "feature name: ", "foo", 4),
             // + the `default: <cmd>` hint line
             (InputKind::AddShell, "command: ", "ls -la", 5),
@@ -1727,13 +1711,6 @@ mod tests {
             ),
             (
                 Mode::Input {
-                    kind: InputKind::ImportProject,
-                    text: String::new(),
-                },
-                "Import Project",
-            ),
-            (
-                Mode::Input {
                     kind: InputKind::AddShell,
                     text: String::new(),
                 },
@@ -1795,8 +1772,8 @@ mod tests {
             Mode::Normal,
             Mode::Help,
             Mode::Input {
-                kind: InputKind::ImportProject,
-                text: "/tmp/repo-a".into(),
+                kind: InputKind::NewFeature,
+                text: "some-feature".into(),
             },
             Mode::Confirm {
                 confirm: Confirm {
@@ -1909,8 +1886,6 @@ mod tests {
             "collapse",
             "expand",
             "attach",
-            "import project",
-            "scan for new projects",
             "new feature",
             "add shell",
             "delete feature",
@@ -1924,6 +1899,28 @@ mod tests {
         assert!(
             app.popup_area.is_some(),
             "help overlay must register its dismissable rect"
+        );
+    }
+
+    /// `I scan` / `i import` are gone from the project row: discovery is a
+    /// boot-time concern, so the row offers only what still exists.
+    #[test]
+    fn the_project_bar_offers_no_scan_or_import() {
+        let mut app = seeded_app();
+        app.sel = crate::app::Sel::Project(0);
+        let labels: Vec<String> = crate::ui::bar_entries(&app)
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
+        assert!(
+            !labels
+                .iter()
+                .any(|l| l.contains("scan") || l.contains("import")),
+            "bar: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("feature")),
+            "bar keeps `n feature`: {labels:?}"
         );
     }
 
@@ -1959,13 +1956,6 @@ mod tests {
                 assert!(text.contains("delete feature"), "bar 'd delete' ↔ help");
             } else if word == "attach" {
                 assert!(text.contains("attach"), "bar '↵ attach' ↔ help");
-            } else if word == "scan" {
-                assert!(
-                    text.contains("scan for new projects"),
-                    "bar 'I scan' ↔ help"
-                );
-            } else if word == "import" {
-                assert!(text.contains("import project"), "bar 'i import' ↔ help");
             } else if word == "close" {
                 assert!(text.contains("close shell"), "bar 'd close' ↔ help");
             } else {

@@ -63,8 +63,6 @@ overlay lists all of them grouped by context. Same words in both.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `I` | rescan the scope for new projects (discovery rescan, live, no cache) | shifted = stronger variant of `i` |
-| `i` | import a project by absolute path | import action |
 | `n` | new feature (worktree + branch + agent shell) | create action |
 
 ### Feature selected
@@ -83,7 +81,7 @@ overlay lists all of them grouped by context. Same words in both.
 | `s` | quick-send a prompt to the agent (multiline editor, Alt+Enter sends) | send action |
 | `d` | close this shell (kills its window; the feature and its other shells stay) | vim `d` destructive, confirms; the object is the selected row |
 
-## Text input (import / new feature — single line)
+## Text input (new feature / add shell — single line)
 
 || Key | Meaning | Rule satisfied |
 |---|---|---|

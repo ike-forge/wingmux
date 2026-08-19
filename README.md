@@ -11,7 +11,7 @@ session: they live in their own dedicated tmux sessions
 (`wingman-session-<project>`), invisible until you attach to them.
 
 ```
-ProjectA  (a git repo, imported by path)
+ProjectA  (a git repo found by discovery)
   ├── master        (the main checkout — untouched)
   ├── featureA1     (worktree + 1..n agent shells)
   ├── featureA2
@@ -76,8 +76,6 @@ the help overlay (`?`).
 | `ctrl-f` / `ctrl-b` | full page up / down |
 | `h` | collapse / jump to parent |
 | `l` / `Enter` | expand, or **attach** to the selected shell (a one-shell feature attaches straight away — see the folded row below) |
-| `i` | import a project (absolute repo path) |
-| `I` | **scan** `[discovery].scan_root` for new projects (discovery rescan) |
 | `n` | new feature (worktree + branch + agent shell) |
 | `a` | add a shell to the selected feature — a prompt asks which command it runs (empty = the project's default agent command, shown as a hint) |
 | `s` | **quick-send** a line to the selected shell (or to a one-shell feature's row). `Esc` keeps the unsent text as that shell's draft — `s` on it again picks up where you left off. The draft is dropped once the message is actually delivered, and lives only for this run of LazyWingman |
@@ -187,9 +185,9 @@ everything else is kept. Unknown keys are reported, not fatal (an older
 binary runs a newer config). Every drop is shown once, at startup, in a
 **diagnostics overlay** (`Esc`/`q` dismisses, `j`/`k` scrolls) and logged.
 
-Projects imported from inside the TUI (`i`, `I`) live in the state file, not
-in the config; config `[[projects]]` entries are merged in at startup and
-consulted for per-project agent settings.
+Projects found by discovery live in the state file, not in the config;
+config `[[projects]]` entries are merged in at startup and consulted for
+per-project agent settings.
 
 ## Project discovery
 
@@ -215,8 +213,11 @@ stats per directory, done live.
   one the first frame draws); the rest are drained one per frame, so the
   tree appears immediately and fills in. Listing 200 repos costs 200
   directory stats, not 200 git calls.
-- **`I`** rescans the scope at any time and adds new repos. It is the
-  stronger variant of `i` (single path).
+- **Discovery runs at startup**, not on a key. A repo created while
+  LazyWingman is running appears the next time you start it in that scope;
+  `r` refreshes tmux state (windows, panes, worktrees), not the repo list.
+  To add a project that is not in the scope, declare it under `[[projects]]`
+  in `config.toml`.
 - **Missing projects** are kept, not pruned: a project whose path is
   currently not a git repo shows `(missing)` dimmed in the tree and
   re-activates automatically when the path is a repo again. If it is gone

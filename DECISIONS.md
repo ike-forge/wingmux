@@ -154,6 +154,19 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   boot), and `prune` skips worktree verification for projects whose
   worktrees were never loaded, so boot never pays 200 git calls. Since M20
   the unfolded projects' listings are queued rather than run at boot.
+- **M22 — no `i import` / `I scan`: discovery is the only way in.** Both
+  keys predate scope-based discovery (M9.3), which already imports every repo
+  inside the scope at boot, live and without a cache. `i` (type an absolute
+  path) and `I` (rescan the same root discovery just walked) were left over
+  from the era of an explicit project list, and they cost two of the scarce
+  top-level keys plus two of the four statusbar slots on a project row. What
+  remains covers the cases: the scope is discovered at startup, and a repo
+  outside it goes under `[[projects]]` in `config.toml`. The deliberate loss:
+  a repo created WHILE LazyWingman runs no longer appears without a restart —
+  `r` refreshes tmux state, not the repo list. Folding a rescan into `r` was
+  considered and left out: `r` means "reconcile what I am showing against
+  reality", and walking the filesystem is a different (and much more
+  expensive) promise. It can be revisited if the restart proves annoying.
 - **M21 — one reentrant lock for every process-global test fixture.** Two
   locks (`XDG_LOCK`, `TMUX_TEST_LOCK`) guarding the same kind of thing —
   process-wide env vars — is a lock-order inversion waiting to happen, and it
