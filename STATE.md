@@ -99,11 +99,21 @@ All five M9 items landed, each committed + pushed to origin/main:
   own binding). Tests: prefix-table registration + legacy unbind.
 - **M9.2** — quick-send is a **multiline textarea** (`Mode::Textarea` +
   `TextBuf`): Enter=newline, Tab=tab, arrows/Home/End (wrap at line ends),
-  PgUp/PgDn/ctrl-u/d/f/b page, **Alt+Enter or Ctrl+Enter sends**, Esc
-  cancels; accessibility layer yields all motion keys while it is open.
+  PgUp/PgDn/ctrl-u/d/f/b page, **ctrl-s sends** (M9.6; Alt+Enter also,
+  where the terminal delivers it), Esc cancels; accessibility layer yields all motion keys while it is open.
   Delivery switched to tmux **paste-buffer with bracketed paste**
   (`paste_keys`) so multi-line prompts arrive as one paste. Tests:
   TextBuf editing, send chords, paste integration.
+- **M9.6** — quick-send bug fixes from live use in tmux: **ctrl-s is the
+  send key** (tmux defaults to `extended-keys off`, so Ctrl+Enter is not
+  encodable and reaches the app as a plain Enter; Alt+Enter is often eaten
+  by the outer terminal — the textarea had no working submit key), and the
+  **scroll window is the popup's content height** (`TextBuf` methods each
+  called `ensure_visible(1)`, so every Enter scrolled the previous line out
+  and only one line was ever visible). `TextBuf` no longer scrolls; the key
+  handler calls `ensure_visible(textarea_visible_lines(viewport))` once per
+  key. Tests: `textarea_ctrl_s_sends`,
+  `textarea_enter_keeps_earlier_lines_visible`.
 - **M9.3** — discovery is **scope-based, live, lazy**: only projects inside
   the startup dir (or `[discovery].scan_root`) are listed; scopes never
   mix. Boot inside a repo → single project, features FLAT at top level.

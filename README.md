@@ -272,7 +272,8 @@ only — the live preview panel lets you confirm what's really happening.
   <agent-session>` (the shell's window is preselected); detaching with `C-b
   d` returns you to the dashboard.
 - **Quick-send** = an in-TUI multiline editor (Enter = newline, Tab =
-  tab, arrows/Home/End move the cursor, Alt+Enter or Ctrl+Enter sends)
+  tab, arrows/Home/End move the cursor, **ctrl-s sends** — Alt+Enter too
+  where the terminal delivers it)
   that pastes the prompt to the selected pane via tmux paste-buffer with
   bracketed paste — multi-line prompts arrive as one paste, not as
   premature Enter presses.

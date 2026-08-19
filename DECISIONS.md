@@ -79,9 +79,9 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
 - **M9 — quick-send is a multiline textarea.** The main way to talk to
   agents became a full editor (`Mode::Textarea` + `TextBuf`): Enter inserts a
   newline, Tab a real tab, arrows/Home/End move the cursor (wrapping at line
-  ends), PgUp/PgDn/ctrl-u/d/f/b page the cursor, and the send chord is
-  **Alt+Enter or Ctrl+Enter** — a plain Enter is needed for editing, so it
-  cannot be the submit key. While the textarea is open the accessibility
+  ends), PgUp/PgDn/ctrl-u/d/f/b page the cursor, and the send key is
+  **ctrl-s** (Alt+Enter still works where the terminal delivers it) — a
+  plain Enter is needed for editing, so it cannot be the submit key. While the textarea is open the accessibility
   layer yields ALL motion keys to it (only ctrl-c and ctrl-t stay global);
   the tree selection never moves while editing. Delivery switched from
   `send-keys -l` to tmux **paste-buffer with bracketed paste** (`paste_keys`):
@@ -89,6 +89,22 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   submit the first line early; bracketed paste delivers multi-line text as
   one paste, then a trailing Enter submits. Import/new-feature inputs stay
   single-line (`Enter` submits) — they are names, not prompts.
+- **M9.6 — the send key is ctrl-s, and the scroll window is the popup's.**
+  Two bugs made quick-send unusable in a real tmux. (1) *Nothing could be
+  submitted*: both send chords are undeliverable in a default setup — tmux
+  ships `extended-keys off`, so **Ctrl+Enter is not encodable at all** and
+  arrives as a bare Enter (a newline), while **Alt+Enter** depends on the
+  outer terminal emulator forwarding `ESC CR` (Windows Terminal binds it to
+  fullscreen). The send key is now **ctrl-s** — a plain control byte, which
+  raw mode always delivers; Alt+Enter is kept as a bonus, and Ctrl+Enter is
+  still accepted for terminals that do encode it. Lesson: a chord that
+  needs the kitty/CSI-u protocol cannot be the ONLY way to perform an
+  action. (2) *Only one line was ever visible*: every `TextBuf` edit and
+  motion called `ensure_visible(1)` — a hardcoded one-line viewport — so
+  each Enter scrolled the previous line out of a 10–18 row popup. `TextBuf`
+  no longer scrolls at all; the key handler calls `ensure_visible` once per
+  key with the popup's real content height (`textarea_visible_lines`),
+  which is the only place that knows it.
 - **M9 — discovery is scope-based, live, and lazy.** The tree no longer
   lists EVERY project ever discovered — that mixed scopes. The scope is the
   startup directory (or `[discovery].scan_root`): only projects inside it

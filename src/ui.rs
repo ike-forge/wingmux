@@ -912,7 +912,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
         "shells",
         &[
             (&["Enter"], &["attach to shell"]),
-            (&["s"], &["quick-send a line"]),
+            (&["s"], &["quick-send", "ctrl-s sends"]),
             (&["d"], &["delete this feature"]),
         ],
     ),
@@ -1229,7 +1229,7 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
     lines.push(Line::from(vec![
         Span::styled("enter newline", fg(theme.accent)),
         Span::styled(sep(app.ascii), fg(theme.dim)),
-        Span::styled("alt+enter send", fg(theme.accent)),
+        Span::styled("ctrl-s send", fg(theme.accent)),
         Span::styled(sep(app.ascii), fg(theme.dim)),
         Span::styled("esc cancel", fg(theme.accent)),
     ]));
@@ -1440,6 +1440,40 @@ mod tests {
                 "cursor must sit on the input row after the typed text ({label:?})",
             );
         }
+    }
+
+    /// The textarea popup shows the WHOLE visible window, not just the
+    /// line being typed (regression: TextBuf scrolled with a hardcoded
+    /// one-line viewport, so every earlier line left the popup), and its
+    /// hint names the send key that terminals actually deliver.
+    #[test]
+    fn textarea_popup_shows_every_line_and_the_send_hint() {
+        let cfg = Config::default();
+        let theme = theme::load("ansi", false).unwrap();
+        let mut app = App::new(cfg, theme, None);
+        app.startup().unwrap();
+
+        let mut buf = crate::app::TextBuf::new();
+        for line in ["alpha", "beta", "gamma"] {
+            for c in line.chars() {
+                buf.insert_char(c);
+            }
+            buf.newline();
+        }
+        buf.ensure_visible(crate::app::textarea_visible_lines(40));
+        app.mode = Mode::Textarea { buf };
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app))
+            .expect("draw must not fail");
+        let text = buffer_text(&terminal);
+
+        for line in ["alpha", "beta", "gamma"] {
+            assert!(text.contains(line), "popup must still show {line:?}");
+        }
+        assert!(text.contains("ctrl-s send"), "hint names the send key");
     }
 
     // ---- M8.4a — small terminals, resize, ASCII fallback ----

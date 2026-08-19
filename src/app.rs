@@ -38,7 +38,7 @@ pub enum Mode {
     },
     /// Multiline prompt editor (quick-send). Owns all editing keys:
     /// Enter = newline, Tab = tab, arrows/Home/End move the cursor,
-    /// Alt+Enter / Ctrl+Enter = send, Esc = cancel. The accessibility
+    /// ctrl-s (or Alt+Enter) = send, Esc = cancel. The accessibility
     /// layer only keeps ctrl-c (quit) and ctrl-t (theme) while it is open.
     Textarea {
         buf: TextBuf,
@@ -120,7 +120,6 @@ impl TextBuf {
         self.lines.insert(self.row + 1, rest);
         self.row += 1;
         self.col = 0;
-        self.ensure_visible(1);
     }
 
     pub fn insert_tab(&mut self) {
@@ -139,7 +138,6 @@ impl TextBuf {
             self.lines[self.row - 1].push_str(&rest);
             self.row -= 1;
             self.col = prev_len;
-            self.ensure_visible(1);
         }
     }
 
@@ -161,7 +159,6 @@ impl TextBuf {
         } else if self.row > 0 {
             self.row -= 1;
             self.col = self.lines[self.row].len();
-            self.ensure_visible(1);
         }
     }
 
@@ -171,7 +168,6 @@ impl TextBuf {
         } else if self.row + 1 < self.lines.len() {
             self.row += 1;
             self.col = 0;
-            self.ensure_visible(1);
         }
     }
 
@@ -179,7 +175,6 @@ impl TextBuf {
         if self.row > 0 {
             self.row -= 1;
             self.clamp_col();
-            self.ensure_visible(1);
         }
     }
 
@@ -187,7 +182,6 @@ impl TextBuf {
         if self.row + 1 < self.lines.len() {
             self.row += 1;
             self.clamp_col();
-            self.ensure_visible(1);
         }
     }
 
@@ -212,7 +206,6 @@ impl TextBuf {
         }
         self.row = target;
         self.clamp_col();
-        self.ensure_visible(page.max(1));
         true
     }
 
@@ -222,8 +215,11 @@ impl TextBuf {
 
     /// Keep the cursor row visible within a `visible`-line viewport:
     /// scroll down if the cursor moved above the viewport, up if it moved
-    /// below it.
-    fn ensure_visible(&mut self, visible: usize) {
+    /// below it. The key handler calls this once per key — only it knows
+    /// the popup's real content height, and scrolling inside the editing
+    /// methods (with a hardcoded one-line window) pushed every earlier
+    /// line out of the textarea.
+    pub fn ensure_visible(&mut self, visible: usize) {
         let view = visible.max(1);
         if self.row < self.scroll {
             self.scroll = self.row;
@@ -1529,19 +1525,28 @@ impl App {
                 _ => {}
             },
             Mode::Textarea { buf } => {
-                // Send: Alt+Enter or Ctrl+Enter. A plain Enter inserts a
-                // newline; Esc cancels. The textarea owns all editing keys.
-                let send_chord = key.code == KeyCode::Enter
-                    && (key.modifiers.contains(KeyModifiers::ALT)
-                        || key.modifiers.contains(KeyModifiers::CONTROL));
+                // Send: ctrl-s, or Alt+Enter where the terminal delivers
+                // it. A plain Enter inserts a newline; Esc cancels. The
+                // textarea owns all editing keys.
+                //
+                // ctrl-s is the reliable half of that pair: tmux with
+                // `extended-keys off` (the default) cannot encode
+                // Ctrl+Enter at all — it reaches us as a bare Enter — and
+                // Alt+Enter is commonly swallowed by the outer terminal
+                // emulator. A plain control byte always arrives.
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                let send_chord = (key.code == KeyCode::Enter
+                    && (key.modifiers.contains(KeyModifiers::ALT) || ctrl))
+                    || (key.code == KeyCode::Char('s') && ctrl);
                 if send_chord {
                     let text = buf.text();
                     self.mode = Mode::Normal;
                     self.submit_input(InputKind::QuickSend, text);
+                } else if key.code == KeyCode::Esc {
+                    self.mode = Mode::Normal;
                 } else {
                     match key.code {
                         KeyCode::Enter => buf.newline(),
-                        KeyCode::Esc => self.mode = Mode::Normal,
                         KeyCode::Tab => buf.insert_tab(),
                         KeyCode::Backspace => buf.backspace(),
                         KeyCode::Delete => buf.delete(),
@@ -1580,6 +1585,9 @@ impl App {
                         KeyCode::Char(c) => buf.insert_char(c),
                         _ => {}
                     }
+                    // Scrolling is decided here, where the popup's real
+                    // content height is known — never inside TextBuf.
+                    buf.ensure_visible(visible_lines);
                 }
             }
             Mode::Confirm { confirm } => match key.code {
@@ -3020,6 +3028,56 @@ mod tests {
         app.on_key(key(KeyCode::Char('y'), false));
         app.on_key(key(KeyCode::Esc, false));
         assert!(matches!(app.mode, Mode::Normal), "Esc cancels");
+    }
+
+    /// Regression: the visible window is the popup's content height, not
+    /// one line — typing Enter must not scroll every earlier line out of
+    /// the textarea (M9.2 hardcoded `ensure_visible(1)`).
+    #[test]
+    fn textarea_enter_keeps_earlier_lines_visible() {
+        let mut app = app_with_shell();
+        app.viewport = (120, 40);
+        let visible = textarea_visible_lines(40);
+        assert!(visible >= 3, "the test needs a roomy window, got {visible}");
+
+        app.on_key(key(KeyCode::Char('s'), false));
+        for _ in 0..3 {
+            app.on_key(key(KeyCode::Char('x'), false));
+            app.on_key(key(KeyCode::Enter, false));
+        }
+        let Mode::Textarea { buf } = &app.mode else {
+            panic!("still in textarea");
+        };
+        assert_eq!(buf.cursor_row(), 3);
+        assert_eq!(
+            buf.scroll(),
+            0,
+            "4 lines fit in {visible} rows — nothing scrolls away"
+        );
+
+        // one line past the window scrolls by exactly one
+        for _ in 0..(visible - 3) {
+            app.on_key(key(KeyCode::Enter, false));
+        }
+        let Mode::Textarea { buf } = &app.mode else {
+            panic!("still in textarea");
+        };
+        assert_eq!(buf.cursor_row(), visible);
+        assert_eq!(buf.scroll(), 1);
+    }
+
+    /// ctrl-s is the send key that survives a legacy terminal: tmux with
+    /// `extended-keys off` cannot deliver Ctrl+Enter, and Alt+Enter is
+    /// often eaten by the outer terminal emulator.
+    #[test]
+    fn textarea_ctrl_s_sends() {
+        let mut app = app_with_shell();
+        app.viewport = (120, 40);
+
+        app.on_key(key(KeyCode::Char('s'), false));
+        app.on_key(key(KeyCode::Char('x'), false));
+        app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(matches!(app.mode, Mode::Normal), "ctrl-s sends");
     }
 
     #[test]
