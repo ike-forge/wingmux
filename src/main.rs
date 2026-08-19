@@ -42,6 +42,11 @@ struct Cli {
     /// `--config-dump`: print the effective config + layer provenance and
     /// exit without starting the TUI.
     dump: bool,
+    /// `hook <Event>`: apply one Claude hook event to our own pane and exit.
+    hook_event: Option<String>,
+    /// `--socket <name>`: tmux socket for the hook subcommand, matching the
+    /// dashboard's `$LAZYWINGMAN_TMUX_SOCKET`.
+    socket: Option<String>,
 }
 
 /// Parse CLI args. Returns [`Cli`]; `--help`/`-h` prints usage and exits 0.
@@ -61,6 +66,18 @@ fn parse_cli() -> Result<Cli> {
                 cli.config = Some(PathBuf::from(path));
             }
             "--config-dump" => cli.dump = true,
+            "--socket" => {
+                let s = args
+                    .next()
+                    .ok_or_else(|| error::Error::Config("--socket requires a name".into()))?;
+                cli.socket = Some(s);
+            }
+            "hook" => {
+                let event = args
+                    .next()
+                    .ok_or_else(|| error::Error::Config("hook requires an event name".into()))?;
+                cli.hook_event = Some(event);
+            }
             other => {
                 return Err(error::Error::Config(format!(
                     "unknown argument '{other}' (try --help)"
@@ -82,6 +99,9 @@ fn print_usage() {
                            env var is the same override, --config wins)\n\
          --config-dump      print the effective config with the layer each\n\
                            key came from, then exit (no TUI)\n\
+         hook <Event>       internal: apply one Claude Code hook event to\n\
+                           this pane's status (used by the generated\n\
+                           lazywingman-activity-hooks.json; not for manual use)\n\
          -h, --help         show this help"
     );
 }
@@ -93,6 +113,9 @@ fn real_main() -> Result<()> {
     log::info!("lazywingman starting (pid {})", std::process::id());
 
     let cli = parse_cli()?;
+    if let Some(event) = cli.hook_event {
+        return run_hook_subcommand(&event, cli.socket);
+    }
     if let Some(ref p) = cli.config {
         log::info!("user config override: {}", p.display());
     }
@@ -151,4 +174,41 @@ fn real_main() -> Result<()> {
         None => log::info!("dashboard standalone (no tmux around it)"),
     }
     app::run(cfg, theme, tmux)
+}
+
+/// `lazywingman hook <Event>`: called by Claude Code, once per lifecycle
+/// event, in the agent's own pane. Must be fast and must never write to
+/// stdout — Claude reads hook stdout as protocol. Any failure is swallowed:
+/// a hook that errors loudly interrupts the agent it observes.
+fn run_hook_subcommand(event: &str, socket: Option<String>) -> Result<()> {
+    if let Some(s) = socket {
+        // Tmux::detect reads this; setting it keeps socket handling in one
+        // place rather than threading an override through the API.
+        // SAFETY: this call happens before any thread is spawned (we are
+        // still in the single-threaded startup path, before parse_cli's
+        // caller has done anything else), which is the documented safety
+        // condition for `std::env::set_var`.
+        unsafe { std::env::set_var("LAZYWINGMAN_TMUX_SOCKET", s) };
+    }
+    let Some(pane_id) = std::env::var("TMUX_PANE").ok().filter(|p| !p.is_empty()) else {
+        // Not inside tmux: nothing to report to. Not an error.
+        return Ok(());
+    };
+    let payload: serde_json::Value =
+        serde_json::from_reader(std::io::stdin()).unwrap_or(serde_json::Value::Null);
+    // A tmux error here (bad socket, tmux missing, stale pane) must not
+    // propagate: this subcommand must exit 0 no matter what, so it never
+    // interrupts the agent it observes. Unlike the TUI path, we do not use
+    // `?` on `detect()`.
+    let tmux = match tmux::Tmux::detect() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("lazywingman hook {event}: {e}");
+            return Ok(());
+        }
+    };
+    if let Err(e) = hooks::run_hook(event, &pane_id, &tmux, &payload) {
+        eprintln!("lazywingman hook {event}: {e}");
+    }
+    Ok(())
 }

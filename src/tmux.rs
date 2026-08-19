@@ -428,14 +428,12 @@ impl Tmux {
     /// Set a pane user option (`@key`). Used by the hook subcommand to
     /// publish an agent's self-reported state onto its own pane; tmux
     /// disposes of it with the pane, so there is nothing to clean up.
-    #[allow(dead_code)] // called by the hook subcommand (later task)
     pub fn set_pane_option(&self, pane_id: &str, key: &str, value: &str) -> Result<()> {
         self.run(&["set-option", "-p", "-t", pane_id, key, value])?;
         Ok(())
     }
 
     /// Unset a pane user option, handing the shell back to the heuristics.
-    #[allow(dead_code)] // called by the hook subcommand (later task)
     pub fn clear_pane_option(&self, pane_id: &str, key: &str) -> Result<()> {
         self.run(&["set-option", "-p", "-u", "-t", pane_id, key])?;
         Ok(())
@@ -755,6 +753,57 @@ mod tests {
                 .expect("same pane");
             assert_eq!(got.overlay_raw, "", "cleared reads as empty");
             let _ = sock;
+        });
+    }
+
+    #[test]
+    fn hook_writes_and_clears_the_overlay_on_a_real_pane() {
+        with_tmux_server(|_sock, tmux| {
+            tmux.new_session(
+                "wingman-session-hook",
+                "lw:feat/0",
+                std::path::Path::new("/tmp"),
+                "bash",
+            )
+            .expect("session");
+            let pane = tmux
+                .list_panes()
+                .expect("panes")
+                .first()
+                .expect("pane")
+                .clone();
+
+            crate::hooks::run_hook("Stop", &pane.pane_id, &tmux, &serde_json::Value::Null)
+                .expect("stop hook");
+            let got = tmux.list_panes().expect("panes");
+            let raw = &got
+                .iter()
+                .find(|p| p.pane_id == pane.pane_id)
+                .expect("pane")
+                .overlay_raw;
+            assert!(raw.starts_with("waiting:"), "overlay reads {raw:?}");
+
+            let msg = serde_json::json!({"message": "Claude needs your permission to use Bash"});
+            crate::hooks::run_hook("Notification", &pane.pane_id, &tmux, &msg)
+                .expect("notification hook");
+            let got = tmux.list_panes().expect("panes");
+            let raw = &got
+                .iter()
+                .find(|p| p.pane_id == pane.pane_id)
+                .expect("pane")
+                .overlay_raw;
+            assert!(raw.starts_with("blocked:"), "overlay reads {raw:?}");
+
+            crate::hooks::run_hook("SessionEnd", &pane.pane_id, &tmux, &serde_json::Value::Null)
+                .expect("session end hook");
+            let got = tmux.list_panes().expect("panes");
+            assert_eq!(
+                got.iter()
+                    .find(|p| p.pane_id == pane.pane_id)
+                    .expect("pane")
+                    .overlay_raw,
+                ""
+            );
         });
     }
 

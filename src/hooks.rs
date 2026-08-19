@@ -5,12 +5,10 @@ use crate::status::Status;
 use std::path::{Path, PathBuf};
 
 /// tmux pane user option carrying the agent's self-reported state.
-#[allow(dead_code)] // wired up when the poll loop reads the overlay (later task)
 pub const OVERLAY_KEY: &str = "@lw_agent";
 
 /// What a hook wrote onto a pane: a state plus when it was written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // constructed by the hook subcommand and read by the poll loop (later tasks)
 pub struct Overlay {
     pub status: Status,
     /// Unix seconds. Recorded for age-out and time-in-state display; the
@@ -20,7 +18,6 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    #[allow(dead_code)] // called by the hook subcommand (later task)
     pub fn encode(&self) -> String {
         format!("{}:{}", self.status.label(), self.at)
     }
@@ -45,7 +42,6 @@ impl Overlay {
 
 /// Unix seconds now, or 0 if the clock is before the epoch (never in
 /// practice; a 0 timestamp is harmless — it only ages the overlay out).
-#[allow(dead_code)] // called by the hook subcommand (later task)
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -55,7 +51,6 @@ pub fn now_secs() -> u64 {
 
 /// What a hook event does to the pane's overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // used by the hook subcommand (later task)
 pub enum Action {
     Set(Status),
     Clear,
@@ -66,12 +61,10 @@ pub enum Action {
 /// Substrings that identify a `Notification` as "the agent is blocked on
 /// the user", as opposed to the 60-second idle nudge. Matched
 /// case-insensitively.
-#[allow(dead_code)] // used by action_for (later task)
 const BLOCKING_NOTIFICATIONS: &[&str] = &["needs your permission", "permission required"];
 
 /// Map one hook event to its effect. `event` comes from argv;
 /// `payload` is Claude's JSON on stdin (only `Notification` uses it).
-#[allow(dead_code)] // called by the hook subcommand (later task)
 pub fn action_for(event: &str, payload: &serde_json::Value) -> Action {
     match event {
         "SessionStart" | "Stop" => Action::Set(Status::Waiting),
@@ -91,6 +84,28 @@ pub fn action_for(event: &str, payload: &serde_json::Value) -> Action {
             }
         }
         _ => Action::Ignore,
+    }
+}
+
+/// Apply one hook event to a pane. Errors are returned for the caller to
+/// log; the process still exits 0 (see `main`).
+pub fn run_hook(
+    event: &str,
+    pane_id: &str,
+    tmux: &crate::tmux::Tmux,
+    payload: &serde_json::Value,
+) -> crate::error::Result<()> {
+    match action_for(event, payload) {
+        Action::Set(status) => {
+            let value = Overlay {
+                status,
+                at: now_secs(),
+            }
+            .encode();
+            tmux.set_pane_option(pane_id, OVERLAY_KEY, &value)
+        }
+        Action::Clear => tmux.clear_pane_option(pane_id, OVERLAY_KEY),
+        Action::Ignore => Ok(()),
     }
 }
 
@@ -485,6 +500,19 @@ mod tests {
             instrument("/usr/local/bin/claude/", p),
             "/usr/local/bin/claude/ --settings /s/lazywingman-activity-hooks.json"
         );
+    }
+
+    #[test]
+    fn hook_ignores_unknown_events_without_touching_tmux() {
+        // No tmux server needed: an Ignore action must not shell out.
+        let tmux = crate::tmux::Tmux::detect().expect("detect");
+        let r = run_hook(
+            "PreToolUse",
+            "%nonexistent",
+            &tmux,
+            &serde_json::Value::Null,
+        );
+        assert!(r.is_ok(), "ignored events must be a no-op, got {r:?}");
     }
 
     #[test]
