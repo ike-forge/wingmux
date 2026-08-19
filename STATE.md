@@ -198,16 +198,24 @@ at the prompt with nothing owed". Both read as `waiting`.
   …/lazywingman-activity-hooks.json`; no consent modal, nothing hidden.
 - **`[defaults] agent_hooks`** (default `true`) turns the whole thing off:
   no settings file is written, no command is instrumented, behaviour is
-  byte-for-byte the pre-M17 regex ladder. The settings file is written
-  once at startup (`run()` → `hooks::write_settings_file()`), never from
-  `App::new`, so a moved binary or a changed `--socket` self-heals on the
-  next launch and constructing an `App` in a test touches no disk.
+  byte-for-byte the pre-M17 regex ladder. This is enforced twice, not just
+  at spawn time: `App::poll` also blanks any overlay a pane still carries
+  before `classify()` ever sees it, so a pane instrumented before the flag
+  was turned off (or one reporting to a second LazyWingman instance
+  sharing the tmux server — see limitation 6) does not keep influencing
+  classification either. The settings file is written once at startup
+  (`run()` → `hooks::write_settings_file()`), never from `App::new`, so a
+  moved binary or a changed `--socket` self-heals on the next launch and
+  constructing an `App` in a test touches no disk.
 - **`classify()` precedence** (`src/status.rs`): `dead` (pane gone from
   tmux) still wins over everything; next, the hook overlay — but only
   while the pane's foreground command is not a login shell (the staleness
-  guard below); then the regex ladder exactly as before. An instrumented
-  Claude session is believed over its own regex patterns, which stay
-  registered as the fallback the moment the overlay is stale, missing, or
+  guard below) AND, once the overlay is older than
+  `OVERLAY_STALE_AFTER_SECS` (60s), only if the pane's own tail does *not*
+  also look like a prompt (see limitation 5 — the age-out fix); then the
+  regex ladder exactly as before. An instrumented Claude session is
+  believed over its own regex patterns, which stay registered as the
+  fallback the moment the overlay is stale-and-idle-looking, missing, or
   the pane is running something else.
 - **The login-shell staleness guard, and its accepted trade-off**:
   `@lw_agent` only outranks the regex ladder while the pane's *foreground
@@ -244,6 +252,30 @@ Known limitations, carried forward on purpose rather than fixed:
 4. **Recognition is narrow by design**: only a command whose first
    token's file name is exactly `claude` is instrumented; wrappers and
    aliases fall back to heuristics like any other agent.
+5. **Not every turn-ending path fires a hook.** `Stop` does not fire when
+   the user interrupts a turn (Esc); the same gap applies to a turn ending
+   in an API error, and to `blocked` after a *denied* permission
+   (`PostToolUse` only fires after a tool completes). Pre-fix, these
+   stranded the overlay at `working`/`blocked` forever even though the
+   pane was visibly back at its prompt — a regression on the exact
+   question this milestone exists to answer. Fixed with an age-out
+   (`OVERLAY_STALE_AFTER_SECS = 60` in `src/status.rs`): the overlay is
+   only ignored, falling back to the regex ladder, when it is BOTH older
+   than the threshold AND the pane's tail corroborates that the agent
+   looks idle (its last line matches a `waiting` pattern). A blanket
+   age-out was rejected — a legitimate turn routinely runs longer than any
+   sane threshold, and discarding the overlay mid-turn would be worse than
+   the bug.
+6. **The settings file is shared per tmux server, not per LazyWingman
+   instance.** `write_settings_file()` regenerates
+   `<state_dir>/lazywingman-activity-hooks.json` unconditionally at
+   startup. If a second LazyWingman instance later starts against the
+   *same* tmux server but a *different* `--socket`, its startup rewrites
+   that shared file to point hooks at itself; any `claude` spawned by the
+   first instance afterwards is instrumented with a settings file that
+   now reports to the second instance's socket, not its own. No detection
+   or warning exists for this; the state directory is keyed by
+   `XDG_STATE_HOME`, not by socket.
 
 LIVE VERIFICATION (controller, real `claude` binary, not a mock): built the
 release binary, generated a settings file in the exact shape
