@@ -157,6 +157,10 @@ pub fn settings_json(exe: &str, socket: Option<&str>) -> String {
                 "hooks": [{
                     "type": "command",
                     "command": format!("{exe}{sock} hook {event}"),
+                    // Without this, Claude falls back to its own 60s
+                    // default per hook, and a hung tmux server would stall
+                    // the agent's own turn for up to a minute.
+                    "timeout": 5,
                 }]
             }]),
         );
@@ -447,6 +451,24 @@ mod tests {
             hooks["Stop"][0]["hooks"][0]["type"].as_str(),
             Some("command")
         );
+    }
+
+    /// Without an explicit timeout, Claude falls back to its own 60s
+    /// default per hook — a hung tmux server would stall the agent's own
+    /// turn for up to a minute. Every generated entry gets a short timeout
+    /// instead.
+    #[test]
+    fn settings_json_entries_carry_a_short_timeout() {
+        let s = settings_json("/opt/bin/lazywingman", None);
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+        let hooks = v["hooks"].as_object().expect("hooks object");
+        for (event, entry) in hooks {
+            assert_eq!(
+                entry[0]["hooks"][0]["timeout"].as_i64(),
+                Some(5),
+                "{event} hook entry must carry timeout: 5"
+            );
+        }
     }
 
     #[test]
