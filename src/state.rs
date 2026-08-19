@@ -65,6 +65,17 @@ pub struct Feature {
     pub shells: Vec<Shell>,
 }
 
+impl Feature {
+    /// Index for the next shell: one past the highest in use, never a
+    /// freed slot. The index names the tmux window and is what
+    /// [`State::reconcile`] matches a live window back to, so a closed
+    /// shell's number must not be handed out again while the feature
+    /// lives.
+    pub fn next_shell_index(&self) -> usize {
+        self.shells.iter().map(|s| s.index + 1).max().unwrap_or(0)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Shell {
     pub index: usize,
@@ -412,6 +423,36 @@ fn pane_cwd(tmux: &Tmux, pane_id: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A closed shell's index is never handed out again: `next_shell_index`
+    /// counts past the highest in use, so the freed number cannot collide
+    /// with a live window on reconcile.
+    #[test]
+    fn next_shell_index_never_reuses_a_freed_slot() {
+        let mut feat = Feature {
+            name: "feat".into(),
+            branch: "feat".into(),
+            worktree_path: PathBuf::from("/tmp/wt"),
+            created_at: String::new(),
+            shells: vec![],
+        };
+        assert_eq!(feat.next_shell_index(), 0);
+        for idx in 0..3 {
+            feat.shells.push(Shell {
+                index: idx,
+                window_name: format!("lw:feat/{idx}"),
+                window_id: None,
+                pane_id: None,
+            });
+        }
+        assert_eq!(feat.next_shell_index(), 3);
+        feat.shells.remove(1); // shell 1 closed
+        assert_eq!(
+            feat.next_shell_index(),
+            3,
+            "a freed index must not be reused while shell 2 holds a window"
+        );
+    }
 
     #[test]
     fn window_name_roundtrip() {

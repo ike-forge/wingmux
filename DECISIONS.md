@@ -36,8 +36,21 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   (agent exited); failed/waiting/working = regex on `capture-pane` tail;
   `idle` = default.
 - Feature deletion: kill windows → `git worktree remove` (with `--force`
-  offered in the confirm dialog when dirty) → drop from state. Branch kept
-  unless `worktrees.delete_branch = true`.
+  offered in the confirm dialog when dirty) → drop from state. The branch
+  goes with the worktree unless `worktrees.delete_branch = false` — a
+  feature branch whose worktree is gone is dead weight in the common case;
+  keeping it is the exception, so it is the opt-in.
+- `d` is contextual: on a feature row it deletes the feature, on a shell
+  row it closes just that shell (kill the window, drop it from the
+  feature). Deleting a feature from a shell row was the old behaviour and
+  the wrong one — "close this agent" is the frequent action, "delete the
+  whole feature" the rare one, and the two must not share a target.
+- Shell indices are never reused: `Feature::next_shell_index` counts past
+  the highest index in use, because the index names the tmux window and is
+  what `reconcile` matches a live window back to.
+- No "remove project" action: a project is a discovered repo, not app
+  state worth curating — removing it only made the tree drift from the
+  scope until the next scan brought it back.
 - Worktree root default: `<parent of repo>/.lazywingman-worktrees/<project>/<feature>`.
 - Keybindings: hardcoded vim-ish set (documented in help overlay + README);
   only the tmux back-key is configurable (cheap win, avoids clashing with

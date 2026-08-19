@@ -82,8 +82,7 @@ the help overlay (`?`).
 | `a` | add a shell to the selected feature |
 | `s` | **quick-send** a line to the selected shell (or to a one-shell feature's row) |
 | `p` | **predefined messages** for the selected shell (or a one-shell feature's row) — a modal of configured presets (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
-| `d` | delete feature (kills windows, removes worktree; `f` = force when dirty) |
-| `x` | remove project from LazyWingman (windows killed, worktrees kept) |
+| `d` | on a feature: delete it (kills windows, removes worktree; `f` = force when dirty). On a shell row: close that shell (kills its window only — the feature and its other shells stay) |
 | `r` | refresh — reconcile state against reality |
 | `?` | help overlay (grouped, scrollable: `j`/`k`, `PgUp`/`PgDn`) |
 | `q` / `Esc` / `ctrl-c` | quit (ctrl-c works from any state) |
@@ -118,7 +117,7 @@ back_key = "C-o"             # prefix + C-o jumps back to the dashboard (prefix 
 [worktrees]
 root = ""                    # default: <parent-of-repo>/.lazywingman-worktrees
 base_branch = "master"       # falls back to the repo's current branch
-delete_branch = false        # also delete the feature branch on delete
+delete_branch = true         # also delete the feature branch on delete
 
 [discovery]
 scan_root = ""               # the scope: projects inside this dir are listed; empty = cwd
@@ -217,8 +216,9 @@ stats per directory, done live.
   stronger variant of `i` (single path).
 - **Missing projects** are kept, not pruned: a project whose path is
   currently not a git repo shows `(missing)` dimmed in the tree and
-  re-activates automatically when the path is a repo again. Remove it
-  explicitly with `x` if it is gone for good.
+  re-activates automatically when the path is a repo again. If it is gone
+  for good, drop it from `state.json` (and from `[[projects]]` in
+  `config.toml` if it was declared there).
 
 ### Themes
 
@@ -307,8 +307,12 @@ at a glance without hunting for the status word at the end of the row.
   metadata).
 - Feature deletion kills the feature's windows — a session whose last shell
   window is killed destroys itself — then `git worktree remove` (with
-  `--force` offered when the worktree is dirty). The branch is kept unless
-  `worktrees.delete_branch = true`.
+  `--force` offered when the worktree is dirty). The feature branch goes
+  with it unless `worktrees.delete_branch = false`.
+- Shell deletion (`d` on a shell row) kills that one window and drops the
+  shell from the feature — the worktree, the branch and the sibling shells
+  are untouched. A closed shell's index is never handed out again while the
+  feature lives, so a new shell cannot collide with a live window.
 
 ## Layout
 

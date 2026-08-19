@@ -382,7 +382,7 @@ pub enum BarAction {
     QuickSend,
     PredefinedSend,
     DeleteFeature,
-    RemoveProject,
+    DeleteShell,
     Attach,
 }
 
@@ -405,8 +405,15 @@ pub struct Confirm {
 
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
-    DeleteFeature { project: usize, feature: usize },
-    RemoveProject { project: usize },
+    DeleteFeature {
+        project: usize,
+        feature: usize,
+    },
+    DeleteShell {
+        project: usize,
+        feature: usize,
+        shell: usize,
+    },
 }
 
 pub struct App {
@@ -1271,7 +1278,7 @@ impl App {
             .get(fi)
             .cloned()
             .ok_or_else(|| Error::State(format!("feature index {fi} out of range")))?;
-        let idx = feat.shells.len();
+        let idx = feat.next_shell_index();
         let wname = Tmux::window_name(&feat.branch, idx);
         let (session_name, window) = self.ensure_agent_session(
             &tmux,
@@ -1382,21 +1389,7 @@ impl App {
                 }
             }
         }
-        // Killing a session's last window destroys the session; if it
-        // survives (other features still have shells), keep it.
-        if let Some(sess) = &proj.session_name
-            && tmux.session_exists(sess)
-            && tmux
-                .list_windows(sess)
-                .map(|ws| {
-                    ws.iter()
-                        .all(|w| !crate::tmux::is_lazywingman_window(&w.window_name))
-                })
-                .unwrap_or(false)
-        {
-            log::info!("agent session {sess} has no shells left, killing it");
-            let _ = tmux.kill_session(sess);
-        }
+        Self::kill_session_if_empty(&tmux, &proj);
         Git.worktree_remove(&feat.worktree_path, force)?;
         if self.cfg.worktrees.delete_branch {
             match Git.branch_delete(&proj.path, &feat.branch) {
@@ -1415,7 +1408,10 @@ impl App {
         Ok(())
     }
 
-    pub fn remove_project(&mut self, pi: usize) -> Result<()> {
+    /// Close one shell: kill its tmux window and drop it from the
+    /// feature. The feature itself — worktree, branch, sibling shells —
+    /// is untouched; deleting the feature is `d` on the feature row.
+    pub fn delete_shell(&mut self, pi: usize, fi: usize, si: usize) -> Result<()> {
         let tmux = self.require_tmux()?;
         let proj = self
             .state
@@ -1423,31 +1419,47 @@ impl App {
             .get(pi)
             .cloned()
             .ok_or_else(|| Error::State(format!("project index {pi} out of range")))?;
-        for feat in &proj.features {
-            for sh in &feat.shells {
-                if let Some(wid) = &sh.window_id {
-                    let _ = tmux.kill_window(wid);
-                }
+        let feat = proj
+            .features
+            .get(fi)
+            .cloned()
+            .ok_or_else(|| Error::State(format!("feature index {fi} out of range")))?;
+        let sh = feat
+            .shells
+            .get(si)
+            .cloned()
+            .ok_or_else(|| Error::State(format!("shell index {si} out of range")))?;
+        if let Some(wid) = &sh.window_id {
+            match tmux.kill_window(wid) {
+                Ok(()) => log::info!("killed window {wid} ({})", sh.window_name),
+                Err(e) => log::warn!("kill-window {wid}: {e}"),
             }
         }
-        // Tear down the project's agent session entirely (idempotent).
-        if let Some(sess) = &proj.session_name
-            && tmux.session_exists(sess)
-        {
-            log::info!("killing agent session {sess}");
-            let _ = tmux.kill_session(sess);
-        }
-        self.state.projects.remove(pi);
-        self.proj_expanded.remove(pi);
-        self.feat_expanded.remove(pi);
+        Self::kill_session_if_empty(&tmux, &proj);
+        self.state.projects[pi].features[fi].shells.remove(si);
         self.clamp_sel();
         self.save_state()?;
-        // worktrees stay on disk (git manages them; LazyWingman never deletes)
-        self.notify(format!(
-            "project '{}' removed from LazyWingman (worktrees kept on disk)",
-            proj.name
-        ));
+        self.poll_dirty(true);
+        self.notify(format!("shell '{}' closed", sh.window_name));
         Ok(())
+    }
+
+    /// Killing a session's last window destroys the session; if it
+    /// survives with no LazyWingman windows left, kill it too.
+    fn kill_session_if_empty(tmux: &Tmux, proj: &crate::state::Project) {
+        if let Some(sess) = &proj.session_name
+            && tmux.session_exists(sess)
+            && tmux
+                .list_windows(sess)
+                .map(|ws| {
+                    ws.iter()
+                        .all(|w| !crate::tmux::is_lazywingman_window(&w.window_name))
+                })
+                .unwrap_or(false)
+        {
+            log::info!("agent session {sess} has no shells left, killing it");
+            let _ = tmux.kill_session(sess);
+        }
     }
 
     // ---------------------------------------------------------- notices
@@ -1576,22 +1588,26 @@ impl App {
         };
     }
 
-    pub fn confirm_remove_project(&mut self) {
-        let Sel::Project(pi) = self.sel else {
-            self.notify("select a project first");
+    pub fn confirm_delete_shell(&mut self) {
+        let Sel::Shell(pi, fi, si) = self.sel else {
+            self.notify("select a shell first");
             return;
         };
-        let proj = &self.state.projects[pi];
+        let feat = &self.state.projects[pi].features[fi];
+        let sh = &feat.shells[si];
         self.mode = Mode::Confirm {
             confirm: Confirm {
-                title: "remove project".into(),
+                title: "close shell".into(),
                 body: format!(
-                    "Remove '{}' from LazyWingman?\n{}\nAgent windows are killed; worktrees stay on disk.",
-                    proj.name,
-                    proj.path.display()
+                    "Close shell '{}' of feature '{}'?\nThe tmux window is killed; the feature, its worktree and its other shells stay.",
+                    sh.window_name, feat.name
                 ),
                 force_label: None,
-                action: ConfirmAction::RemoveProject { project: pi },
+                action: ConfirmAction::DeleteShell {
+                    project: pi,
+                    feature: fi,
+                    shell: si,
+                },
             },
         };
     }
@@ -1991,8 +2007,10 @@ impl App {
                 }
             }
             KeyCode::Char('p') => self.open_messages(),
-            KeyCode::Char('d') => self.confirm_delete_feature(),
-            KeyCode::Char('x') => self.confirm_remove_project(),
+            KeyCode::Char('d') => match self.sel {
+                Sel::Shell(..) => self.confirm_delete_shell(),
+                _ => self.confirm_delete_feature(),
+            },
             KeyCode::Char('r') => {
                 self.refresh();
             }
@@ -2358,7 +2376,7 @@ impl App {
             }
             BarAction::PredefinedSend => self.open_messages(),
             BarAction::DeleteFeature => self.confirm_delete_feature(),
-            BarAction::RemoveProject => self.confirm_remove_project(),
+            BarAction::DeleteShell => self.confirm_delete_shell(),
             BarAction::Attach => {
                 if let Some((pi, fi, si)) = self.selected_shell() {
                     self.attach(pi, fi, si);
@@ -2546,7 +2564,11 @@ impl App {
             ConfirmAction::DeleteFeature { project, feature } => {
                 self.delete_feature(project, feature, force)
             }
-            ConfirmAction::RemoveProject { project } => self.remove_project(project),
+            ConfirmAction::DeleteShell {
+                project,
+                feature,
+                shell,
+            } => self.delete_shell(project, feature, shell),
         };
         if let Err(e) = res {
             self.fail(&e);
@@ -3237,6 +3259,103 @@ mod tests {
         assert_eq!(app.selected_shell(), None);
     }
 
+    /// `d` is contextual: on a shell row it closes that shell, on a
+    /// feature row it deletes the feature. Closing a shell must never
+    /// offer to take the feature (and its sibling shells) with it.
+    #[test]
+    fn d_on_a_shell_confirms_closing_only_that_shell() {
+        let mut app = app_with_shell();
+        app.state.projects[0].features[0].shells.push(Shell {
+            index: 1,
+            window_name: "lw:feat/1".into(),
+            window_id: Some("@2".into()),
+            pane_id: Some("%2".into()),
+        });
+        app.build_tree_flags();
+        app.sel = Sel::Shell(0, 0, 1);
+
+        app.on_key(key(KeyCode::Char('d'), false));
+        match &app.mode {
+            Mode::Confirm { confirm } => {
+                assert!(
+                    matches!(
+                        confirm.action,
+                        ConfirmAction::DeleteShell {
+                            project: 0,
+                            feature: 0,
+                            shell: 1
+                        }
+                    ),
+                    "d on a shell must confirm closing that shell: {:?}",
+                    confirm.action
+                );
+                assert!(
+                    confirm.body.contains("lw:feat/1"),
+                    "the confirm names the shell: {:?}",
+                    confirm.body
+                );
+            }
+            m => panic!("expected a confirm, got {m:?}"),
+        }
+
+        // the feature row keeps the feature-level delete
+        app.mode = Mode::Normal;
+        app.sel = Sel::Feature(0, 0);
+        app.on_key(key(KeyCode::Char('d'), false));
+        match &app.mode {
+            Mode::Confirm { confirm } => assert!(
+                matches!(confirm.action, ConfirmAction::DeleteFeature { .. }),
+                "d on a feature still deletes the feature: {:?}",
+                confirm.action
+            ),
+            m => panic!("expected a confirm, got {m:?}"),
+        }
+    }
+
+    /// Closing a shell kills that shell's window and nothing else: the
+    /// feature, its worktree entry and the sibling shell survive.
+    #[test]
+    fn delete_shell_kills_one_window_and_keeps_the_feature() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_standalone(sock);
+            let mut app = app_with(tmux.clone());
+            seed_project_with_shell(&tmux, &mut app);
+            let w2 = tmux
+                .new_window("wingman-session-p", "lw:feat/1", Path::new("/tmp"), "bash")
+                .unwrap();
+            app.state.projects[0].features[0].shells.push(Shell {
+                index: 1,
+                window_name: "lw:feat/1".into(),
+                window_id: Some(w2.window_id.clone()),
+                pane_id: Some(w2.pane_id.clone()),
+            });
+            app.build_tree_flags();
+            app.sel = Sel::Shell(0, 0, 1);
+
+            // save_state() writes to XDG_STATE_HOME — keep it off the
+            // developer's real state.json (the shared helper is the rule).
+            crate::util::testutil::with_fresh_xdg(|| app.delete_shell(0, 0, 1).unwrap());
+
+            assert_eq!(
+                app.state.projects[0].features.len(),
+                1,
+                "the feature must survive closing one of its shells"
+            );
+            let feat = &app.state.projects[0].features[0];
+            assert_eq!(feat.shells.len(), 1, "only the closed shell is dropped");
+            assert_eq!(feat.shells[0].index, 0);
+            let windows = tmux.list_windows("wingman-session-p").unwrap();
+            assert!(
+                windows.iter().any(|w| w.window_name == "lw:feat/0"),
+                "the sibling shell's window stays: {windows:?}"
+            );
+            assert!(
+                !windows.iter().any(|w| w.window_name == "lw:feat/1"),
+                "the closed shell's window is killed: {windows:?}"
+            );
+        });
+    }
+
     /// `l`/Enter on a folded feature attaches instead of expanding, and
     /// `h` walks up to the project rather than toggling a flag nothing
     /// renders.
@@ -3751,17 +3870,23 @@ mod tests {
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         assert!(!app.bar_hits.is_empty());
         assert_eq!(app.sel, Sel::Project(0));
-        // a project's bar has "x remove" → confirm_remove_project
+        // a project's bar has "n feature" → the new-feature input
         let (x0, x1, _) = app
             .bar_hits
             .iter()
-            .find(|(_, _, a)| *a == BarAction::RemoveProject)
+            .find(|(_, _, a)| *a == BarAction::NewFeature)
             .copied()
-            .expect("bar must offer 'x remove' for a project");
+            .expect("bar must offer 'n feature' for a project");
         app.on_mouse(click((x0 + x1) / 2, 39));
         assert!(
-            matches!(app.mode, Mode::Confirm { .. }),
-            "clicking 'x remove' must open the confirm"
+            matches!(
+                app.mode,
+                Mode::Input {
+                    kind: InputKind::NewFeature,
+                    ..
+                }
+            ),
+            "clicking 'n feature' must open the input"
         );
     }
 

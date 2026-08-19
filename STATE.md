@@ -9,7 +9,24 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M16 — dead entries are muted whole (COMPLETE).** User feedback: "when a
+**M17 — delete semantics (COMPLETE).** Three pieces of user feedback:
+(1) `worktrees.delete_branch` now defaults to **true** — deleting a feature
+takes its branch with it unless the user opts out; (2) `d` on a **shell**
+row closed the whole feature with all its shells — it now closes only that
+shell (kill the window, drop it from the feature; worktree, branch and
+sibling shells stay), while `d` on a feature row still deletes the feature;
+(3) the `x remove project` action is gone (bar entry, help row, key,
+`ConfirmAction`, `App::remove_project`) — it was not useful. Side fix found
+on the way: `add_shell` numbered the new shell by `shells.len()`, so after
+closing a middle shell the freed index came back and collided with a live
+window on reconcile; the index now comes from `Feature::next_shell_index`
+(one past the highest in use). Docs: README key table + config sample +
+deletion section, DECISIONS (four entries), docs/shortcuts.md. Gating: fmt
+clean, clippy -D warnings clean, tests green apart from the pre-existing
+`legacy_root_back_key_is_unbound_but_user_binding_survives` failure, which
+already fails on the untouched baseline in this environment.
+
+Before that: **M16 — dead entries are muted whole (COMPLETE).** User feedback: "when a
 shell/agent is closed, dead, please mute the whole entry in the tree" —
 `<myfeature> dead` should read all-muted, not just the status word. Gating:
 fmt clean, clippy -D warnings clean, tests green apart from the pre-existing
