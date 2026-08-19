@@ -9,7 +9,14 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M12 — predefined messages (COMPLETE).** User request: `s` writes a
+**M13 — tree width cap + dead-shell detection (COMPLETE).** User feedback:
+the left panel gets "overly wide" on a wide screen, and a shell killed with
+ctrl-d "does not get detected (still shows as waiting)". Gating: fmt clean,
+clippy -D warnings clean, 182 tests green — with the pre-existing
+`legacy_root_back_key_is_unbound_but_user_binding_survives` failure, which
+already fails on `main` in this environment (unrelated to this change).
+
+Before that: **M12 — predefined messages (COMPLETE).** User request: `s` writes a
 message, `p` should open a modal of configurable canned messages, with
 "continue" and "merge to master, drop the worktree" as the defaults.
 Gating green (fmt clean, clippy -D warnings clean, 181 tests with
@@ -106,6 +113,31 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M13 — tree width cap + dead-shell detection (COMPLETE)
+
+User feedback, verbatim: "There should be a max size to the left-panel
+(300/400px?) On my wide screen, it gets overly wide even though there is
+not much inside" and "if I kill a shell (ctrl+d), it does not get detected
+by lazywingman (still shows as waiting)".
+
+- **Tree width cap**: `TREE_MAX = 48` columns in `ui.rs`. `tree_width()`
+  still takes the tier percentage (32% wide / 42% split) but clamps it, so
+  a 200-column terminal gives the tree 48 columns and the rest to the
+  preview. `draw_split` now takes the width in *columns*
+  (`Constraint::Length`) computed by `tree_width()` instead of re-deriving
+  a percentage — the renderer and the mouse hit-testing can no longer
+  drift, which the old "must match" comment only asked for politely.
+- **Dead-shell detection**: tmux destroys a pane when its shell exits
+  (`remain-on-exit` is off by default), so `pane_dead` is almost never
+  seen — a ctrl-d'd shell simply *disappears* from `list-panes`. `poll()`
+  used to `continue` on a pane it could not find, leaving the last live
+  status (`waiting`) on screen forever. `classify()` now takes
+  `Option<&PaneInfo>` and reads `None` as `Status::Dead`; `poll()` skips
+  the capture for a gone pane and keeps its last capture so the preview
+  still shows how the shell ended.
+- Tests: `a_pane_tmux_no_longer_lists_is_dead`, and `tree_width` at
+  400x60 asserts the cap.
 
 ### M12 — predefined messages: the `p` modal + `[[messages]]` config (COMPLETE)
 

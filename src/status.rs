@@ -3,7 +3,8 @@
 //! Heuristics only — the pane preview in the dashboard lets the user confirm
 //! what the classifier guessed. Order of checks:
 //!
-//! `dead` (tmux says the pane's process died) → `failed` (any line matches a
+//! `dead` (the pane is gone from tmux, or tmux says its process died) →
+//! `failed` (any line matches a
 //! failure pattern) → `waiting` if the *last* line matches a prompt pattern
 //! (the freshest signal) → `working` (any line matches a busy pattern) →
 //! `waiting` (any line) → `ended` (foreground command is a login shell *and*
@@ -17,7 +18,7 @@
 use regex::Regex;
 
 use crate::config::StatusPatterns;
-use crate::tmux::is_shell_command;
+use crate::tmux::{PaneInfo, is_shell_command};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
@@ -72,9 +73,17 @@ fn compile_all(list: &[String]) -> Vec<Regex> {
         .collect()
 }
 
-/// Classify a pane's state from its capture tail + tmux metadata.
-pub fn classify(patterns: &Compiled, tail: &str, current_command: &str, dead: bool) -> Status {
-    if dead {
+/// Classify a shell's state from its capture tail + tmux metadata. `pane`
+/// is `None` when tmux no longer lists the pane at all.
+pub fn classify(patterns: &Compiled, tail: &str, pane: Option<&PaneInfo>) -> Status {
+    // A pane tmux stopped listing means the shell exited (ctrl-d) or its
+    // window was killed outside the dashboard. tmux destroys the pane on
+    // exit unless `remain-on-exit` is set, so a *vanished* pane — not the
+    // `pane_dead` flag — is the usual death signal.
+    let Some(pane) = pane else {
+        return Status::Dead;
+    };
+    if pane.dead {
         return Status::Dead;
     }
     if any_match(&patterns.failed, tail) {
@@ -92,7 +101,7 @@ pub fn classify(patterns: &Compiled, tail: &str, current_command: &str, dead: bo
     if any_match(&patterns.waiting, tail) {
         return Status::Waiting;
     }
-    if is_shell_command(current_command) {
+    if is_shell_command(&pane.current_command) {
         return Status::Ended;
     }
     Status::Idle
@@ -106,6 +115,14 @@ fn any_match(regexes: &[Regex], text: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn pane(current_command: &str, dead: bool) -> PaneInfo {
+        PaneInfo {
+            pane_id: "%1".to_string(),
+            current_command: current_command.to_string(),
+            dead,
+        }
+    }
+
     fn c(working: &[&str], waiting: &[&str], failed: &[&str]) -> Compiled {
         Compiled::compile(&StatusPatterns {
             working: working.iter().map(|s| s.to_string()).collect(),
@@ -118,24 +135,43 @@ mod tests {
     fn dead_wins_over_everything() {
         let p = c(&["Thinking"], &["❯"], &["Error"]);
         assert_eq!(
-            classify(&p, "Thinking ❯ Error", "claude", true),
+            classify(&p, "Thinking ❯ Error", Some(&pane("claude", true))),
             Status::Dead
         );
+    }
+
+    /// The pane tmux no longer lists: the shell exited (ctrl-d) or its
+    /// window was killed outside the dashboard. Without this the shell
+    /// would keep whatever status it had when it was last alive.
+    #[test]
+    fn a_pane_tmux_no_longer_lists_is_dead() {
+        let p = c(&["Thinking"], &["❯"], &["Error"]);
+        assert_eq!(classify(&p, "What next? ❯", None), Status::Dead);
     }
 
     #[test]
     fn shell_foreground_with_agent_tail_is_not_ended() {
         // bash running an agent script: the tail carries the agent's state
         let p = c(&["Thinking"], &["❯"], &["Error"]);
-        assert_eq!(classify(&p, "Thinking...", "bash", false), Status::Working);
         assert_eq!(
-            classify(&p, "What would you like to do? ❯", "bash", false),
+            classify(&p, "Thinking...", Some(&pane("bash", false))),
+            Status::Working
+        );
+        assert_eq!(
+            classify(
+                &p,
+                "What would you like to do? ❯",
+                Some(&pane("bash", false))
+            ),
             Status::Waiting
         );
-        assert_eq!(classify(&p, "✖ Error: boom", "zsh", false), Status::Failed);
+        assert_eq!(
+            classify(&p, "✖ Error: boom", Some(&pane("zsh", false))),
+            Status::Failed
+        );
         // ... but a bare shell with no agent signal is Ended
         assert_eq!(
-            classify(&p, "nothing matches", "bash", false),
+            classify(&p, "nothing matches", Some(&pane("bash", false))),
             Status::Ended
         );
     }
@@ -152,8 +188,7 @@ mod tests {
             classify(
                 &p,
                 "Thinking about the task...\nDone.\nWhat would you like to do? ❯",
-                "bash",
-                false
+                Some(&pane("bash", false))
             ),
             Status::Waiting
         );
@@ -162,8 +197,7 @@ mod tests {
             classify(
                 &p,
                 "What would you like to do? ❯ busy 2\nWorking on it (2)...",
-                "bash",
-                false
+                Some(&pane("bash", false))
             ),
             Status::Working
         );
@@ -172,19 +206,25 @@ mod tests {
     #[test]
     fn failed_beats_working_beats_waiting() {
         let p = c(&["Thinking"], &["❯"], &["Error:"]);
-        assert_eq!(classify(&p, "Error: boom", "claude", false), Status::Failed);
         assert_eq!(
-            classify(&p, "Thinking...\n❯", "claude", false),
+            classify(&p, "Error: boom", Some(&pane("claude", false))),
+            Status::Failed
+        );
+        assert_eq!(
+            classify(&p, "Thinking...\n❯", Some(&pane("claude", false))),
             Status::Waiting
         );
-        assert_eq!(classify(&p, "❯", "claude", false), Status::Waiting);
+        assert_eq!(
+            classify(&p, "❯", Some(&pane("claude", false))),
+            Status::Waiting
+        );
     }
 
     #[test]
     fn idle_is_the_default() {
         let p = c(&["Thinking"], &["❯"], &["Error"]);
         assert_eq!(
-            classify(&p, "nothing matches", "claude", false),
+            classify(&p, "nothing matches", Some(&pane("claude", false))),
             Status::Idle
         );
     }

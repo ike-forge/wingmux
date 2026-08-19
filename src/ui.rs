@@ -20,6 +20,9 @@ const WIDE_MIN: (u16, u16) = (64, 12);
 const SPLIT_MIN: (u16, u16) = (44, 9);
 const TREE_MIN: (u16, u16) = (26, 7);
 
+/// Cap on the tree panel's width, in columns (see [`tree_width`]).
+const TREE_MAX: u16 = 48;
+
 /// Which panels fit in a frame of `(width, height)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tier {
@@ -48,11 +51,15 @@ pub(crate) fn tier_impl(w: u16, h: u16) -> Tier {
 
 /// Width of the tree panel for a viewport, or `None` when the frame is too
 /// small for the tree at all. Same math for rendering and mouse hit-testing.
+///
+/// The share is a percentage up to [`TREE_MAX`]: the tree holds short
+/// names, so on a wide screen a plain percentage turns into dead space —
+/// past the cap the extra columns go to the preview instead.
 pub(crate) fn tree_width(viewport: (u16, u16)) -> Option<u16> {
     let (w, h) = viewport;
     match tier_impl(w, h) {
-        Tier::Wide => Some(w * 32 / 100),
-        Tier::Split => Some(w * 42 / 100),
+        Tier::Wide => Some((w * 32 / 100).min(TREE_MAX)),
+        Tier::Split => Some((w * 42 / 100).min(TREE_MAX)),
         Tier::TreeOnly => Some(w),
         Tier::Message => None,
     }
@@ -126,8 +133,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_too_small(f, area, app);
             return;
         }
-        Tier::Wide => draw_split(f, area, app, 32),
-        Tier::Split => draw_split(f, area, app, 42),
+        Tier::Wide | Tier::Split => {
+            let tree_w = tree_width((area.width, area.height)).unwrap_or(area.width);
+            draw_split(f, area, app, tree_w);
+        }
         Tier::TreeOnly => draw_tree_only(f, area, app),
     }
     // Overlays render last (on top). popup_area is (re)computed every
@@ -236,13 +245,13 @@ fn asciify(f: &mut Frame, area: Rect) {
     }
 }
 
-/// Tree | preview, statusbar below. `tree_pct` must match [`tree_width`]
-/// for the tier — the same math drives mouse hit-testing.
-fn draw_split(f: &mut Frame, area: Rect, app: &mut App, tree_pct: u16) {
+/// Tree | preview, statusbar below. `tree_w` comes from [`tree_width`] —
+/// the same math drives mouse hit-testing.
+fn draw_split(f: &mut Frame, area: Rect, app: &mut App, tree_w: u16) {
     let [main, statusbar] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
     let [tree, preview] =
-        Layout::horizontal([Constraint::Percentage(tree_pct), Constraint::Fill(1)]).areas(main);
+        Layout::horizontal([Constraint::Length(tree_w), Constraint::Fill(1)]).areas(main);
 
     draw_tree(f, tree, app);
     draw_preview(f, preview, app);
@@ -1625,6 +1634,7 @@ mod tests {
     fn tree_width_follows_tier_math() {
         assert_eq!(tree_width((120, 40)), Some(38)); // full: 32%
         assert_eq!(tree_width((50, 10)), Some(21)); // no-preview: 42%
+        assert_eq!(tree_width((400, 60)), Some(48)); // wide screen: capped
         assert_eq!(tree_width((30, 8)), Some(30)); // tree-only: 100%
         assert_eq!(tree_width((20, 5)), None); // message tier
     }

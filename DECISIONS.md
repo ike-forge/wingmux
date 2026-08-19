@@ -30,7 +30,9 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
 - State file: JSON at `$XDG_STATE_HOME/lazywingman/state.json` (state, not
   data, is the semantically correct XDG dir for mutable runtime state).
 - Status model: `dead | ended | failed | waiting | working | idle`.
-  `dead` = pane_dead; `ended` = pane's foreground command is a login shell
+  `dead` = pane gone from tmux (the shell exited — tmux destroys the pane
+  unless `remain-on-exit` is set) or pane_dead; `ended` = live pane whose
+  foreground command is a login shell
   (agent exited); failed/waiting/working = regex on `capture-pane` tail;
   `idle` = default.
 - Feature deletion: kill windows → `git worktree remove` (with `--force`
