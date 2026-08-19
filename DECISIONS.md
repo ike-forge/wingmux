@@ -154,6 +154,24 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   boot), and `prune` skips worktree verification for projects whose
   worktrees were never loaded, so boot never pays 200 git calls. Since M20
   the unfolded projects' listings are queued rather than run at boot.
+- **M24 — a worktree with no shell is dimmed, and that is the whole
+  signal.** `ensure_worktrees` lists every worktree the repo has, so rows
+  appear for worktrees LazyWingman never created. The row state worth
+  showing is not *who made it* but *whether there is a tmux window for it*:
+  with no window there is nothing to attach to, send to or capture, whoever
+  made the worktree. So the predicate is derived — `shells.is_empty()`,
+  which `prune` keeps honest by dropping shells whose window vanished — and
+  NOT a persisted `created_by_wingman` flag. A flag would have needed a
+  schema field, a migration for existing state files, and would still have
+  lied about a wingman-made worktree whose last shell was closed: same
+  inertness, different provenance. Derived also self-heals — `a` starts a
+  shell and the row joins the rest with no state to fix up. The row mutes
+  *whole* (the rule dead rows already follow) and the preview says why it is
+  empty instead of showing the generic "select a shell" hint, which would
+  send the user hunting for a child row that does not exist. Deletion is
+  deliberately unchanged: the confirm already reports dirty vs clean, and a
+  provenance warning on a state that cannot distinguish "made by hand" from
+  "shell closed" would cry wolf on the common case.
 - **M23 — the New Feature popup names the base branch it cuts from.** A
   feature's branch has always been cut from the project's base branch
   (`worktrees.base_branch`, or the project's override), never from the

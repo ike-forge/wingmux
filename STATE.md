@@ -9,7 +9,32 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M23 — the New Feature popup states the base branch (COMPLETE).** User
+**M24 — worktrees with no shell are dimmed (COMPLETE).** User feedback:
+worktrees LazyWingman did not create get listed (good), but when there is no
+tmux window for them they are effectively outside it — no attach, no send, no
+preview — and the tree said nothing about that. Reframed during design: the
+honest predicate is not provenance but `shells.is_empty()`, because a
+wingman-made worktree whose last shell was closed is just as inert; the user
+agreed and dropped the "not managed by wingman" wording (and, with it, any
+special warning in the delete confirm). Landed in `src/ui.rs` only, no state
+schema change: `feature_color` mutes such a feature row whole in `theme.dim`
+(prefix, icon and name — the rule `row_color` already applies to dead rows,
+so the amber dirty-icon tint yields too; the `◇`/`◆` shape still marks the
+worktree state), and `draw_preview` gains a `None if
+selected_feature_has_no_shell(app)` arm explaining why there is nothing to
+show and pointing at `a`. Unchanged on purpose: the delete confirm, and
+`bar_entries`, whose non-solo `Sel::Feature` arm already omitted attach/send.
+Tests: `a_worktree_without_a_shell_renders_dim` (reads the cell fg through a
+new `row_fg` buffer helper, with the highlight parked on a shell row so the
+selection colours do not repaint the assertions) and
+`a_worktree_without_a_shell_explains_the_empty_preview`. Docs: README (icon
+paragraph + a "Worktrees without a shell" section), DECISIONS (why derived
+and not a persisted flag). Gate on the merged tree: fmt clean, clippy
+-D warnings clean, 227 pass apart from the pre-existing
+`legacy_root_back_key_is_unbound_but_user_binding_survives`, which fails the
+same way on the untouched baseline in this environment.
+
+Before that: **M23 — the New Feature popup states the base branch (COMPLETE).** User
 feedback: the popup asked for a feature name and nothing else, leaving it to
 folklore that the worktree branches from the project's BASE branch
 (`worktrees.base_branch`, per-project override), not from whatever the repo
