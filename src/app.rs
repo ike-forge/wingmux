@@ -1861,7 +1861,9 @@ impl App {
                 }
             }
             Mode::Confirm { confirm } => match key.code {
-                KeyCode::Char('y') | KeyCode::Enter => {
+                // `d` opened this popup, so `d` again closes the loop —
+                // the vim `dd` reflex confirms without a hand move.
+                KeyCode::Char('y') | KeyCode::Char('d') | KeyCode::Enter => {
                     let action = confirm.action.clone();
                     self.mode = Mode::Normal;
                     self.run_confirm(action, false);
@@ -3310,6 +3312,48 @@ mod tests {
             ),
             m => panic!("expected a confirm, got {m:?}"),
         }
+    }
+
+    /// The confirm popup takes `d` as a yes: `dd` deletes the way vim
+    /// does, without moving the hand off the key that opened the popup.
+    #[test]
+    fn d_confirms_the_delete_popup() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_standalone(sock);
+            let mut app = app_with(tmux.clone());
+            seed_project_with_shell(&tmux, &mut app);
+            let w2 = tmux
+                .new_window("wingman-session-p", "lw:feat/1", Path::new("/tmp"), "bash")
+                .unwrap();
+            app.state.projects[0].features[0].shells.push(Shell {
+                index: 1,
+                window_name: "lw:feat/1".into(),
+                window_id: Some(w2.window_id.clone()),
+                pane_id: Some(w2.pane_id.clone()),
+            });
+            app.build_tree_flags();
+            app.sel = Sel::Shell(0, 0, 1);
+
+            app.on_key(key(KeyCode::Char('d'), false));
+            assert!(
+                matches!(app.mode, Mode::Confirm { .. }),
+                "the first d opens the confirm, got {:?}",
+                app.mode
+            );
+            // the delete saves state — keep it off the real state.json
+            crate::util::testutil::with_fresh_xdg(|| app.on_key(key(KeyCode::Char('d'), false)));
+
+            assert!(
+                matches!(app.mode, Mode::Normal),
+                "the second d answers the confirm, got {:?}",
+                app.mode
+            );
+            assert_eq!(
+                app.state.projects[0].features[0].shells.len(),
+                1,
+                "dd closed the selected shell"
+            );
+        });
     }
 
     /// Closing a shell kills that shell's window and nothing else: the

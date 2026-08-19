@@ -382,14 +382,16 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     } else {
         ("     ├─ ", "     └─ ")
     };
-    // Per-type icons (aesthetic pass; ASCII keeps plain markers). The
-    // feature icon carries the worktree's state: hollow = clean, filled =
-    // uncommitted changes. Since each feature owns its worktree (and its
-    // branch), that is the one fact about it the tree cannot infer.
-    let (proj_icon, feat_icon, dirty_icon, shell_icon) = if app.ascii {
-        ("*", "-", "*", "")
+    // Per-type icons (aesthetic pass; ASCII keeps plain markers). Each
+    // icon carries the one fact its row cannot show otherwise: the
+    // project icon is filled when it holds features and hollow when it is
+    // empty; the feature icon is hollow for a clean worktree and filled
+    // when it has uncommitted changes. Counts stay out of the rows — the
+    // tree is expanded by default, so the children speak for themselves.
+    let (proj_icon, empty_proj_icon, feat_icon, dirty_icon, shell_icon) = if app.ascii {
+        ("*", "o", "-", "*", "")
     } else {
-        ("▣", "◇", "◆", "● ")
+        ("▣", "▢", "◇", "◆", "● ")
     };
     let mut items: Vec<ListItem> = Vec::new();
     let mut sel_row: Option<usize> = None;
@@ -402,19 +404,19 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
         if !app.flatten {
             let expanded = app.proj_expanded.get(pi).copied().unwrap_or(false);
             let marker = if expanded { exp } else { coll };
-            let count = proj.features.len();
+            let icon = if proj.features.is_empty() {
+                empty_proj_icon
+            } else {
+                proj_icon
+            };
             let pdead = project_dead(app, proj);
             let mut spans = vec![Span::styled(
-                format!("{marker} {proj_icon} {} ", proj.name),
+                format!("{marker} {icon} {}", proj.name),
                 fg(row_color(theme, pdead, theme.tree_project)).add_modifier(Modifier::BOLD),
             )];
             if proj.missing {
-                spans.push(Span::styled("(missing) ", fg(theme.dim)));
+                spans.push(Span::styled(" (missing)", fg(theme.dim)));
             }
-            spans.push(Span::styled(
-                format!("({count} feature{})", if count == 1 { "" } else { "s" }),
-                fg(row_color(theme, pdead, theme.dim)),
-            ));
             items.push(ListItem::new(Line::from(spans)));
             if app.sel == Sel::Project(pi) {
                 sel_row = Some(row);
@@ -434,7 +436,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 .unwrap_or(false);
             // One worktree, one agent: a feature with a single shell is
             // folded for good — no marker, no child row, and its own row
-            // carries that shell's status instead of a shell count.
+            // carries that shell's status.
             let solo = app.solo_shell(pi, fi);
             let fdead = feature_dead(app, feat);
             let marker = match solo {
@@ -445,14 +447,14 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             };
             let n = feat.shells.len();
             let dirty = app.feature_dirty_cached(pi, fi);
-            let icon = if dirty { dirty_icon } else { feat_icon };
+            let ficon = if dirty { dirty_icon } else { feat_icon };
             // In flatten mode the features are the top level (no guide);
             // otherwise they hang off the project with a tree branch.
             let (prefix, icon_span) = if app.flatten {
-                (format!("{marker} "), format!("{icon} "))
+                (format!("{marker} "), format!("{ficon} "))
             } else {
                 let guide = if fi + 1 == n_feat { last_child } else { child };
-                (format!("{guide}{marker} "), format!("{icon} "))
+                (format!("{guide}{marker} "), format!("{ficon} "))
             };
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(prefix, fg(row_color(theme, fdead, theme.tree_feature))),
@@ -477,10 +479,9 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                         let st = shell_status(app, &feat.shells[si]);
                         Span::styled(format!("  {}", st.label()), fg(status_color(theme, st)))
                     }
-                    None => Span::styled(
-                        format!(" [{n} shell{}]", if n == 1 { "" } else { "s" }),
-                        fg(row_color(theme, fdead, theme.dim)),
-                    ),
+                    // A multi-shell feature says nothing extra: its shells
+                    // are one row below, each with its own status.
+                    None => Span::raw(""),
                 },
             ])));
             if app.sel == Sel::Feature(pi, fi) {
@@ -1274,8 +1275,8 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
     f.render_widget(Clear, area);
     let sp = sep(app.ascii);
     let options = match &confirm.force_label {
-        Some(fl) => format!(" [y] yes{sp}[f] {fl}{sp}[n] cancel "),
-        None => format!(" [y] yes{sp}[n] cancel "),
+        Some(fl) => format!(" [y/d] yes{sp}[f] {fl}{sp}[n] cancel "),
+        None => format!(" [y/d] yes{sp}[n] cancel "),
     };
     let mut lines: Vec<Line> = confirm
         .body
@@ -1923,8 +1924,9 @@ mod tests {
 
     /// The tree folds the nominal case: a feature with one shell shows
     /// that shell's status on its own row and gets no child row, while a
-    /// feature with several keeps its count and its expanded subtree. No
-    /// row carries the tmux window id — that is plumbing, not information.
+    /// feature with several just gets its expanded subtree. No row carries
+    /// a shell count (the shells are right below) and none carries the
+    /// tmux window id — that is plumbing, not information.
     #[test]
     fn solo_feature_row_carries_the_status_and_no_child_row() {
         let mut app = seeded_app();
@@ -1972,8 +1974,8 @@ mod tests {
         );
         let many = rows.iter().find(|r| r.contains("many-shells")).unwrap();
         assert!(
-            many.contains("[2 shells]"),
-            "a multi-shell feature keeps its count: {many:?}"
+            !many.contains("shells]"),
+            "a multi-shell feature carries no count either: {many:?}"
         );
         // the folded feature contributes no `#2` row; the open one does
         let shell_rows: Vec<&String> = rows.iter().filter(|r| r.contains(" #")).collect();
@@ -1986,6 +1988,47 @@ mod tests {
         for r in &rows {
             assert!(!r.contains('@'), "tree must not show window ids: {r:?}");
         }
+    }
+
+    /// Project rows carry no feature count — the tree is expanded by
+    /// default, so the features themselves are the count. What the row
+    /// cannot show otherwise is whether a folded project holds anything
+    /// at all, and the icon says it: filled when it has features, hollow
+    /// when it is empty.
+    #[test]
+    fn project_rows_swap_the_count_for_a_full_or_empty_icon() {
+        let mut app = seeded_app();
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "only-feature".into(),
+            branch: "only-feature".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-one"),
+            created_at: String::new(),
+            shells: vec![crate::state::Shell {
+                index: 0,
+                window_name: "lw:f/0".into(),
+                window_id: Some("@7".into()),
+                pane_id: Some("%0".into()),
+            }],
+        });
+        app.build_tree_flags();
+        app.proj_expanded[0] = true;
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let rows = buffer_rows(&terminal);
+
+        let full = rows.iter().find(|r| r.contains("repo-a")).unwrap();
+        let empty = rows.iter().find(|r| r.contains("repo-b")).unwrap();
+        for row in [full, empty] {
+            assert!(!row.contains("feature)"), "no count on a row: {row:?}");
+            assert!(!row.contains("features)"), "no count on a row: {row:?}");
+        }
+        assert!(
+            full.contains("▣ repo-a"),
+            "a project with features: {full:?}"
+        );
+        assert!(empty.contains("▢ repo-b"), "an empty project: {empty:?}");
     }
 
     /// A dead entry is muted *whole*: once every shell under it has
