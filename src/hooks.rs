@@ -161,6 +161,24 @@ pub fn write_settings_file() -> crate::error::Result<PathBuf> {
     Ok(path)
 }
 
+/// Whether `command` already carries a `--settings <path>` pair whose path
+/// ends in our settings file name. Token-precise: unlike a raw substring
+/// search, this does not false-positive on a command that merely *mentions*
+/// the file name (e.g. inside a quoted prompt), which would otherwise cause
+/// `instrument` to silently skip a command that has never been instrumented.
+fn already_carries_our_settings_flag(command: &str) -> bool {
+    let mut tokens = command.split_whitespace();
+    while let Some(tok) = tokens.next() {
+        if tok == "--settings"
+            && let Some(path_tok) = tokens.next()
+            && Path::new(path_tok).file_name().and_then(|f| f.to_str()) == Some(SETTINGS_FILE_NAME)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Add `--settings <path>` to a command, if and only if it is recognisably
 /// Claude. The flag goes immediately after the binary token, never at the
 /// end: `claude` takes a positional prompt, and trailing flags after it
@@ -169,25 +187,36 @@ pub fn write_settings_file() -> crate::error::Result<PathBuf> {
 /// Recognition is deliberately narrow — the first token's file name must be
 /// exactly `claude`. Wrapper scripts and aliases are not instrumented and
 /// fall back to the regex heuristics.
+///
+/// The insertion is byte-surgical: everything after the binary token is
+/// copied verbatim from the original string, never re-tokenised. `claude`
+/// takes a free-text positional prompt, and re-joining tokens with a single
+/// space (as `split_whitespace` + `join(" ")` would) silently collapses any
+/// deliberate internal spacing (or quoting) in that prompt before Claude
+/// ever sees it.
 #[allow(dead_code)] // called from the spawn sites (later task)
 pub fn instrument(command: &str, settings: &Path) -> String {
-    let mut parts = command.split_whitespace();
-    let Some(bin) = parts.next() else {
+    let Some(bin_start) = command.find(|c: char| !c.is_whitespace()) else {
         return command.to_string();
     };
+    let after_bin_start = &command[bin_start..];
+    let bin_len = after_bin_start
+        .find(char::is_whitespace)
+        .unwrap_or(after_bin_start.len());
+    let bin = &after_bin_start[..bin_len];
     if Path::new(bin).file_name().and_then(|f| f.to_str()) != Some("claude") {
         return command.to_string();
     }
-    if command.contains(SETTINGS_FILE_NAME) {
+    if already_carries_our_settings_flag(command) {
         return command.to_string();
     }
-    let rest: Vec<&str> = parts.collect();
-    let flag = format!("--settings {}", settings.display());
-    if rest.is_empty() {
-        format!("{bin} {flag}")
-    } else {
-        format!("{bin} {flag} {}", rest.join(" "))
-    }
+    let bin_end = bin_start + bin_len;
+    let leading = &command[..bin_start];
+    let remainder = &command[bin_end..];
+    format!(
+        "{leading}{bin} --settings {}{remainder}",
+        settings.display()
+    )
 }
 
 #[cfg(test)]
@@ -397,6 +426,65 @@ mod tests {
         let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
         let once = instrument("claude", p);
         assert_eq!(instrument(&once, p), once);
+    }
+
+    /// A command that literally already carries our `--settings <path>`
+    /// pair must be left alone, however that path was spelled — this is
+    /// the idempotence guard the substring check was protecting, now
+    /// exercised directly rather than only via a self-produced string.
+    #[test]
+    fn genuinely_already_instrumented_command_is_unchanged() {
+        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
+        let cmd = "claude --settings /elsewhere/lazywingman-activity-hooks.json --resume";
+        assert_eq!(instrument(cmd, p), cmd);
+    }
+
+    /// A prompt that merely *mentions* the settings file name (e.g. the
+    /// user asked Claude to explain the file) must NOT be mistaken for an
+    /// already-instrumented command — a raw substring test over the whole
+    /// command string would wrongly skip instrumentation here, silently
+    /// defeating the milestone's core promise that hooks always fire.
+    #[test]
+    fn command_merely_mentioning_the_filename_still_gets_instrumented() {
+        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
+        let cmd = r#"claude "explain what lazywingman-activity-hooks.json is for""#;
+        assert_eq!(
+            instrument(cmd, p),
+            r#"claude --settings /s/lazywingman-activity-hooks.json "explain what lazywingman-activity-hooks.json is for""#
+        );
+    }
+
+    /// `claude` takes a free-text positional prompt. Internal spacing
+    /// (deliberate formatting, code, ASCII layout) inside that prompt must
+    /// survive byte for byte — re-tokenising with `split_whitespace` and
+    /// rejoining with a single space would silently collapse it.
+    #[test]
+    fn internal_spacing_in_the_prompt_is_preserved_byte_for_byte() {
+        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
+        let cmd = "claude \"line one    line two\"";
+        assert_eq!(
+            instrument(cmd, p),
+            "claude --settings /s/lazywingman-activity-hooks.json \"line one    line two\""
+        );
+    }
+
+    /// Recognition edge cases the review flagged as untested: a
+    /// whitespace-only command has no first token at all (left untouched);
+    /// `./claude` and a trailing-slash path both resolve, via
+    /// `Path::file_name`, to a final component of exactly `claude`, so both
+    /// are recognised and instrumented.
+    #[test]
+    fn recognition_edge_cases() {
+        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
+        assert_eq!(instrument("   ", p), "   ");
+        assert_eq!(
+            instrument("./claude", p),
+            "./claude --settings /s/lazywingman-activity-hooks.json"
+        );
+        assert_eq!(
+            instrument("/usr/local/bin/claude/", p),
+            "/usr/local/bin/claude/ --settings /s/lazywingman-activity-hooks.json"
+        );
     }
 
     #[test]
