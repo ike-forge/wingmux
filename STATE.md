@@ -208,6 +208,17 @@ All five M9 items landed, each committed + pushed to origin/main:
   handler calls `ensure_visible(textarea_visible_lines(viewport))` once per
   key. Tests: `textarea_ctrl_s_sends`,
   `textarea_enter_keeps_earlier_lines_visible`.
+- **M9.7** — preview panel showed **neither the start nor the end** of the
+  agent's output: `draw_preview` rendered the capture from its first line,
+  but `capture-pane -S -120` returns a window that *starts* 120 lines back
+  in the scrollback and *ends* with the blank padding of the pane's empty
+  area — so the panel showed rows 1..21 of the scrollback, mid-history.
+  New `ui::preview_tail(capture, inner_height)` drops the trailing blank
+  padding and keeps the **newest** `inner_height - PREVIEW_BOTTOM_PAD`
+  lines; `PREVIEW_BOTTOM_PAD = 3` leaves a gap under the last line so the
+  newest output does not sit flush on the border and read as cut off.
+  Tests: `preview_shows_tail_with_bottom_buffer` (render assertion on the
+  row the last line lands in), `preview_tail_handles_short_captures_and_tiny_panels`.
 - **M9.3** — discovery is **scope-based, live, lazy**: only projects inside
   the startup dir (or `[discovery].scan_root`) are listed; scopes never
   mix. Boot inside a repo → single project, features FLAT at top level.

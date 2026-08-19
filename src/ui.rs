@@ -20,6 +20,11 @@ const WIDE_MIN: (u16, u16) = (64, 12);
 const SPLIT_MIN: (u16, u16) = (44, 9);
 const TREE_MIN: (u16, u16) = (26, 7);
 
+/// Blank rows kept between the last captured line and the preview panel's
+/// bottom border. Without the gap the agent's newest output sits flush on
+/// the border and reads as truncated mid-sentence.
+const PREVIEW_BOTTOM_PAD: usize = 3;
+
 /// Which panels fit in a frame of `(width, height)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tier {
@@ -475,6 +480,24 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+/// The slice of a pane capture the preview shows in a panel of
+/// `inner_height` rows: the *newest* lines, with [`PREVIEW_BOTTOM_PAD`]
+/// rows left blank beneath them.
+///
+/// `capture-pane -S -N` returns a window that starts N lines back in the
+/// scrollback and ends with the blank padding of the pane's empty area, so
+/// rendering it from the top shows neither the start nor the end of the
+/// agent's output — the trailing blanks are dropped and the tail wins.
+fn preview_tail(capture: &str, inner_height: usize) -> String {
+    let mut lines: Vec<&str> = capture.lines().collect();
+    while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+        lines.pop();
+    }
+    let rows = inner_height.saturating_sub(PREVIEW_BOTTOM_PAD).max(1);
+    let start = lines.len().saturating_sub(rows);
+    lines[start..].join("\n")
+}
+
 fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
     let block = panel_block(theme, "preview (capture-pane)", false);
@@ -482,7 +505,8 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         Sel::Shell(_, _, _) => {
             if let Some(pid) = app.selected_shell_pane() {
                 if let Some(cap) = app.captures.get(&pid) {
-                    Text::from(cap.clone())
+                    // borders take two rows off the panel
+                    Text::from(preview_tail(cap, area.height.saturating_sub(2) as usize))
                 } else {
                     Text::from(if app.ascii {
                         "capturing... (select the shell in the tree)"
@@ -1872,6 +1896,104 @@ mod tests {
         assert!(
             app.popup_area.is_none(),
             "refused overlay must not register a dismissable rect"
+        );
+    }
+
+    // ---- preview tail anchoring ----
+
+    /// Rows of the rendered frame, one string per terminal line.
+    fn buffer_rows(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> Vec<String> {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    /// An app with one shell selected and `capture` as its pane capture.
+    /// Built without `startup()` so the user's real state cannot leak in.
+    fn app_with_capture(capture: &str) -> App {
+        let cfg = Config::default();
+        let theme = theme::load("ansi", false).unwrap();
+        let mut app = App::new(cfg, theme, None);
+        app.state.projects.push(crate::state::Project {
+            name: "repo-a".into(),
+            path: std::path::PathBuf::from("/tmp/repo-a"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: false,
+            features: vec![],
+        });
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "feat".into(),
+            branch: "feat".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/repo-a-feat"),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            shells: vec![crate::state::Shell {
+                index: 1,
+                window_name: "feat-1".into(),
+                window_id: Some("@1".into()),
+                pane_id: Some("%1".into()),
+            }],
+        });
+        app.build_tree_flags();
+        app.feat_expanded[0][0] = true;
+        app.sel = crate::app::Sel::Shell(0, 0, 0);
+        app.clamp_sel();
+        assert!(
+            matches!(app.sel, crate::app::Sel::Shell(0, 0, 0)),
+            "fixture must leave the shell selected"
+        );
+        app.captures.insert("%1".into(), capture.to_string());
+        app
+    }
+
+    /// `preview_tail` edge cases: a capture shorter than the panel keeps
+    /// every line, and a panel too short for the pad still shows a row.
+    #[test]
+    fn preview_tail_handles_short_captures_and_tiny_panels() {
+        assert_eq!(preview_tail("a\nb\nc\n\n\n", 20), "a\nb\nc");
+        assert_eq!(preview_tail("", 20), "");
+        // 10 rows of panel, 3 reserved as pad → the last 7 lines
+        let ten: String = (1..=10).map(|i| format!("l{i}\n")).collect();
+        assert_eq!(preview_tail(&ten, 10), "l4\nl5\nl6\nl7\nl8\nl9\nl10");
+        // a panel smaller than the pad degrades to a single newest line
+        assert_eq!(preview_tail(&ten, 2), "l10");
+    }
+
+    /// The preview shows the *tail* of the capture (what the agent just
+    /// printed), not the head of the scrollback window — and leaves a few
+    /// blank rows below the last line so the output does not read as cut off.
+    #[test]
+    fn preview_shows_tail_with_bottom_buffer() {
+        let mut capture: String = (1..=200)
+            .map(|i| format!("cap-line-{i:03}\n"))
+            .collect::<String>();
+        // capture-pane pads the pane's empty area with blank lines
+        capture.push_str("\n\n\n\n\n");
+        let mut app = app_with_capture(&capture);
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let rows = buffer_rows(&terminal);
+
+        let last = rows
+            .iter()
+            .position(|r| r.contains("cap-line-200"))
+            .unwrap_or_else(|| panic!("last captured line must be visible:\n{}", rows.join("\n")));
+        assert!(
+            !rows.iter().any(|r| r.contains("cap-line-001")),
+            "the head of a long capture scrolls off"
+        );
+
+        // the panel's bottom border is the last row before the statusbar
+        let bottom_border = rows.len() - 2;
+        assert!(
+            bottom_border - last > PREVIEW_BOTTOM_PAD,
+            "expected >= {PREVIEW_BOTTOM_PAD} blank rows under the last line \
+             (last at {last}, border at {bottom_border})"
         );
     }
 }
