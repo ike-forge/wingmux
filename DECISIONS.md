@@ -45,6 +45,16 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   feature). Deleting a feature from a shell row was the old behaviour and
   the wrong one — "close this agent" is the frequent action, "delete the
   whole feature" the rare one, and the two must not share a target.
+- The delete confirm answers to `d` as well as `y`/`Enter`: `d` opened the
+  popup, so `dd` completes the delete without a hand move — the vim reflex.
+  `f` (force) stays a separate key: discarding uncommitted work must not be
+  reachable by pressing the same key twice.
+- Tree rows carry no counts (`(2 features)`, `[2 shells]` are gone): the
+  tree is expanded by default, so the children are the count and the text
+  only repeated what was one row below. The one thing a *folded* project
+  row cannot show otherwise — whether it holds anything at all — moved into
+  its icon (`▣` non-empty, `▢` empty), the same trick the feature icon
+  already plays for the worktree's state.
 - Shell indices are never reused: `Feature::next_shell_index` counts past
   the highest index in use, because the index names the tmux window and is
   what `reconcile` matches a live window back to.

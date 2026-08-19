@@ -120,7 +120,7 @@ the trailing Enter submits.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `y` / `Enter` | confirm | confirm, object named in prompt |
+| `y` / `d` / `Enter` | confirm | confirm, object named in prompt; `d` re-pressed = vim `dd` |
 | `n` / `Esc` / `q` | abort (default) | confirmation defaults to "no" |
 | `f` | confirm with force (only when offered, e.g. dirty worktree) | destructive variant, offered not assumed |
 | `ctrl-c` | quit, even here | ctrl layer over overlays |

@@ -9,14 +9,33 @@ whenever a milestone runs long.
 
 ## Current milestone
 
-**M18 — `a` asks which command to run (COMPLETE).** User feedback: adding a
+**M19 — `dd` confirms, tree rows drop their counts (COMPLETE).** Two pieces
+of user feedback: (1) the delete confirm now takes `d` as a yes alongside
+`y`/`Enter` — `d` opened the popup, so `dd` finishes the delete the way vim
+does; `f` (force) stays its own key so discarding uncommitted work is never
+two presses of the same key. (2) The `(N features)` / `[N shells]` chrome is
+gone from the tree: it is expanded by default, so the counts only repeated
+the rows right below them. The one fact a *folded* project row could not
+show otherwise moved into its icon — `▣` holds features, `▢` is empty
+(ASCII: `*` / `o`) — mirroring what the feature icon already does for the
+worktree state. Docs: README (layout diagram, icon list, folded-row and
+deletion sections), DECISIONS (two entries), docs/shortcuts.md confirm-mode
+table. Tests: new `project_rows_swap_the_count_for_a_full_or_empty_icon`
+(render) and `d_confirms_the_delete_popup` (live tmux); the multi-shell
+assertion in `solo_feature_row_carries_the_status_and_no_child_row` flipped
+to assert the count's *absence*. Also live-verified in a throwaway tmux:
+`▢ repo-a` → create feature → `▣ repo-a`, `d` `d` deletes it and the row
+goes hollow again. Gating: fmt clean, clippy -D warnings clean, 204 tests
+green apart from the pre-existing
+`legacy_root_back_key_is_unbound_but_user_binding_survives` failure, which
+already fails on the untouched baseline in this environment.
+
+Before that: **M18 — `a` asks which command to run (COMPLETE).** User feedback: adding a
 second shell that runs the same default agent is not the realistic case —
 if the default agent is not enough you want a *different* command. `a` now
 opens a small prompt for the command; empty falls back to the project
 default, which the popup shows as a hint. Gating: fmt clean, clippy -D
-warnings clean, tests green apart from the pre-existing
-`legacy_root_back_key_is_unbound_but_user_binding_survives` failure, which
-already fails on the untouched baseline in this environment.
+warnings clean, tests green apart from the same pre-existing failure.
 
 Before that: **M17 — delete semantics (COMPLETE).** Three pieces of user feedback:
 (1) `worktrees.delete_branch` now defaults to **true** — deleting a feature
@@ -159,6 +178,43 @@ enough to resume without re-reading code.
   "M8 COMPLETE" at the top of STATE.md.
 
 ## Progress log
+
+### M19 — `dd` confirms, tree rows drop their counts (COMPLETE)
+
+User feedback, verbatim: "When deleting a feature, I should be able to
+confirm with yes or `d`. This is then a vim shortcut, more natural for some
+users." and "Can we remove the noisy `(x features)` `[x shells]` that are
+written along the tree? Since its unfolded by default this is noise. For
+projects, we can use a empty/full folder".
+
+- **`d` confirms.** `Mode::Confirm` accepts `Char('d')` on the same arm as
+  `Char('y')` / `Enter`. It applies to both confirms `d` can open (delete
+  feature, close shell), because both are reached by pressing `d` — the
+  reflex is "press it twice", not "press it twice on a feature". `f` was
+  deliberately left off that arm: force delete discards uncommitted work,
+  so it must not be reachable by repeating the key that opened the popup.
+  The hint row reads `[y/d] yes · [f] … · [n] cancel`.
+- **Counts are gone.** `draw_tree` no longer emits `(N features)` on the
+  project row nor `[N shells]` on a multi-shell feature row. Both said what
+  the very next rows already show — the tree is expanded by default. The
+  solo-feature row is unchanged: it still carries its shell's status, since
+  that shell has no row of its own.
+- **Full/empty project icon.** The only thing the count told you that the
+  children cannot is whether a *folded* project holds anything, so that
+  moved into the icon: `▣` non-empty, `▢` empty (ASCII `*` / `o`). Same
+  trick as the feature icon (`◇` clean / `◆` dirty) — one glyph, one fact
+  the row could not otherwise state. `(missing)` stays, moved to a trailing
+  span now that nothing follows it.
+- Tests: `project_rows_swap_the_count_for_a_full_or_empty_icon` renders a
+  project with a feature next to an empty one and asserts both the missing
+  counts and the two icons; `d_confirms_the_delete_popup` drives `d` `d`
+  against a live tmux server and asserts the shell is actually closed;
+  `solo_feature_row_carries_the_status_and_no_child_row` now asserts the
+  multi-shell row carries *no* count either.
+- Live acceptance in a throwaway tmux (`-L lwvis`, XDG under the
+  scratchpad, two demo repos): both projects rendered `▢`, creating a
+  feature flipped repo-a to `▣`, the confirm showed `[y/d] yes`, and `d`
+  `d` deleted the feature — agent session gone, row hollow again.
 
 ### M18 — `a` asks which command to run (COMPLETE)
 

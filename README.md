@@ -309,6 +309,8 @@ at a glance without hunting for the status word at the end of the row.
   window is killed destroys itself — then `git worktree remove` (with
   `--force` offered when the worktree is dirty). The feature branch goes
   with it unless `worktrees.delete_branch = false`.
+  The confirm popup answers to `y`, `Enter` or `d` — pressing `d` twice
+  deletes, the way `dd` does in vim.
 - Shell deletion (`d` on a shell row) kills that one window and drops the
   shell from the feature — the worktree, the branch and the sibling shells
   are untouched. A closed shell's index is never handed out again while the
@@ -322,12 +324,12 @@ is happening, the bar says what you can press:
 
 ```
 ╭ projects/features ───────╮╭ preview (capture-pane) ─────────────╮
-│▾ ▣ repo-a (2 features)   ││ live tail of the selected shell,    │
+│▾ ▣ repo-a                ││ live tail of the selected shell,    │
 │  ├─   ◇ feat-a  waiting  ││ refreshed every poll                │
-│  └─ ▾ ◆ feat-b [2 shells]││                                     │
+│  └─ ▾ ◆ feat-b           ││                                     │
 │      ├─ ● #0 working     ││     ╭────────────────────────╮      │
 │      └─ ● #1 waiting     ││     │ feature 'feat-b' crea… │      │
-│                          ││     ╰────────────────────────╯      │
+│▸ ▢ repo-b                ││     ╰────────────────────────╯      │
 ╰──────────────────────────╯╰─────────────────────────────────────╯
  n feature · a shell · d delete · ? help
 ```
@@ -341,15 +343,16 @@ so the panel keeps the theme's background, and `none` renders raw text.
 Status classification always runs on the stripped text, so colouring never
 changes how a pane is classified.
 
-Icons: `▣` project, `◇` feature with a clean worktree, `◆` feature with
-uncommitted changes, `●` shell. Missing projects show `(missing)`
-dimmed. When only ONE project is in scope its feature rows replace the
+Icons: `▣` project holding features, `▢` empty project, `◇` feature with a
+clean worktree, `◆` feature with uncommitted changes, `●` shell. Rows carry
+no counts — the tree is expanded by default, so the children *are* the
+count, and the project icon says whether a folded project holds anything.
+Missing projects show `(missing)` dimmed. When only ONE project is in scope its feature rows replace the
 project row entirely (the flat layout).
 
 **The folded row** (`feat-a` above): the nominal case is one worktree, one
 agent, so a feature with a single shell has no child row at all — its own
-row *is* that shell. It carries the shell's status instead of a shell
-count, has no expand marker, and `Enter` / `s` attach and quick-send to it
+row *is* that shell. It carries the shell's status, has no expand marker, and `Enter` / `s` attach and quick-send to it
 directly. `a` gives the feature a second shell, and the subtree appears.
 Only features with several shells (or none) are expandable.
 
