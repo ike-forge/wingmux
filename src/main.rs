@@ -21,6 +21,7 @@ mod tmux;
 mod ui;
 mod util;
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use error::Result;
@@ -185,17 +186,27 @@ fn run_hook_subcommand(event: &str, socket: Option<String>) -> Result<()> {
         // Tmux::detect reads this; setting it keeps socket handling in one
         // place rather than threading an override through the API.
         // SAFETY: this call happens before any thread is spawned (we are
-        // still in the single-threaded startup path, before parse_cli's
-        // caller has done anything else), which is the documented safety
-        // condition for `std::env::set_var`.
+        // still on the single-threaded startup path: only `logging::init`
+        // and a `log::info!` have run before it, neither of which spawns a
+        // thread), which is the documented safety condition for
+        // `std::env::set_var`.
         unsafe { std::env::set_var("LAZYWINGMAN_TMUX_SOCKET", s) };
     }
     let Some(pane_id) = std::env::var("TMUX_PANE").ok().filter(|p| !p.is_empty()) else {
         // Not inside tmux: nothing to report to. Not an error.
         return Ok(());
     };
-    let payload: serde_json::Value =
-        serde_json::from_reader(std::io::stdin()).unwrap_or(serde_json::Value::Null);
+    // A hook is never legitimately fed JSON from a terminal — Claude always
+    // pipes the payload and closes the pipe. Reading stdin when it is a tty
+    // would block forever waiting for an EOF nobody sends, stalling the
+    // agent this subcommand exists to observe. So skip the read entirely in
+    // that case rather than trust an invocation contract this crate cannot
+    // enforce.
+    let payload: serde_json::Value = if std::io::stdin().is_terminal() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_reader(std::io::stdin()).unwrap_or(serde_json::Value::Null)
+    };
     // A tmux error here (bad socket, tmux missing, stale pane) must not
     // propagate: this subcommand must exit 0 no matter what, so it never
     // interrupts the agent it observes. Unlike the TUI path, we do not use
