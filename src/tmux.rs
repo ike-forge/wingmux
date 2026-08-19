@@ -38,6 +38,10 @@ pub struct PaneInfo {
     pub pane_id: String,
     pub current_command: String,
     pub dead: bool,
+    /// Raw `@lw_agent` value, empty when the pane carries none. Parsed by
+    /// `hooks::Overlay::parse`; kept as a string here so tmux stays
+    /// ignorant of what the value means.
+    pub overlay_raw: String,
 }
 
 /// One tmux session (agent sessions only, filtered by the caller).
@@ -396,7 +400,7 @@ impl Tmux {
     /// A server with no sessions yet (fresh standalone boot) yields an empty
     /// list, not an error.
     pub fn list_panes(&self) -> Result<Vec<PaneInfo>> {
-        let fmt = "#{pane_id}|#{pane_current_command}|#{pane_dead}|#{session_name}";
+        let fmt = "#{pane_id}|#{pane_current_command}|#{pane_dead}|#{session_name}|#{@lw_agent}";
         let out = match self.run(&["list-panes", "-a", "-F", fmt]) {
             Ok(o) => o,
             // list-panes -a has no target when the server has zero sessions.
@@ -406,13 +410,33 @@ impl Tmux {
         Ok(out
             .lines()
             .filter(|line| {
-                line.rsplit('|')
-                    .next()
+                // The session name is field 3 now, not the last one: the
+                // overlay trails it and may itself contain '|'. A plain
+                // split is fine here — nth(3) lands on the session field
+                // regardless of how many pipes follow it in the overlay.
+                line.split('|')
+                    .nth(3)
                     .map(|s| s.starts_with(SESSION_PREFIX))
                     .unwrap_or(false)
             })
             .filter_map(parse_pane_line)
             .collect())
+    }
+
+    // ---------------------------------------------------- pane options
+
+    /// Set a pane user option (`@key`). Used by the hook subcommand to
+    /// publish an agent's self-reported state onto its own pane; tmux
+    /// disposes of it with the pane, so there is nothing to clean up.
+    pub fn set_pane_option(&self, pane_id: &str, key: &str, value: &str) -> Result<()> {
+        self.run(&["set-option", "-p", "-t", pane_id, key, value])?;
+        Ok(())
+    }
+
+    /// Unset a pane user option, handing the shell back to the heuristics.
+    pub fn clear_pane_option(&self, pane_id: &str, key: &str) -> Result<()> {
+        self.run(&["set-option", "-p", "-u", "-t", pane_id, key])?;
+        Ok(())
     }
 
     /// Type text into a pane. `enter` appends a trailing Enter.
@@ -575,13 +599,18 @@ impl Tmux {
 }
 
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
-    // The trailing session name is only used to filter the list — the
-    // dashboard keeps no per-pane geometry.
-    let mut it = line.splitn(4, '|');
+    // Field order: id | command | dead | session | overlay. The overlay is
+    // last and taken verbatim so a '|' inside it cannot desync parsing.
+    let mut it = line.splitn(5, '|');
+    let pane_id = it.next()?.to_string();
+    let current_command = it.next()?.to_string();
+    let dead = it.next()? == "1";
+    let _session = it.next()?;
     Some(PaneInfo {
-        pane_id: it.next()?.to_string(),
-        current_command: it.next()?.to_string(),
-        dead: it.next()? == "1",
+        pane_id,
+        current_command,
+        dead,
+        overlay_raw: it.next().unwrap_or("").to_string(),
     })
 }
 
@@ -662,6 +691,120 @@ mod tests {
         assert!(!p.dead);
         let dead = parse_pane_line("%9|sh|1|wingman-session-p").unwrap();
         assert!(dead.dead);
+    }
+
+    #[test]
+    fn pane_line_parsing_keeps_the_overlay_verbatim() {
+        let p =
+            parse_pane_line("%3|claude|0|wingman-session-x|blocked:1755600000").expect("parses");
+        assert_eq!(p.pane_id, "%3");
+        assert_eq!(p.current_command, "claude");
+        assert!(!p.dead);
+        assert_eq!(p.overlay_raw, "blocked:1755600000");
+    }
+
+    /// The overlay is last and taken as the remainder, so a `|` inside it
+    /// can never desync the parser.
+    #[test]
+    fn overlay_may_contain_the_field_separator() {
+        let p = parse_pane_line("%3|claude|0|wingman-session-x|a|b").expect("parses");
+        assert_eq!(p.overlay_raw, "a|b");
+    }
+
+    #[test]
+    fn missing_overlay_field_is_empty_not_an_error() {
+        let p = parse_pane_line("%3|claude|0|wingman-session-x").expect("parses");
+        assert_eq!(p.overlay_raw, "");
+    }
+
+    #[test]
+    fn pane_option_roundtrip_and_clear() {
+        with_tmux_server(|sock, tmux| {
+            tmux.new_session(
+                "wingman-session-opt",
+                "lw:feat/0",
+                std::path::Path::new("/tmp"),
+                "bash",
+            )
+            .expect("session");
+            let pane = tmux
+                .list_panes()
+                .expect("panes")
+                .first()
+                .expect("one pane")
+                .clone();
+            assert_eq!(pane.overlay_raw, "", "unset panes read as empty");
+
+            tmux.set_pane_option(&pane.pane_id, crate::hooks::OVERLAY_KEY, "blocked:12")
+                .expect("set");
+            let after = tmux.list_panes().expect("panes");
+            let got = after
+                .iter()
+                .find(|p| p.pane_id == pane.pane_id)
+                .expect("same pane");
+            assert_eq!(got.overlay_raw, "blocked:12");
+
+            tmux.clear_pane_option(&pane.pane_id, crate::hooks::OVERLAY_KEY)
+                .expect("clear");
+            let cleared = tmux.list_panes().expect("panes");
+            let got = cleared
+                .iter()
+                .find(|p| p.pane_id == pane.pane_id)
+                .expect("same pane");
+            assert_eq!(got.overlay_raw, "", "cleared reads as empty");
+            let _ = sock;
+        });
+    }
+
+    #[test]
+    fn hook_writes_and_clears_the_overlay_on_a_real_pane() {
+        with_tmux_server(|_sock, tmux| {
+            tmux.new_session(
+                "wingman-session-hook",
+                "lw:feat/0",
+                std::path::Path::new("/tmp"),
+                "bash",
+            )
+            .expect("session");
+            let pane = tmux
+                .list_panes()
+                .expect("panes")
+                .first()
+                .expect("pane")
+                .clone();
+
+            crate::hooks::run_hook("Stop", &pane.pane_id, &tmux, &serde_json::Value::Null)
+                .expect("stop hook");
+            let got = tmux.list_panes().expect("panes");
+            let raw = &got
+                .iter()
+                .find(|p| p.pane_id == pane.pane_id)
+                .expect("pane")
+                .overlay_raw;
+            assert!(raw.starts_with("waiting:"), "overlay reads {raw:?}");
+
+            let msg = serde_json::json!({"message": "Claude needs your permission to use Bash"});
+            crate::hooks::run_hook("Notification", &pane.pane_id, &tmux, &msg)
+                .expect("notification hook");
+            let got = tmux.list_panes().expect("panes");
+            let raw = &got
+                .iter()
+                .find(|p| p.pane_id == pane.pane_id)
+                .expect("pane")
+                .overlay_raw;
+            assert!(raw.starts_with("blocked:"), "overlay reads {raw:?}");
+
+            crate::hooks::run_hook("SessionEnd", &pane.pane_id, &tmux, &serde_json::Value::Null)
+                .expect("session end hook");
+            let got = tmux.list_panes().expect("panes");
+            assert_eq!(
+                got.iter()
+                    .find(|p| p.pane_id == pane.pane_id)
+                    .expect("pane")
+                    .overlay_raw,
+                ""
+            );
+        });
     }
 
     #[test]

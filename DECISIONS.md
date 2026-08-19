@@ -467,3 +467,37 @@ Every decision not fixed by the spec, one line. Appended as decisions are made.
   the panel keeps the theme's background, `none` is the escape hatch.
   Config-only — the modes are a preference, not a per-moment decision, so
   they take no keybinding.
+- **M17 — a tmux pane user option carries the agent's self-reported state,
+  not a per-shell state file or a Unix socket.** Both alternatives were
+  considered and rejected:
+  - A per-shell state file (written by the hook, read by the poll loop)
+    would be a *second* source of truth alongside tmux, when every other
+    piece of live status data in the app — panes, captures, dirty flags —
+    is already re-derived from tmux/git on each poll rather than trusted
+    from a cache. It would also need its own garbage collection: nothing
+    guarantees the file for a dead pane ever gets removed, unlike a tmux
+    pane option, which is destroyed automatically with the pane it
+    belongs to (the same "dead = gone from tmux" model M14 already
+    established).
+  - A Unix socket needs a listener thread in what is otherwise a
+    synchronous TUI, plus a stale-socket lifecycle and a non-blocking
+    client with a timeout — because a naive hook client would **block
+    the agent** whenever LazyWingman was down (the hook fires from
+    inside Claude's own turn; a client that blocks trying to connect
+    blocks the agent it's reporting on). It is also the only one of the
+    rejected options that loses events outright while the dashboard is
+    closed, rather than merely deferring them.
+  - The pane option needs no daemon and no cleanup: the hook subcommand's
+    entire write is one `tmux set-option` call, matching the existing
+    rule that all tmux interaction goes through the CLI. It survives a
+    LazyWingman restart with zero recovery code (read straight back out
+    of the next `list-panes` call) and disappears with the pane, so
+    nothing is ever left to reconcile or expire.
+- **M17 — instrumentation is automatic, with no consent modal.**
+  Disclosure comes from the injected flag itself: a new shell shows its
+  command at the top of the pane, and it reads `claude --settings
+  '~/.local/state/lazywingman/lazywingman-activity-hooks.json'` — the
+  settings file is named so that line is self-explanatory. A first-run
+  "hello/docs" modal explaining it may come later; it was explicitly out
+  of scope for this milestone. `[defaults] agent_hooks = true` is the
+  opt-out.

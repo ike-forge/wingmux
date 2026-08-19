@@ -69,6 +69,10 @@ pub struct ThemeColors {
     pub tree_shell: Spec,
     pub status_working: Spec,
     pub status_waiting: Spec,
+    /// Added in M17. Optional: themes written earlier stay valid and
+    /// borrow `status_waiting`.
+    #[serde(default)]
+    pub status_blocked: Option<Spec>,
     pub status_idle: Spec,
     pub status_failed: Spec,
     pub status_dead: Spec,
@@ -108,6 +112,7 @@ pub struct ResolvedColors {
     pub tree_shell: Color,
     pub status_working: Color,
     pub status_waiting: Color,
+    pub status_blocked: Color,
     pub status_idle: Color,
     pub status_failed: Color,
     pub status_dead: Color,
@@ -406,6 +411,7 @@ fn resolve_theme(file: ThemeFile, truecolor: bool, monochrome: bool) -> Result<T
             tree_shell: resolve(c.tree_shell),
             status_working: resolve(c.status_working),
             status_waiting: resolve(c.status_waiting),
+            status_blocked: resolve(c.status_blocked.unwrap_or(c.status_waiting)),
             status_idle: resolve(c.status_idle),
             status_failed: resolve(c.status_failed),
             status_dead: resolve(c.status_dead),
@@ -499,6 +505,7 @@ mod tests {
                 ("tree_shell", c.tree_shell),
                 ("status_working", c.status_working),
                 ("status_waiting", c.status_waiting),
+                ("status_blocked", c.status_blocked),
                 ("status_idle", c.status_idle),
                 ("status_failed", c.status_failed),
                 ("status_dead", c.status_dead),
@@ -597,6 +604,50 @@ mod tests {
             Color::Rgb(r, g, b) => ((r as u32) << 16) | ((g as u32) << 8) | b as u32,
             other => panic!("expected an RGB colour, got {other:?}"),
         }
+    }
+
+    // ---- M17 — the `blocked` colour role ----
+
+    /// Every shipped theme defines the new role explicitly, and it must be
+    /// distinguishable from `waiting` — the whole point of the state.
+    /// Reached hermetically through `BUILTIN_THEMES`/`parse_theme`/
+    /// `resolve_theme` rather than `load`, which would consult the user's
+    /// themes dir first and could pick up a shadowing user file.
+    #[test]
+    fn shipped_themes_define_a_distinct_blocked_colour() {
+        for (name, content) in BUILTIN_THEMES {
+            let file = parse_theme(content, Path::new(&format!("<builtin:{name}>")))
+                .unwrap_or_else(|e| panic!("theme {name}: {e}"));
+            assert!(
+                file.colors.status_blocked.is_some(),
+                "theme {name} must define status_blocked explicitly"
+            );
+            let resolved = resolve_theme(file, true, false).unwrap();
+            assert_ne!(
+                resolved.colors.status_blocked, resolved.colors.status_waiting,
+                "theme {name} must give blocked its own colour"
+            );
+        }
+    }
+
+    /// A theme written before M17 omits the key entirely and must keep
+    /// loading, borrowing the waiting colour rather than failing.
+    #[test]
+    fn a_theme_without_blocked_still_loads() {
+        let src = std::fs::read_to_string("themes/ansi.toml").expect("read ansi.toml");
+        let older: String = src
+            .lines()
+            .filter(|l| !l.starts_with("status_blocked"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed =
+            parse_theme(&older, Path::new("ansi.toml")).expect("a pre-M17 theme must still parse");
+        assert!(parsed.colors.status_blocked.is_none());
+        let resolved = resolve_theme(parsed, true, false).unwrap();
+        assert_eq!(
+            resolved.colors.status_blocked, resolved.colors.status_waiting,
+            "an omitted status_blocked must fall back to status_waiting"
+        );
     }
 
     /// The picker list: built-ins first in the stable order, then user

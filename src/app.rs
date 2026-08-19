@@ -501,6 +501,10 @@ pub struct App {
     /// delivering the message drops it.
     pub drafts: HashMap<String, TextBuf>,
     pub statuses: HashMap<String, Status>,
+    /// Path to the generated Claude hook settings file, when
+    /// instrumentation is enabled (`[defaults] agent_hooks`). `None`
+    /// disables injection entirely.
+    pub hook_settings: Option<std::path::PathBuf>,
     pattern_cache: HashMap<String, Compiled>,
     pub last_poll: Instant,
     /// The transient notice shown as a toast above the statusbar. Set by
@@ -612,6 +616,7 @@ impl App {
             captures: HashMap::new(),
             drafts: HashMap::new(),
             statuses: HashMap::new(),
+            hook_settings: None,
             pattern_cache: HashMap::new(),
             last_poll: Instant::now(),
             message: None,
@@ -1207,6 +1212,16 @@ impl App {
             .ok_or_else(|| Error::Tmux("no tmux server available".into()))
     }
 
+    /// The command actually typed into a fresh pane: the user's
+    /// `agent_command`, plus `--settings` when it is a recognised `claude`
+    /// and instrumentation is on. The stored command is never rewritten.
+    pub fn agent_command_for_spawn(&self, command: &str) -> String {
+        match &self.hook_settings {
+            Some(p) => crate::hooks::instrument(command, p),
+            None => command.to_string(),
+        }
+    }
+
     /// The dedicated agent-session name for a project. Deterministic:
     /// `wingman-session-<slug>`, suffixed with a stable hash of the path
     /// when another project already owns that name or a foreign session
@@ -1313,7 +1328,8 @@ impl App {
             Some(w) => w,
             None => tmux.new_window(&session_name, &wname, &root, &proj.agent_shell)?,
         };
-        tmux.send_keys(&w.pane_id, &proj.agent_command, true)?;
+        let spawn_cmd = self.agent_command_for_spawn(&proj.agent_command);
+        tmux.send_keys(&w.pane_id, &spawn_cmd, true)?;
 
         self.state.projects[pi].session_name = Some(session_name.clone());
         self.state.projects[pi].features.push(Feature {
@@ -1384,7 +1400,11 @@ impl App {
             "" => proj.agent_command.as_str(),
             c => c,
         };
-        tmux.send_keys(&w.pane_id, command, true)?;
+        // The command the user chose (or the project default) is what
+        // gets instrumented — M17 injects --settings only when it is a
+        // recognised `claude`.
+        let spawn_cmd = self.agent_command_for_spawn(command);
+        tmux.send_keys(&w.pane_id, &spawn_cmd, true)?;
         self.state.projects[pi].session_name = Some(session_name.clone());
         self.state.projects[pi].features[fi].shells.push(Shell {
             index: idx,
@@ -1830,7 +1850,21 @@ impl App {
             // capture, and the classifier reads `None` as dead. Skipping
             // it instead would leave the last live status on screen
             // forever.
-            let pane = self.panes.get(&pid).cloned();
+            let mut pane = self.panes.get(&pid).cloned();
+            if !self.cfg.defaults.agent_hooks
+                && let Some(p) = pane.as_mut()
+            {
+                // The kill switch: `agent_hooks = false` must classify
+                // purely from `capture-pane`, exactly as before this
+                // feature existed. Turning the flag off only stops writing
+                // new overlays — a pane instrumented earlier (or by another
+                // LazyWingman instance sharing the tmux server) still
+                // carries one, and it outlives both a restart and this
+                // flag flip. `classify` has no way to know the flag is
+                // off, so silence the overlay here, the one seam every
+                // poll goes through, rather than scattering the check.
+                p.overlay_raw.clear();
+            }
             let tail = match &pane {
                 None => String::new(),
                 Some(_) => match tmux.capture_pane(&pid, 120) {
@@ -2721,6 +2755,19 @@ pub fn run(cfg: Config, theme: Theme, tmux: Tmux) -> Result<()> {
     if app.ascii {
         log::info!("ascii-only rendering enabled (LW_ASCII or C locale)");
     }
+    if app.cfg.defaults.agent_hooks {
+        match crate::hooks::write_settings_file() {
+            Ok(p) => {
+                log::info!("agent hooks enabled: {}", p.display());
+                app.hook_settings = Some(p);
+            }
+            // Never fatal: without the file we simply fall back to the
+            // regex heuristics, which is exactly pre-M17 behaviour.
+            Err(e) => log::warn!("agent hooks disabled ({e})"),
+        }
+    } else {
+        log::info!("agent hooks disabled by config");
+    }
     if let Err(e) = app.startup() {
         // before the terminal is taken over, stderr is safe
         eprintln!("lazywingman: startup failed: {e}");
@@ -2852,6 +2899,26 @@ mod tests {
         app
     }
 
+    #[test]
+    fn spawn_command_is_instrumented_when_hooks_are_on() {
+        let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
+        app.hook_settings = Some(std::path::PathBuf::from(
+            "/s/lazywingman-activity-hooks.json",
+        ));
+        assert_eq!(
+            app.agent_command_for_spawn("claude"),
+            "claude --settings '/s/lazywingman-activity-hooks.json'"
+        );
+        assert_eq!(app.agent_command_for_spawn("codex exec"), "codex exec");
+    }
+
+    #[test]
+    fn spawn_command_is_untouched_when_hooks_are_off() {
+        let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
+        app.hook_settings = None;
+        assert_eq!(app.agent_command_for_spawn("claude"), "claude");
+    }
+
     /// Seed state with one project whose agent session and first shell
     /// window really exist on the test tmux server.
     fn seed_project_with_shell(tmux: &Tmux, app: &mut App) -> (String, String) {
@@ -2880,6 +2947,35 @@ mod tests {
             }],
         });
         (w.window_id, w.pane_id)
+    }
+
+    /// `agent_hooks = false` must be a real kill switch: even a pane that
+    /// still carries a live `@lw_agent` overlay (written by an earlier
+    /// spawn, or by a second LazyWingman instance) must classify purely
+    /// from `capture-pane`, exactly as README/STATE promise. The overlay
+    /// says `blocked`, which a foreground `cat` (not a shell, so the
+    /// login-shell guard alone would not save this test) would otherwise
+    /// win outright.
+    #[test]
+    fn agent_hooks_off_ignores_a_live_overlay_during_poll() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_standalone(sock);
+            let mut app = app_with(tmux.clone());
+            app.cfg.defaults.agent_hooks = false;
+            let (_wid, pid) = seed_project_with_shell(&tmux, &mut app);
+            tmux.send_keys(&pid, "cat", true).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            tmux.set_pane_option(&pid, crate::hooks::OVERLAY_KEY, "blocked:9999999999")
+                .unwrap();
+
+            app.poll();
+
+            assert_eq!(
+                app.statuses.get(&pid),
+                Some(&Status::Idle),
+                "agent_hooks = false must classify from the ladder, ignoring the overlay"
+            );
+        });
     }
 
     /// M8.2 — the standalone handoff path, verified at the command level:
@@ -4833,6 +4929,7 @@ mod tests {
             pane_id: "%1".into(),
             current_command: "node".into(),
             dead: false,
+            overlay_raw: String::new(),
         };
         assert_eq!(
             crate::status::classify(&pat, &recent_tail(coloured), Some(&pane)),
