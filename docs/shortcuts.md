@@ -72,7 +72,7 @@ overlay lists all of them grouped by context. Same words in both.
 | Key | Meaning | Rule satisfied |
 |---|---|---|
 | `n` | new feature (sibling) | create action |
-| `a` | add a shell to the feature | add action |
+| `a` | add a shell to the feature (prompts for the command; empty = the project default) | add action |
 | `d` | delete feature (kills windows, removes worktree; `f` = force when dirty) | vim `d` destructive, confirms; `f` differs by position (confirm mode, not navigation) |
 
 ### Shell selected
