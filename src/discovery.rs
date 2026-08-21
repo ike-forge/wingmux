@@ -1,4 +1,4 @@
-//! Project discovery: recursive scans for git repositories.
+//! Repository discovery: recursive scans for git repositories.
 //!
 //! Used by the startup flow (scope = the working directory: what is inside
 //! it is listed, nothing else) and the `I` key (rescan the scope, add new
@@ -18,8 +18,8 @@
 //!
 //! There is NO cache: finding `.git` entries is a handful of stats per
 //! directory, fast enough to do live even for scopes with hundreds of
-//! folders. The expensive part — `git worktree list` per project — is the
-//! caller's responsibility and is done lazily, only for projects whose
+//! folders. The expensive part — `git worktree list` per repository — is the
+//! caller's responsibility and is done lazily, only for repositories whose
 //! details are actually on screen.
 
 use std::collections::HashSet;

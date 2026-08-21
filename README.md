@@ -1,32 +1,32 @@
 # LazyWingman
 
 A control centre for supervising coding agents (Claude Code, Codex, Mistral
-Vibe, …) across **multiple projects and multiple features in parallel**. See
-everything at a glance, jump into any agent with one keystroke, spin up and
-tear down feature workspaces instantly.
+Vibe, …) across **multiple repositories and multiple worktrees in
+parallel**. See everything at a glance, jump into any agent with one
+keystroke, spin up and tear down worktrees instantly.
 
 LazyWingman runs anywhere — inside tmux (as a pane of your existing session)
 or standalone in a plain terminal. Agent shells never pollute your tmux
 session: they live in their own dedicated tmux sessions
-(`wingman-session-<project>`), invisible until you attach to them.
+(`wingman-session-<repository>`), invisible until you attach to them.
 
 ```
-ProjectA  (a git repo found by discovery)
+RepositoryA  (a git repo found by discovery)
   ├── master        (the main checkout — untouched)
-  ├── featureA1     (worktree + 1..n agent shells)
-  ├── featureA2
-  └── featureA3
-ProjectB
+  ├── worktreeA1    (git worktree + 1..n agent shells)
+  ├── worktreeA2
+  └── worktreeA3
+RepositoryB
   ├── master
-  ├── featureB1
-  └── featureB2
+  ├── worktreeB1
+  └── worktreeB2
 ```
 
-- **Project** = an existing local git repo. Imported and removed only; never
-  created or deleted by LazyWingman.
-- **Feature** = a git worktree (created automatically) + at least one spawned
+- **Repository** = an existing local git repo. Imported and removed only;
+  never created or deleted by LazyWingman.
+- **Worktree** = a git worktree (created automatically) + at least one spawned
   shell running the default agent command.
-- **Shell** = a tmux window running a command in the feature's worktree —
+- **Shell** = a tmux window running a command inside the worktree —
   usually an agent, but useful for any long-running command.
 
 Non-goals (deliberate): no orchestration, no MCP/skill management, no web UI,
@@ -58,9 +58,10 @@ First run writes an exhaustive, fully commented config to
 one) and copies the built-in themes to
 `$XDG_CONFIG_HOME/lazywingman/themes/`.
 
-LazyWingman finds your projects for you (see [Project discovery](#project-discovery)),
-and projects can carry their own committed `.lazywingman.toml` so a fresh
-clone is already configured (see [Configuration](#configuration)).
+LazyWingman finds your repositories for you (see [Repository
+discovery](#repository-discovery)), and repositories can carry their own
+committed `.lazywingman.toml` so a fresh clone is already configured (see
+[Configuration](#configuration)).
 
 ## Keybindings
 
@@ -76,12 +77,12 @@ the help overlay (`?`).
 | `PgUp` / `PgDn`, `ctrl-u` / `ctrl-d` | half page up / down |
 | `ctrl-f` / `ctrl-b` | full page up / down |
 | `h` | collapse / jump to parent |
-| `l` / `Enter` | expand, or **attach** to the selected shell (a one-shell feature attaches straight away — see the folded row below) |
-| `n` | new feature (worktree + branch + agent shell) — a prompt asks for the name and names the branch it will be cut from: the project's **base branch** (`worktrees.base_branch`, per-project override), never the branch the repo has checked out |
-| `a` | add a shell to the selected feature — a prompt asks which command it runs (empty = the project's default agent command, shown as a hint) |
-| `s` | **quick-send** a line to the selected shell (or to a one-shell feature's row). `Esc` keeps the unsent text as that shell's draft — `s` on it again picks up where you left off. The draft is dropped once the message is actually delivered, and lives only for this run of LazyWingman |
-| `p` | **predefined messages** for the selected shell (or a one-shell feature's row) — a modal of configured presets (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
-| `d` | on a feature: delete it (kills windows, removes worktree; `f` = force when dirty). On a shell row: close that shell (kills its window only — the feature and its other shells stay) |
+| `l` / `Enter` | expand, or **attach** to the selected shell (a one-shell worktree attaches straight away — see the folded row below) |
+| `n` | new worktree (git worktree + branch + agent shell) — a prompt asks for the name and names the branch it will be cut from: the repository's **base branch** (`worktrees.base_branch`, per-repository override), never the branch the repo has checked out |
+| `a` | add a shell to the selected worktree — a prompt asks which command it runs (empty = the repository's default agent command, shown as a hint) |
+| `s` | **quick-send** a line to the selected shell (or to a one-shell worktree's row). `Esc` keeps the unsent text as that shell's draft — `s` on it again picks up where you left off. The draft is dropped once the message is actually delivered, and lives only for this run of LazyWingman |
+| `p` | **predefined messages** for the selected shell (or a one-shell worktree's row) — a modal of configured presets (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
+| `d` | on a worktree: delete it (kills windows, removes worktree; `f` = force when dirty). On a shell row: close that shell (kills its window only — the worktree and its other shells stay) |
 | `r` | refresh — reconcile state against reality |
 | `?` | help overlay (grouped, scrollable: `j`/`k`, `PgUp`/`PgDn`) |
 | `q` / `Esc` / `ctrl-c` | quit (ctrl-c works from any state) |
@@ -99,14 +100,14 @@ ever loses the key).
 
 ## Configuration
 
-`$XDG_CONFIG_HOME/lazywingman/config.toml` — written on first run, and only
-if it isn't there already. It lists every setting LazyWingman understands,
-each one commented out at its built-in default, so the file changes nothing
-until you edit it. Two comment styles tell the two kinds apart:
-`#key = value` (no space after the hash) is a real default — uncommenting it
-as-is is a no-op — while `# text` is prose, or an example with no default
-behind it (`[[projects]]`). Section headers like `[preview]` are left active
-so uncommenting a single key under one is enough. Example, uncommented:
+`$XDG_CONFIG_HOME/lazywingman/config.toml` — written on first run, and only if
+it isn't there already. It lists every setting LazyWingman understands, each
+one commented out at its built-in default, so the file changes nothing until
+you edit it. Two comment styles tell the two kinds apart: `#key = value` (no
+space after the hash) is a real default — uncommenting it as-is is a no-op —
+while `# text` is prose, or an example with no default behind it
+(`[[repositories]]`). Section headers like `[preview]` are left active so
+uncommenting a single key under one is enough. Example, uncommented:
 
 ```toml
 theme = "catppuccin-mocha"  # 7 built-ins; ctrl-t switches live (saved to state)
@@ -122,21 +123,21 @@ back_key = "C-o"             # prefix + C-o jumps back to the dashboard (prefix 
 [worktrees]
 root = ""                    # default: <parent-of-repo>/.lazywingman-worktrees
 base_branch = "master"       # falls back to the repo's current branch
-delete_branch = true         # also delete the feature branch on delete
+delete_branch = true         # also delete the worktree branch on delete
 
 [discovery]
-scan_root = ""               # the scope: projects inside this dir are listed; empty = cwd
+scan_root = ""               # the scope: repositories inside this dir are listed; empty = cwd
 max_depth = 4                # how deep a discovery scan walks
 skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
 
 [defaults]
-agent_command = "claude"     # spawned in every new feature shell by default
+agent_command = "claude"     # spawned in every new worktree shell by default
 agent_shell = "bash"
 agent_hooks = true           # instrument recognised `claude` commands for accurate status
 
 [icons]                      # full key reference under "Layout" below
 preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "ascii" | "none"
-feature_dirty = "󰘬"          # any key overrides the preset; "" draws nothing
+worktree_dirty = "󰘬"         # any key overrides the preset; "" draws nothing
 border = "rounded"           # "rounded" | "plain" | "ascii"
 
 [[messages]]                 # `p` modal: canned prompts for the selected shell
@@ -155,11 +156,11 @@ working = ["Working", "Reading", "⠋", "▌"]
 waiting = ["❯", "codex>"]
 failed = ["Error:", "✖"]
 
-[[projects]]                 # pre-declared projects are imported at startup
-path = "/home/you/work/project-b"
+[[repositories]]             # pre-declared repositories are imported at startup
+path = "/home/you/work/repo-b"
 agent = "codex"              # optional: preset name
 agent_command = "codex exec --yolo"  # optional: inline override
-base_branch = "develop"      # optional: per-project override
+base_branch = "develop"      # optional: per-repository override
 ```
 
 ### Layering
@@ -170,14 +171,14 @@ merge deeply, lists are replaced outright):
 1. Built-in defaults
 2. Your config — `$XDG_CONFIG_HOME/lazywingman/config.toml` (or
    `--config <path>` / `LW_CONFIG` for the same file elsewhere)
-3. Project-local — `.lazywingman.toml` in the working directory or the
+3. Repository-local — `.lazywingman.toml` in the working directory or the
    nearest ancestor holding one (the search stops at a git repository root)
-4. Project-local overrides — `.lazywingman.local.toml` next to it (gitignore
-   this one; it wins over the committed project file)
+4. Repository-local overrides — `.lazywingman.local.toml` next to it
+   (gitignore this one; it wins over the committed repository file)
 
-A project-local file is meant to be committed — a teammate clones the repo
-and is already configured. A few keys belong to the user, not the project,
-and are **ignored in project files with a diagnostic**: `tmux.back_key`
+A repository-local file is meant to be committed — a teammate clones the repo
+and is already configured. A few keys belong to the user, not the repository,
+and are **ignored in repository files with a diagnostic**: `tmux.back_key`
 (your global tmux binding), `worktrees.root` and `discovery.scan_root`
 (machine-specific paths). Set those in your user config.
 
@@ -187,7 +188,7 @@ Inspect the resolved config any time:
 lazywingman --config-dump
 theme = "catppuccin-mocha"          # from user
 poll_interval_ms = 500              # from user
-worktrees.base_branch = "develop"   # from project
+worktrees.base_branch = "develop"   # from repository
 ```
 
 ### Failure behaviour
@@ -198,49 +199,49 @@ everything else is kept. Unknown keys are reported, not fatal (an older
 binary runs a newer config). Every drop is shown once, at startup, in a
 **diagnostics overlay** (`Esc`/`q` dismisses, `j`/`k` scrolls) and logged.
 
-Projects found by discovery live in the state file, not in the config;
-config `[[projects]]` entries are merged in at startup and consulted for
-per-project agent settings.
+Repositories found by discovery live in the state file, not in the config;
+config `[[repositories]]` entries are merged in at startup and consulted for
+per-repository agent settings.
 
-## Project discovery
+## Repository discovery
 
-LazyWingman lists exactly the projects **inside the current path** — the
-scope — and nothing else. Different scopes never mix; projects you worked
+LazyWingman lists exactly the repositories **inside the current path** — the
+scope — and nothing else. Different scopes never mix; repositories you worked
 on elsewhere stay saved in state but are hidden until you start there
 again. There is no cache and no prompt: finding `.git` entries is a few
 stats per directory, done live.
 
 - **Start inside a git repo**: that repo is the scope. It is auto-imported
-  and, because it is the only project, the tree shows its **features flat**
-  at the top level (no project row — the project is obvious). A lone
-  *missing* project still shows its row so the problem is visible.
+  and, because it is the only repository, the tree shows its **worktrees
+  flat** at the top level (no repository row — the repository is obvious). A
+  lone *missing* repository still shows its row so the problem is visible.
 - **Start in a folder of repos**: every repo inside it is listed (walk is
   bounded by `max_depth`, skips hidden dirs and `skip_dirs`; linked-worktree
   `.git` files are never treated as repos — their main repo covers them).
   Everything is unfolded so the shells are visible straight away; past 30
-  projects in scope the tree starts collapsed instead, because it would be
+  repositories in scope the tree starts collapsed instead, because it would be
   longer than any terminal.
 - **Worktrees load lazily, and in the background**: `git worktree list` is
-  the expensive part, so it runs once per project — when you expand it, or
-  from the boot queue. Boot itself only waits for the first project (the
+  the expensive part, so it runs once per repository — when you expand it, or
+  from the boot queue. Boot itself only waits for the first repository (the
   one the first frame draws); the rest are drained one per frame, so the
   tree appears immediately and fills in. Listing 200 repos costs 200
   directory stats, not 200 git calls.
 - **Discovery runs at startup**, not on a key. A repo created while
-  LazyWingman is running appears the next time you start it in that scope;
-  `r` refreshes tmux state (windows, panes, worktrees), not the repo list.
-  To add a project that is not in the scope, declare it under `[[projects]]`
+  LazyWingman is running appears the next time you start it in that scope; `r`
+  refreshes tmux state (windows, panes, worktrees), not the repo list. To add
+  a repository that is not in the scope, declare it under `[[repositories]]`
   in `config.toml`.
-- **Missing projects** are kept, not pruned: a project whose path is
+- **Missing repositories** are kept, not pruned: a repository whose path is
   currently not a git repo shows `(missing)` dimmed in the tree and
   re-activates automatically when the path is a repo again. If it is gone
-  for good, drop it from `state.json` (and from `[[projects]]` in
+  for good, drop it from `state.json` (and from `[[repositories]]` in
   `config.toml` if it was declared there).
 
 ### Themes
 
 `$XDG_CONFIG_HOME/lazywingman/themes/<name>.toml`. Colours are named roles
-(`background`, `accent`, `tree_project`, `status_working`, …) written as
+(`background`, `accent`, `tree_repository`, `status_working`, …) written as
 `#rrggbb` hex, an ANSI-16 name (`cyan`, `bright_black`, `gray`, …), or
 `default` (terminal default). Seven built-ins ship with the binary:
 
@@ -304,28 +305,27 @@ regex ladder alone cannot express:
 
 Set `agent_hooks = false` to disable injection entirely; every agent,
 Claude included, then classifies purely from `capture-pane`, exactly as
-before this feature existed. `failed` stays regex-based either way —
+before this worktree existed. `failed` stays regex-based either way —
 Claude has no "I failed" hook event — so a failing turn only surfaces
 once the session ends and the overlay clears.
 
-A `dead` entry is **muted whole**: the row's guide, icon, name and status
-all take the dead colour instead of only the status word. The rule climbs
-the tree — a feature is muted once every one of its shells is dead, a
-project once every one of its features is (a feature with no shells is not
-dead, it was simply never started) — so a finished feature reads as history
-at a glance without hunting for the status word at the end of the row.
+A `dead` entry is **muted whole**: the row's guide, icon, name and status all
+take the dead colour instead of only the status word. The rule climbs the tree
+— a worktree is muted once every one of its shells is dead, a repository once
+every one of its worktrees is (a worktree with no shells is not dead, it was
+simply never started) — so a finished worktree reads as history at a glance
+without hunting for the status word at the end of the row.
 
 ## How it works with tmux
 
 - LazyWingman detects its own coordinates (`TMUX` env, `display-message -t
   pane`) when it runs inside tmux; standalone it still manages the same tmux
-  server via its CLI — the server is started automatically if none is
-  running. Agent shells live in **dedicated sessions**, one per
-  project, named deterministically `wingman-session-<project>` — your own
-  session is never touched. Shell windows are named `lw:<feature>/<n>`
-  inside that session, so everything is rediscoverable after a restart
-  (`tmux list-sessions` → per-session `list-windows`), even if the state
-  file is lost.
+  server via its CLI — the server is started automatically if none is running.
+  Agent shells live in **dedicated sessions**, one per repository, named
+  deterministically `wingman-session-<repository>` — your own session is never
+  touched. Shell windows are named `lw:<worktree>/<n>` inside that session, so
+  everything is rediscoverable after a restart (`tmux list-sessions` →
+  per-session `list-windows`), even if the state file is lost.
 - All interaction goes through the tmux CLI (`new-session`, `new-window`,
   `send-keys`, `capture-pane`, `switch-client`, `select-window`,
   `kill-window`, `list-panes -a`, `bind-key`); nothing is shell-interpreted.
@@ -335,9 +335,9 @@ at a glance without hunting for the status word at the end of the row.
   the PREFIX table to `switch-client` back to the dashboard window, rebound
   on every startup; legacy root-table bindings from earlier versions are
   removed on startup.
-- **New feature**: the branch and worktree are cut from the project's
-  **base branch** (`worktrees.base_branch`, or the project's override), not
-  from whatever the repo has checked out. The New Feature popup names that
+- **New worktree**: the branch and worktree are cut from the repository's
+  **base branch** (`worktrees.base_branch`, or the repository's override), not
+  from whatever the repo has checked out. The New Worktree popup names that
   branch under the name field; when the configured base branch does not
   exist in the repo it warns that creation falls back to the current branch.
 - **Attach (standalone)**: the terminal is handed over to `tmux attach -t
@@ -355,16 +355,16 @@ at a glance without hunting for the status word at the end of the row.
   `list-windows`; stale entries self-heal and running shells are
   rediscovered (even with a deleted state file, from the pane's cwd + git
   metadata).
-- Feature deletion kills the feature's windows — a session whose last shell
+- Worktree deletion kills the worktree's windows — a session whose last shell
   window is killed destroys itself — then `git worktree remove` (with
-  `--force` offered when the worktree is dirty). The feature branch goes
+  `--force` offered when the worktree is dirty). The worktree branch goes
   with it unless `worktrees.delete_branch = false`.
   The confirm popup answers to `y`, `Enter` or `d` — pressing `d` twice
   deletes, the way `dd` does in vim.
 - Shell deletion (`d` on a shell row) kills that one window and drops the
-  shell from the feature — the worktree, the branch and the sibling shells
+  shell from the worktree — the worktree, the branch and the sibling shells
   are untouched. A closed shell's index is never handed out again while the
-  feature lives, so a new shell cannot collide with a live window.
+  worktree lives, so a new shell cannot collide with a live window.
 
 ## Layout
 
@@ -373,20 +373,20 @@ Two panels and a bar — the tree says what exists, the preview says what
 is happening, the bar says what you can press:
 
 ```
-╭ Projects (2) ────────────╮╭ Preview ────────────────────────────╮
+╭ Repositories (2) ────────╮╭ Preview ────────────────────────────╮
 │▣ repo-a                  ││ live tail of the selected shell,    │
-│  ├─     feat-a  waiting  ││ refreshed every poll                │
-│  └─ ▾ 󰘬 feat-b           ││                                     │
+│  ├─     login   waiting  ││ refreshed every poll                │
+│  └─ ▾ 󰘬 search           ││                                     │
 │     ├─ ● #0 working      ││     ╭────────────────────────╮      │
-│     └─ ● #1 waiting      ││     │ feature 'feat-b' crea… │      │
+│     └─ ● #1 waiting      ││     │ worktree 'search' cre… │      │
 │▢ repo-b                  ││     ╰────────────────────────╯      │
 ╰──────────────────────────╯╰─────────────────────────────────────╯
- n feature · a shell · d delete · ? help
+ n worktree · a shell · d delete · ? help
 ```
 
 Panel titles are Title Case and name what the panel holds. The tree is
-`Projects (n)`, or `Features (n)` when a single git repo is in scope and
-its features have replaced the project row (the flat layout below).
+`Repositories (n)`, or `Worktrees (n)` when a single git repo is in scope and
+its worktrees have replaced the repository row (the flat layout below).
 
 **The preview panel** shows the tail of `capture-pane -e` for the selected
 shell — escape sequences included, so the agent's own colouring (spinners,
@@ -397,16 +397,16 @@ so the panel keeps the theme's background, and `none` renders raw text.
 Status classification always runs on the stripped text, so colouring never
 changes how a pane is classified.
 
-Icons come from `[icons]` (default preset `nerdfont`): `▣` project holding
-features, `▢` empty project, `󰘬` feature with uncommitted changes, nothing
-for a clean one, `●` shell. A clean feature keeps its column, so names stay
-aligned. No patched font? Set `preset = "unicode"` for `◇`/`◆`, or
-`preset = "ascii"`. Rows carry meaning in symbols, labels and position as
-well as colour.
+Icons come from `[icons]` (default preset `nerdfont`): `▣` repository holding
+worktrees, `▢` empty repository, `󰘬` worktree with uncommitted changes,
+nothing for a clean one, `●` shell. A clean worktree keeps its column, so
+names stay aligned. No patched font? Set `preset = "unicode"` for `◇`/`◆`, or
+`preset = "ascii"`. Rows carry meaning in symbols, labels and position as well
+as colour.
 
 > A Nerd Font glyph is drawn single-width by the Mono font variants, which
 > is what the default assumes. If your font draws it double-width, add a
-> trailing space to the `feature_dirty` value — config values are used
+> trailing space to the `worktree_dirty` value — config values are used
 > verbatim and the column pads around them.
 
 #### Every `[icons]` key
@@ -415,13 +415,13 @@ well as colour.
 
 | Key | `nerdfont` | `unicode` | `ascii` | `none` | Draws |
 |---|---|---|---|---|---|
-| `project` | `▣` | `▣` | `*` | — | project holding features |
-| `project_empty` | `▢` | `▢` | `o` | — | project with none |
-| `feature` | — | `◇` | `-` | — | clean worktree |
-| `feature_dirty` | `󰘬` | `◆` | `*` | — | uncommitted changes |
+| `repository` | `▣` | `▣` | `*` | — | repository holding worktrees |
+| `repository_empty` | `▢` | `▢` | `o` | — | repository with none |
+| `worktree` | — | `◇` | `-` | — | clean worktree |
+| `worktree_dirty` | `󰘬` | `◆` | `*` | — | uncommitted changes |
 | `shell` | `●` | `●` | — | — | before the shell number |
-| `expand_open` | `▾` | `▾` | `v` | `▾` | expanded feature |
-| `expand_closed` | `▸` | `▸` | `>` | `▸` | collapsed feature |
+| `expand_open` | `▾` | `▾` | `v` | `▾` | expanded worktree |
+| `expand_closed` | `▸` | `▸` | `>` | `▸` | collapsed worktree |
 | `cursor` | `›` | `›` | `>` | `›` | selection, tree and modals |
 | `guide_branch` | `├─` | `├─` | `\|-` | `├─` | guide, non-last child |
 | `guide_last` | `└─` | `└─` | `` `- `` | `└─` | guide, last child |
@@ -433,23 +433,23 @@ well as colour.
 | `border` | `rounded` | `rounded` | `ascii` | `rounded` | panel and popup frames |
 
 An empty string draws nothing. Four pairs share a rendered column and are
-padded to equal width — `project`/`project_empty`, `feature`/`feature_dirty`,
-`expand_open`/`expand_closed`, `guide_branch`/`guide_last` — so names stay
-aligned when one side is empty. The rest are used verbatim: add your own
-trailing space if you want a gap after one (the default `shell = "● "` has
-one baked in).
+padded to equal width — `repository`/`repository_empty`,
+`worktree`/`worktree_dirty`, `expand_open`/`expand_closed`,
+`guide_branch`/`guide_last` — so names stay aligned when one side is empty.
+The rest are used verbatim: add your own trailing space if you want a gap
+after one (the default `shell = "● "` has one baked in).
 
 `preset = "ascii"` renders a frame a non-UTF-8 terminal can draw, and
 `border = "ascii"` additionally rewrites box-drawing to `+ - |` after
 render — across the whole rect, so under that setting literal box-drawing
 in a captured agent pane is rewritten too.
 
-Rows carry no counts — the tree is expanded by default, so the children
-*are* the count, and the project icon says whether a folded project holds
-anything. Missing projects show `(missing)` dimmed. A worktree LazyWingman
-has no tmux window for is dimmed *whole* — see **Worktrees without a
-shell** below. When only ONE project is in scope its feature rows replace
-the project row entirely (the flat layout).
+Rows carry no counts — the tree is expanded by default, so the children *are*
+the count, and the repository icon says whether a folded repository holds
+anything. Missing repositories show `(missing)` dimmed. A worktree LazyWingman
+has no tmux window for is dimmed *whole* — see **Worktrees without a shell**
+below. When only ONE repository is in scope its worktree rows replace the
+repository row entirely (the flat layout).
 
 **Worktrees without a shell**: every worktree `git worktree list` reports
 gets a row, whether LazyWingman created it or you did. A worktree it has no
@@ -459,14 +459,15 @@ selecting it says so in the preview instead of showing a pane. It is a
 listing, not a dead end: `a` starts a shell in that worktree and it joins the
 rest, and `d` deletes it like any other.
 
-**The folded row** (`feat-a` above): the nominal case is one worktree, one
-agent, so a feature with a single shell has no child row at all — its own
-row *is* that shell. It carries the shell's status, has no expand marker, and `Enter` / `s` attach and quick-send to it
-directly. `a` gives the feature a second shell, and the subtree appears.
-Only features with several shells (or none) are expandable.
+**The folded row** (`login` above): the nominal case is one worktree, one
+agent, so a worktree with a single shell has no child row at all — its own row
+*is* that shell. It carries the shell's status, has no expand marker, and
+`Enter` / `s` attach and quick-send to it directly. `a` gives the worktree a
+second shell, and the subtree appears. Only worktrees with several shells (or
+none) are expandable.
 
 The statusbar carries the contextual shortcuts and nothing else — no app
-name, no session chip, no project count. Notices ("feature 'x' created",
+name, no session chip, no repository count. Notices ("worktree 'x' created",
 "attach failed: …") appear as a toast above the bar and fade after a few
 seconds; the log and the diagnostics overlay (`D`) keep the record.
 
