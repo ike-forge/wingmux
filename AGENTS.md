@@ -67,7 +67,9 @@ warnings`, `cargo test`.
 
 - Conventional-ish commits, one per finished change (`feat: …`, `fix: …`,
   `chore: …`)
-- Identity: `LazyWingman Builder <builder@lazywingman.local>`
+- Identity: `ike <ike.dev@pm.me>` — it comes from the ambient git
+  config for this directory, so plain `git commit` is correct; never pass
+  `-c user.name=…`/`-c user.email=…` overrides.
 - Commit freely; **push at the end of every finished unit of work**
   (feature/change). Doc/planning commits may be pushed midway (optional).
   Never force-push or rewrite history.
