@@ -1,8 +1,8 @@
 //! tmux integration via its CLI.
 //!
 //! LazyWingman supervises agent shells that live in DEDICATED tmux sessions
-//! (`wingman-session-<project>`), never in the user's session — creating a
-//! feature or shell must not pollute the dashboard's session. The dashboard
+//! (`wingman-session-<repository>`), never in the user's session — creating a
+//! worktree or shell must not pollute the dashboard's session. The dashboard
 //! itself may run inside tmux (its coordinates are detected) or standalone
 //! in a plain terminal; every session/window/pane operation works in both
 //! cases because it goes through the tmux server.
@@ -186,14 +186,14 @@ impl Tmux {
         out
     }
 
-    /// Deterministic agent-session name for a project slug:
+    /// Deterministic agent-session name for a repository slug:
     /// `wingman-session-<slug>`. On collisions the caller appends
     /// [`Self::hash_suffix`] to keep it unique.
     pub fn session_name(slug: &str) -> String {
         format!("{SESSION_PREFIX}{}", Self::sanitize(slug))
     }
 
-    /// Stable 8-hex suffix for a path — disambiguates two projects whose
+    /// Stable 8-hex suffix for a path — disambiguates two repositories whose
     /// slugs collide. [`std::hash::DefaultHasher::new`] is deterministic
     /// (fixed keys), unlike `RandomState::new()`.
     pub fn hash_suffix(path: &Path) -> String {
@@ -203,9 +203,9 @@ impl Tmux {
         format!("{:08x}", h.finish() & 0xffff_ffff)
     }
 
-    /// Deterministic window name for a feature shell inside an agent session.
-    pub fn window_name(feature: &str, index: usize) -> String {
-        let mut name = format!("{WINDOW_PREFIX}{}/{}", Self::sanitize(feature), index);
+    /// Deterministic window name for a worktree shell inside an agent session.
+    pub fn window_name(worktree: &str, index: usize) -> String {
+        let mut name = format!("{WINDOW_PREFIX}{}/{}", Self::sanitize(worktree), index);
         // tmux window names are capped; keep ours well under.
         name.truncate(200);
         name
@@ -386,7 +386,7 @@ impl Tmux {
         })
     }
 
-    /// Kill a window by id (used on feature deletion; killing a session's
+    /// Kill a window by id (used on worktree deletion; killing a session's
     /// last window destroys the session).
     pub fn kill_window(&self, window_id: &str) -> Result<()> {
         self.run(&["kill-window", "-t", window_id])?;
@@ -646,12 +646,12 @@ mod tests {
 
     #[test]
     fn session_and_window_names_are_deterministic_and_safe() {
-        let s = Tmux::session_name("my project");
-        assert_eq!(s, "wingman-session-my-project");
-        let s2 = Tmux::session_name("my project");
+        let s = Tmux::session_name("my repository");
+        assert_eq!(s, "wingman-session-my-repository");
+        let s2 = Tmux::session_name("my repository");
         assert_eq!(s, s2);
         // case is preserved: distinct names stay distinct (no silent merging)
-        assert_ne!(s, Tmux::session_name("My-Project"));
+        assert_ne!(s, Tmux::session_name("My-Repository"));
         assert!(s.starts_with(SESSION_PREFIX));
         assert!(!s.contains(' '));
 

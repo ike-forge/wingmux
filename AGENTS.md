@@ -1,12 +1,12 @@
 # Agent instructions — LazyWingman
 
 Tmux-native control centre for supervising coding agents (Claude Code,
-Codex, Mistral Vibe, …) across multiple projects and features in parallel.
-Runs inside tmux as a normal pane of the user's existing session.
+Codex, Mistral Vibe, …) across multiple repositories and worktrees in
+parallel. Runs inside tmux as a normal pane of the user's existing session.
 
 ## Read these first
 
-- `README.md` — what the app is; the core model (project → feature →
+- `README.md` — what the app is; the core model (repository → worktree →
   shell) and the UI model
 - `docs/architecture.md` — how the app is built and why: the design
   decisions per subsystem, with the reason each one was made

@@ -1,13 +1,13 @@
 //! Configuration loading, defaults, and first-run bootstrap.
 //!
 //! Config lives at `$XDG_CONFIG_HOME/lazywingman/config.toml`, layered with
-//! a project-local `.lazywingman.toml` (searched upward from the working
+//! a repository-local `.lazywingman.toml` (searched upward from the working
 //! directory, stopping at the first hit / repository root) and its ignored
 //! sibling `.lazywingman.local.toml`. On first run a fully commented default
 //! config is written (and built-in themes are copied into `themes/`).
 //!
 //! Loading is lenient per the configuration guidelines (drop the smallest
-//! addressable unit, never prevent startup): one bad agent/project entry,
+//! addressable unit, never prevent startup): one bad agent/repository entry,
 //! one bad binding, one bad scalar — each is dropped with a diagnostic in
 //! `Config.diagnostics` while everything else is kept. Unknown keys are
 //! reported, not fatal. `from_str` stays strict for tests.
@@ -23,18 +23,18 @@ use crate::error::{Error, Result};
 /// ("key = value  # from <layer>").
 pub const LAYER_DEFAULTS: &str = "defaults";
 pub const LAYER_USER: &str = "user";
-pub const LAYER_PROJECT: &str = "project";
+pub const LAYER_REPOSITORY: &str = "repository";
 pub const LAYER_LOCAL: &str = "local";
 
 /// Fully commented default config, written on first run.
 pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on first run, edit freely.
 # Location: $XDG_CONFIG_HOME/lazywingman/config.toml (default ~/.config/lazywingman)
 #
-# This file is the USER layer. A project can also carry a committed
+# This file is the USER layer. A repository can also carry a committed
 # .lazywingman.toml (searched upward from the working directory, stopping at
 # the repository root) and a gitignored .lazywingman.local.toml next to it;
 # those layers override keys here. Some keys are user-only and are ignored
-# in project files with a diagnostic: tmux.back_key, worktrees.root,
+# in repository files with a diagnostic: tmux.back_key, worktrees.root,
 # discovery.scan_root. Inspect the effective config with `lazywingman
 # --config-dump`; use --config <path> or LW_CONFIG to point at a different
 # user file. A malformed config never prevents startup — the smallest bad
@@ -50,7 +50,7 @@ theme = "catppuccin-mocha"
 # How often (ms) agent panes are polled for status + preview.
 poll_interval_ms = 500
 
-# Ask for confirmation before deleting a feature.
+# Ask for confirmation before deleting a worktree.
 confirm_on_delete = true
 
 [preview]
@@ -71,21 +71,21 @@ colors = "full"
 back_key = "C-o"
 
 [worktrees]
-# Root directory for feature worktrees. Absolute path, or relative to the
-# project's parent directory. Empty = <project-parent>/.lazywingman-worktrees
+# Root directory for the worktrees. Absolute path, or relative to the
+# repository's parent directory. Empty = <repository-parent>/.lazywingman-worktrees
 root = ""
-# Branch that feature branches are cut from. Falls back to the repository's
-# current branch if this one doesn't exist in a project.
+# Branch that new worktree branches are cut from. Falls back to the repository's
+# current branch if this one doesn't exist in a repository.
 base_branch = "master"
-# Also delete the feature branch when the feature is removed. Set to
+# Also delete the worktree branch when the worktree is removed. Set to
 # false to keep the branch behind after the worktree is gone.
 delete_branch = true
 
 [discovery]
-# The scope: only projects inside this directory are listed (scopes never
+# The scope: only repositories inside this directory are listed (scopes never
 # mix). Empty = the directory LazyWingman was started from. When you start
-# inside a git repo, that repo is the scope and its features are shown
-# flat (no project row). The scan is live (no cache) and runs at startup.
+# inside a git repo, that repo is the scope and its worktrees are shown
+# flat (no repository row). The scan is live (no cache) and runs at startup.
 scan_root = ""
 # Maximum subdirectory depth of a scan (0 = the scan root itself only).
 max_depth = 4
@@ -95,7 +95,7 @@ max_depth = 4
 skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
 
 [defaults]
-# Agent command spawned in a feature shell unless a project overrides it.
+# Agent command spawned in a worktree shell unless a repository overrides it.
 agent_command = "claude"
 # Shell used for agent windows.
 agent_shell = "bash"
@@ -109,14 +109,14 @@ agent_hooks = true
 [icons]
 preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "ascii" | "none"
 # Any key below overrides the preset. An empty string draws nothing.
-# `project`/`project_empty`, `feature`/`feature_dirty`, `expand_open`/
+# `repository`/`repository_empty`, `worktree`/`worktree_dirty`, `expand_open`/
 # `expand_closed` and `guide_branch`/`guide_last` are padded in pairs, so
 # names stay aligned when one side is empty. `shell`, `cursor`,
 # `separator`, `warn` and `ellipsis` have no sibling to pad against and are
 # used verbatim — add your own trailing space if you want a gap after one
 # (the default `shell = "● "` already has one baked in).
-# feature = ""               # clean worktree
-# feature_dirty = "󰘬"        # uncommitted changes (nf-md-source_branch)
+# worktree = ""              # no glyph on a clean worktree
+# worktree_dirty = "󰘬"        # uncommitted changes (nf-md-source_branch)
 # border = "rounded"         # "rounded" | "plain" | "ascii"
 
 # Predefined messages, offered by the `p` modal on a selected shell:
@@ -132,7 +132,7 @@ text = "continue"
 label = "merge + drop worktree"
 text = "merge to <base_branch>, delete current branch and worktree"
 
-# Agent presets, selectable per project via `agent = "<name>"`.
+# Agent presets, selectable per repository via `agent = "<name>"`.
 # The `patterns` regexes are matched against the tail of a pane's capture
 # to classify its status (working / waiting / failed). Order of checks:
 # dead > ended > failed > waiting > working > idle.
@@ -162,9 +162,10 @@ working = [
 waiting = ["❯", "›", "codex>", "> $"]
 failed = ["Error", "error:", "✖"]
 
-# Projects declared by hand — the way to list a repo that discovery does not
-# find (outside the scope). Discovered projects live in state.json instead.
-# [[projects]]
+# Repositories declared by hand — the way to list a repo that discovery does
+# not find (outside the scope). Discovered repositories live in state.json
+# instead.
+# [[repositories]]
 # path = "/absolute/path/to/repo"
 # base_branch = "main"       # optional: override [worktrees].base_branch
 # agent = "claude"           # optional: preset from [[agents]]
@@ -184,7 +185,7 @@ pub struct Config {
     pub defaults: DefaultsConfig,
     pub icons: IconsConfig,
     pub agents: Vec<AgentConfig>,
-    pub projects: Vec<ProjectConfig>,
+    pub repositories: Vec<RepositoryConfig>,
     /// Predefined messages offered by the `p` modal (quick-send presets).
     pub messages: Vec<MessageConfig>,
     /// Diagnostics collected while loading (per configuration rules: a
@@ -194,7 +195,7 @@ pub struct Config {
     #[serde(skip)]
     pub diagnostics: Vec<String>,
     /// Layer provenance for `--config-dump`: "key = value  # from <layer>"
-    /// — which layer (default/user/project/local) provided each key.
+    /// — which layer (default/user/repository/local) provided each key.
     #[serde(skip)]
     pub sources: Vec<(String, &'static str)>,
 }
@@ -244,13 +245,13 @@ pub struct TmuxConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct WorktreeConfig {
-    /// Absolute, or relative to the project's parent directory.
+    /// Absolute, or relative to the repository's parent directory.
     pub root: String,
     pub base_branch: String,
     pub delete_branch: bool,
 }
 
-/// Project discovery: recursive scans for git repositories.
+/// Repository discovery: recursive scans for git repositories.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct DiscoveryConfig {
@@ -298,10 +299,10 @@ pub const ICON_PRESETS: &[&str] = &["nerdfont", "unicode", "ascii", "none"];
 /// theirs is "which glyphs suit my font?", and the two are independent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IconsConfig {
-    pub project: String,
-    pub project_empty: String,
-    pub feature: String,
-    pub feature_dirty: String,
+    pub repository: String,
+    pub repository_empty: String,
+    pub worktree: String,
+    pub worktree_dirty: String,
     pub shell: String,
     pub expand_open: String,
     pub expand_closed: String,
@@ -335,10 +336,10 @@ impl IconsConfig {
     /// padded once — padding an already-padded value would compound.
     fn raw_preset(name: &str) -> IconsConfig {
         let nerdfont = IconsConfig {
-            project: "▣".into(),
-            project_empty: "▢".into(),
-            feature: String::new(),
-            feature_dirty: "󰘬".into(),
+            repository: "▣".into(),
+            repository_empty: "▢".into(),
+            worktree: String::new(),
+            worktree_dirty: "󰘬".into(),
             shell: "● ".into(),
             expand_open: "▾".into(),
             expand_closed: "▸".into(),
@@ -353,23 +354,23 @@ impl IconsConfig {
         };
         match name {
             "unicode" => IconsConfig {
-                feature: "◇".into(),
-                feature_dirty: "◆".into(),
+                worktree: "◇".into(),
+                worktree_dirty: "◆".into(),
                 ..nerdfont
             },
             "none" => IconsConfig {
-                project: String::new(),
-                project_empty: String::new(),
-                feature: String::new(),
-                feature_dirty: String::new(),
+                repository: String::new(),
+                repository_empty: String::new(),
+                worktree: String::new(),
+                worktree_dirty: String::new(),
                 shell: String::new(),
                 ..nerdfont
             },
             "ascii" => IconsConfig {
-                project: "*".into(),
-                project_empty: "o".into(),
-                feature: "-".into(),
-                feature_dirty: "*".into(),
+                repository: "*".into(),
+                repository_empty: "o".into(),
+                worktree: "-".into(),
+                worktree_dirty: "*".into(),
                 shell: String::new(),
                 expand_open: "v".into(),
                 expand_closed: ">".into(),
@@ -393,8 +394,8 @@ impl IconsConfig {
     /// nothing. Keys with no sibling (`shell`, `cursor`, `separator`,
     /// `warn`, `ellipsis`) are used verbatim.
     fn pad(&mut self) {
-        pad_pair(&mut self.project, &mut self.project_empty);
-        pad_pair(&mut self.feature, &mut self.feature_dirty);
+        pad_pair(&mut self.repository, &mut self.repository_empty);
+        pad_pair(&mut self.worktree, &mut self.worktree_dirty);
         pad_pair(&mut self.expand_open, &mut self.expand_closed);
         pad_pair(&mut self.guide_branch, &mut self.guide_last);
     }
@@ -417,10 +418,10 @@ fn pad_pair(a: &mut String, b: &mut String) {
 #[serde(default)]
 struct IconsFile {
     preset: String,
-    project: Option<String>,
-    project_empty: Option<String>,
-    feature: Option<String>,
-    feature_dirty: Option<String>,
+    repository: Option<String>,
+    repository_empty: Option<String>,
+    worktree: Option<String>,
+    worktree_dirty: Option<String>,
     shell: Option<String>,
     expand_open: Option<String>,
     expand_closed: Option<String>,
@@ -438,10 +439,10 @@ impl Default for IconsFile {
     fn default() -> Self {
         IconsFile {
             preset: "nerdfont".into(),
-            project: None,
-            project_empty: None,
-            feature: None,
-            feature_dirty: None,
+            repository: None,
+            repository_empty: None,
+            worktree: None,
+            worktree_dirty: None,
             shell: None,
             expand_open: None,
             expand_closed: None,
@@ -468,10 +469,10 @@ impl<'de> Deserialize<'de> for IconsConfig {
         let f = IconsFile::deserialize(d)?;
         let b = IconsConfig::raw_preset(&f.preset);
         let mut i = IconsConfig {
-            project: f.project.unwrap_or(b.project),
-            project_empty: f.project_empty.unwrap_or(b.project_empty),
-            feature: f.feature.unwrap_or(b.feature),
-            feature_dirty: f.feature_dirty.unwrap_or(b.feature_dirty),
+            repository: f.repository.unwrap_or(b.repository),
+            repository_empty: f.repository_empty.unwrap_or(b.repository_empty),
+            worktree: f.worktree.unwrap_or(b.worktree),
+            worktree_dirty: f.worktree_dirty.unwrap_or(b.worktree_dirty),
             shell: f.shell.unwrap_or(b.shell),
             expand_open: f.expand_open.unwrap_or(b.expand_open),
             expand_closed: f.expand_closed.unwrap_or(b.expand_closed),
@@ -519,7 +520,7 @@ pub struct MessageConfig {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-pub struct ProjectConfig {
+pub struct RepositoryConfig {
     pub path: String,
     pub base_branch: Option<String>,
     /// Preset name from `[[agents]]`.
@@ -573,7 +574,7 @@ impl Default for Config {
                     patterns: builtin_patterns("codex").unwrap(),
                 },
             ],
-            projects: Vec::new(),
+            repositories: Vec::new(),
             messages: default_messages(),
             diagnostics: Vec::new(),
             sources: Vec::new(),
@@ -734,7 +735,7 @@ pub fn generic_patterns() -> StatusPatterns {
     }
 }
 
-/// The effective agent configuration for a project.
+/// The effective agent configuration for a repository.
 #[derive(Debug, Clone)]
 pub struct EffectiveAgent {
     pub command: String,
@@ -744,8 +745,8 @@ pub struct EffectiveAgent {
     pub patterns: StatusPatterns,
 }
 
-/// Keys that belong to the user, not the project (configuration rule:
-/// \"not every setting is local-able\"). A project-local file setting one of
+/// Keys that belong to the user, not the repository (configuration rule:
+/// \"not every setting is local-able\"). A repository-local file setting one of
 /// these gets a diagnostic and the key is ignored — never silently applied.
 const USER_ONLY_KEYS: &[(&str, &str)] = &[
     ("tmux", "back_key"),       // a global tmux binding is the user's choice
@@ -765,7 +766,7 @@ const TOP_KEYS: &[&str] = &[
     "defaults",
     "icons",
     "agents",
-    "projects",
+    "repositories",
     "messages",
 ];
 const PREVIEW_KEYS: &[&str] = &["colors"];
@@ -775,10 +776,10 @@ const DISCOVERY_KEYS: &[&str] = &["scan_root", "max_depth", "skip_dirs"];
 const DEFAULTS_KEYS: &[&str] = &["agent_command", "agent_shell", "agent_hooks"];
 const ICONS_KEYS: &[&str] = &[
     "preset",
-    "project",
-    "project_empty",
-    "feature",
-    "feature_dirty",
+    "repository",
+    "repository_empty",
+    "worktree",
+    "worktree_dirty",
     "shell",
     "expand_open",
     "expand_closed",
@@ -793,14 +794,14 @@ const ICONS_KEYS: &[&str] = &[
 ];
 const AGENT_KEYS: &[&str] = &["name", "command", "shell", "patterns"];
 const PATTERN_KEYS: &[&str] = &["working", "waiting", "failed"];
-const PROJECT_KEYS: &[&str] = &["path", "base_branch", "agent", "agent_command"];
+const REPOSITORY_KEYS: &[&str] = &["path", "base_branch", "agent", "agent_command"];
 const MESSAGE_KEYS: &[&str] = &["label", "text"];
 
 impl Config {
     /// Load config, writing defaults (and built-in themes) on first run.
     /// Layered per the configuration rules: built-in defaults ← user config
     /// (`$XDG_CONFIG_HOME/lazywingman/config.toml`, or `LW_CONFIG`) ←
-    /// project-local `.lazywingman.toml` (searched upward from the working
+    /// repository-local `.lazywingman.toml` (searched upward from the working
     /// directory, stopping at the first hit / repository root) ← its
     /// gitignored sibling `.lazywingman.local.toml`. Higher layers win key
     /// by key (maps merge deeply, lists replace). A malformed file never
@@ -873,28 +874,28 @@ impl Config {
             ));
         }
 
-        // --- project layers ---------------------------------------------
-        if let Some(dir) = find_project_dir(cwd) {
-            let proj = dir.join(".lazywingman.toml");
-            if proj.exists() {
-                match parse_layer(&proj) {
+        // --- repository layers ---------------------------------------------
+        if let Some(dir) = find_repository_dir(cwd) {
+            let repo_file = dir.join(".lazywingman.toml");
+            if repo_file.exists() {
+                match parse_layer(&repo_file) {
                     Ok(table) => {
-                        report_unknown_keys(&table, &proj, &mut diags);
+                        report_unknown_keys(&table, &repo_file, &mut diags);
                         merge_layer(
                             &mut merged,
                             table,
-                            LAYER_PROJECT,
-                            &proj,
+                            LAYER_REPOSITORY,
+                            &repo_file,
                             &mut sources,
                             &mut diags,
                         );
                     }
                     Err(e) => diags.push(format!(
                         "{}: {e} — using defaults for this file",
-                        proj.display()
+                        repo_file.display()
                     )),
                 }
-                layer_paths.push((LAYER_PROJECT, proj.clone()));
+                layer_paths.push((LAYER_REPOSITORY, repo_file.clone()));
             }
             // gitignored sibling: highest of the file layers
             let local = dir.join(".lazywingman.local.toml");
@@ -943,9 +944,9 @@ impl Config {
                 log::warn!("ignoring agent preset with empty name/command");
             }
         }
-        for p in &self.projects {
+        for p in &self.repositories {
             if p.path.is_empty() {
-                log::warn!("ignoring project with empty path");
+                log::warn!("ignoring repository with empty path");
             }
         }
     }
@@ -1023,10 +1024,10 @@ impl Config {
             ),
         );
         line(
-            "projects",
+            "repositories",
             format!(
                 "[{}]",
-                self.projects
+                self.repositories
                     .iter()
                     .map(|p| format!("\"{}\"", p.path))
                     .collect::<Vec<_>>()
@@ -1044,15 +1045,15 @@ impl Config {
                     .join(", ")
             ),
         );
-        line("icons.project", format!("\"{}\"", self.icons.project));
+        line("icons.repository", format!("\"{}\"", self.icons.repository));
         line(
-            "icons.project_empty",
-            format!("\"{}\"", self.icons.project_empty),
+            "icons.repository_empty",
+            format!("\"{}\"", self.icons.repository_empty),
         );
-        line("icons.feature", format!("\"{}\"", self.icons.feature));
+        line("icons.worktree", format!("\"{}\"", self.icons.worktree));
         line(
-            "icons.feature_dirty",
-            format!("\"{}\"", self.icons.feature_dirty),
+            "icons.worktree_dirty",
+            format!("\"{}\"", self.icons.worktree_dirty),
         );
         line("icons.shell", format!("\"{}\"", self.icons.shell));
         line(
@@ -1090,23 +1091,23 @@ impl Config {
         out
     }
 
-    /// Projects with a non-empty path.
-    pub fn usable_projects(&self) -> Vec<&ProjectConfig> {
-        self.projects
+    /// Repositories with a non-empty path.
+    pub fn usable_repositories(&self) -> Vec<&RepositoryConfig> {
+        self.repositories
             .iter()
             .filter(|p| !p.path.is_empty())
             .collect()
     }
 
-    /// Effective agent (command, shell, status patterns) for a project.
-    pub fn agent_for(&self, project: &ProjectConfig) -> EffectiveAgent {
+    /// Effective agent (command, shell, status patterns) for a repository.
+    pub fn agent_for(&self, repository: &RepositoryConfig) -> EffectiveAgent {
         // Resolve preset by name first.
-        let preset = project
+        let preset = repository
             .agent
             .as_deref()
             .and_then(|n| self.agents.iter().find(|a| a.name == n));
 
-        let command = project
+        let command = repository
             .agent_command
             .clone()
             .or_else(|| preset.map(|a| a.command.clone()))
@@ -1120,7 +1121,7 @@ impl Config {
         // (e.g. `agent = "claude"` + `agent_command = "codex exec"` → codex
         // patterns). Otherwise the named preset's patterns apply, falling
         // back to prefix/builtin matching.
-        let patterns = if project.agent_command.is_some() {
+        let patterns = if repository.agent_command.is_some() {
             self.patterns_for(&command)
         } else {
             let named = preset
@@ -1166,9 +1167,9 @@ impl Config {
         builtin_patterns(first_word).filter(|p| p.is_nonempty())
     }
 
-    /// Root directory for a project's feature worktrees.
-    pub fn worktree_root_for(&self, project_path: &Path) -> PathBuf {
-        let parent = project_path.parent().unwrap_or(project_path);
+    /// Root directory holding a repository's worktrees.
+    pub fn worktree_root_for(&self, repository_path: &Path) -> PathBuf {
+        let parent = repository_path.parent().unwrap_or(repository_path);
         let root = self.worktrees.root.trim();
         let root = if root.is_empty() {
             parent.join(".lazywingman-worktrees")
@@ -1179,9 +1180,9 @@ impl Config {
         crate::util::normalize_path(&root)
     }
 
-    /// Base branch for a project (per-project override, else global).
-    pub fn base_branch_for(&self, project: &ProjectConfig) -> String {
-        project
+    /// Base branch for a repository (per-repository override, else global).
+    pub fn base_branch_for(&self, repository: &RepositoryConfig) -> String {
+        repository
             .base_branch
             .clone()
             .unwrap_or_else(|| self.worktrees.base_branch.clone())
@@ -1206,17 +1207,17 @@ fn parse_layer(path: &Path) -> Result<toml::Table> {
     }
 }
 
-/// The nearest project-local config directory working upward from `cwd`,
-/// stopping at the first hit *and* at a repository root (the project
+/// The nearest repository-local config directory working upward from `cwd`,
+/// stopping at the first hit *and* at a repository root (the repository
 /// boundary — a repo-root file, if any, is checked first, then the search
 /// stops so a sibling repo's config is never inherited).
-fn find_project_dir(cwd: &Path) -> Option<PathBuf> {
+fn find_repository_dir(cwd: &Path) -> Option<PathBuf> {
     let mut dir = Some(cwd);
     while let Some(d) = dir {
         if d.join(".lazywingman.toml").is_file() || d.join(".lazywingman.local.toml").is_file() {
             return Some(d.to_path_buf());
         }
-        // Repository root is the project boundary: check it (already did),
+        // Repository root is the repository boundary: check it (already did),
         // then stop — don't walk above the repo.
         if d.join(".git").exists() {
             return None;
@@ -1344,15 +1345,15 @@ fn report_unknown_keys(table: &toml::Table, file: &Path, diags: &mut Vec<String>
                 }
             }
         }
-        if key == "projects"
+        if key == "repositories"
             && let Some(arr) = value.as_array()
         {
             for entry in arr {
                 let Some(t) = entry.as_table() else { continue };
                 for pk in t.keys() {
-                    if !PROJECT_KEYS.contains(&pk.as_str()) {
+                    if !REPOSITORY_KEYS.contains(&pk.as_str()) {
                         diags.push(format!(
-                            "{}: unknown key 'projects.{pk}' ignored",
+                            "{}: unknown key 'repositories.{pk}' ignored",
                             file.display()
                         ));
                     }
@@ -1378,7 +1379,7 @@ fn report_unknown_keys(table: &toml::Table, file: &Path, diags: &mut Vec<String>
 }
 
 /// Smallest-addressable-unit validation: drop malformed scalars, sections,
-/// agent/project entries and status-pattern regexes with a diagnostic, keep
+/// agent/repository entries and status-pattern regexes with a diagnostic, keep
 /// everything else — never prevent startup.
 fn deserialize_lenient(
     merged: &toml::Table,
@@ -1462,7 +1463,7 @@ fn deserialize_lenient(
     // (a config file without [[agents]] still gets claude/codex presets,
     // exactly like the serde-default path it replaces)
     cfg.agents = take_agent_list(merged, layer_paths, sources, diags, cfg.agents);
-    cfg.projects = take_project_list(merged, layer_paths, sources, diags);
+    cfg.repositories = take_repository_list(merged, layer_paths, sources, diags);
     cfg.messages = take_message_list(merged, layer_paths, sources, diags, cfg.messages);
 
     cfg
@@ -1630,10 +1631,10 @@ impl SectionSalvage for IconsConfig {
         }
         let b = IconsConfig::raw_preset(&preset);
         let mut i = IconsConfig {
-            project: salvage_field(t, "project", b.project, file, diags),
-            project_empty: salvage_field(t, "project_empty", b.project_empty, file, diags),
-            feature: salvage_field(t, "feature", b.feature, file, diags),
-            feature_dirty: salvage_field(t, "feature_dirty", b.feature_dirty, file, diags),
+            repository: salvage_field(t, "repository", b.repository, file, diags),
+            repository_empty: salvage_field(t, "repository_empty", b.repository_empty, file, diags),
+            worktree: salvage_field(t, "worktree", b.worktree, file, diags),
+            worktree_dirty: salvage_field(t, "worktree_dirty", b.worktree_dirty, file, diags),
             shell: salvage_field(t, "shell", b.shell, file, diags),
             expand_open: salvage_field(t, "expand_open", b.expand_open, file, diags),
             expand_closed: salvage_field(t, "expand_closed", b.expand_closed, file, diags),
@@ -1797,23 +1798,31 @@ fn validate_patterns(
     a
 }
 
-fn take_project_list(
+fn take_repository_list(
     merged: &toml::Table,
     layer_paths: &[(&'static str, PathBuf)],
     sources: &[(String, &'static str)],
     diags: &mut Vec<String>,
-) -> Vec<ProjectConfig> {
-    let mut projects =
-        take_list::<ProjectConfig>(merged, "projects", Vec::new(), layer_paths, sources, diags);
-    let file = where_file(layer_paths, sources, "projects");
-    projects.retain(|p| {
+) -> Vec<RepositoryConfig> {
+    let mut repositories = take_list::<RepositoryConfig>(
+        merged,
+        "repositories",
+        Vec::new(),
+        layer_paths,
+        sources,
+        diags,
+    );
+    let file = where_file(layer_paths, sources, "repositories");
+    repositories.retain(|p| {
         let ok = !p.path.is_empty();
         if !ok {
-            diags.push(format!("{file}: project with empty path — entry dropped"));
+            diags.push(format!(
+                "{file}: repository with empty path — entry dropped"
+            ));
         }
         ok
     });
-    projects
+    repositories
 }
 
 fn take_message_list(
@@ -1894,21 +1903,21 @@ mod tests {
     fn icon_presets_carry_the_documented_glyphs() {
         let nf = IconsConfig::preset("nerdfont");
         assert!(
-            nf.feature_dirty.starts_with('\u{f062c}'),
+            nf.worktree_dirty.starts_with('\u{f062c}'),
             "nerdfont dirty: {:?}",
-            nf.feature_dirty
+            nf.worktree_dirty
         );
         assert_eq!(
-            nf.feature.trim_end(),
+            nf.worktree.trim_end(),
             "",
-            "nerdfont clean feature draws nothing"
+            "nerdfont clean worktree draws nothing"
         );
-        assert_eq!(nf.project.trim_end(), "▣");
+        assert_eq!(nf.repository.trim_end(), "▣");
         assert_eq!(nf.border, BorderStyle::Rounded);
 
         let uni = IconsConfig::preset("unicode");
-        assert_eq!(uni.feature.trim_end(), "◇");
-        assert_eq!(uni.feature_dirty.trim_end(), "◆");
+        assert_eq!(uni.worktree.trim_end(), "◇");
+        assert_eq!(uni.worktree_dirty.trim_end(), "◆");
 
         let ascii = IconsConfig::preset("ascii");
         assert_eq!(ascii.guide_branch.trim_end(), "|-");
@@ -1917,8 +1926,8 @@ mod tests {
         assert_eq!(ascii.border, BorderStyle::Ascii);
 
         let none = IconsConfig::preset("none");
-        assert_eq!(none.project, "", "none: no type icon, no column at all");
-        assert_eq!(none.feature, "");
+        assert_eq!(none.repository, "", "none: no type icon, no column at all");
+        assert_eq!(none.worktree, "");
         assert_eq!(
             none.expand_open.trim_end(),
             "▾",
@@ -1937,8 +1946,8 @@ mod tests {
         for name in ICON_PRESETS {
             let i = IconsConfig::preset(name);
             for (a, b, what) in [
-                (&i.project, &i.project_empty, "project"),
-                (&i.feature, &i.feature_dirty, "feature"),
+                (&i.repository, &i.repository_empty, "repository"),
+                (&i.worktree, &i.worktree_dirty, "worktree"),
                 (&i.expand_open, &i.expand_closed, "expand"),
                 (&i.guide_branch, &i.guide_last, "guide"),
             ] {
@@ -1956,19 +1965,23 @@ mod tests {
         // Render sites concatenate icon + name directly, so the separating
         // space lives in the padded icon. An empty column adds no space.
         let nf = IconsConfig::preset("nerdfont");
-        assert!(nf.project.ends_with(' '), "project: {:?}", nf.project);
         assert!(
-            nf.feature_dirty.ends_with(' '),
+            nf.repository.ends_with(' '),
+            "repository: {:?}",
+            nf.repository
+        );
+        assert!(
+            nf.worktree_dirty.ends_with(' '),
             "dirty: {:?}",
-            nf.feature_dirty
+            nf.worktree_dirty
         );
         assert_eq!(
-            unicode_width::UnicodeWidthStr::width(nf.feature.as_str()),
-            unicode_width::UnicodeWidthStr::width(nf.feature_dirty.as_str()),
+            unicode_width::UnicodeWidthStr::width(nf.worktree.as_str()),
+            unicode_width::UnicodeWidthStr::width(nf.worktree_dirty.as_str()),
             "clean pads to the dirty glyph's column, trailing space included"
         );
         assert_eq!(
-            IconsConfig::preset("none").project,
+            IconsConfig::preset("none").repository,
             "",
             "empty column: no space"
         );
@@ -1976,16 +1989,17 @@ mod tests {
 
     #[test]
     fn icons_preset_and_per_key_override() {
-        let cfg = Config::from_str("[icons]\npreset = \"ascii\"\nfeature_dirty = \"D\"\n").unwrap();
+        let cfg =
+            Config::from_str("[icons]\npreset = \"ascii\"\nworktree_dirty = \"D\"\n").unwrap();
         // the override wins...
-        assert_eq!(cfg.icons.feature_dirty.trim_end(), "D");
+        assert_eq!(cfg.icons.worktree_dirty.trim_end(), "D");
         // ...and the rest of the preset survives
         assert_eq!(cfg.icons.guide_branch.trim_end(), "|-");
         assert_eq!(cfg.icons.border, BorderStyle::Ascii);
         // padding is applied once, after the override is layered on
         assert_eq!(
-            UnicodeWidthStr::width(cfg.icons.feature.as_str()),
-            UnicodeWidthStr::width(cfg.icons.feature_dirty.as_str())
+            UnicodeWidthStr::width(cfg.icons.worktree.as_str()),
+            UnicodeWidthStr::width(cfg.icons.worktree_dirty.as_str())
         );
     }
 
@@ -2038,7 +2052,7 @@ mod tests {
             assert_eq!(cfg.worktrees.base_branch, "master");
             assert!(
                 cfg.worktrees.delete_branch,
-                "the feature branch goes with the worktree by default"
+                "the worktree branch goes with the worktree by default"
             );
             assert!(crate::util::config_path().exists());
             // themes copied too
@@ -2100,17 +2114,17 @@ mod tests {
     }
 
     #[test]
-    fn projects_and_overrides_parse() {
+    fn repositories_and_overrides_parse() {
         let cfg = Config::from_str(
             r#"
-            [[projects]]
+            [[repositories]]
             path = "/tmp/repo"
             base_branch = "develop"
             agent = "codex"
             "#,
         )
         .unwrap();
-        let p = &cfg.projects[0];
+        let p = &cfg.repositories[0];
         assert_eq!(p.path, "/tmp/repo");
         assert_eq!(cfg.base_branch_for(p), "develop");
         // agent resolution: codex preset
@@ -2123,14 +2137,14 @@ mod tests {
     fn inline_agent_command_overrides_preset() {
         let cfg = Config::from_str(
             r#"
-            [[projects]]
+            [[repositories]]
             path = "/tmp/repo"
             agent = "claude"
             agent_command = "codex exec --yolo"
             "#,
         )
         .unwrap();
-        let a = cfg.agent_for(&cfg.projects[0]);
+        let a = cfg.agent_for(&cfg.repositories[0]);
         assert_eq!(a.command, "codex exec --yolo");
         // patterns picked from codex preset via prefix match
         assert!(a.patterns.waiting.iter().any(|w| w.contains("codex>")));
@@ -2140,44 +2154,44 @@ mod tests {
     fn unknown_preset_falls_back_to_global_default() {
         let cfg = Config::from_str(
             r#"
-            [[projects]]
+            [[repositories]]
             path = "/tmp/repo"
             agent = "no-such-agent"
             "#,
         )
         .unwrap();
-        let a = cfg.agent_for(&cfg.projects[0]);
+        let a = cfg.agent_for(&cfg.repositories[0]);
         assert_eq!(a.command, "claude");
         assert!(a.patterns.waiting.iter().any(|w| w.contains("❯")));
     }
 
     #[test]
     fn worktree_root_resolution() {
-        let project = Path::new("/work/projects/my-repo");
+        let repository = Path::new("/work/repositories/my-repo");
         // default: sibling of the repo
         let cfg = Config::default();
         assert_eq!(
-            cfg.worktree_root_for(project),
-            PathBuf::from("/work/projects/.lazywingman-worktrees")
+            cfg.worktree_root_for(repository),
+            PathBuf::from("/work/repositories/.lazywingman-worktrees")
         );
         // absolute override
         let cfg = Config::from_str("[worktrees]\nroot = \"/wt\"\n").unwrap();
-        assert_eq!(cfg.worktree_root_for(project), PathBuf::from("/wt"));
-        // relative override → resolved against project parent
+        assert_eq!(cfg.worktree_root_for(repository), PathBuf::from("/wt"));
+        // relative override → resolved against repository parent
         let cfg = Config::from_str("[worktrees]\nroot = \"../wt\"\n").unwrap();
-        assert_eq!(cfg.worktree_root_for(project), PathBuf::from("/work/wt"));
+        assert_eq!(cfg.worktree_root_for(repository), PathBuf::from("/work/wt"));
     }
 
     #[test]
     fn base_branch_falls_back_to_global() {
-        let cfg = Config::from_str("[[projects]]\npath = \"/x\"\n").unwrap();
-        assert_eq!(cfg.base_branch_for(&cfg.projects[0]), "master");
+        let cfg = Config::from_str("[[repositories]]\npath = \"/x\"\n").unwrap();
+        assert_eq!(cfg.base_branch_for(&cfg.repositories[0]), "master");
     }
 
     #[test]
     fn malformed_agents_are_skipped_not_fatal() {
         let cfg = Config::from_str("[[agents]]\nname = \"\"\ncommand = \"\"\n").unwrap();
-        let a = cfg.agent_for(&ProjectConfig::default());
+        let a = cfg.agent_for(&RepositoryConfig::default());
         assert_eq!(a.command, "claude");
     }
 
@@ -2412,10 +2426,10 @@ mod tests {
         });
     }
 
-    // ---------------------------------------------- M8.4d: project layering
+    // ---------------------------------------------- M8.4d: repository layering
 
     #[test]
-    fn project_config_layers_over_user() {
+    fn repository_config_layers_over_user() {
         with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             let cwd = root.path().join("sub").join("deep");
@@ -2425,21 +2439,21 @@ mod tests {
                 &cwd,
                 "theme = \"dracula\"\npoll_interval_ms = 250\n[tmux]\nback_key = \"C-x\"\n",
             );
-            // project-local config in an ancestor: overrides ONE key
+            // repository-local config in an ancestor: overrides ONE key
             std::fs::write(
                 root.path().join("sub/.lazywingman.toml"),
                 "theme = \"ansi\"\n",
             )
             .unwrap();
             let cfg = Config::load_from(&cwd, None).unwrap();
-            assert_eq!(cfg.theme, "ansi"); // project wins for theme
+            assert_eq!(cfg.theme, "ansi"); // repository wins for theme
             assert_eq!(cfg.poll_interval_ms, 250); // user keeps poll
             assert_eq!(cfg.tmux.back_key, "C-x"); // user keeps tmux
-            // provenance: theme came from the project layer
+            // provenance: theme came from the repository layer
             assert!(
                 cfg.sources
                     .iter()
-                    .any(|(k, l)| k == "theme" && *l == LAYER_PROJECT)
+                    .any(|(k, l)| k == "theme" && *l == LAYER_REPOSITORY)
             );
             assert!(
                 cfg.sources
@@ -2450,7 +2464,7 @@ mod tests {
     }
 
     #[test]
-    fn project_config_found_upward_stops_at_first_hit_and_repo_root() {
+    fn repository_config_found_upward_stops_at_first_hit_and_repo_root() {
         with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             let repo = root.path().join("repo");
@@ -2471,7 +2485,7 @@ mod tests {
     }
 
     #[test]
-    fn local_sibling_config_wins_over_project_config() {
+    fn local_sibling_config_wins_over_repository_config() {
         with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             std::fs::write(
@@ -2504,23 +2518,23 @@ mod tests {
             );
             std::fs::write(
                 root.path().join(".lazywingman.toml"),
-                "[[agents]]\nname=\"project-agent\"\ncommand=\"p\"\n",
+                "[[agents]]\nname=\"repository-agent\"\ncommand=\"p\"\n",
             )
             .unwrap();
             let cfg = Config::load_from(root.path(), None).unwrap();
-            // the project list REPLACES the user list outright
+            // the repository list REPLACES the user list outright
             assert_eq!(cfg.agents.len(), 1);
-            assert_eq!(cfg.agents[0].name, "project-agent");
+            assert_eq!(cfg.agents[0].name, "repository-agent");
             assert!(
                 cfg.sources
                     .iter()
-                    .any(|(k, l)| k == "agents" && *l == LAYER_PROJECT)
+                    .any(|(k, l)| k == "agents" && *l == LAYER_REPOSITORY)
             );
         });
     }
 
     #[test]
-    fn user_only_keys_rejected_in_project_files() {
+    fn user_only_keys_rejected_in_repository_files() {
         with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             load_user(root.path(), "[tmux]\nback_key = \"C-x\"\n");
@@ -2530,7 +2544,7 @@ mod tests {
             )
             .unwrap();
             let cfg = Config::load_from(root.path(), None).unwrap();
-            // user's binding wins; the project file's attempt is reported
+            // user's binding wins; the repository file's attempt is reported
             assert_eq!(cfg.tmux.back_key, "C-x");
             assert_eq!(cfg.worktrees.root, "");
             assert!(
@@ -2612,7 +2626,7 @@ mod tests {
             let root = tempfile::TempDir::new().unwrap();
             load_user(
                 root.path(),
-                "theme = \"dracula\"\npoll_interval_ms = 250\n[icons]\nfeature_dirty = \"D\"\n",
+                "theme = \"dracula\"\npoll_interval_ms = 250\n[icons]\nworktree_dirty = \"D\"\n",
             );
             std::fs::write(
                 root.path().join(".lazywingman.toml"),
@@ -2624,12 +2638,12 @@ mod tests {
             assert!(dump.contains("theme = \"dracula\"  # from user"));
             assert!(dump.contains("poll_interval_ms = 250  # from user"));
             assert!(dump.contains("preview.colors = \"full\"  # from defaults"));
-            assert!(dump.contains("worktrees.base_branch = \"develop\"  # from project"));
+            assert!(dump.contains("worktrees.base_branch = \"develop\"  # from repository"));
             assert!(dump.contains("tmux.back_key = \"C-o\"  # from defaults"));
             // [icons] must appear too: a per-key override shows its own
             // layer, and an untouched key still shows the resolved default.
             assert!(
-                dump.contains("icons.feature_dirty = \"D \"  # from user"),
+                dump.contains("icons.worktree_dirty = \"D \"  # from user"),
                 "dump: {dump}"
             );
             assert!(

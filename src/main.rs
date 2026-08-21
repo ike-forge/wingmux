@@ -1,7 +1,7 @@
 //! LazyWingman — a control centre for supervising coding agents.
 //!
 //! Agent shells live in dedicated tmux sessions
-//! (`wingman-session-<project>`) that LazyWingman spawns, polls, and tears
+//! (`wingman-session-<repository>`) that LazyWingman spawns, polls, and tears
 //! down — never in the user's own session. The dashboard itself runs either
 //! inside tmux (as a pane of the user's session) or standalone in a plain
 //! terminal; both are supported.
@@ -169,11 +169,11 @@ fn real_main() -> Result<()> {
         }
     };
     log::info!(
-        "config loaded: theme={} (config '{}') poll={}ms projects={} truecolor={}",
+        "config loaded: theme={} (config '{}') poll={}ms repositories={} truecolor={}",
         theme.name,
         cfg.theme,
         cfg.poll_interval_ms,
-        cfg.projects.len(),
+        cfg.repositories.len(),
         truecolor
     );
     log::info!("theme '{}' resolved", theme.name);

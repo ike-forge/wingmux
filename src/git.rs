@@ -1,4 +1,4 @@
-//! Git operations: project validation, worktree management, branch naming.
+//! Git operations: repository validation, worktree management, branch naming.
 //!
 //! All operations shell out to the `git` binary with `-C <dir>` so paths with
 //! special characters are never interpreted by a shell. Errors carry git's
@@ -20,7 +20,7 @@ pub struct GitOutput {
 pub struct WorktreeInfo {
     pub path: PathBuf,
     pub head: Option<String>,
-    /// Full ref, e.g. `refs/heads/feature-x`. `None` when detached.
+    /// Full ref, e.g. `refs/heads/worktree-x`. `None` when detached.
     pub branch: Option<String>,
 }
 
@@ -36,9 +36,9 @@ impl WorktreeInfo {
 /// Max length for generated branch names (git limits ~245; stay well under).
 const MAX_BRANCH_LEN: usize = 120;
 
-/// Turn a feature name into a git-safe branch name / directory component:
+/// Turn a worktree name into a git-safe branch name / directory component:
 /// lowercase, non `[a-z0-9._-]` characters become `-`, runs collapsed and
-/// trimmed, truncated to [`MAX_BRANCH_LEN`]. Empty input → `"feature"`.
+/// trimmed, truncated to [`MAX_BRANCH_LEN`]. Empty input → `"worktree"`.
 pub fn slugify(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut last_dash = false;
@@ -54,7 +54,7 @@ pub fn slugify(name: &str) -> String {
     }
     let out = out.trim_matches('-').to_string();
     if out.is_empty() {
-        return "feature".to_string();
+        return "worktree".to_string();
     }
     let mut out: String = out.chars().take(MAX_BRANCH_LEN).collect();
     out.truncate(MAX_BRANCH_LEN);
@@ -62,7 +62,7 @@ pub fn slugify(name: &str) -> String {
         out.pop();
     }
     if out.is_empty() {
-        "feature".to_string()
+        "worktree".to_string()
     } else {
         out
     }
@@ -167,7 +167,7 @@ impl Git {
         .unwrap_or(false)
     }
 
-    /// The branch new feature branches are cut from: the configured base if
+    /// The branch new worktree branches are cut from: the configured base if
     /// it exists in this repo, otherwise the repo's current branch.
     pub fn resolve_base_branch(&self, dir: &Path, configured: &str) -> Result<String> {
         if !configured.is_empty() && self.branch_exists(dir, configured) {
@@ -217,7 +217,7 @@ impl Git {
         // main repo, discovered via its `.git` file. A missing `.git` file
         // only means the DIRECTORY is gone (deleted outside wingman): git
         // still lists the worktree as `prunable` and still holds its branch,
-        // so fall back to the project's own main repo and remove it there.
+        // so fall back to the repository's own main repo and remove it there.
         let main = match main_repo_of_worktree(wt_path) {
             Some(m) => m,
             None => match self.main_repo(repo) {
@@ -261,7 +261,7 @@ impl Git {
     }
 
     /// Delete a local branch (`-D`, force — the branch is orphaned once its
-    /// worktree is gone and the feature is done).
+    /// worktree is gone and the work is done).
     pub fn branch_delete(&self, dir: &Path, branch: &str) -> Result<()> {
         log::info!("deleting branch {branch} in {}", dir.display());
         Self::run_ok(dir, &["branch", "-D", branch])?;
@@ -345,13 +345,13 @@ mod tests {
 
     #[test]
     fn slugify_basics() {
-        assert_eq!(slugify("My Feature!"), "my-feature");
+        assert_eq!(slugify("My Worktree!"), "my-worktree");
         assert_eq!(slugify("  x  "), "x");
-        assert_eq!(slugify(""), "feature");
+        assert_eq!(slugify(""), "worktree");
         assert_eq!(slugify("a_b.c-d"), "a_b.c-d");
         assert_eq!(slugify("branch/name"), "branch-name");
         assert_eq!(slugify("café"), "caf");
-        assert_eq!(slugify("---"), "feature");
+        assert_eq!(slugify("---"), "worktree");
     }
 
     #[test]
@@ -390,7 +390,7 @@ mod tests {
 
         // from a linked worktree → the MAIN repo is returned
         let wt = repo.parent().unwrap().join("wt-main-repo");
-        git.worktree_add(&repo, &wt, "feature-wt", "main").unwrap();
+        git.worktree_add(&repo, &wt, "worktree-wt", "main").unwrap();
         let nested = wt.join("src");
         fs::create_dir_all(&nested).unwrap();
         assert_eq!(git.repo_root(&nested).unwrap(), wt);
@@ -414,22 +414,22 @@ mod tests {
     fn worktree_add_list_remove_roundtrip() {
         let (_guard, repo) = temp_repo("proj");
         let git = Git;
-        let wt_path = repo.parent().unwrap().join("wt-feature-x");
+        let wt_path = repo.parent().unwrap().join("wt-worktree-x");
 
         // initial list has just the main worktree
         let list = git.worktree_list(&repo).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].path, repo);
 
-        git.worktree_add(&repo, &wt_path, "feature-x", "main")
+        git.worktree_add(&repo, &wt_path, "worktree-x", "main")
             .unwrap();
         assert!(wt_path.exists());
-        assert!(git.branch_exists(&repo, "feature-x"));
+        assert!(git.branch_exists(&repo, "worktree-x"));
 
         let list = git.worktree_list(&repo).unwrap();
         assert_eq!(list.len(), 2);
         let wt = list.iter().find(|w| w.path == wt_path).unwrap();
-        assert_eq!(wt.branch_short(), Some("feature-x"));
+        assert_eq!(wt.branch_short(), Some("worktree-x"));
         assert!(wt.head.is_some());
 
         // dirty check: clean worktree
@@ -449,8 +449,8 @@ mod tests {
 
     /// A worktree whose DIRECTORY was deleted outside wingman stays
     /// registered in git (`prunable`) and keeps holding its branch.
-    /// Removing the feature has to clear that registration too — otherwise
-    /// `git worktree list` keeps reporting it and the feature reappears on
+    /// Removing the worktree has to clear that registration too — otherwise
+    /// `git worktree list` keeps reporting it and the worktree reappears on
     /// the next start.
     #[test]
     fn worktree_remove_clears_a_prunable_registration() {

@@ -20,32 +20,35 @@ the same commit as the change.
 
 - State file: JSON at `$XDG_STATE_HOME/lazywingman/state.json` (state, not
   data, is the semantically correct XDG dir for mutable runtime state).
-- **State schema v2**: `State.version = 2`, `Project.session_name:
-  Option<String>`. v1 files load via serde defaults; v1 shells (windows in the
-  dashboard session) are not found by session-based reconcile and are pruned
-  (worktrees and projects survive).
-- Shell indices are never reused: `Feature::next_shell_index` counts past
+- **State schema v3**: `State.version = 3`. v3 renamed the on-disk keys
+  (`projects`/`features` → `repositories`/`worktrees`) with no migration
+  path, so `load` reads `version` first and discards a well-formed file of
+  any other version, starting empty and letting `reconcile` rediscover the
+  repositories and reconstruct their worktrees. Malformed JSON is still an
+  error — the user is told rather than silently losing the tree.
+- Shell indices are never reused: `Worktree::next_shell_index` counts past
   the highest index in use, because the index names the tmux window and is
   what `reconcile` matches a live window back to.
 
 ## Discovery
 
 - **Discovery is scope-based, live, and lazy.** The tree does not list every
-  project ever discovered — that mixed scopes. The scope is the startup
-  directory (or `[discovery].scan_root`): only projects inside it get rows;
-  projects from other scopes stay in state but are hidden. When you start
-  INSIDE a git repo, that repo is the scope and its features are shown flat at
-  the top level (no project row — `flatten`); a lone MISSING project still
-  shows its row. Everything unfolds by default up to `UNFOLD_CAP = 30`
-  projects in scope (see "The tree"). There is no startup scan prompt and no
-  `discovered.json` cache: finding `.git` entries is a few stats per dir, done
-  live at boot — no stale cache to trust, no prompt to dismiss, even at
-  hundreds of folders. The expensive part — `git worktree list` per project —
-  is lazy (`ensure_worktrees`): it runs ONCE per project when the project is
-  expanded (or for the flattened single project at boot), and `prune` skips
-  worktree verification for projects whose worktrees were never loaded, so
-  boot never pays 200 git calls. The unfolded projects' listings are queued
-  rather than run at boot.
+  repository ever discovered — that mixed scopes. The scope is the startup
+  directory (or `[discovery].scan_root`): only repositories inside it get
+  rows; repositories from other scopes stay in state but are hidden. When you
+  start INSIDE a git repo, that repo is the scope and its worktrees are shown
+  flat at the top level (no repository row — `flatten`); a lone MISSING
+  repository still shows its row. Everything unfolds by default up to
+  `UNFOLD_CAP = 30` repositories in scope (see "The tree"). There is no
+  startup scan prompt and no `discovered.json` cache: finding `.git` entries
+  is a few stats per dir, done live at boot — no stale cache to trust, no
+  prompt to dismiss, even at hundreds of folders. The expensive part —
+  `git worktree list` per repository — is lazy (`ensure_worktrees`): it runs
+  ONCE per repository when the repository is expanded (or for the flattened
+  single repository at boot), and `prune` skips worktree verification for
+  repositories whose worktrees were never loaded, so boot never pays 200 git
+  calls. The unfolded repositories' listings are queued rather than run at
+  boot.
 - **Discovery semantics, settled**: the scan reports a directory whose `.git`
   is a DIRECTORY as a repo and does not descend into it (repos nested inside a
   repo are that repo's business); a `.git` FILE (linked worktree / submodule)
@@ -53,76 +56,77 @@ the same commit as the change.
   of `skip_dirs`; symlinks are never followed (cycle safety); depth is bounded
   by `[discovery].max_depth` (0 = scan root only). The startup auto-import
   resolves to the MAIN repo (`git worktree list` first entry) even when
-  booting from inside a linked worktree. Config-declared projects that are not
-  repos are skipped with a warning (explicit config entries are the user's
-  statement; the missing-flag is for projects that WERE imported and later
-  vanished). A project whose path vanished is kept in state and marked
+  booting from inside a linked worktree. Config-declared repositories that are
+  not repos are skipped with a warning (explicit config entries are the user's
+  statement; the missing-flag is for repositories that WERE imported and later
+  vanished). A repository whose path vanished is kept in state and marked
   `missing` (shown "(missing)" in the tree) instead of being pruned; it
-  re-activates when the path is a repo again, and keeps its features and
+  re-activates when the path is a repo again, and keeps its worktrees and
   shells untouched while gone (they cannot be verified). Pruning only removes
-  features/shells of present projects. Startup discovery is gated behind an
-  `interactive_boot` flag (`run()` sets it; tests boot headless without it),
-  so tests never import the crate's own repo by accident.
+  worktrees/shells of present repositories. Startup discovery is gated behind
+  an `interactive_boot` flag (`run()` sets it; tests boot headless without
+  it), so tests never import the crate's own repo by accident.
 - **No `i import` / `I scan`: discovery is the only way in.** Both keys
   predate scope-based discovery, which already imports every repo inside the
   scope at boot, live and without a cache. `i` (type an absolute path) and `I`
   (rescan the same root discovery just walked) were left over from the era of
-  an explicit project list, and they cost two of the scarce top-level keys
-  plus two of the four statusbar slots on a project row. What remains covers
-  the cases: the scope is discovered at startup, and a repo outside it goes
-  under `[[projects]]` in `config.toml`. The deliberate loss: a repo created
-  WHILE LazyWingman runs no longer appears without a restart — `r` refreshes
-  tmux state, not the repo list. Folding a rescan into `r` was considered and
-  left out: `r` means "reconcile what I am showing against reality", and
-  walking the filesystem is a different (and much more expensive) promise. It
-  can be revisited if the restart proves annoying.
-- **No "remove project" action**: a project is a discovered repo, not app
-  state worth curating — removing it only made the tree drift from the
+  an explicit repository list, and they cost two of the scarce top-level keys
+  plus two of the four statusbar slots on a repository row. What remains
+  covers the cases: the scope is discovered at startup, and a repo outside it
+  goes under `[[repositories]]` in `config.toml`. The deliberate loss: a repo
+  created WHILE LazyWingman runs no longer appears without a restart — `r`
+  refreshes tmux state, not the repo list. Folding a rescan into `r` was
+  considered and left out: `r` means "reconcile what I am showing against
+  reality", and walking the filesystem is a different (and much more
+  expensive) promise. It can be revisited if the restart proves annoying.
+- **No "remove repository" action**: a repository is a discovered repo, not
+  app state worth curating — removing it only made the tree drift from the
   scope until the next scan brought it back.
 
-## Features, worktrees and deletion
+## Worktrees and deletion
 
-- Worktree root default: `<parent of repo>/.lazywingman-worktrees/<project>/<feature>`.
-- Feature deletion: kill windows → `git worktree remove` (with `--force`
+- Worktree root default:
+  `<parent of repo>/.lazywingman-worktrees/<repository>/<worktree>`.
+- Worktree deletion: kill windows → `git worktree remove` (with `--force`
   offered in the confirm dialog when dirty) → drop from state. The branch
   goes with the worktree unless `worktrees.delete_branch = false` — a
-  feature branch whose worktree is gone is dead weight in the common case;
+  worktree branch whose worktree is gone is dead weight in the common case;
   keeping it is the exception, so it is the opt-in.
-- `d` is contextual: on a feature row it deletes the feature, on a shell
+- `d` is contextual: on a worktree row it deletes the worktree, on a shell
   row it closes just that shell (kill the window, drop it from the
-  feature). Deleting a feature from a shell row was the old behaviour and
+  worktree). Deleting a worktree from a shell row was the old behaviour and
   the wrong one — "close this agent" is the frequent action, "delete the
-  whole feature" the rare one, and the two must not share a target.
+  whole worktree" the rare one, and the two must not share a target.
 - The delete confirm answers to `d` as well as `y`/`Enter`: `d` opened the
   popup, so `dd` completes the delete without a hand move — the vim reflex.
   `f` (force) stays a separate key: discarding uncommitted work must not be
   reachable by pressing the same key twice.
-- **The New Feature popup names the base branch it cuts from.** A feature's
-  branch has always been cut from the project's base branch
-  (`worktrees.base_branch`, or the project's override), never from the branch
-  the repo happens to have checked out — but the popup asked for a name and
-  said nothing else, so the user had to know that. It now prints
-  `branches from: <base> (base branch)` under the name field. The branch is
-  resolved through the SAME `Git::resolve_base_branch` call `create_feature`
-  makes, so the popup cannot promise a base the creation then ignores, and it
-  is resolved ONCE when the popup opens — a git call per keystroke, or per
-  frame, for a line that cannot change while the popup is up, would be the
-  wrong trade. The fallback is spelled out rather than hidden: when the
-  configured base is absent from the repo, creation falls back to the current
-  branch, so the popup names that branch and warns
-  `base branch '<configured>' not found — using current branch` instead of
-  claiming a base branch that does not exist.
+- **The New Worktree popup names the base branch it cuts from.** A worktree's
+  branch has always been cut from the repository's base branch
+  (`worktrees.base_branch`, or the repository's override), never from the
+  branch the repo happens to have checked out — but the popup asked for a name
+  and said nothing else, so the user had to know that. It now prints `branches
+  from: <base> (base branch)` under the name field. The branch is resolved
+  through the SAME `Git::resolve_base_branch` call `create_worktree` makes, so
+  the popup cannot promise a base the creation then ignores, and it is
+  resolved ONCE when the popup opens — a git call per keystroke, or per frame,
+  for a line that cannot change while the popup is up, would be the wrong
+  trade. The fallback is spelled out rather than hidden: when the configured
+  base is absent from the repo, creation falls back to the current branch, so
+  the popup names that branch and warns `base branch '<configured>' not found
+  — using current branch` instead of claiming a base branch that does not
+  exist.
 
 ## Shells and tmux sessions
 
-- **Agent shells live in dedicated tmux sessions** (`wingman-session-<proj>`),
-  per user feedback ("do not pollute my tmux session"): creating a feature /
+- **Agent shells live in dedicated tmux sessions**
+  (`wingman-session-<repo>`), per user feedback ("do not pollute my tmux session"): creating a worktree /
   adding a shell must not add windows to the user's session. One session per
-  project, named `wingman-session-<sanitized-name>` (+ `-<hash8>` suffix on
-  collision), windows inside named `lw:<feature>/<n>`; strict naming is what
-  makes rediscovery after a crash/close possible (`list-sessions` + per-session
-  `list-windows`). Killing the feature's last window auto-destroys the session
-  (verified against tmux 3.5a).
+  repository, named `wingman-session-<sanitized-name>` (+ `-<hash8>` suffix on
+  collision), windows inside named `lw:<worktree>/<n>`; strict naming is what
+  makes rediscovery after a crash/close possible (`list-sessions` +
+  per-session `list-windows`). Killing the worktree's last window
+  auto-destroys the session (verified against tmux 3.5a).
 - **Attach/back across sessions**: inside tmux, attach = `switch-client -t
   <agent-session>` + `select-window -t @<shell-window>` (window IDs are
   server-global; clientless `select-window -t session:@win` verified to change
@@ -176,10 +180,10 @@ the same commit as the change.
   because agents are often launched FROM a shell: the tail carries the
   agent's real state, the foreground command only says "a shell is in
   charge".
-- **Dirty flags are polled, not rendered**: `git status` per feature per frame
-  would fork a process per row per redraw, so the tree reads a cache refreshed
-  on the poll tick at most every 3s (and immediately after a feature is
-  created or deleted).
+- **Dirty flags are polled, not rendered**: `git status` per worktree per
+  frame would fork a process per row per redraw, so the tree reads a cache
+  refreshed on the poll tick at most every 3s (and immediately after a
+  worktree is created or deleted).
 
 ## Agent instrumentation (Claude hooks)
 
@@ -231,47 +235,47 @@ the same commit as the change.
 
 - **Unfold by default; the cap is readability, not cost.** Folding hides the
   shells the dashboard exists to supervise, so the tree starts fully unfolded.
-  The old `≤5 projects` rule existed because unfolding a project triggers its
-  `git worktree list`, and a scope with dozens of repos would have paid all of
-  them before the first frame. That is now decoupled: boot loads the FIRST
-  visible project synchronously and queues the rest, and the event loop drains
-  one per iteration (`drain_pending_worktrees`), so the tree paints immediately
-  and fills in over the next frames. No threads — the loop is single-threaded
-  and one `git worktree list` per frame is invisible. `UNFOLD_CAP = 30`
-  survives purely as a readability backstop: past it the tree is longer than
-  any terminal and folding is the better default.
-- **A one-shell feature is folded, not collapsed**: the nominal case is one
-  worktree, one agent, so a feature with a single shell gets no child row at
+  The old `≤5 repositories` rule existed because unfolding a repository
+  triggers its `git worktree list`, and a scope with dozens of repos would
+  have paid all of them before the first frame. That is now decoupled: boot
+  loads the FIRST visible repository synchronously and queues the rest, and
+  the event loop drains one per iteration (`drain_pending_worktrees`), so the
+  tree paints immediately and fills in over the next frames. No threads — the
+  loop is single-threaded and one `git worktree list` per frame is invisible.
+  `UNFOLD_CAP = 30` survives purely as a readability backstop: past it the
+  tree is longer than any terminal and folding is the better default.
+- **A one-shell worktree is folded, not collapsed**: the nominal case is one
+  worktree, one agent, so a worktree with a single shell gets no child row at
   all — its own row carries the shell's status and acts as that shell (`Enter`
   attaches, `s` quick-sends, the preview follows it). Making it "collapsed by
   default" instead would still cost a keypress to see a row that repeats the
-  feature's name and nothing else. The rule lives in one predicate,
+  worktree's name and nothing else. The rule lives in one predicate,
   `App::solo_shell`, and is enforced in `visible_nodes()` so navigation, mouse
   hits and `clamp_sel` cannot disagree with what is drawn. `a` (add shell) is
   the way out: two shells bring the subtree back.
-- **Tree rows carry no counts** (`(2 features)`, `[2 shells]` are gone): the
+- **Tree rows carry no counts** (`(2 worktrees)`, `[2 shells]` are gone): the
   tree is expanded by default, so the children are the count and the text
-  only repeated what was one row below. The one thing a *folded* project
+  only repeated what was one row below. The one thing a *folded* repository
   row cannot show otherwise — whether it holds anything at all — moved into
-  its icon (`▣` non-empty, `▢` empty), the same trick the feature icon
-  uses. The expand marker was dropped from project rows: the icon already
-  occupies that slot and a collapsed project shows no children, so the
+  its icon (`▣` non-empty, `▢` empty), the same trick the worktree icon
+  uses. The expand marker was dropped from repository rows: the icon already
+  occupies that slot and a collapsed repository shows no children, so the
   arrow was a second answer to a question the row already answered.
 - **Dead entries are muted whole** (user feedback: "when a shell is
   closed/dead, mute the whole entry in the tree"). Colouring only the status
   word left a dead row as visually loud as a working one, so the eye had to
   read the end of every row to find what was still alive. A dead row draws
-  entirely in `status_dead`, and the rule aggregates upward (feature dead = all
-  its shells dead; project dead = all its features dead) so the muting matches
-  how the tree folds. Empty containers are excluded: a feature with no shells
-  is unstarted, not finished.
+  entirely in `status_dead`, and the rule aggregates upward (worktree dead =
+  all its shells dead; repository dead = all its worktrees dead) so the muting
+  matches how the tree folds. Empty containers are excluded: a worktree with
+  no shells is unstarted, not finished.
 - **A worktree with no shell is dimmed, and that is the whole signal.**
   `ensure_worktrees` lists every worktree the repo has, so rows appear for
   worktrees LazyWingman never created. The row state worth showing is not *who
-  made it* but *whether there is a tmux window for it*: with no window there is
-  nothing to attach to, send to or capture, whoever made the worktree. So the
-  predicate is derived — `shells.is_empty()`, which `prune` keeps honest by
-  dropping shells whose window vanished — and NOT a persisted
+  made it* but *whether there is a tmux window for it*: with no window there
+  is nothing to attach to, send to or capture, whoever made the worktree. So
+  the predicate is derived — `shells.is_empty()`, which `prune` keeps honest
+  by dropping shells whose window vanished — and NOT a persisted
   `created_by_wingman` flag. A flag would have needed a schema field, a
   migration for existing state files, and would still have lied about a
   wingman-made worktree whose last shell was closed: same inertness, different
@@ -319,9 +323,9 @@ the same commit as the change.
   uses tmux **paste-buffer with bracketed paste** (`paste_keys`) rather than
   `send-keys -l`: `send-keys -l "a\nb"` would translate the newline into an
   Enter press and submit the first line early; bracketed paste delivers
-  multi-line text as one paste, then a trailing Enter submits. New-feature and
-  add-shell inputs stay single-line (`Enter` submits) — they are names, not
-  prompts.
+  multi-line text as one paste, then a trailing Enter submits. New-worktree
+  and add-shell inputs stay single-line (`Enter` submits) — they are names,
+  not prompts.
 - **Why the send key is ctrl-s, and why the scroll window is the popup's.**
   Two bugs made quick-send unusable in a real tmux. (1) *Nothing could be
   submitted*: both original send chords are undeliverable in a default setup —
@@ -339,17 +343,17 @@ the same commit as the change.
   real content height (`textarea_visible_lines`), which is the only place that
   knows it.
 - **Drafts are per shell, in memory, and dropped only on delivery.** A
-  half-written prompt is expensive to retype, so `Esc` parks the buffer against
-  the shell's pane id (the key `captures` and `statuses` already use) and `s`
-  resumes it, cursor included. Two deliberate limits: drafts do NOT go into
-  `state.json` — they are working state, not configuration, and a prompt
-  half-written three days ago is noise, not a feature — and a draft is dropped
-  only when the send actually SUCCEEDED. `submit_input` toasts and swallows its
-  error, so clearing on submit would lose the text exactly when the user most
-  needs it (dead pane, no server). `TEXTBUF_MAX_BYTES = 1_000_000` is a
-  runaway-paste backstop, not a limit anyone types into; past it input is
-  dropped silently, because an error toast per keystroke would be worse than a
-  buffer that stops growing.
+  half-written prompt is expensive to retype, so `Esc` parks the buffer
+  against the shell's pane id (the key `captures` and `statuses` already use)
+  and `s` resumes it, cursor included. Two deliberate limits: drafts do NOT go
+  into `state.json` — they are working state, not configuration, and a prompt
+  half-written three days ago is noise, not a worktree — and a draft is
+  dropped only when the send actually SUCCEEDED. `submit_input` toasts and
+  swallows its error, so clearing on submit would lose the text exactly when
+  the user most needs it (dead pane, no server). `TEXTBUF_MAX_BYTES =
+  1_000_000` is a runaway-paste backstop, not a limit anyone types into; past
+  it input is dropped silently, because an error toast per keystroke would be
+  worse than a buffer that stops growing.
 - **Predefined messages are a picker, not a second editor**: `p` on a shell
   opens `Mode::Messages`, a numbered list of the configured presets, and
   `Enter` (or the entry's own digit `1`-`9`) **sends immediately** — no detour
@@ -360,43 +364,43 @@ the same commit as the change.
 
 ## Layout, wording and rendering
 
-- **The detail panel is gone**: every field it showed was either already in the
-  tree (name, status, shell count), config the user wrote themselves (path,
-  base branch, agent command, worktree root), or noise (pane geometry, process
-  name, a keys line duplicating the statusbar). The branch was redundant by
-  construction — a feature owns its worktree and therefore its branch. The one
-  fact it held alone, an uncommitted worktree, moved into the tree as the
-  feature icon (nothing when clean, `󰘬` when dirty, per `[icons]`), so the
-  layout is tree | preview.
+- **The detail panel is gone**: every field it showed was either already in
+  the tree (name, status, shell count), config the user wrote themselves
+  (path, base branch, agent command, worktree root), or noise (pane geometry,
+  process name, a keys line duplicating the statusbar). The branch was
+  redundant by construction — a worktree row owns its git worktree and
+  therefore its branch. The one fact it held alone, an uncommitted worktree,
+  moved into the tree as the worktree icon (nothing when clean, `󰘬` when
+  dirty, per `[icons]`), so the layout is tree | preview.
 - **The statusbar is shortcuts and nothing else**: the app name, the session
-  chip and the project count never changed anything the user could act on, and
-  the message slot was never cleared, so the last notice stayed on screen for
-  the rest of the session. Notices are toasts above the bar with their own TTL
-  (4s, 6s for errors) — the log and the diagnostics overlay stay the permanent
-  record. The bar's entries are contextual, clickable, and computed per
-  selection; hjkl/Esc/q deliberately take no slot (assumed knowledge).
+  chip and the repository count never changed anything the user could act on,
+  and the message slot was never cleared, so the last notice stayed on screen
+  for the rest of the session. Notices are toasts above the bar with their own
+  TTL (4s, 6s for errors) — the log and the diagnostics overlay stay the
+  permanent record. The bar's entries are contextual, clickable, and computed
+  per selection; hjkl/Esc/q deliberately take no slot (assumed knowledge).
 - **Panel titles are Title Case names, body text is not.** Titles name a thing
-  (`Preview`, `Quick Send`, `Projects`), so they read as proper names; hints,
-  statusbar and body text stay lowercase, which is the LazyGit register this
-  project follows. The preview title carries no `(capture-pane)` suffix: it
-  named the implementation, not the panel. The tree title follows the tree's
-  actual contents — `Features (n)` when a single repo is flattened,
-  `Projects (n)` otherwise — and counts only in-scope projects, since
-  out-of-scope ones have no rows.
+  (`Preview`, `Quick Send`, `Repositories`), so they read as proper names;
+  hints, statusbar and body text stay lowercase, which is the LazyGit register
+  this repository follows. The preview title carries no `(capture-pane)`
+  suffix: it named the implementation, not the panel. The tree title follows
+  the tree's actual contents — `Worktrees (n)` when a single repo is
+  flattened, `Repositories (n)` otherwise — and counts only in-scope
+  repositories, since out-of-scope ones have no rows.
 - **UI pass from the screenshots (rounded corners, bare titles, tree guides,
   icons).** Panels and popups use `BorderType::Rounded` (╭ ╮ ╰ ╯). Titles
   render foreground-only — no background fill under a panel/popup title
   ("simple title display without background"). The tree draws proper guides:
-  features hang off the project with `├─ `/`└─ `, shells get continuation `│`
-  (parent branch keeps running until its last child), and every preset maps
-  to the shapes named by `[icons]`. The six composites (`child`,
-  `last_child`, and the four grandchild forms) are built in `draw_tree`
-  from three keys — `guide_branch`, `guide_last`, `guide_vertical` — since
-  six near-identical constants is not a surface worth configuring. A type
-  icon sits next to each row: `[icons].project`/`project_empty` on
-  projects, `feature`/`feature_dirty` on features, `shell` on shells.
-  Mouse hit-testing uses the same tier math as rendering, so the wider
-  guide prefixes changed no hit areas.
+  worktrees hang off the repository with `├─ `/`└─ `, shells get continuation
+  `│` (parent branch keeps running until its last child), and every preset
+  maps to the shapes named by `[icons]`. The six composites (`child`,
+  `last_child`, and the four grandchild forms) are built in `draw_tree` from
+  three keys — `guide_branch`, `guide_last`, `guide_vertical` — since six
+  near-identical constants is not a surface worth configuring. A type icon
+  sits next to each row: `[icons].repository`/`repository_empty` on
+  repositories, `worktree`/`worktree_dirty` on worktrees, `shell` on shells.
+  Mouse hit-testing uses the same tier math as rendering, so the wider guide
+  prefixes changed no hit areas.
 - **Small terminals**: layout tiers (Wide / Split / TreeOnly / message) at
   fixed thresholds; overlays that don't fit are refused with a "frame too
   small" box instead of drawing garbage; the input cursor is only set when
@@ -480,19 +484,19 @@ the same commit as the change.
 - **Config layering**: defaults ← user config (config.toml / `--config` /
   `LW_CONFIG`) ← `.lazywingman.toml` ← `.lazywingman.local.toml` (gitignored
   sibling, highest of the file layers). Merge is key by key: maps merge deeply
-  per subkey, lists/scalars replace outright. The project file is found walking
-  upward from cwd, stopping at the first hit *and* at a repository root
-  (`.git`) so a sibling repo's config is never inherited. Per the configuration
-  rules, some keys are user-only and are rejected in project files with a
-  diagnostic (never silently applied): `tmux.back_key` (a global tmux binding),
-  `worktrees.root`, `discovery.scan_root` (machine paths).
+  per subkey, lists/scalars replace outright. The repository file is found
+  walking upward from cwd, stopping at the first hit *and* at a repository
+  root (`.git`) so a sibling repo's config is never inherited. Per the
+  configuration rules, some keys are user-only and are rejected in repository
+  files with a diagnostic (never silently applied): `tmux.back_key` (a global
+  tmux binding), `worktrees.root`, `discovery.scan_root` (machine paths).
 - **Drop the smallest unit, never prevent startup**: loading is lenient — a
   whole-file TOML syntax error drops that file's contribution, a bad
-  `[[agents]]`/`[[projects]]` entry drops that entry, a bad scalar or a bad
-  section field (one bad binding) defaults on its own, a bad status pattern
-  regex is dropped at load, unknown keys are reported not fatal. Every drop
-  lands in `Config.diagnostics` with what/where/used-instead and is shown ONCE
-  in a startup diagnostics overlay (Esc/q/Enter dismiss,
+  `[[agents]]`/`[[repositories]]` entry drops that entry, a bad scalar or a
+  bad section field (one bad binding) defaults on its own, a bad status
+  pattern regex is dropped at load, unknown keys are reported not fatal. Every
+  drop lands in `Config.diagnostics` with what/where/used-instead and is shown
+  ONCE in a startup diagnostics overlay (Esc/q/Enter dismiss,
   j/k/g/G/PageUp/Home/End/wheel scroll — the same accessibility code path as
   help and the picker). A startup confirm parked behind the overlay resumes
   after dismissal.
@@ -501,21 +505,22 @@ the same commit as the change.
   configuration rule "make the resolved config inspectable".
 - **`[[messages]]` replaces the built-ins, like every other list**: a config
   that defines any entry defines the whole list (the layering rule "maps merge
-  deeply, lists are replaced outright"). The two defaults ("continue", "merge to
-  <base_branch>, delete current branch and worktree") therefore only apply when no layer mentions
-  `[[messages]]` — and they are written out verbatim on first run, so editing
-  them is editing a visible list, not fighting an invisible one. `label` is
-  optional: an entry without it is listed by the text it sends.
+  deeply, lists are replaced outright"). The two defaults ("continue", "merge
+  to <base_branch>, delete current branch and worktree") therefore only apply
+  when no layer mentions `[[messages]]` — and they are written out verbatim on
+  first run, so editing them is editing a visible list, not fighting an
+  invisible one. `label` is optional: an entry without it is listed by the
+  text it sends.
 
 ## Help and docs
 
 - **The help overlay is the palette**: the app has one index of everything
-  (`?`), grouped by context (navigate / projects / features / shells / global)
-  with the same words as the contextual bar (shared `HELP_GROUPS` strings). A
-  fuzzy-search palette was deliberately not built: the action set is small
-  enough that a grouped reference + contextual bar covers discoverability; the
-  palette is scrollable and the popup sizes to content (clip + "j/k scrolls"
-  hint instead of a fixed-size overlay).
+  (`?`), grouped by context (navigate / repositories / worktrees / shells /
+  global) with the same words as the contextual bar (shared `HELP_GROUPS`
+  strings). A fuzzy-search palette was deliberately not built: the action set
+  is small enough that a grouped reference + contextual bar covers
+  discoverability; the palette is scrollable and the popup sizes to content
+  (clip + "j/k scrolls" hint instead of a fixed-size overlay).
 - **Everything is documented**: `docs/shortcuts.md` lists every binding with
   the TUI rule it satisfies and every deliberately unbound key with its reason;
   it is updated in the same commit as any binding change.

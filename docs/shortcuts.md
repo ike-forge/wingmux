@@ -59,19 +59,19 @@ every project. The picked theme survives restarts via `state.json`.
 The statusbar shows only the entries that do something right now; the help
 overlay lists all of them grouped by context. Same words in both.
 
-### Project selected
+### Repository selected
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `n` | new feature (worktree + branch cut from the project's base branch, + agent shell) | create action |
+| `n` | new worktree (git worktree + branch cut from the repository's base branch, + agent shell) | create action |
 
-### Feature selected
+### Worktree selected
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `n` | new feature (sibling; branched from the base branch, not the checkout) | create action |
-| `a` | add a shell to the feature (prompts for the command; empty = the project default) | add action |
-| `d` | delete feature (kills windows, removes worktree; `f` = force when dirty) | vim `d` destructive, confirms; `f` differs by position (confirm mode, not navigation) |
+| `n` | new worktree (sibling; branched from the base branch, not the checkout) | create action |
+| `a` | add a shell to the worktree (prompts for the command; empty = the repository default) | add action |
+| `d` | delete worktree (kills windows, removes worktree; `f` = force when dirty) | vim `d` destructive, confirms; `f` differs by position (confirm mode, not navigation) |
 
 ### Shell selected
 
@@ -79,11 +79,11 @@ overlay lists all of them grouped by context. Same words in both.
 |---|---|---|
 | `Enter` / `l` | attach to the shell | domain convention (attach) |
 | `s` | quick-send a prompt to the agent (multiline editor, Alt+Enter sends) | send action |
-| `d` | close this shell (kills its window; the feature and its other shells stay) | vim `d` destructive, confirms; the object is the selected row |
+| `d` | close this shell (kills its window; the worktree and its other shells stay) | vim `d` destructive, confirms; the object is the selected row |
 
-## Text input (new feature / add shell — single line)
+## Text input (new worktree / add shell — single line)
 
-The New Feature prompt names the branch it will cut from under the name
+The New Worktree prompt names the branch it will cut from under the name
 field (`branches from: <base> (base branch)`), and warns when the configured
 base branch is absent and creation falls back to the current checkout.
 
@@ -118,7 +118,7 @@ Sending uses tmux's paste-buffer with bracketed paste, so multi-line prompts
 arrive as ONE paste (embedded newlines are content, not Enter presses) and
 the trailing Enter submits.
 
-## Confirm dialogs (delete feature / close shell)
+## Confirm dialogs (delete worktree / close shell)
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
@@ -193,7 +193,7 @@ An inert key is a decision, not an omission.
 - `Tab` / `Shift-Tab` — no panel cycling: there is exactly one focusable
   panel (the tree); the detail/preview panes are display-only. In the
   quick-send textarea, `Tab` inserts a tab (see above).
-- `y` / `v` — no yank or row-selection feature yet (no multi-select model).
+- `y` / `v` — no yank or row selection yet (no multi-select model).
 - `:` — no command language; every action already has a key.
 - `e`, `c`, `w`, `b`, `t`, `E`, `C`, ... — reserved for future actions
   (edit/rename, toggle, etc.); nothing is bound to a letter that has no
