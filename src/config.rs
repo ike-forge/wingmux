@@ -30,6 +30,14 @@ pub const LAYER_LOCAL: &str = "local";
 pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on first run, edit freely.
 # Location: $XDG_CONFIG_HOME/lazywingman/config.toml (default ~/.config/lazywingman)
 #
+# Every setting LazyWingman understands is listed below, commented out at
+# its built-in default — so this file changes nothing until you edit it.
+# Two comment styles are used: `#key = value` (no space after the hash) is
+# a real default, and uncommenting it as-is is a no-op; `# text` (hash then
+# space) is prose, or an example with no default behind it. Section headers
+# like [preview] are left active on purpose, so uncommenting a single key
+# under one is enough.
+#
 # This file is the USER layer. A project can also carry a committed
 # .lazywingman.toml (searched upward from the working directory, stopping at
 # the repository root) and a gitignored .lazywingman.local.toml next to it;
@@ -44,126 +52,144 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 # "catppuccin-frappe", "catppuccin-latte", "dracula", "gruvbox", "ansi".
 # Drop your own theme into ~/.config/lazywingman/themes/<name>.toml
 # Press ctrl-t inside the TUI to switch themes live (picked themes are
-# saved to the state file; this line is the startup default).
-theme = "catppuccin-mocha"
+# saved to the state file; this key is the startup default).
+#theme = "catppuccin-mocha"
 
 # How often (ms) agent panes are polled for status + preview.
-poll_interval_ms = 500
+#poll_interval_ms = 500
 
 # Ask for confirmation before deleting a feature.
-confirm_on_delete = true
+#confirm_on_delete = true
 
 [preview]
 # How much of the agent's own colouring the preview panel shows. The pane is
 # captured with its escape sequences, so by default you see exactly what the
 # agent painted — spinners, diffs, syntax highlighting.
-#   "full"       — every colour exactly as the pane emits it (default)
+#   "full"       — every colour exactly as the pane emits it
 #   "foreground" — text colours kept, background colours dropped (the panel
 #                  keeps the theme's background; also "no-background")
 #   "none"       — raw text, no colours at all (also "text")
-colors = "full"
+#colors = "full"
 
 [tmux]
 # Keybinding (tmux syntax) pressed AFTER the tmux prefix (e.g. `C-b C-o`)
 # inside an agent window to jump straight back to the LazyWingman
 # dashboard. Bound in the PREFIX table, never the root table — a root
 # binding would hijack the key for every session and other TUIs.
-back_key = "C-o"
+#back_key = "C-o"
 
 [worktrees]
 # Root directory for feature worktrees. Absolute path, or relative to the
 # project's parent directory. Empty = <project-parent>/.lazywingman-worktrees
-root = ""
+#root = ""
 # Branch that feature branches are cut from. Falls back to the repository's
 # current branch if this one doesn't exist in a project.
-base_branch = "master"
+#base_branch = "master"
 # Also delete the feature branch when the feature is removed. Set to
 # false to keep the branch behind after the worktree is gone.
-delete_branch = true
+#delete_branch = true
 
 [discovery]
 # The scope: only projects inside this directory are listed (scopes never
 # mix). Empty = the directory LazyWingman was started from. When you start
 # inside a git repo, that repo is the scope and its features are shown
 # flat (no project row). The scan is live (no cache) and runs at startup.
-scan_root = ""
+#scan_root = ""
 # Maximum subdirectory depth of a scan (0 = the scan root itself only).
-max_depth = 4
+#max_depth = 4
 # Directory names skipped during a scan. Hidden directories (names starting
 # with '.') are always skipped; worktree `.git` files are never treated as
 # repositories (their main repo covers them).
-skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
+#skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
 
 [defaults]
 # Agent command spawned in a feature shell unless a project overrides it.
-agent_command = "claude"
+#agent_command = "claude"
 # Shell used for agent windows.
-agent_shell = "bash"
+#agent_shell = "bash"
 # Inject Claude Code hooks (--settings <generated file>) into recognised
 # `claude` commands, so status is read from the agent's own hook events
 # instead of guessed from regex patterns on the pane's output. Nothing is
 # written to your own Claude config; the flag is visible in the pane's
 # command line. Set to false to disable and always use the regex heuristics.
-agent_hooks = true
+#agent_hooks = true
 
 [icons]
-preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "ascii" | "none"
-# Any key below overrides the preset. An empty string draws nothing.
-# `project`/`project_empty`, `feature`/`feature_dirty`, `expand_open`/
-# `expand_closed` and `guide_branch`/`guide_last` are padded in pairs, so
-# names stay aligned when one side is empty. `shell`, `cursor`,
-# `separator`, `warn` and `ellipsis` have no sibling to pad against and are
-# used verbatim — add your own trailing space if you want a gap after one
-# (the default `shell = "● "` already has one baked in).
-# feature = ""               # clean worktree
-# feature_dirty = "󰘬"        # uncommitted changes (nf-md-source_branch)
-# border = "rounded"         # "rounded" | "plain" | "ascii"
+# Glyph set to start from: "nerdfont" (a patched font), "unicode" (no
+# patched font needed), "ascii" (7-bit only) or "none" (no row icons).
+#preset = "nerdfont"
+
+# Every key below overrides the preset glyph by glyph. An empty string
+# draws nothing. `project`/`project_empty`, `feature`/`feature_dirty`,
+# `expand_open`/`expand_closed` and `guide_branch`/`guide_last` are padded
+# in pairs, so names stay aligned when one side is empty. `shell`,
+# `cursor`, `separator`, `warn` and `ellipsis` have no sibling to pad
+# against and are used verbatim — add your own trailing space if you want
+# a gap after one (the default `shell` below already has one baked in).
+# The values shown are the "nerdfont" preset.
+#project = "▣"                 # project holding features
+#project_empty = "▢"           # project with none yet
+#feature = ""                  # clean worktree
+#feature_dirty = "󰘬"          # uncommitted changes (nf-md-source_branch)
+#shell = "● "                  # a shell inside a feature
+#expand_open = "▾"             # expanded row
+#expand_closed = "▸"           # collapsed row
+#cursor = "›"                  # marks the selected row
+#guide_branch = "├─"            # tree guide, more siblings below
+#guide_last = "└─"              # tree guide, last sibling
+#guide_vertical = "│"          # tree guide, carried down a column
+#separator = " · "               # between status-bar fields
+#warn = "⚠"                    # startup diagnostics indicator
+#ellipsis = "…"                # marks text truncated to fit
+
+# Popup and panel borders. Not a glyph: ratatui owns the corner set, and
+# "ascii" is a post-render rewrite. "rounded" | "plain" | "ascii".
+#border = "rounded"
 
 # Predefined messages, offered by the `p` modal on a selected shell:
 # pick one and it is sent to the agent exactly as if you had typed it.
 # `label` is what the modal lists, `text` is what gets sent (label may be
 # omitted — then the text is listed). Defining any [[messages]] entry
-# replaces this whole list, like every other list in this file.
-[[messages]]
-label = "continue"
-text = "continue"
+# replaces this whole list, like every other list in this file. The two
+# below are the built-in defaults.
+#[[messages]]
+#label = "continue"
+#text = "continue"
 
-[[messages]]
-label = "merge + drop worktree"
-text = "merge to <base_branch>, delete current branch and worktree"
+#[[messages]]
+#label = "merge + drop worktree"
+#text = "merge to <base_branch>, delete current branch and worktree"
 
 # Agent presets, selectable per project via `agent = "<name>"`.
 # The `patterns` regexes are matched against the tail of a pane's capture
 # to classify its status (working / waiting / failed). Order of checks:
-# dead > ended > failed > waiting > working > idle.
-[[agents]]
-name = "claude"
-command = "claude"
-[agents.patterns]
-working = [
-  "Thinking", "Running", "Reading", "Writing", "Searching", "Applying",
-  "Planning", "Creating", "Editing", "Executing", "Progress",
-  "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "●", "▰",
-]
-waiting = [
-  "What would you like to do", "❯", "›", "(q) to quit", "q to quit",
-  "> $",
-]
-failed = ["✖", "Error:", "error:", "exited with code", "Fatal", "failed"]
+# dead > ended > failed > waiting > working > idle. Defining any [[agents]]
+# entry replaces this whole list; the two below are the built-in defaults.
+#[[agents]]
+#name = "claude"
+#command = "claude"
+# Optional per-preset shell; omitted, [defaults].agent_shell is used.
+# shell = "zsh"
+#[agents.patterns]
+#working = ["Thinking", "Running", "Reading", "Writing", "Searching",
+#"Applying", "Planning", "Creating", "Editing", "Executing", "Progress",
+#"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "●", "▰"]
+#waiting = ["What would you like to do", "❯", "›", "(q) to quit",
+#"q to quit", "> $"]
+#failed = ["✖", "Error:", "error:", "exited with code", "Fatal", "failed"]
 
-[[agents]]
-name = "codex"
-command = "codex"
-[agents.patterns]
-working = [
-  "Working", "Reading", "Writing", "Running", "Thinking", "Exploring",
-  "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "▌",
-]
-waiting = ["❯", "›", "codex>", "> $"]
-failed = ["Error", "error:", "✖"]
+#[[agents]]
+#name = "codex"
+#command = "codex"
+#[agents.patterns]
+#working = ["Working", "Reading", "Writing", "Running", "Thinking",
+#"Exploring", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "▌"]
+#waiting = ["❯", "›", "codex>", "> $"]
+#failed = ["Error", "error:", "✖"]
 
 # Projects declared by hand — the way to list a repo that discovery does not
 # find (outside the scope). Discovered projects live in state.json instead.
+# There is no default list; the block below is an example only.
 # [[projects]]
 # path = "/absolute/path/to/repo"
 # base_branch = "main"       # optional: override [worktrees].base_branch
@@ -2076,8 +2102,10 @@ mod tests {
         with_fresh_xdg(|| {
             Config::load().unwrap();
             let mut text = std::fs::read_to_string(crate::util::config_path()).unwrap();
-            text = text.replace("theme = \"catppuccin-mocha\"", "theme = \"ansi\"");
-            text = text.replace("poll_interval_ms = 500", "poll_interval_ms = 250");
+            // The written file ships every key commented out, so "editing
+            // it" means uncommenting as well as changing the value.
+            text = text.replace("#theme = \"catppuccin-mocha\"", "theme = \"ansi\"");
+            text = text.replace("#poll_interval_ms = 500", "poll_interval_ms = 250");
             std::fs::write(crate::util::config_path(), text).unwrap();
             let cfg = Config::load().unwrap();
             assert_eq!(cfg.theme, "ansi");
@@ -2335,6 +2363,83 @@ mod tests {
             PreviewColors::Foreground
         );
         assert_eq!(mode("[preview]\ncolors = \"text\"\n"), PreviewColors::None);
+    }
+
+    /// Strip the leading `#` from the config lines of `DEFAULT_CONFIG`.
+    ///
+    /// The written file uses two comment styles: `#key = value` (hash, no
+    /// space) is a real default — uncommenting it changes nothing — while
+    /// `# prose` (hash + space) is explanation or an example that has no
+    /// default (`[[projects]]`). This keeps only the former.
+    fn uncomment_defaults(text: &str) -> String {
+        text.lines()
+            .map(|line| match line.strip_prefix('#') {
+                Some(rest) if !rest.starts_with(' ') && !rest.is_empty() => rest,
+                Some(_) => "",
+                None => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Does `DEFAULT_CONFIG` document `key` — as `key = …`, `[key]`,
+    /// `[[key]]` or a dotted sub-table ending in `.key]`?
+    fn documents_key(key: &str) -> bool {
+        DEFAULT_CONFIG.lines().any(|line| {
+            let l = line.trim_start_matches('#').trim_start();
+            l.starts_with(&format!("{key} ="))
+                || l.starts_with(&format!("[{key}]"))
+                || l.starts_with(&format!("[[{key}]]"))
+                || (l.starts_with('[') && l.contains(&format!(".{key}]")))
+        })
+    }
+
+    /// The written file is exhaustive: every key the loader recognises is
+    /// in it, so the config is discoverable without reading the source.
+    #[test]
+    fn default_config_documents_every_recognised_key() {
+        let registries: &[(&str, &[&str])] = &[
+            ("top-level", TOP_KEYS),
+            ("[preview]", PREVIEW_KEYS),
+            ("[tmux]", TMUX_KEYS),
+            ("[worktrees]", WORKTREES_KEYS),
+            ("[discovery]", DISCOVERY_KEYS),
+            ("[defaults]", DEFAULTS_KEYS),
+            ("[icons]", ICONS_KEYS),
+            ("[[agents]]", AGENT_KEYS),
+            ("[agents.patterns]", PATTERN_KEYS),
+            ("[[projects]]", PROJECT_KEYS),
+            ("[[messages]]", MESSAGE_KEYS),
+        ];
+        let missing: Vec<String> = registries
+            .iter()
+            .flat_map(|(section, keys)| {
+                keys.iter()
+                    .filter(|k| !documents_key(k))
+                    .map(move |k| format!("{section} {k}"))
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "DEFAULT_CONFIG must document every recognised key; missing: {missing:?}"
+        );
+    }
+
+    /// The documented values really are the defaults: uncommenting the
+    /// whole file changes nothing. Guards against a default drifting in
+    /// `Default for Config` without the written file following.
+    #[test]
+    fn uncommenting_default_config_reproduces_the_defaults() {
+        let cfg = Config::from_str(&uncomment_defaults(DEFAULT_CONFIG)).unwrap();
+        assert_eq!(format!("{cfg:?}"), format!("{:?}", Config::default()));
+    }
+
+    /// As shipped the file sets nothing — every value comes from the
+    /// built-in defaults, so a first run behaves like no config at all.
+    #[test]
+    fn default_config_is_inert_as_written() {
+        let cfg = Config::from_str(DEFAULT_CONFIG).unwrap();
+        assert_eq!(format!("{cfg:?}"), format!("{:?}", Config::default()));
     }
 
     /// The shipped default config parses and keeps the documented default.

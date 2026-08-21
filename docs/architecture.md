@@ -486,6 +486,22 @@ the same commit as the change.
   rules, some keys are user-only and are rejected in project files with a
   diagnostic (never silently applied): `tmux.back_key` (a global tmux binding),
   `worktrees.root`, `discovery.scan_root` (machine paths).
+- **The written config is exhaustive and inert**: on first run — and only when
+  the file is absent — `DEFAULT_CONFIG` is written out with *every* key the
+  loader recognises, each commented at its built-in default. Defaults therefore
+  live in exactly one place (`Default for Config`); the file is documentation,
+  not a second source of truth, so a user who never edits it silently inherits
+  later default changes. Two comment styles keep this machine-checkable:
+  `#key = value` (no space) is a real default, `# text` is prose or an example
+  with no default (`[[projects]]`, `[[agents]].shell`). Plain section headers
+  (`[preview]`, `[icons]`, …) are left active — an empty table parses to the
+  default, and it means uncommenting one key is enough; array-of-table headers
+  (`[[agents]]`, `[[messages]]`) stay commented, since an empty entry would
+  *replace* the built-in list with a blank one. Three tests hold the file
+  honest: every registered key appears in it, uncommenting the whole file
+  reproduces `Config::default()` exactly, and the file as shipped parses to the
+  same defaults. A generator was rejected — `Config` is not `Serialize`, and no
+  generator writes the per-key prose that makes the file worth reading.
 - **Drop the smallest unit, never prevent startup**: loading is lenient — a
   whole-file TOML syntax error drops that file's contribution, a bad
   `[[agents]]`/`[[projects]]` entry drops that entry, a bad scalar or a bad
@@ -503,8 +519,8 @@ the same commit as the change.
   that defines any entry defines the whole list (the layering rule "maps merge
   deeply, lists are replaced outright"). The two defaults ("continue", "merge to
   <base_branch>, delete current branch and worktree") therefore only apply when no layer mentions
-  `[[messages]]` — and they are written out verbatim on first run, so editing
-  them is editing a visible list, not fighting an invisible one. `label` is
+  `[[messages]]` — and they are written out verbatim (commented) on first run,
+  so editing them is editing a visible list, not fighting an invisible one. `label` is
   optional: an entry without it is listed by the text it sends.
 
 ## Help and docs

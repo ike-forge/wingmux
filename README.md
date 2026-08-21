@@ -53,8 +53,9 @@ back-key `C-o` to return to the dashboard); standalone, attach hands the
 terminal over to `tmux attach` and drops you back into the dashboard when you
 detach (`C-b d`).
 
-First run writes a commented config to
-`$XDG_CONFIG_HOME/lazywingman/config.toml` and copies the built-in themes to
+First run writes an exhaustive, fully commented config to
+`$XDG_CONFIG_HOME/lazywingman/config.toml` (never overwriting an existing
+one) and copies the built-in themes to
 `$XDG_CONFIG_HOME/lazywingman/themes/`.
 
 LazyWingman finds your projects for you (see [Project discovery](#project-discovery)),
@@ -98,8 +99,14 @@ ever loses the key).
 
 ## Configuration
 
-`$XDG_CONFIG_HOME/lazywingman/config.toml` — everything is commented in the
-file written on first run. Example:
+`$XDG_CONFIG_HOME/lazywingman/config.toml` — written on first run, and only
+if it isn't there already. It lists every setting LazyWingman understands,
+each one commented out at its built-in default, so the file changes nothing
+until you edit it. Two comment styles tell the two kinds apart:
+`#key = value` (no space after the hash) is a real default — uncommenting it
+as-is is a no-op — while `# text` is prose, or an example with no default
+behind it (`[[projects]]`). Section headers like `[preview]` are left active
+so uncommenting a single key under one is enough. Example, uncommented:
 
 ```toml
 theme = "catppuccin-mocha"  # 7 built-ins; ctrl-t switches live (saved to state)
