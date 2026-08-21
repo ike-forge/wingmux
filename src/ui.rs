@@ -256,8 +256,10 @@ fn fits(area: Rect, min: (u16, u16)) -> bool {
     area.width >= min.0 && area.height >= min.1
 }
 
-/// App-generated glyphs, configurable via `[icons]` (the user's pane content
-/// is never rewritten — only our own labels).
+/// App-generated glyphs, configurable via `[icons]`. These helpers return
+/// the app's own labels; `asciify` is the one that reaches further, rewriting
+/// box-drawing across whatever rect it is handed — under `border = "ascii"`
+/// that includes the preview's captured pane text and the textarea's buffer.
 pub(crate) fn warn_mark(icons: &crate::config::IconsConfig) -> &str {
     &icons.warn
 }
