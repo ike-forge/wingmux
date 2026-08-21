@@ -473,7 +473,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             // In flatten mode the features are the top level (no guide);
             // otherwise they hang off the project with a tree branch.
             let (prefix, icon_span) = if app.flatten {
-                (marker.clone(), ficon.to_string())
+                (marker, ficon.to_string())
             } else {
                 let guide = if fi + 1 == n_feat {
                     &last_child
@@ -679,7 +679,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
         // on top of the feature ones (`a` gives it a second shell, which
         // unfolds the subtree).
         Sel::Feature(pi, fi) if app.solo_shell(pi, fi).is_some() => vec![
-            ("↵ attach".into(), Attach),
+            ((format!("{} attach", app.cfg.icons.enter)), Attach),
             ("s send".into(), QuickSend),
             ("p predefined".into(), PredefinedSend),
             ("a shell".into(), AddShell),
@@ -693,7 +693,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
             ("? help".into(), Help),
         ],
         Sel::Shell(..) => vec![
-            ("↵ attach".into(), Attach),
+            ((format!("{} attach", app.cfg.icons.enter)), Attach),
             ("s send".into(), QuickSend),
             ("p predefined".into(), PredefinedSend),
             ("d close".into(), DeleteShell),
@@ -950,14 +950,14 @@ fn help_lines(app: &App) -> Vec<Line<'_>> {
         )));
         lines.push(Line::from(Span::styled(
             format!(
-                "back chord is <prefix>+'{}' (config tmux.back_key) — jump back to this window",
+                "back chord is <prefix>+'{}' (config tmux.back_key): jump back to this window",
                 app.cfg.tmux.back_key
             ),
             fg(theme.dim),
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "attach: press Enter — the terminal is handed over to tmux attach",
+            "attach: press Enter and the terminal is handed over to tmux attach",
             fg(theme.dim),
         )));
         lines.push(Line::from(Span::styled(
@@ -1079,12 +1079,12 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
     let mut lines: Vec<Line> = Vec::new();
     for (i, name) in names.iter().take(rows).enumerate() {
         let selected = i == index;
-        let marker = &app.cfg.icons.expand_closed;
+        let marker = &app.cfg.icons.cursor;
         let label = if selected {
-            format!(" {marker}{name} ")
+            format!(" {marker} {name} ")
         } else {
             format!(
-                " {}{name} ",
+                " {} {name} ",
                 " ".repeat(UnicodeWidthStr::width(marker.as_str()))
             )
         };
@@ -1143,7 +1143,7 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
     let mut lines: Vec<Line> = Vec::new();
     for (i, label) in labels.iter().take(rows).enumerate() {
         let selected = i == index;
-        let marker = &app.cfg.icons.expand_closed;
+        let marker = &app.cfg.icons.cursor;
         // The number is the key that sends the entry (up to 9 of them).
         let num = if i < 9 {
             format!("{} ", i + 1)
@@ -1151,10 +1151,10 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
             "  ".into()
         };
         let label = if selected {
-            format!(" {marker}{num}{label} ")
+            format!(" {marker} {num}{label} ")
         } else {
             format!(
-                " {}{num}{label} ",
+                " {} {num}{label} ",
                 " ".repeat(UnicodeWidthStr::width(marker.as_str()))
             )
         };
@@ -1225,7 +1225,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
         )));
         if let Some(configured) = &hint.missing {
             lines.push(Line::from(Span::styled(
-                format!("base branch '{configured}' not found — using current branch"),
+                format!("base branch '{configured}' not found; using current branch"),
                 fg(theme.status_waiting),
             )));
         }
@@ -2051,10 +2051,18 @@ mod tests {
         app.proj_expanded[0] = true;
         app.feat_expanded[0][0] = true;
         app.clamp_sel();
+        // Select a shell so the statusbar renders its attach entry: that is
+        // where `↵` used to leak, and with the project row selected the entry
+        // never appears at all.
+        app.sel = crate::app::Sel::Shell(0, 0, 0);
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
+        assert!(
+            text.contains("Enter attach"),
+            "the ascii preset spells the attach key out: {text:?}"
+        );
         for glyph in ["─", "│", "┌", "▾", "▸", "›", "·", "→"] {
             assert!(
                 !text.contains(glyph),
@@ -2064,6 +2072,15 @@ mod tests {
         for glyph in ["+", "-", "|", "v", ">"] {
             assert!(text.contains(glyph), "ascii render must use {glyph:?}");
         }
+        // A denylist only catches the glyphs someone thought to list: `↵` and
+        // `—` slipped past the one above for the whole life of the old
+        // `LW_ASCII` mode. The preset's promise is a frame a non-UTF-8
+        // terminal can draw, so assert the whole thing.
+        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
+        assert!(
+            stray.is_empty(),
+            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
+        );
     }
 
     /// In unicode mode the box-drawing tree markers are present — the
@@ -2677,6 +2694,13 @@ mod tests {
                 "ascii help must not contain {glyph:?}"
             );
         }
+        // Whole-frame, not a denylist: `↵` and `—` slipped past the glyph
+        // lists here for the whole life of the old `LW_ASCII` mode.
+        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
+        assert!(
+            stray.is_empty(),
+            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
+        );
     }
 
     /// The scroll-height math in the app and the rendered line count share
@@ -2742,6 +2766,13 @@ mod tests {
                 "ascii picker must not contain {glyph:?}"
             );
         }
+        // Whole-frame, not a denylist: `↵` and `—` slipped past the glyph
+        // lists here for the whole life of the old `LW_ASCII` mode.
+        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
+        assert!(
+            stray.is_empty(),
+            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
+        );
     }
 
     /// The picker on a tiny frame is refused with the standard message
@@ -2828,6 +2859,13 @@ mod tests {
                 "ascii diagnostics must not contain {glyph:?}"
             );
         }
+        // Whole-frame, not a denylist: `↵` and `—` slipped past the glyph
+        // lists here for the whole life of the old `LW_ASCII` mode.
+        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
+        assert!(
+            stray.is_empty(),
+            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
+        );
     }
 
     /// The diagnostics overlay on a tiny frame is refused with the standard
@@ -3052,6 +3090,13 @@ mod tests {
         assert!(
             text.is_ascii(),
             "ascii mode must not emit unicode: {text:?}"
+        );
+        // Whole-frame, not a denylist: `↵` and `—` slipped past the glyph
+        // lists here for the whole life of the old `LW_ASCII` mode.
+        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
+        assert!(
+            stray.is_empty(),
+            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
         );
     }
 

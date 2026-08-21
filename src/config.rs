@@ -115,9 +115,23 @@ preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "ascii
 # `separator`, `warn` and `ellipsis` have no sibling to pad against and are
 # used verbatim — add your own trailing space if you want a gap after one
 # (the default `shell = "● "` already has one baked in).
-# feature = ""               # clean worktree
-# feature_dirty = "󰘬"        # uncommitted changes (nf-md-source_branch)
-# border = "rounded"         # "rounded" | "plain" | "ascii"
+# Every key, with its `nerdfont` default:
+# project        = "▣"       # project holding features
+# project_empty  = "▢"       # project with none
+# feature        = ""        # clean worktree (draws nothing, keeps its column)
+# feature_dirty  = "󰘬"       # uncommitted changes (nf-md-source_branch)
+# shell          = "● "      # shell row, before the shell number
+# expand_open    = "▾"       # expanded feature
+# expand_closed  = "▸"       # collapsed feature
+# cursor         = "›"       # selection cursor, in the tree and the modals
+# guide_branch   = "├─"      # tree guide, non-last child
+# guide_last     = "└─"      # tree guide, last child
+# guide_vertical = "│"       # tree guide, continuing parent
+# separator      = " · "     # between statusbar and help entries
+# warn           = "⚠"       # startup diagnostics
+# ellipsis       = "…"       # truncation marker
+# enter          = "↵"       # the Enter key, in the statusbar
+# border         = "rounded" # "rounded" | "plain" | "ascii"
 
 # Predefined messages, offered by the `p` modal on a selected shell:
 # pick one and it is sent to the agent exactly as if you had typed it.
@@ -312,6 +326,8 @@ pub struct IconsConfig {
     pub separator: String,
     pub warn: String,
     pub ellipsis: String,
+    /// Glyph standing for the Enter key in the statusbar.
+    pub enter: String,
     pub border: BorderStyle,
 }
 
@@ -349,6 +365,7 @@ impl IconsConfig {
             separator: " · ".into(),
             warn: "⚠".into(),
             ellipsis: "…".into(),
+            enter: "↵".into(),
             border: BorderStyle::Rounded,
         };
         match name {
@@ -380,6 +397,7 @@ impl IconsConfig {
                 separator: " - ".into(),
                 warn: "!".into(),
                 ellipsis: "...".into(),
+                enter: "Enter".into(),
                 border: BorderStyle::Ascii,
             },
             _ => nerdfont,
@@ -431,6 +449,7 @@ struct IconsFile {
     separator: Option<String>,
     warn: Option<String>,
     ellipsis: Option<String>,
+    enter: Option<String>,
     border: Option<BorderStyle>,
 }
 
@@ -452,6 +471,7 @@ impl Default for IconsFile {
             separator: None,
             warn: None,
             ellipsis: None,
+            enter: None,
             border: None,
         }
     }
@@ -482,6 +502,7 @@ impl<'de> Deserialize<'de> for IconsConfig {
             separator: f.separator.unwrap_or(b.separator),
             warn: f.warn.unwrap_or(b.warn),
             ellipsis: f.ellipsis.unwrap_or(b.ellipsis),
+            enter: f.enter.unwrap_or(b.enter),
             border: f.border.unwrap_or(b.border),
         };
         i.pad();
@@ -789,6 +810,7 @@ const ICONS_KEYS: &[&str] = &[
     "separator",
     "warn",
     "ellipsis",
+    "enter",
     "border",
 ];
 const AGENT_KEYS: &[&str] = &["name", "command", "shell", "patterns"];
@@ -1644,6 +1666,7 @@ impl SectionSalvage for IconsConfig {
             separator: salvage_field(t, "separator", b.separator, file, diags),
             warn: salvage_field(t, "warn", b.warn, file, diags),
             ellipsis: salvage_field(t, "ellipsis", b.ellipsis, file, diags),
+            enter: salvage_field(t, "enter", b.enter, file, diags),
             border: salvage_field(t, "border", b.border, file, diags),
         };
         i.pad();
@@ -1993,6 +2016,49 @@ mod tests {
     fn icons_default_when_absent() {
         let cfg = Config::from_str("theme = \"gruvbox\"\n").unwrap();
         assert_eq!(cfg.icons, IconsConfig::preset("nerdfont"));
+    }
+
+    /// `ICONS_KEYS` is the one place a new icon key must be repeated that the
+    /// compiler does NOT check — the struct literals in `raw_preset`,
+    /// `Deserialize` and `salvage` are exhaustive, so they break loudly. Left
+    /// to drift, a legitimate new key gets reported as unknown. Every key is
+    /// round-tripped through the real parser rather than counted, so a typo
+    /// fails too.
+    #[test]
+    fn every_icons_key_is_registered_for_unknown_key_reporting() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let body: String = ICONS_KEYS
+                .iter()
+                .map(|k| {
+                    if *k == "border" {
+                        format!("{k} = \"plain\"\n")
+                    } else if *k == "preset" {
+                        format!("{k} = \"unicode\"\n")
+                    } else {
+                        format!("{k} = \"x\"\n")
+                    }
+                })
+                .collect();
+            let cfg = load_user(cwd.path(), &format!("[icons]\n{body}"));
+            let unknown: Vec<_> = cfg
+                .diagnostics
+                .iter()
+                .filter(|d| d.contains("unknown key"))
+                .collect();
+            assert!(
+                unknown.is_empty(),
+                "ICONS_KEYS names a key the parser rejects: {unknown:?}"
+            );
+            // ...and the inverse: a key the struct has but ICONS_KEYS forgot
+            // would be reported as unknown, so assert the count matches the
+            // number of fields actually accepted.
+            assert_eq!(
+                ICONS_KEYS.len(),
+                17,
+                "adding an icon key means adding it to ICONS_KEYS too"
+            );
+        });
     }
 
     #[test]
