@@ -403,16 +403,21 @@ the same commit as the change.
   on-buffer.
 - **Icons**: `[icons]` (`src/config.rs`) covers the tree's type icons and
   guides, the expand/cursor markers, the separator, the warn mark, the
-  ellipsis and the border style, chosen by a preset (`nerdfont` default,
-  plus `unicode`, `ascii`, `none`) and overridable key by key. This
+  ellipsis, the Enter glyph and the border style, chosen by a preset
+  (`nerdfont` default, plus `unicode`, `ascii`, `none`) and overridable key
+  by key. This
   replaced an `LW_ASCII` boolean, which conflated two independent
   questions — whether the terminal draws box characters, and which glyphs
   the user's font has. Keys that share a rendered column are padded to
   equal width at resolution time, so an empty icon still holds its column.
-  A few incidental glyphs remain outside `[icons]` — the statusbar's `↵`
-  (`bar_entries`) and the help overlay's em dashes are not preset keys and
-  are not rewritten by `asciify`, so under `preset = "ascii"` a user still
-  sees `↵ attach` and literal em dashes. `border = "ascii"` rewrites buffer
+  The statusbar's `↵` is the `enter` key (`ascii` spells it `Enter`); the
+  em dashes that used to leak into rendered help and hint text were reworded
+  to ASCII punctuation rather than made configurable, since mid-sentence
+  typography is not an icon. `asciify` rewrites only box-drawing, so
+  anything outside `[icons]` that is non-ASCII would leak: the four
+  `*_ascii_preset_is_clean` tests assert the whole rendered frame is ASCII
+  rather than checking a denylist, which is what let `↵` and `—` survive
+  unnoticed under the old `LW_ASCII` mode. `border = "ascii"` rewrites buffer
   cells to `+ - |` (`ui::asciify`) because ratatui has no ASCII
   `BorderType`; it rewrites box-drawing across whichever rect it is given,
   which for the preview panel and the quick-send textarea includes the

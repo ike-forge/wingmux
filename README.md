@@ -127,7 +127,7 @@ agent_command = "claude"     # spawned in every new feature shell by default
 agent_shell = "bash"
 agent_hooks = true           # instrument recognised `claude` commands for accurate status
 
-[icons]
+[icons]                      # full key reference under "Layout" below
 preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "ascii" | "none"
 feature_dirty = "󰘬"          # any key overrides the preset; "" draws nothing
 border = "rounded"           # "rounded" | "plain" | "ascii"
@@ -401,6 +401,41 @@ well as colour.
 > is what the default assumes. If your font draws it double-width, add a
 > trailing space to the `feature_dirty` value — config values are used
 > verbatim and the column pads around them.
+
+#### Every `[icons]` key
+
+`preset` picks the base set; any key below overrides it individually.
+
+| Key | `nerdfont` | `unicode` | `ascii` | `none` | Draws |
+|---|---|---|---|---|---|
+| `project` | `▣` | `▣` | `*` | — | project holding features |
+| `project_empty` | `▢` | `▢` | `o` | — | project with none |
+| `feature` | — | `◇` | `-` | — | clean worktree |
+| `feature_dirty` | `󰘬` | `◆` | `*` | — | uncommitted changes |
+| `shell` | `●` | `●` | — | — | before the shell number |
+| `expand_open` | `▾` | `▾` | `v` | `▾` | expanded feature |
+| `expand_closed` | `▸` | `▸` | `>` | `▸` | collapsed feature |
+| `cursor` | `›` | `›` | `>` | `›` | selection, tree and modals |
+| `guide_branch` | `├─` | `├─` | `\|-` | `├─` | guide, non-last child |
+| `guide_last` | `└─` | `└─` | `` `- `` | `└─` | guide, last child |
+| `guide_vertical` | `│` | `│` | `\|` | `│` | guide, continuing parent |
+| `separator` | ` · ` | ` · ` | ` - ` | ` · ` | between bar/help entries |
+| `warn` | `⚠` | `⚠` | `!` | `⚠` | startup diagnostics |
+| `ellipsis` | `…` | `…` | `...` | `…` | truncation marker |
+| `enter` | `↵` | `↵` | `Enter` | `↵` | the Enter key, in the bar |
+| `border` | `rounded` | `rounded` | `ascii` | `rounded` | panel and popup frames |
+
+An empty string draws nothing. Four pairs share a rendered column and are
+padded to equal width — `project`/`project_empty`, `feature`/`feature_dirty`,
+`expand_open`/`expand_closed`, `guide_branch`/`guide_last` — so names stay
+aligned when one side is empty. The rest are used verbatim: add your own
+trailing space if you want a gap after one (the default `shell = "● "` has
+one baked in).
+
+`preset = "ascii"` renders a frame a non-UTF-8 terminal can draw, and
+`border = "ascii"` additionally rewrites box-drawing to `+ - |` after
+render — across the whole rect, so under that setting literal box-drawing
+in a captured agent pane is rewritten too.
 
 Rows carry no counts — the tree is expanded by default, so the children
 *are* the count, and the project icon says whether a folded project holds
