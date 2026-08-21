@@ -575,20 +575,19 @@ impl Tmux {
         let win = dash_window_id.trim_start_matches('@');
         let keys = self.run_raw(&["list-keys", "-T", "root"])?;
         for line in keys.lines() {
-            // A legacy root binding looks like:
-            //   bind-key -T root C-o switch-client -t main \; select-window -t @0
-            if !line.starts_with("bind-key -T root")
-                || !line.contains("switch-client -t ")
+            // A legacy root binding carries the dashboard's own switch-client
+            // command:  bind-key -T root C-o switch-client -t main \;
+            // select-window -t @0 — modulo the column padding `list-keys`
+            // adds, which is why the key comes from `root_binding_key`.
+            let Some(key) = root_binding_key(line) else {
+                continue;
+            };
+            if !line.contains("switch-client -t ")
                 || !line.contains(format!("-t {dash_session}").as_str())
                 || !line.contains(&format!("select-window -t @{win}"))
             {
                 continue;
             }
-            // The key is the token right after the table name.
-            let mut parts = line.split_whitespace().skip_while(|p| *p != "root").skip(1);
-            let Some(key) = parts.next() else {
-                continue;
-            };
             log::info!(
                 "removing legacy root back-key binding for {key} (prefix-table binding replaces it)"
             );
@@ -596,6 +595,28 @@ impl Tmux {
         }
         Ok(())
     }
+}
+
+/// The key of a `bind-key … -T root <key> <command>` line from
+/// `tmux list-keys -T root`, or `None` for anything else.
+///
+/// This cannot be a literal-prefix match. tmux right-pads `list-keys`
+/// output into columns, and the widths depend on which other bindings the
+/// table holds — one `-r` binding widens the flags column for every row —
+/// so the same binding prints as `bind-key  -T root C-o    <cmd>` in one
+/// table and `bind-key    -T root C-o <cmd>` in another. Tokenising is the
+/// only stable read.
+fn root_binding_key(line: &str) -> Option<&str> {
+    let mut tok = line.split_whitespace();
+    if tok.next()? != "bind-key" {
+        return None;
+    }
+    // Skip the flags column (`-r`, `-n`, …) up to the table selector.
+    let mut tok = tok.skip_while(|t| *t != "-T").skip(1);
+    if tok.next()? != "root" {
+        return None;
+    }
+    tok.next()
 }
 
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
@@ -1107,6 +1128,44 @@ mod tests {
             );
             let _ = sock;
         });
+    }
+
+    /// Real `list-keys -T root` output: tmux pads the flags column to one
+    /// space and the key column out to the widest key in the table.
+    #[test]
+    fn root_binding_key_is_read_through_the_padded_columns() {
+        let line = "bind-key  -T root C-o                       \
+switch-client -t main \\; select-window -t @0";
+        assert_eq!(root_binding_key(line), Some("C-o"));
+    }
+
+    /// One repeatable binding anywhere in the table widens the flags
+    /// column for every row, including the rows that carry no flags.
+    #[test]
+    fn root_binding_key_survives_a_widened_flags_column() {
+        assert_eq!(
+            root_binding_key("bind-key    -T root C-o    switch-client -t main"),
+            Some("C-o")
+        );
+        assert_eq!(
+            root_binding_key("bind-key -r -T root C-p    next-window"),
+            Some("C-p")
+        );
+    }
+
+    #[test]
+    fn root_binding_key_ignores_other_tables_and_junk() {
+        assert_eq!(
+            root_binding_key("bind-key  -T prefix C-o    switch-client -t main"),
+            None
+        );
+        assert_eq!(
+            root_binding_key("bind-key  -T copy-mode C-o  send-keys -X page-up"),
+            None
+        );
+        assert_eq!(root_binding_key("bind-key  -T root"), None);
+        assert_eq!(root_binding_key("garbage"), None);
+        assert_eq!(root_binding_key(""), None);
     }
 }
 
