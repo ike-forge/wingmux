@@ -1,12 +1,12 @@
 # Agent instructions — LazyWingman
 
 Tmux-native control centre for supervising coding agents (Claude Code,
-Codex, Mistral Vibe, …) across multiple projects and features in parallel.
-Runs inside tmux as a normal pane of the user's existing session.
+Codex, Mistral Vibe, …) across multiple repositories and worktrees in
+parallel. Runs inside tmux as a normal pane of the user's existing session.
 
 ## Read these first
 
-- `README.md` — what the app is; the core model (project → feature →
+- `README.md` — what the app is; the core model (repository → worktree →
   shell) and the UI model
 - `docs/architecture.md` — how the app is built and why: the design
   decisions per subsystem, with the reason each one was made
@@ -28,7 +28,9 @@ global TUI rules on purpose, say so here with the reason.
 - **No root in this environment**: install into `$HOME/.local` (deb
   extraction), never `apt-get install`.
 - tmux needs `LD_LIBRARY_PATH=$HOME/.local/tmux-prefix/usr/lib/x86_64-linux-gnu`
-  (tmux 3.5a installed non-root).
+  (installed non-root; currently tmux 3.7b — `list-keys` output is
+  column-aligned and its padding differs from 3.5, so never parse it by
+  fixed-width prefix).
 - **Do not re-run `hermes verify --save`**: `.hermes/environment.json` has
   `start: null` on purpose (a TUI with no HTTP endpoint), and detection
   regenerates `start: cargo run`, whose readiness poll then fails.

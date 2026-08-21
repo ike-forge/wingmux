@@ -122,19 +122,19 @@ fn shell_status(app: &App, sh: &crate::state::Shell) -> Status {
         .unwrap_or(Status::Idle)
 }
 
-/// A feature is dead once every shell under it is — a feature with no
+/// A worktree is dead once every shell under it is — a worktree with no
 /// shells at all is not dead, it was simply never started.
-fn feature_dead(app: &App, feat: &crate::state::Feature) -> bool {
-    !feat.shells.is_empty()
-        && feat
+fn worktree_dead(app: &App, wt: &crate::state::Worktree) -> bool {
+    !wt.shells.is_empty()
+        && wt
             .shells
             .iter()
             .all(|sh| shell_status(app, sh) == Status::Dead)
 }
 
-/// A project is dead once every feature under it is.
-fn project_dead(app: &App, proj: &crate::state::Project) -> bool {
-    !proj.features.is_empty() && proj.features.iter().all(|f| feature_dead(app, f))
+/// A repository is dead once every worktree under it is.
+fn repository_dead(app: &App, repo: &crate::state::Repository) -> bool {
+    !repo.worktrees.is_empty() && repo.worktrees.iter().all(|f| worktree_dead(app, f))
 }
 
 /// The colour a tree row draws in: a dead entry is muted *whole* — guide,
@@ -144,17 +144,17 @@ fn row_color(theme: &ResolvedColors, dead: bool, live: Color) -> Color {
     if dead { theme.status_dead } else { live }
 }
 
-/// The colour a feature row draws in. A worktree wingman has no tmux
+/// The colour a worktree row draws in. A worktree LazyWingman has no tmux
 /// window for gets muted whole: it cannot be attached to, sent to or
 /// previewed, so the row is a listing and nothing more. `live` is the
 /// colour the span would otherwise take.
-fn feature_color(
+fn worktree_color(
     theme: &ResolvedColors,
-    feat: &crate::state::Feature,
+    wt: &crate::state::Worktree,
     dead: bool,
     live: Color,
 ) -> Color {
-    if feat.shells.is_empty() {
+    if wt.shells.is_empty() {
         theme.dim
     } else {
         row_color(theme, dead, live)
@@ -416,27 +416,27 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let mut sel_row: Option<usize> = None;
     let mut row: usize = 0;
 
-    // Scope-filtered: only projects inside the current path get rows.
-    let vis = app.visible_projects();
-    for pi in vis {
-        let proj = &app.state.projects[pi];
+    // Scope-filtered: only repositories inside the current path get rows.
+    let vis = app.visible_repositories();
+    for ri in vis {
+        let repo = &app.state.repositories[ri];
         if !app.flatten {
-            let expanded = app.proj_expanded.get(pi).copied().unwrap_or(false);
-            let icon = if proj.features.is_empty() {
-                &ic.project_empty
+            let expanded = app.repo_expanded.get(ri).copied().unwrap_or(false);
+            let icon = if repo.worktrees.is_empty() {
+                &ic.repository_empty
             } else {
-                &ic.project
+                &ic.repository
             };
-            let pdead = project_dead(app, proj);
+            let pdead = repository_dead(app, repo);
             let mut spans = vec![Span::styled(
-                format!("{icon}{}", proj.name),
-                fg(row_color(theme, pdead, theme.tree_project)).add_modifier(Modifier::BOLD),
+                format!("{icon}{}", repo.name),
+                fg(row_color(theme, pdead, theme.tree_repository)).add_modifier(Modifier::BOLD),
             )];
-            if proj.missing {
+            if repo.missing {
                 spans.push(Span::styled(" (missing)", fg(theme.dim)));
             }
             items.push(ListItem::new(Line::from(spans)));
-            if app.sel == Sel::Project(pi) {
+            if app.sel == Sel::Repository(ri) {
                 sel_row = Some(row);
             }
             row += 1;
@@ -444,38 +444,38 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 continue;
             }
         }
-        let n_feat = proj.features.len();
-        for (fi, feat) in proj.features.iter().enumerate() {
+        let n_feat = repo.worktrees.len();
+        for (wi, wt) in repo.worktrees.iter().enumerate() {
             let fexp = app
-                .feat_expanded
-                .get(pi)
-                .and_then(|v| v.get(fi))
+                .wt_expanded
+                .get(ri)
+                .and_then(|v| v.get(wi))
                 .copied()
                 .unwrap_or(false);
-            // One worktree, one agent: a feature with a single shell is
+            // One worktree, one agent: a worktree with a single shell is
             // folded for good — no marker, no child row, and its own row
             // carries that shell's status.
-            let solo = app.solo_shell(pi, fi);
-            let fdead = feature_dead(app, feat);
+            let solo = app.solo_shell(ri, wi);
+            let fdead = worktree_dead(app, wt);
             let marker = match solo {
                 // a blank of the marker's width keeps the names aligned
                 Some(_) => " ".repeat(UnicodeWidthStr::width(ic.expand_open.as_str())),
                 None if fexp => ic.expand_open.clone(),
                 None => ic.expand_closed.clone(),
             };
-            let n = feat.shells.len();
-            let dirty = app.feature_dirty_cached(pi, fi);
+            let n = wt.shells.len();
+            let dirty = app.worktree_dirty_cached(ri, wi);
             let ficon = if dirty {
-                &ic.feature_dirty
+                &ic.worktree_dirty
             } else {
-                &ic.feature
+                &ic.worktree
             };
-            // In flatten mode the features are the top level (no guide);
-            // otherwise they hang off the project with a tree branch.
+            // In flatten mode the worktrees are the top level (no guide);
+            // otherwise they hang off the repository with a tree branch.
             let (prefix, icon_span) = if app.flatten {
-                (marker.clone(), ficon.to_string())
+                (marker, ficon.to_string())
             } else {
-                let guide = if fi + 1 == n_feat {
+                let guide = if wi + 1 == n_feat {
                     &last_child
                 } else {
                     &child
@@ -485,47 +485,47 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(
                     prefix,
-                    fg(feature_color(theme, feat, fdead, theme.tree_feature)),
+                    fg(worktree_color(theme, wt, fdead, theme.tree_worktree)),
                 ),
                 Span::styled(
                     icon_span,
-                    fg(feature_color(
+                    fg(worktree_color(
                         theme,
-                        feat,
+                        wt,
                         fdead,
                         if dirty {
                             theme.status_waiting
                         } else {
-                            theme.tree_feature
+                            theme.tree_worktree
                         },
                     )),
                 ),
                 Span::styled(
-                    feat.name.clone(),
-                    fg(feature_color(theme, feat, fdead, theme.tree_feature)),
+                    wt.name.clone(),
+                    fg(worktree_color(theme, wt, fdead, theme.tree_worktree)),
                 ),
                 match solo {
                     Some(si) => {
-                        let st = shell_status(app, &feat.shells[si]);
+                        let st = shell_status(app, &wt.shells[si]);
                         Span::styled(format!("  {}", st.label()), fg(status_color(theme, st)))
                     }
-                    // A multi-shell feature says nothing extra: its shells
+                    // A multi-shell worktree says nothing extra: its shells
                     // are one row below, each with its own status.
                     None => Span::raw(""),
                 },
             ])));
-            if app.sel == Sel::Feature(pi, fi) {
+            if app.sel == Sel::Worktree(ri, wi) {
                 sel_row = Some(row);
             }
             row += 1;
-            // A solo feature emits no child row whatever its flag says —
+            // A solo worktree emits no child row whatever its flag says —
             // `App::visible_nodes` skips it the same way, and the two must
             // never drift (the cursor and mouse hit-testing map rows to
             // nodes by index).
             if !fexp || solo.is_some() {
                 continue;
             }
-            for (si, sh) in feat.shells.iter().enumerate() {
+            for (si, sh) in wt.shells.iter().enumerate() {
                 let st = shell_status(app, sh);
                 let guide = if app.flatten {
                     if si + 1 == n {
@@ -533,7 +533,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     } else {
                         &grandchild
                     }
-                } else if fi + 1 == n_feat {
+                } else if wi + 1 == n_feat {
                     if si + 1 == n {
                         &no_last_grandchild
                     } else {
@@ -552,7 +552,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     Span::raw(" "),
                     Span::styled(st.label(), fg(status_color(theme, st))),
                 ])));
-                if app.sel == Sel::Shell(pi, fi, si) {
+                if app.sel == Sel::Shell(ri, wi, si) {
                     sel_row = Some(row);
                 }
                 row += 1;
@@ -560,19 +560,19 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    // Flatten mode lists a single repo's features, so the title names
+    // Flatten mode lists a single repo's worktrees, so the title names
     // what the rows actually are. The count follows the tree: only
-    // in-scope projects have rows, so out-of-scope ones must not be
+    // in-scope repositories have rows, so out-of-scope ones must not be
     // counted.
-    let vis = app.visible_projects();
+    let vis = app.visible_repositories();
     let title = if app.flatten {
         let n = vis
             .first()
-            .map(|&pi| app.state.projects[pi].features.len())
+            .map(|&ri| app.state.repositories[ri].worktrees.len())
             .unwrap_or(0);
-        format!("Features ({n})")
+        format!("Worktrees ({n})")
     } else {
-        format!("Projects ({})", vis.len())
+        format!("Repositories ({})", vis.len())
     };
     let block = panel_block(theme, &app.cfg.icons, &title, true);
     let list = List::new(items)
@@ -609,15 +609,15 @@ fn preview_tail(capture: &str, inner_height: usize) -> String {
     lines[start..].join("\n")
 }
 
-/// Is a feature row selected whose worktree has no shell at all?
-fn selected_feature_has_no_shell(app: &App) -> bool {
-    let Sel::Feature(pi, fi) = app.sel else {
+/// Is a worktree row selected whose worktree has no shell at all?
+fn selected_worktree_has_no_shell(app: &App) -> bool {
+    let Sel::Worktree(ri, wi) = app.sel else {
         return false;
     };
     app.state
-        .projects
-        .get(pi)
-        .and_then(|p| p.features.get(fi))
+        .repositories
+        .get(ri)
+        .and_then(|p| p.worktrees.get(wi))
         .is_some_and(|f| f.shells.is_empty())
 }
 
@@ -645,7 +645,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         // A worktree with no shell: there is no pane to capture, and the
         // generic hint below would send the user hunting for a child row
         // that does not exist.
-        None if selected_feature_has_no_shell(app) => Text::from(
+        None if selected_worktree_has_no_shell(app) => Text::from(
             "no agent shell for this worktree\n\n\
              wingman has no tmux window here, so there is nothing to\n\
              preview, attach to or send to.\n\n\
@@ -674,26 +674,26 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
 pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
     use BarAction::*;
     match app.sel {
-        Sel::Project(_) => vec![("n feature".into(), NewFeature), ("? help".into(), Help)],
-        // A folded feature row is its shell: it offers the shell actions
-        // on top of the feature ones (`a` gives it a second shell, which
+        Sel::Repository(_) => vec![("n worktree".into(), NewWorktree), ("? help".into(), Help)],
+        // A folded worktree row is its shell: it offers the shell actions
+        // on top of the worktree ones (`a` gives it a second shell, which
         // unfolds the subtree).
-        Sel::Feature(pi, fi) if app.solo_shell(pi, fi).is_some() => vec![
-            ("↵ attach".into(), Attach),
+        Sel::Worktree(ri, wi) if app.solo_shell(ri, wi).is_some() => vec![
+            ((format!("{} attach", app.cfg.icons.enter)), Attach),
             ("s send".into(), QuickSend),
             ("p predefined".into(), PredefinedSend),
             ("a shell".into(), AddShell),
-            ("d delete".into(), DeleteFeature),
+            ("d delete".into(), DeleteWorktree),
             ("? help".into(), Help),
         ],
-        Sel::Feature(..) => vec![
-            ("n feature".into(), NewFeature),
+        Sel::Worktree(..) => vec![
+            ("n worktree".into(), NewWorktree),
             ("a shell".into(), AddShell),
-            ("d delete".into(), DeleteFeature),
+            ("d delete".into(), DeleteWorktree),
             ("? help".into(), Help),
         ],
         Sel::Shell(..) => vec![
-            ("↵ attach".into(), Attach),
+            ((format!("{} attach", app.cfg.icons.enter)), Attach),
             ("s send".into(), QuickSend),
             ("p predefined".into(), PredefinedSend),
             ("d close".into(), DeleteShell),
@@ -703,7 +703,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
 }
 
 /// The statusbar: the contextual shortcuts, and nothing else. No app
-/// name, no session, no project count, no sticky message — anything that
+/// name, no session, no repository count, no sticky message — anything that
 /// is not actionable is noise on a row the user reads constantly.
 /// Notices live in [`draw_toast`] and fade by themselves.
 fn draw_statusbar(f: &mut Frame, area: Rect, app: &mut App) {
@@ -806,8 +806,8 @@ fn centered_rect(area: Rect, w_pct: u16, h_pct: u16) -> Rect {
 fn draw_help(f: &mut Frame, app: &App) -> Rect {
     let theme = &app.theme.colors;
     // Grouped by context (discoverability rule): the overlay is the app's
-    // palette, so every action appears grouped — navigate / projects /
-    // features / shells / global — with the same words as the statusbar.
+    // palette, so every action appears grouped — navigate / repositories /
+    // worktrees / shells / global — with the same words as the statusbar.
     // The popup sizes itself to the content (bounded by the frame); long
     // content scrolls (j/k, arrows, PgUp/PgDn, ctrl-u/d, Home/End) and the
     // title advertises it.
@@ -866,22 +866,22 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
         ],
     ),
     (
-        "projects",
-        &[(&["n"], &["new feature", "worktree + agent shell"])],
+        "repositories",
+        &[(&["n"], &["new worktree", "worktree + agent shell"])],
     ),
     (
-        "features",
+        "worktrees",
         &[
-            (&["n"], &["new feature"]),
+            (&["n"], &["new worktree"]),
             (&["a"], &["add shell", "prompts for the command"]),
-            (&["Enter"], &["attach", "one-shell feature"]),
+            (&["Enter"], &["attach", "one-shell worktree"]),
             (
                 &["s", "p"],
-                &["quick-send / predefined", "one-shell feature"],
+                &["quick-send / predefined", "one-shell worktree"],
             ),
             (
                 &["d"],
-                &["delete feature", "kills windows", "removes worktree"],
+                &["delete worktree", "kills windows", "removes worktree"],
             ),
         ],
     ),
@@ -893,7 +893,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             (&["p"], &["predefined message", "Enter sends", "1-9 pick"]),
             (
                 &["d"],
-                &["close shell", "kills the window", "feature stays"],
+                &["close shell", "kills the window", "worktree stays"],
             ),
         ],
     ),
@@ -950,14 +950,14 @@ fn help_lines(app: &App) -> Vec<Line<'_>> {
         )));
         lines.push(Line::from(Span::styled(
             format!(
-                "back chord is <prefix>+'{}' (config tmux.back_key) — jump back to this window",
+                "back chord is <prefix>+'{}' (config tmux.back_key): jump back to this window",
                 app.cfg.tmux.back_key
             ),
             fg(theme.dim),
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "attach: press Enter — the terminal is handed over to tmux attach",
+            "attach: press Enter and the terminal is handed over to tmux attach",
             fg(theme.dim),
         )));
         lines.push(Line::from(Span::styled(
@@ -1079,12 +1079,12 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
     let mut lines: Vec<Line> = Vec::new();
     for (i, name) in names.iter().take(rows).enumerate() {
         let selected = i == index;
-        let marker = &app.cfg.icons.expand_closed;
+        let marker = &app.cfg.icons.cursor;
         let label = if selected {
-            format!(" {marker}{name} ")
+            format!(" {marker} {name} ")
         } else {
             format!(
-                " {}{name} ",
+                " {} {name} ",
                 " ".repeat(UnicodeWidthStr::width(marker.as_str()))
             )
         };
@@ -1150,7 +1150,7 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
     let mut lines: Vec<Line> = Vec::new();
     for (i, entry) in entries.iter().take(rows).enumerate() {
         let selected = i == index;
-        let marker = &app.cfg.icons.expand_closed;
+        let marker = &app.cfg.icons.cursor;
         // The number is the key that sends the entry (up to 9 of them).
         let num = if i < 9 {
             format!("{} ", i + 1)
@@ -1158,10 +1158,10 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
             "  ".into()
         };
         let row = if selected {
-            format!(" {marker}{num}{entry} ")
+            format!(" {marker} {num}{entry} ")
         } else {
             format!(
-                " {}{num}{entry} ",
+                " {} {num}{entry} ",
                 " ".repeat(UnicodeWidthStr::width(marker.as_str()))
             )
         };
@@ -1195,7 +1195,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
     let theme = &app.theme.colors;
     let (title, label) = match &app.mode {
         Mode::Input { kind, .. } => match kind {
-            InputKind::NewFeature => ("New Feature", "feature name: "),
+            InputKind::NewWorktree => ("New Worktree", "worktree name: "),
             InputKind::AddShell => ("Add Shell", "command: "),
             InputKind::QuickSend => ("Quick Send", "send to agent: "),
         },
@@ -1210,7 +1210,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
         Span::styled(label, fg(theme.accent)),
         Span::raw(text.clone()),
     ]));
-    // add-shell only: an empty submit runs the project's default command,
+    // add-shell only: an empty submit runs the repository's default command,
     // so name it right under the field instead of making it folklore.
     if *kind == InputKind::AddShell
         && let Some(def) = app.add_shell_default()
@@ -1220,11 +1220,11 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
             fg(theme.dim),
         )));
     }
-    // new-feature only: the worktree is cut from the project's base
+    // new-worktree only: the worktree is cut from the repository's base
     // branch, NOT from whatever the repo has checked out. Name the branch
     // so nobody has to guess which one it is.
-    if *kind == InputKind::NewFeature
-        && let Some(hint) = app.new_feature_base()
+    if *kind == InputKind::NewWorktree
+        && let Some(hint) = app.new_worktree_base()
     {
         lines.push(Line::from(Span::styled(
             format!("branches from: {} (base branch)", hint.branch),
@@ -1232,7 +1232,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
         )));
         if let Some(configured) = &hint.missing {
             lines.push(Line::from(Span::styled(
-                format!("base branch '{configured}' not found — using current branch"),
+                format!("base branch '{configured}' not found; using current branch"),
                 fg(theme.status_waiting),
             )));
         }
@@ -1419,17 +1419,17 @@ mod tests {
             Mode::Normal,
             Mode::Help,
             Mode::Input {
-                kind: InputKind::NewFeature,
-                text: "some-feature".into(),
+                kind: InputKind::NewWorktree,
+                text: "some-worktree".into(),
             },
             Mode::Confirm {
                 confirm: Confirm {
-                    title: "delete feature".into(),
+                    title: "delete worktree".into(),
                     body: "delete 'x'?\nworktree is dirty — force will discard".into(),
                     force_label: Some("force".into()),
-                    action: ConfirmAction::DeleteFeature {
-                        project: 0,
-                        feature: 0,
+                    action: ConfirmAction::DeleteWorktree {
+                        repository: 0,
+                        worktree: 0,
                     },
                 },
             },
@@ -1445,16 +1445,16 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
     }
 
-    /// A missing project renders with a dimmed "(missing)" marker in the
+    /// A missing repository renders with a dimmed "(missing)" marker in the
     /// tree — visibility without pretending the repo is there.
     #[test]
-    fn missing_project_renders_dimmed_marker() {
+    fn missing_repository_renders_dimmed_marker() {
         let cfg = Config::default();
         let theme = theme::load("ansi", false).unwrap();
         let mut app = App::new(cfg, theme, None);
         // No `startup()` — see `seeded_app`: it would load and rewrite the
         // real `state.json`.
-        app.state.projects.push(crate::state::Project {
+        app.state.repositories.push(crate::state::Repository {
             name: "gone".into(),
             path: std::path::PathBuf::from("/gone"),
             base_branch: "main".into(),
@@ -1462,7 +1462,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: true,
-            features: vec![],
+            worktrees: vec![],
         });
         app.build_tree_flags();
         app.clamp_sel();
@@ -1484,19 +1484,19 @@ mod tests {
     /// The input popup's block cursor must sit on the input text row, right
     /// after the typed text. Regression: it used to be drawn one row low
     /// (area.y + 3 instead of area.y + 2), making the caret appear below
-    /// the text in every input popup (new feature, quick-send, import).
+    /// the text in every input popup (new worktree, quick-send, import).
     #[test]
     fn input_popup_cursor_sits_on_input_row() {
-        // seeded: the add-shell hint needs a project to name, and it adds
+        // seeded: the add-shell hint needs a repository to name, and it adds
         // a content line, which moves the (content-sized) popup.
         let mut app = seeded_app();
-        app.sel = crate::app::Sel::Project(0);
+        app.sel = crate::app::Sel::Repository(0);
 
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
         for (kind, label, text, lines) in [
-            (InputKind::NewFeature, "feature name: ", "foo", 4),
+            (InputKind::NewWorktree, "worktree name: ", "foo", 4),
             // + the `default: <cmd>` hint line
             (InputKind::AddShell, "command: ", "ls -la", 5),
             (InputKind::QuickSend, "send to agent: ", "busy 2", 4),
@@ -1636,11 +1636,11 @@ mod tests {
         assert!(filled > 1, "the long line wrapped over {filled} rows");
     }
 
-    /// The New Feature popup spells out where the branch comes from: the
-    /// project's base branch, not the branch the repo has checked out. The
+    /// The New Worktree popup spells out where the branch comes from: the
+    /// repository's base branch, not the branch the repo has checked out. The
     /// hint is the one place a user can see it before hitting Enter.
     #[test]
-    fn new_feature_popup_states_the_base_branch() {
+    fn new_worktree_popup_states_the_base_branch() {
         crate::util::testutil::with_test_lock(|| {
             let root = tempfile::TempDir::new().unwrap();
             let repo = root.path().join("repo");
@@ -1664,7 +1664,7 @@ mod tests {
             git(&["checkout", "-b", "checked-out"]);
 
             let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
-            app.state.projects.push(crate::state::Project {
+            app.state.repositories.push(crate::state::Repository {
                 name: "repo".into(),
                 path: repo.clone(),
                 base_branch: "main".into(),
@@ -1672,12 +1672,12 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
-                features: vec![],
+                worktrees: vec![],
             });
             app.build_tree_flags();
             app.clamp_sel();
-            app.sel = crate::app::Sel::Project(0);
-            app.open_new_feature();
+            app.sel = crate::app::Sel::Repository(0);
+            app.open_new_worktree();
 
             let backend = ratatui::backend::TestBackend::new(120, 40);
             let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -1689,13 +1689,13 @@ mod tests {
             );
             assert!(
                 !text.contains("checked-out"),
-                "the checked-out branch is not what a feature branches from: {text:?}"
+                "the checked-out branch is not what a worktree branches from: {text:?}"
             );
 
             // configured base missing from the repo: creation falls back to the
             // checkout, and the popup warns instead of naming a phantom base.
-            app.state.projects[0].base_branch = "master".into();
-            app.open_new_feature();
+            app.state.repositories[0].base_branch = "master".into();
+            app.open_new_worktree();
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             let text = buffer_text(&terminal);
             assert!(
@@ -1711,11 +1711,11 @@ mod tests {
         let cfg = Config::default();
         let theme = theme::load("ansi", false).unwrap();
         // No `startup()`: it loads AND rewrites the real `state.json`, so
-        // the fixture would inherit the developer's projects (dozens of
+        // the fixture would inherit the developer's repositories (dozens of
         // them, past the unfold cap these render tests rely on) and race
         // with every other test doing the same.
         let mut app = App::new(cfg, theme, None);
-        app.state.projects.push(crate::state::Project {
+        app.state.repositories.push(crate::state::Repository {
             name: "repo-a".into(),
             path: std::path::PathBuf::from("/tmp/repo-a"),
             base_branch: "main".into(),
@@ -1723,12 +1723,12 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features: vec![],
+            worktrees: vec![],
         });
-        // A second project keeps the fixture out of flatten mode (a lone
-        // project's features would become the top level, hiding the rows
+        // A second repository keeps the fixture out of flatten mode (a lone
+        // repository's worktrees would become the top level, hiding the rows
         // these render tests assert on).
-        app.state.projects.push(crate::state::Project {
+        app.state.repositories.push(crate::state::Repository {
             name: "repo-b".into(),
             path: std::path::PathBuf::from("/tmp/repo-b"),
             base_branch: "main".into(),
@@ -1736,33 +1736,35 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features: vec![],
+            worktrees: vec![],
         });
         app.build_tree_flags();
         app.clamp_sel();
         app
     }
 
-    /// `seeded_app` with a feature and its single shell selected — the
+    /// `seeded_app` with a worktree and its single shell selected — the
     /// state the `p` modal is actually opened from. `trunk` rather than
     /// `main` so a resolved token cannot be confused with a literal.
     fn seeded_app_with_shell() -> App {
         let mut app = seeded_app();
-        app.state.projects[0].base_branch = "trunk".into();
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "feat".into(),
-            branch: "feat".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/repo-a-wt"),
-            created_at: String::new(),
-            shells: vec![crate::state::Shell {
-                index: 0,
-                window_name: "lw:feat/0".into(),
-                window_id: Some("@1".into()),
-                pane_id: Some("%1".into()),
-            }],
-        });
+        app.state.repositories[0].base_branch = "trunk".into();
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "wt".into(),
+                branch: "wt".into(),
+                path: std::path::PathBuf::from("/tmp/repo-a-wt"),
+                created_at: String::new(),
+                shells: vec![crate::state::Shell {
+                    index: 0,
+                    window_name: "lw:wt/0".into(),
+                    window_id: Some("@1".into()),
+                    pane_id: Some("%1".into()),
+                }],
+            });
         app.build_tree_flags();
-        app.sel = crate::app::Sel::Feature(0, 0);
+        app.sel = crate::app::Sel::Worktree(0, 0);
         app.clamp_sel();
         app
     }
@@ -1790,7 +1792,7 @@ mod tests {
         let wide = at(120, 40);
         assert!(wide.contains("Preview"), "the wide tier is tree + preview");
         assert!(
-            wide.contains("Projects"),
+            wide.contains("Repositories"),
             "the wide tier still shows the tree"
         );
 
@@ -1802,7 +1804,7 @@ mod tests {
 
         let tree_only = at(30, 8);
         assert!(
-            tree_only.contains("Projects"),
+            tree_only.contains("Repositories"),
             "tree-only tier still shows the tree"
         );
         assert!(!tree_only.contains("Preview"), "the preview hides first");
@@ -1817,9 +1819,9 @@ mod tests {
     /// A fixture with no disk state: `seeded_app` runs `startup()`, which
     /// loads (and rewrites) the real `state.json`, so any assertion on
     /// exact counts or on flatten mode must build its own app.
-    fn bare_app(features: Vec<crate::state::Feature>) -> App {
+    fn bare_app(worktrees: Vec<crate::state::Worktree>) -> App {
         let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
-        app.state.projects.push(crate::state::Project {
+        app.state.repositories.push(crate::state::Repository {
             name: "repo-a".into(),
             path: std::path::PathBuf::from("/tmp/repo-a"),
             base_branch: "main".into(),
@@ -1827,7 +1829,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features,
+            worktrees,
         });
         app.build_tree_flags();
         app.clamp_sel();
@@ -1849,7 +1851,7 @@ mod tests {
         let mut app = bare_app(vec![]);
         let base = render_wide(&mut app);
         assert!(
-            base.contains("Projects (1)"),
+            base.contains("Repositories (1)"),
             "tree keeps its count: {base:?}"
         );
         assert!(base.contains("Preview"), "preview panel: {base:?}");
@@ -1869,10 +1871,10 @@ mod tests {
             (Mode::Messages { index: 0 }, "Messages"),
             (
                 Mode::Input {
-                    kind: InputKind::NewFeature,
+                    kind: InputKind::NewWorktree,
                     text: String::new(),
                 },
-                "New Feature",
+                "New Worktree",
             ),
             (
                 Mode::Input {
@@ -1888,31 +1890,34 @@ mod tests {
         }
     }
 
-    /// A single git repo flattens to its features, so the tree names what
-    /// it actually lists: `Features (n)`, not `Projects`.
+    /// A single git repo flattens to its worktrees, so the tree names what
+    /// it actually lists: `Worktrees (n)`, not `Repositories`.
     #[test]
-    fn tree_title_says_features_when_flattened() {
-        let mut app = bare_app(vec![crate::state::Feature {
-            name: "feat".into(),
-            branch: "feat".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/repo-a/feat"),
+    fn tree_title_says_worktrees_when_flattened() {
+        let mut app = bare_app(vec![crate::state::Worktree {
+            name: "wt".into(),
+            branch: "wt".into(),
+            path: std::path::PathBuf::from("/tmp/repo-a/wt"),
             created_at: String::new(),
             shells: vec![],
         }]);
-        assert!(app.flatten, "one project with features flattens");
+        assert!(app.flatten, "one repository with worktrees flattens");
         let text = render_wide(&mut app);
         assert!(
-            text.contains("Features (1)"),
+            text.contains("Worktrees (1)"),
             "flattened tree title: {text:?}"
         );
-        assert!(!text.contains("Projects"), "no project wording: {text:?}");
+        assert!(
+            !text.contains("Repositories"),
+            "no repository wording: {text:?}"
+        );
     }
 
-    fn feature_with_shells(name: &str, n: usize) -> crate::state::Feature {
-        crate::state::Feature {
+    fn worktree_with_shells(name: &str, n: usize) -> crate::state::Worktree {
+        crate::state::Worktree {
             name: name.into(),
             branch: name.into(),
-            worktree_path: std::path::PathBuf::from(format!("/tmp/repo-a/{name}")),
+            path: std::path::PathBuf::from(format!("/tmp/repo-a/{name}")),
             created_at: String::new(),
             shells: (0..n)
                 .map(|index| crate::state::Shell {
@@ -1939,15 +1944,15 @@ mod tests {
         panic!("{needle:?} is not on screen");
     }
 
-    /// A worktree wingman has no tmux window for cannot be attached, sent
-    /// to or previewed. Its row mutes *whole* — the same "the eye skips
-    /// it" rule a dead row follows — while a worktree with shells keeps
-    /// the live colour.
+    /// A worktree LazyWingman has no tmux window for cannot be attached,
+    /// sent to or previewed. Its row mutes *whole* — the same "the eye
+    /// skips it" rule a dead row follows — while a worktree with shells
+    /// keeps the live colour.
     #[test]
     fn a_worktree_without_a_shell_renders_dim() {
         let mut app = bare_app(vec![
-            feature_with_shells("alpha", 2),
-            feature_with_shells("beta", 0),
+            worktree_with_shells("alpha", 2),
+            worktree_with_shells("beta", 0),
         ]);
         // Park the highlight on a row neither assertion reads: the
         // selected row is repainted in the selection colours.
@@ -1963,7 +1968,7 @@ mod tests {
         );
         assert_eq!(
             row_fg(&terminal, "alpha"),
-            app.theme.colors.tree_feature,
+            app.theme.colors.tree_worktree,
             "a worktree with shells keeps the live colour"
         );
     }
@@ -1973,8 +1978,8 @@ mod tests {
     /// leave the user hunting for a row to select.
     #[test]
     fn a_worktree_without_a_shell_explains_the_empty_preview() {
-        let mut app = bare_app(vec![feature_with_shells("beta", 0)]);
-        app.sel = Sel::Feature(0, 0);
+        let mut app = bare_app(vec![worktree_with_shells("beta", 0)]);
+        app.sel = Sel::Worktree(0, 0);
         let text = render_wide(&mut app);
         assert!(
             text.contains("no agent shell for this worktree"),
@@ -2015,17 +2020,17 @@ mod tests {
             Mode::Normal,
             Mode::Help,
             Mode::Input {
-                kind: InputKind::NewFeature,
-                text: "some-feature".into(),
+                kind: InputKind::NewWorktree,
+                text: "some-worktree".into(),
             },
             Mode::Confirm {
                 confirm: Confirm {
-                    title: "delete feature".into(),
+                    title: "delete worktree".into(),
                     body: "delete 'x'?".into(),
                     force_label: None,
-                    action: ConfirmAction::DeleteFeature {
-                        project: 0,
-                        feature: 0,
+                    action: ConfirmAction::DeleteWorktree {
+                        repository: 0,
+                        worktree: 0,
                     },
                 },
             },
@@ -2052,7 +2057,7 @@ mod tests {
     fn ascii_preset_renders_without_box_glyphs() {
         let mut app = seeded_app();
         app.cfg.icons = crate::config::IconsConfig::preset("ascii");
-        app.state.projects.push(crate::state::Project {
+        app.state.repositories.push(crate::state::Repository {
             name: "repo-b".into(),
             path: std::path::PathBuf::from("/tmp/repo-b"),
             base_branch: "main".into(),
@@ -2060,10 +2065,10 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features: vec![],
+            worktrees: vec![],
         });
-        // The project row lost its expand marker in this task; give the
-        // first project a multi-shell, expanded feature so a feature-row
+        // The repository row lost its expand marker in this task; give the
+        // first repository a multi-shell, expanded worktree so a worktree-row
         // marker (`expand_open` = "v" in the ascii preset) still renders.
         let shell = |i: usize| crate::state::Shell {
             index: i,
@@ -2071,21 +2076,31 @@ mod tests {
             window_id: Some(format!("@{}", i + 1)),
             pane_id: Some(format!("%{i}")),
         };
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "many-shells".into(),
-            branch: "many-shells".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-many"),
-            created_at: String::new(),
-            shells: vec![shell(0), shell(1)],
-        });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "many-shells".into(),
+                branch: "many-shells".into(),
+                path: std::path::PathBuf::from("/tmp/wt-many"),
+                created_at: String::new(),
+                shells: vec![shell(0), shell(1)],
+            });
         app.build_tree_flags();
-        app.proj_expanded[0] = true;
-        app.feat_expanded[0][0] = true;
+        app.repo_expanded[0] = true;
+        app.wt_expanded[0][0] = true;
         app.clamp_sel();
+        // Select a shell so the statusbar renders its attach entry: that is
+        // where `↵` used to leak, and with the project row selected the entry
+        // never appears at all.
+        app.sel = crate::app::Sel::Shell(0, 0, 0);
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
+        assert!(
+            text.contains("Enter attach"),
+            "the ascii preset spells the attach key out: {text:?}"
+        );
         for glyph in ["─", "│", "┌", "▾", "▸", "›", "·", "→"] {
             assert!(
                 !text.contains(glyph),
@@ -2095,6 +2110,15 @@ mod tests {
         for glyph in ["+", "-", "|", "v", ">"] {
             assert!(text.contains(glyph), "ascii render must use {glyph:?}");
         }
+        // A denylist only catches the glyphs someone thought to list: `↵` and
+        // `—` slipped past the one above for the whole life of the old
+        // `LW_ASCII` mode. The preset's promise is a frame a non-UTF-8
+        // terminal can draw, so assert the whole thing.
+        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
+        assert!(
+            stray.is_empty(),
+            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
+        );
     }
 
     /// In unicode mode the box-drawing tree markers are present — the
@@ -2102,9 +2126,9 @@ mod tests {
     #[test]
     fn unicode_mode_keeps_box_drawing() {
         let mut app = seeded_app();
-        // The project row no longer carries an expand marker (this task);
-        // give the first project a multi-shell, expanded feature so a
-        // feature-row marker (`expand_open` = "▾" in the default preset)
+        // The repository row no longer carries an expand marker (this task);
+        // give the first repository a multi-shell, expanded worktree so a
+        // worktree-row marker (`expand_open` = "▾" in the default preset)
         // still renders (Ruling F1's fix applied here for the same reason).
         let shell = |i: usize| crate::state::Shell {
             index: i,
@@ -2112,16 +2136,18 @@ mod tests {
             window_id: Some(format!("@{}", i + 1)),
             pane_id: Some(format!("%{i}")),
         };
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "many-shells".into(),
-            branch: "many-shells".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-many"),
-            created_at: String::new(),
-            shells: vec![shell(0), shell(1)],
-        });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "many-shells".into(),
+                branch: "many-shells".into(),
+                path: std::path::PathBuf::from("/tmp/wt-many"),
+                created_at: String::new(),
+                shells: vec![shell(0), shell(1)],
+            });
         app.build_tree_flags();
-        app.proj_expanded[0] = true;
-        app.feat_expanded[0][0] = true;
+        app.repo_expanded[0] = true;
+        app.wt_expanded[0][0] = true;
         app.clamp_sel();
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -2188,7 +2214,7 @@ mod tests {
     fn help_overlay_groups_actions_by_context() {
         let mut app = seeded_app();
         let text = help_text(&mut app, 120, 40);
-        for header in ["navigate", "projects", "features", "shells", "global"] {
+        for header in ["navigate", "repositories", "worktrees", "shells", "global"] {
             assert!(text.contains(header), "group header {header:?} missing");
         }
         // every action is listed (palette = the index of everything)
@@ -2197,9 +2223,9 @@ mod tests {
             "collapse",
             "expand",
             "attach",
-            "new feature",
+            "new worktree",
             "add shell",
-            "delete feature",
+            "delete worktree",
             "close shell",
             "quick-send",
             "refresh",
@@ -2213,12 +2239,12 @@ mod tests {
         );
     }
 
-    /// `I scan` / `i import` are gone from the project row: discovery is a
+    /// `I scan` / `i import` are gone from the repository row: discovery is a
     /// boot-time concern, so the row offers only what still exists.
     #[test]
-    fn the_project_bar_offers_no_scan_or_import() {
+    fn the_repository_bar_offers_no_scan_or_import() {
         let mut app = seeded_app();
-        app.sel = crate::app::Sel::Project(0);
+        app.sel = crate::app::Sel::Repository(0);
         let labels: Vec<String> = crate::ui::bar_entries(&app)
             .into_iter()
             .map(|(l, _)| l)
@@ -2230,8 +2256,8 @@ mod tests {
             "bar: {labels:?}"
         );
         assert!(
-            labels.iter().any(|l| l.contains("feature")),
-            "bar keeps `n feature`: {labels:?}"
+            labels.iter().any(|l| l.contains("worktree")),
+            "bar keeps `n worktree`: {labels:?}"
         );
     }
 
@@ -2240,7 +2266,7 @@ mod tests {
     #[test]
     fn bar_entries_and_help_share_wording() {
         // For every bar label, the action's key word appears in the help
-        // overlay (bar: "n feature" vs help: "new feature", etc.).
+        // overlay (bar: "n worktree" vs help: "new worktree", etc.).
         let mut app = seeded_app();
         let text = help_text(&mut app, 120, 40);
         let app2 = seeded_app();
@@ -2259,12 +2285,12 @@ mod tests {
                     text.contains("predefined message"),
                     "bar 'p predefined' ↔ help row"
                 );
-            } else if word == "feature" {
-                assert!(text.contains("new feature"), "bar 'n feature' ↔ help");
+            } else if word == "worktree" {
+                assert!(text.contains("new worktree"), "bar 'n worktree' ↔ help");
             } else if word == "shell" {
                 assert!(text.contains("add shell"), "bar 'a shell' ↔ help");
             } else if word == "delete" {
-                assert!(text.contains("delete feature"), "bar 'd delete' ↔ help");
+                assert!(text.contains("delete worktree"), "bar 'd delete' ↔ help");
             } else if word == "attach" {
                 assert!(text.contains("attach"), "bar '↵ attach' ↔ help");
             } else if word == "close" {
@@ -2276,12 +2302,12 @@ mod tests {
     }
 
     /// The statusbar carries the shortcuts and nothing else: no app name,
-    /// no session, no project count, no sticky notice. Anything the user
+    /// no session, no repository count, no sticky notice. Anything the user
     /// cannot act on is noise on the row they read constantly.
     #[test]
     fn statusbar_is_shortcuts_only() {
         let mut app = seeded_app();
-        app.notify("feature 'foo' created");
+        app.notify("worktree 'foo' created");
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
@@ -2291,7 +2317,10 @@ mod tests {
             .collect();
 
         assert!(!last.contains("lazywingman"), "no app name: {last:?}");
-        assert!(!last.contains("project(s)"), "no project count: {last:?}");
+        assert!(
+            !last.contains("repositories"),
+            "no repository count: {last:?}"
+        );
         assert!(!last.contains("standalone"), "no session chip: {last:?}");
         assert!(
             !last.contains("created"),
@@ -2307,7 +2336,7 @@ mod tests {
     #[test]
     fn toast_shows_then_expires() {
         let mut app = seeded_app();
-        app.notify("feature 'foo' created");
+        app.notify("worktree 'foo' created");
         let render = |app: &mut App| {
             let backend = ratatui::backend::TestBackend::new(120, 40);
             let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -2315,39 +2344,43 @@ mod tests {
             buffer_text(&terminal)
         };
         assert!(
-            render(&mut app).contains("feature 'foo' created"),
+            render(&mut app).contains("worktree 'foo' created"),
             "a fresh notice is drawn as a toast"
         );
         app.expire_toast_for_test();
         assert!(
-            !render(&mut app).contains("feature 'foo' created"),
+            !render(&mut app).contains("worktree 'foo' created"),
             "the toast is gone once its TTL has passed"
         );
     }
 
-    /// The feature icon carries the worktree state: hollow when clean,
+    /// The worktree icon carries the worktree state: hollow when clean,
     /// filled when there are uncommitted changes.
     #[test]
-    fn dirty_feature_gets_a_filled_icon() {
+    fn dirty_worktree_gets_a_filled_icon() {
         let mut app = seeded_app();
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "clean-one".into(),
-            branch: "clean-one".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-clean"),
-            created_at: String::new(),
-            shells: vec![],
-        });
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "dirty-one".into(),
-            branch: "dirty-one".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-dirty"),
-            created_at: String::new(),
-            shells: vec![],
-        });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "clean-one".into(),
+                branch: "clean-one".into(),
+                path: std::path::PathBuf::from("/tmp/wt-clean"),
+                created_at: String::new(),
+                shells: vec![],
+            });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "dirty-one".into(),
+                branch: "dirty-one".into(),
+                path: std::path::PathBuf::from("/tmp/wt-dirty"),
+                created_at: String::new(),
+                shells: vec![],
+            });
         app.dirty
             .insert(std::path::PathBuf::from("/tmp/wt-dirty"), true);
         app.build_tree_flags();
-        app.proj_expanded[0] = true;
+        app.repo_expanded[0] = true;
 
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -2360,7 +2393,7 @@ mod tests {
         let dirty = rows.iter().find(|r| r.contains("dirty-one")).unwrap();
         assert!(
             dirty.contains(&format!("{} dirty-one", '\u{f062c}')),
-            "dirty feature carries the branch glyph: {dirty:?}"
+            "dirty worktree carries the branch glyph: {dirty:?}"
         );
         // `str::find` returns a byte offset, and the nerd-font glyph is
         // 4 bytes in UTF-8 against 1 for an ASCII space — comparing byte
@@ -2375,29 +2408,31 @@ mod tests {
         );
     }
 
-    /// The project row's type icon is its only marker: `▾`/`▸` were removed
+    /// The repository row's type icon is its only marker: `▾`/`▸` were removed
     /// because the icon already sits there and the children show the state.
     #[test]
-    fn the_project_row_has_no_expand_marker() {
+    fn the_repository_row_has_no_expand_marker() {
         let mut app = seeded_app();
-        // seeded_app's first project starts empty, which would render the
-        // hollow `▢` icon; give it a feature so it renders the filled `▣`
+        // seeded_app's first repository starts empty, which would render the
+        // hollow `▢` icon; give it a worktree so it renders the filled `▣`
         // this test asserts on (Ruling F2 — fixture adapted, assertions
         // kept literal).
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "some-feature".into(),
-            branch: "some-feature".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-some-feature"),
-            created_at: String::new(),
-            shells: vec![],
-        });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "some-worktree".into(),
+                branch: "some-worktree".into(),
+                path: std::path::PathBuf::from("/tmp/wt-some-worktree"),
+                created_at: String::new(),
+                shells: vec![],
+            });
         app.build_tree_flags();
         app.clamp_sel();
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
-        let name = &app.state.projects[0].name.clone();
+        let name = &app.state.repositories[0].name.clone();
         let row: String = (0..buf.area.height)
             .map(|y| {
                 (0..buf.area.width)
@@ -2409,47 +2444,51 @@ mod tests {
         let upto = &row[..row.find(name.as_str()).unwrap()];
         assert!(
             !upto.contains('▾'),
-            "no open marker before the project: {row:?}"
+            "no open marker before the repository: {row:?}"
         );
         assert!(
             !upto.contains('▸'),
-            "no closed marker before the project: {row:?}"
+            "no closed marker before the repository: {row:?}"
         );
         assert!(upto.contains('▣'), "the icon is still there: {row:?}");
     }
 
     /// Row indices are the contract between `draw_tree`, `visible_nodes` and
-    /// mouse hit-testing. Dropping the project marker must not shift them.
+    /// mouse hit-testing. Dropping the repository marker must not shift them.
     #[test]
     fn rendered_tree_rows_match_visible_nodes() {
         let mut app = seeded_app();
-        // A fixture with real depth: a multi-shell feature (renders a
-        // feature row plus one row per shell) and a solo feature (folds
-        // onto a single row, no child row at all). Two projects with zero
-        // features (the pre-fix fixture) would pass this assertion even if
-        // every feature/shell row were miscounted.
+        // A fixture with real depth: a multi-shell worktree (renders a
+        // worktree row plus one row per shell) and a solo worktree (folds
+        // onto a single row, no child row at all). Two repositories with zero
+        // worktrees (the pre-fix fixture) would pass this assertion even if
+        // every worktree/shell row were miscounted.
         let shell = |i: usize| crate::state::Shell {
             index: i,
             window_name: format!("lw:f/{i}"),
             window_id: Some(format!("@{}", i + 1)),
             pane_id: Some(format!("%{i}")),
         };
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "many-shells".into(),
-            branch: "many-shells".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-many"),
-            created_at: String::new(),
-            shells: vec![shell(0), shell(1)],
-        });
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "one-shell".into(),
-            branch: "one-shell".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-one"),
-            created_at: String::new(),
-            shells: vec![shell(2)],
-        });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "many-shells".into(),
+                branch: "many-shells".into(),
+                path: std::path::PathBuf::from("/tmp/wt-many"),
+                created_at: String::new(),
+                shells: vec![shell(0), shell(1)],
+            });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "one-shell".into(),
+                branch: "one-shell".into(),
+                path: std::path::PathBuf::from("/tmp/wt-one"),
+                created_at: String::new(),
+                shells: vec![shell(2)],
+            });
         app.build_tree_flags();
-        app.proj_expanded[0] = true;
+        app.repo_expanded[0] = true;
         app.clamp_sel();
         let expected = app.visible_nodes_len_for_test();
         let (w, h) = (120u16, 40u16);
@@ -2475,13 +2514,13 @@ mod tests {
         assert_eq!(non_empty, expected, "one rendered row per visible node");
     }
 
-    /// The tree folds the nominal case: a feature with one shell shows
+    /// The tree folds the nominal case: a worktree with one shell shows
     /// that shell's status on its own row and gets no child row, while a
-    /// feature with several just gets its expanded subtree. No row carries
+    /// worktree with several just gets its expanded subtree. No row carries
     /// a shell count (the shells are right below) and none carries the
     /// tmux window id — that is plumbing, not information.
     #[test]
-    fn solo_feature_row_carries_the_status_and_no_child_row() {
+    fn solo_worktree_row_carries_the_status_and_no_child_row() {
         let mut app = seeded_app();
         let shell = |i: usize| crate::state::Shell {
             index: i,
@@ -2489,27 +2528,31 @@ mod tests {
             window_id: Some(format!("@{}", i + 7)),
             pane_id: Some(format!("%{i}")),
         };
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "many-shells".into(),
-            branch: "many-shells".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-many"),
-            created_at: String::new(),
-            shells: vec![shell(0), shell(1)],
-        });
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "one-shell".into(),
-            branch: "one-shell".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-one"),
-            created_at: String::new(),
-            shells: vec![shell(2)],
-        });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "many-shells".into(),
+                branch: "many-shells".into(),
+                path: std::path::PathBuf::from("/tmp/wt-many"),
+                created_at: String::new(),
+                shells: vec![shell(0), shell(1)],
+            });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "one-shell".into(),
+                branch: "one-shell".into(),
+                path: std::path::PathBuf::from("/tmp/wt-one"),
+                created_at: String::new(),
+                shells: vec![shell(2)],
+            });
         app.statuses.insert("%0".into(), Status::Working);
         app.statuses.insert("%1".into(), Status::Working);
         app.statuses.insert("%2".into(), Status::Waiting);
         app.build_tree_flags();
-        app.proj_expanded[0] = true;
-        let n = app.state.projects[0].features.len();
-        app.feat_expanded[0][n - 2] = true; // the many-shell feature is open
+        app.repo_expanded[0] = true;
+        let n = app.state.repositories[0].worktrees.len();
+        app.wt_expanded[0][n - 2] = true; // the many-shell worktree is open
 
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -2519,18 +2562,18 @@ mod tests {
         let solo = rows.iter().find(|r| r.contains("one-shell")).unwrap();
         assert!(
             solo.contains(Status::Waiting.label()),
-            "a folded feature shows its shell's status: {solo:?}"
+            "a folded worktree shows its shell's status: {solo:?}"
         );
         assert!(
             !solo.contains("shell]"),
-            "a folded feature drops the shell count: {solo:?}"
+            "a folded worktree drops the shell count: {solo:?}"
         );
         let many = rows.iter().find(|r| r.contains("many-shells")).unwrap();
         assert!(
             !many.contains("shells]"),
-            "a multi-shell feature carries no count either: {many:?}"
+            "a multi-shell worktree carries no count either: {many:?}"
         );
-        // the folded feature contributes no `#2` row; the open one does
+        // the folded worktree contributes no `#2` row; the open one does
         let shell_rows: Vec<&String> = rows.iter().filter(|r| r.contains(" #")).collect();
         assert_eq!(
             shell_rows.len(),
@@ -2543,28 +2586,30 @@ mod tests {
         }
     }
 
-    /// Project rows carry no feature count — the tree is expanded by
-    /// default, so the features themselves are the count. What the row
-    /// cannot show otherwise is whether a folded project holds anything
-    /// at all, and the icon says it: filled when it has features, hollow
+    /// Repository rows carry no worktree count — the tree is expanded by
+    /// default, so the worktrees themselves are the count. What the row
+    /// cannot show otherwise is whether a folded repository holds anything
+    /// at all, and the icon says it: filled when it has worktrees, hollow
     /// when it is empty.
     #[test]
-    fn project_rows_swap_the_count_for_a_full_or_empty_icon() {
+    fn repository_rows_swap_the_count_for_a_full_or_empty_icon() {
         let mut app = seeded_app();
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "only-feature".into(),
-            branch: "only-feature".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-one"),
-            created_at: String::new(),
-            shells: vec![crate::state::Shell {
-                index: 0,
-                window_name: "lw:f/0".into(),
-                window_id: Some("@7".into()),
-                pane_id: Some("%0".into()),
-            }],
-        });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "only-worktree".into(),
+                branch: "only-worktree".into(),
+                path: std::path::PathBuf::from("/tmp/wt-one"),
+                created_at: String::new(),
+                shells: vec![crate::state::Shell {
+                    index: 0,
+                    window_name: "lw:f/0".into(),
+                    window_id: Some("@7".into()),
+                    pane_id: Some("%0".into()),
+                }],
+            });
         app.build_tree_flags();
-        app.proj_expanded[0] = true;
+        app.repo_expanded[0] = true;
 
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -2574,19 +2619,19 @@ mod tests {
         let full = rows.iter().find(|r| r.contains("repo-a")).unwrap();
         let empty = rows.iter().find(|r| r.contains("repo-b")).unwrap();
         for row in [full, empty] {
-            assert!(!row.contains("feature)"), "no count on a row: {row:?}");
-            assert!(!row.contains("features)"), "no count on a row: {row:?}");
+            assert!(!row.contains("worktree)"), "no count on a row: {row:?}");
+            assert!(!row.contains("worktrees)"), "no count on a row: {row:?}");
         }
         assert!(
             full.contains("▣ repo-a"),
-            "a project with features: {full:?}"
+            "a repository with worktrees: {full:?}"
         );
-        assert!(empty.contains("▢ repo-b"), "an empty project: {empty:?}");
+        assert!(empty.contains("▢ repo-b"), "an empty repository: {empty:?}");
     }
 
     /// A dead entry is muted *whole*: once every shell under it has
     /// exited, the row's guide, icon, name and status all take the dead
-    /// colour instead of only the status word, so the eye skips a feature
+    /// colour instead of only the status word, so the eye skips a worktree
     /// that carries no live agent.
     #[test]
     fn a_dead_entry_is_muted_across_the_whole_row() {
@@ -2597,28 +2642,32 @@ mod tests {
             window_id: Some(format!("@{}", i + 7)),
             pane_id: Some(format!("%{i}")),
         };
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "gone-one".into(),
-            branch: "gone-one".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-gone"),
-            created_at: String::new(),
-            shells: vec![shell(0)],
-        });
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "half-gone".into(),
-            branch: "half-gone".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-half"),
-            created_at: String::new(),
-            shells: vec![shell(1), shell(2)],
-        });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "gone-one".into(),
+                branch: "gone-one".into(),
+                path: std::path::PathBuf::from("/tmp/wt-gone"),
+                created_at: String::new(),
+                shells: vec![shell(0)],
+            });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "half-gone".into(),
+                branch: "half-gone".into(),
+                path: std::path::PathBuf::from("/tmp/wt-half"),
+                created_at: String::new(),
+                shells: vec![shell(1), shell(2)],
+            });
         app.statuses.insert("%0".into(), Status::Dead);
         app.statuses.insert("%1".into(), Status::Dead);
         app.statuses.insert("%2".into(), Status::Working);
         app.build_tree_flags();
-        app.proj_expanded[0] = true;
-        let n = app.state.projects[0].features.len();
-        app.feat_expanded[0][n - 1] = true; // the mixed feature is open
-        app.sel = Sel::Project(1); // keep the highlight off the rows asserted on
+        app.repo_expanded[0] = true;
+        let n = app.state.repositories[0].worktrees.len();
+        app.wt_expanded[0][n - 1] = true; // the mixed worktree is open
+        app.sel = Sel::Repository(1); // keep the highlight off the rows asserted on
 
         let dead = app.theme.colors.status_dead;
         let backend = ratatui::backend::TestBackend::new(120, 40);
@@ -2653,7 +2702,7 @@ mod tests {
         assert!(text.contains(Status::Dead.label()), "row reads: {text:?}");
         assert!(
             colors.iter().all(|c| *c == dead),
-            "a solo dead feature is muted whole: {text:?} {colors:?}"
+            "a solo dead worktree is muted whole: {text:?} {colors:?}"
         );
         // The shell row of a dead shell is muted the same way...
         let (text, colors) = row(" #1");
@@ -2661,7 +2710,7 @@ mod tests {
             colors.iter().all(|c| *c == dead),
             "a dead shell row is muted whole: {text:?} {colors:?}"
         );
-        // ...while its live sibling, and the feature holding it, keep
+        // ...while its live sibling, and the worktree holding it, keep
         // their normal colours.
         let (text, colors) = row(" #2");
         assert!(
@@ -2671,7 +2720,7 @@ mod tests {
         let (text, colors) = row("half-gone");
         assert!(
             colors.iter().any(|c| *c != dead),
-            "a feature with one live shell is not muted: {text:?} {colors:?}"
+            "a worktree with one live shell is not muted: {text:?} {colors:?}"
         );
     }
 
@@ -2708,6 +2757,13 @@ mod tests {
                 "ascii help must not contain {glyph:?}"
             );
         }
+        // Whole-frame, not a denylist: `↵` and `—` slipped past the glyph
+        // lists here for the whole life of the old `LW_ASCII` mode.
+        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
+        assert!(
+            stray.is_empty(),
+            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
+        );
     }
 
     /// The scroll-height math in the app and the rendered line count share
@@ -2773,6 +2829,13 @@ mod tests {
                 "ascii picker must not contain {glyph:?}"
             );
         }
+        // Whole-frame, not a denylist: `↵` and `—` slipped past the glyph
+        // lists here for the whole life of the old `LW_ASCII` mode.
+        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
+        assert!(
+            stray.is_empty(),
+            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
+        );
     }
 
     /// The picker on a tiny frame is refused with the standard message
@@ -2859,6 +2922,13 @@ mod tests {
                 "ascii diagnostics must not contain {glyph:?}"
             );
         }
+        // Whole-frame, not a denylist: `↵` and `—` slipped past the glyph
+        // lists here for the whole life of the old `LW_ASCII` mode.
+        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
+        assert!(
+            stray.is_empty(),
+            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
+        );
     }
 
     /// The diagnostics overlay on a tiny frame is refused with the standard
@@ -2894,7 +2964,7 @@ mod tests {
         let cfg = Config::default();
         let theme = theme::load("ansi", false).unwrap();
         let mut app = App::new(cfg, theme, None);
-        app.state.projects.push(crate::state::Project {
+        app.state.repositories.push(crate::state::Repository {
             name: "repo-a".into(),
             path: std::path::PathBuf::from("/tmp/repo-a"),
             base_branch: "main".into(),
@@ -2902,29 +2972,31 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features: vec![],
+            worktrees: vec![],
         });
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "feat".into(),
-            branch: "feat".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/repo-a-feat"),
-            created_at: "2026-01-01T00:00:00Z".into(),
-            shells: vec![crate::state::Shell {
-                index: 1,
-                window_name: "feat-1".into(),
-                window_id: Some("@1".into()),
-                pane_id: Some("%1".into()),
-            }],
-        });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "wt".into(),
+                branch: "wt".into(),
+                path: std::path::PathBuf::from("/tmp/repo-a-wt"),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                shells: vec![crate::state::Shell {
+                    index: 1,
+                    window_name: "wt-1".into(),
+                    window_id: Some("@1".into()),
+                    pane_id: Some("%1".into()),
+                }],
+            });
         app.build_tree_flags();
-        // One shell → the feature row is folded onto it; that row is what
+        // One shell → the worktree row is folded onto it; that row is what
         // the preview follows.
-        app.sel = crate::app::Sel::Feature(0, 0);
+        app.sel = crate::app::Sel::Worktree(0, 0);
         app.clamp_sel();
         assert_eq!(
             app.selected_shell(),
             Some((0, 0, 0)),
-            "fixture must leave the folded feature's shell selected"
+            "fixture must leave the folded worktree's shell selected"
         );
         app.captures.insert("%1".into(), capture.to_string());
         app
@@ -3107,6 +3179,13 @@ mod tests {
             text.is_ascii(),
             "ascii mode must not emit unicode: {text:?}"
         );
+        // Whole-frame, not a denylist: `↵` and `—` slipped past the glyph
+        // lists here for the whole life of the old `LW_ASCII` mode.
+        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
+        assert!(
+            stray.is_empty(),
+            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
+        );
     }
 
     /// The statusbar advertises `p` on a shell (same words as the help).
@@ -3127,9 +3206,9 @@ mod tests {
         );
     }
 
-    /// A shell row offers `d close` (the shell), a feature row `d delete`
-    /// (the feature) — the bar never offers to delete a feature from a
-    /// shell row. No selection offers a project removal any more.
+    /// A shell row offers `d close` (the shell), a worktree row `d delete`
+    /// (the worktree) — the bar never offers to delete a worktree from a
+    /// shell row. No selection offers a repository removal any more.
     #[test]
     fn statusbar_delete_entry_is_contextual() {
         let mut app = seeded_app();
@@ -3142,24 +3221,24 @@ mod tests {
             "a shell closes itself: {entries:?}"
         );
         assert!(
-            !entries.iter().any(|(_, a)| *a == BarAction::DeleteFeature),
-            "a shell row must not offer the feature delete: {entries:?}"
+            !entries.iter().any(|(_, a)| *a == BarAction::DeleteWorktree),
+            "a shell row must not offer the worktree delete: {entries:?}"
         );
 
-        app.sel = crate::app::Sel::Feature(0, 0);
+        app.sel = crate::app::Sel::Worktree(0, 0);
         let entries = bar_entries(&app);
         assert!(
             entries
                 .iter()
-                .any(|(l, a)| l == "d delete" && *a == BarAction::DeleteFeature),
-            "a feature deletes itself: {entries:?}"
+                .any(|(l, a)| l == "d delete" && *a == BarAction::DeleteWorktree),
+            "a worktree deletes itself: {entries:?}"
         );
 
-        app.sel = crate::app::Sel::Project(0);
+        app.sel = crate::app::Sel::Repository(0);
         let labels: Vec<String> = bar_entries(&app).into_iter().map(|(l, _)| l).collect();
         assert!(
             !labels.iter().any(|l| l.contains("remove")),
-            "the project removal entry is gone: {labels:?}"
+            "the repository removal entry is gone: {labels:?}"
         );
     }
 
@@ -3175,13 +3254,13 @@ mod tests {
     }
 
     /// The add-shell prompt names the command it will run and shows the
-    /// project's default underneath — submitting empty runs that default,
+    /// repository's default underneath — submitting empty runs that default,
     /// so the user has to be able to see it.
     #[test]
     fn add_shell_popup_shows_the_default_command_hint() {
         let mut app = seeded_app();
-        app.state.projects[0].agent_command = "codex exec --yolo".into();
-        app.sel = crate::app::Sel::Project(0);
+        app.state.repositories[0].agent_command = "codex exec --yolo".into();
+        app.sel = crate::app::Sel::Repository(0);
         app.mode = Mode::Input {
             kind: InputKind::AddShell,
             text: String::new(),
@@ -3194,7 +3273,7 @@ mod tests {
         assert!(text.contains("command: "), "command field label: {text}");
         assert!(
             text.contains("default: codex exec --yolo"),
-            "the project's default command must be shown as a hint: {text}"
+            "the repository's default command must be shown as a hint: {text}"
         );
     }
 
@@ -3204,8 +3283,8 @@ mod tests {
     #[test]
     fn input_popup_keeps_its_footer_on_short_frames() {
         let mut app = seeded_app();
-        app.sel = crate::app::Sel::Project(0);
-        for kind in [InputKind::AddShell, InputKind::NewFeature] {
+        app.sel = crate::app::Sel::Repository(0);
+        for kind in [InputKind::AddShell, InputKind::NewWorktree] {
             app.mode = Mode::Input {
                 kind,
                 text: String::new(),
@@ -3223,26 +3302,28 @@ mod tests {
         }
     }
 
-    /// A folded solo feature shows its shell's status, so `blocked` has to
+    /// A folded solo worktree shows its shell's status, so `blocked` has to
     /// survive all the way to a rendered row — not just to the enum.
     #[test]
     fn a_blocked_shell_reads_as_blocked_in_the_tree() {
         let mut app = seeded_app();
-        app.state.projects[0].features.push(crate::state::Feature {
-            name: "needs-me".into(),
-            branch: "needs-me".into(),
-            worktree_path: std::path::PathBuf::from("/tmp/wt-blocked"),
-            created_at: String::new(),
-            shells: vec![crate::state::Shell {
-                index: 0,
-                window_name: "lw:needs-me/0".into(),
-                window_id: Some("@7".into()),
-                pane_id: Some("%0".into()),
-            }],
-        });
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "needs-me".into(),
+                branch: "needs-me".into(),
+                path: std::path::PathBuf::from("/tmp/wt-blocked"),
+                created_at: String::new(),
+                shells: vec![crate::state::Shell {
+                    index: 0,
+                    window_name: "lw:needs-me/0".into(),
+                    window_id: Some("@7".into()),
+                    pane_id: Some("%0".into()),
+                }],
+            });
         app.statuses.insert("%0".into(), Status::Blocked);
         app.build_tree_flags();
-        app.proj_expanded[0] = true;
+        app.repo_expanded[0] = true;
 
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();

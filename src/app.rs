@@ -11,10 +11,10 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
 
-use crate::config::{Config, ProjectConfig};
+use crate::config::{Config, RepositoryConfig};
 use crate::error::{Error, Result};
 use crate::git::Git;
-use crate::state::{Feature, Project, Shell, State};
+use crate::state::{Repository, Shell, State, Worktree};
 use crate::status::{self, Compiled, Status};
 use crate::theme::Theme;
 use crate::tmux::{PaneInfo, Tmux};
@@ -27,7 +27,7 @@ const RECENT_TAIL_LINES: usize = 10;
 const TOAST_TTL: Duration = Duration::from_secs(4);
 const TOAST_TTL_ERR: Duration = Duration::from_secs(6);
 
-/// How often the per-feature dirty flags are recomputed. Each one shells
+/// How often the per-worktree dirty flags are recomputed. Each one shells
 /// out to `git status`, so it runs on its own slow cadence rather than on
 /// every tmux poll.
 const DIRTY_INTERVAL: Duration = Duration::from_secs(3);
@@ -36,7 +36,7 @@ const DIRTY_INTERVAL: Duration = Duration::from_secs(3);
 /// a backstop so a runaway paste cannot grow the buffer without bound.
 const TEXTBUF_MAX_BYTES: usize = 1_000_000;
 
-/// Projects unfold by default up to this many in scope. Past it the tree
+/// Repositories unfold by default up to this many in scope. Past it the tree
 /// is longer than any terminal and folding is the readable default.
 const UNFOLD_CAP: usize = 30;
 
@@ -56,11 +56,11 @@ impl Toast {
     }
 }
 
-/// A node in the projects/features/shells tree.
+/// A node in the repositories/worktrees/shells tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sel {
-    Project(usize),
-    Feature(usize, usize),
+    Repository(usize),
+    Worktree(usize, usize),
     Shell(usize, usize, usize),
 }
 
@@ -440,19 +440,19 @@ pub(crate) fn textarea_wrap_width(viewport_w: u16) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarAction {
     Help,
-    NewFeature,
+    NewWorktree,
     AddShell,
     QuickSend,
     PredefinedSend,
-    DeleteFeature,
+    DeleteWorktree,
     DeleteShell,
     Attach,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputKind {
-    NewFeature,
-    /// The command the new shell should run. Empty means "the project's
+    NewWorktree,
+    /// The command the new shell should run. Empty means "the repository's
     /// default agent command" — the prompt shows it as a hint.
     AddShell,
     QuickSend,
@@ -470,13 +470,13 @@ pub struct Confirm {
 
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
-    DeleteFeature {
-        project: usize,
-        feature: usize,
+    DeleteWorktree {
+        repository: usize,
+        worktree: usize,
     },
     DeleteShell {
-        project: usize,
-        feature: usize,
+        repository: usize,
+        worktree: usize,
         shell: usize,
     },
 }
@@ -487,11 +487,11 @@ pub struct App {
     pub tmux: Option<Tmux>,
     pub state: State,
     pub sel: Sel,
-    /// Projects whose `git worktree list` is still owed, drained one per
+    /// Repositories whose `git worktree list` is still owed, drained one per
     /// event-loop iteration by [`App::drain_pending_worktrees`].
     pub pending_worktrees: std::collections::VecDeque<usize>,
-    pub proj_expanded: Vec<bool>,
-    pub feat_expanded: Vec<Vec<bool>>,
+    pub repo_expanded: Vec<bool>,
+    pub wt_expanded: Vec<Vec<bool>>,
     pub mode: Mode,
     pub panes: HashMap<String, PaneInfo>,
     pub captures: HashMap<String, String>,
@@ -521,18 +521,18 @@ pub struct App {
     /// `run()` turns it on.
     pub interactive_boot: bool,
     pub quit: bool,
-    /// The current scope: only projects whose path is inside this root are
-    /// listed (startup cwd, or `[discovery].scan_root` when set). Projects
+    /// The current scope: only repositories whose path is inside this root are
+    /// listed (startup cwd, or `[discovery].scan_root` when set). Repositories
     /// in state from other scopes stay saved but are not shown — scopes
     /// never mix.
     pub scope_root: PathBuf,
-    /// Flatten mode: exactly one project is in scope, so the tree shows
-    /// its features at the top level without a project row.
+    /// Flatten mode: exactly one repository is in scope, so the tree shows
+    /// its worktrees at the top level without a repository row.
     pub flatten: bool,
-    /// Has `git worktree list` been run for each project (index-parallel
-    /// to `state.projects`)? Worktrees are the expensive part of
-    /// discovery, so they load lazily — when a project is expanded, or for
-    /// the single flattened project at boot.
+    /// Has `git worktree list` been run for each repository (index-parallel
+    /// to `state.repositories`)? Worktrees are the expensive part of
+    /// discovery, so they load lazily — when a repository is expanded, or for
+    /// the single flattened repository at boot.
     pub worktrees_loaded: Vec<bool>,
     /// Last frame size — drives page-sized motions and mouse hit-testing.
     pub viewport: (u16, u16),
@@ -558,18 +558,18 @@ pub struct App {
     /// crossterm version does not report a click count on mouse events.
     last_click: Option<(Instant, u16, u16)>,
     /// Worktree path → has uncommitted changes. The tree draws this as the
-    /// feature icon, so it must be a lookup, not a `git status` per frame;
+    /// worktree icon, so it must be a lookup, not a `git status` per frame;
     /// [`App::poll_dirty`] refills it every [`DIRTY_INTERVAL`].
     pub(crate) dirty: HashMap<PathBuf, bool>,
     last_dirty_poll: Option<Instant>,
-    /// What the New Feature popup says the branch will be cut from,
+    /// What the New Worktree popup says the branch will be cut from,
     /// re-resolved every time the popup opens (a `git` call per keystroke
-    /// is not on). `None` when the project's repo could not be read.
-    new_feature_base: Option<BaseHint>,
+    /// is not on). `None` when the repository could not be read.
+    new_worktree_base: Option<BaseHint>,
 }
 
-/// The base branch a new feature would branch from, as shown in the New
-/// Feature popup. `missing` carries the configured base branch when it is
+/// The base branch a new worktree would branch from, as shown in the New
+/// Worktree popup. `missing` carries the configured base branch when it is
 /// absent from the repo and `branch` is therefore the current checkout —
 /// the one case where the popup must not claim a base branch.
 #[derive(Debug, Clone)]
@@ -604,10 +604,10 @@ impl App {
             theme,
             tmux,
             state: State::default(),
-            sel: Sel::Project(0),
+            sel: Sel::Repository(0),
             pending_worktrees: std::collections::VecDeque::new(),
-            proj_expanded: Vec::new(),
-            feat_expanded: Vec::new(),
+            repo_expanded: Vec::new(),
+            wt_expanded: Vec::new(),
             mode: Mode::Normal,
             panes: HashMap::new(),
             captures: HashMap::new(),
@@ -633,7 +633,7 @@ impl App {
             picker_original: crate::theme::DEFAULT_THEME.into(),
             bar_hits: Vec::new(),
             last_click: None,
-            new_feature_base: None,
+            new_worktree_base: None,
         }
     }
 
@@ -642,9 +642,9 @@ impl App {
     /// Load state, reconcile against reality, bind the back keys.
     pub fn startup(&mut self) -> Result<()> {
         self.state = State::load()?;
-        self.merge_config_projects()?;
+        self.merge_config_repositories()?;
         // Interactive boot: auto-import the cwd's repo (with its worktrees
-        // as features) or, when the cwd is not a repo, arm the startup
+        // as worktrees) or, when the cwd is not a repo, arm the startup
         // scan prompt.
         if self.interactive_boot {
             self.boot_discovery()?;
@@ -679,8 +679,8 @@ impl App {
         // prefix, where it cannot collide with any application.
         tmux.unbind_legacy_root_back_key(&inside.session_name, &inside.window_id)?;
         let mut bound = 0;
-        for proj in &self.state.projects {
-            if let Some(sess) = &proj.session_name
+        for repo in &self.state.repositories {
+            if let Some(sess) = &repo.session_name
                 && tmux.session_exists(sess)
             {
                 tmux.bind_back_key(
@@ -706,48 +706,48 @@ impl App {
         Ok(())
     }
 
-    /// Import projects declared in config.toml that aren't in state yet.
-    fn merge_config_projects(&mut self) -> Result<()> {
+    /// Import repositories declared in config.toml that aren't in state yet.
+    fn merge_config_repositories(&mut self) -> Result<()> {
         let mut imported = 0;
         let paths: Vec<PathBuf> = self
             .cfg
-            .usable_projects()
+            .usable_repositories()
             .into_iter()
             .map(|p| PathBuf::from(&p.path))
             .collect();
         for path in paths {
-            if self.state.projects.iter().any(|x| x.path == path) {
+            if self.state.repositories.iter().any(|x| x.path == path) {
                 continue;
             }
             if !Git.is_repo(&path) {
                 log::warn!(
-                    "config project {} is not a git repo, skipping",
+                    "config repository {} is not a git repo, skipping",
                     path.display()
                 );
                 continue;
             }
-            self.add_project(path)?;
+            self.add_repository(path)?;
             imported += 1;
         }
         if imported > 0 {
-            log::info!("imported {imported} project(s) from config");
+            log::info!("imported {imported} repositories from config");
         }
         Ok(())
     }
 
-    /// Push a new project for a verified repo path, resolving base branch
-    /// and agent settings from the config (per-project overrides by path).
-    fn add_project(&mut self, path: PathBuf) -> Result<()> {
+    /// Push a new repository for a verified repo path, resolving base branch
+    /// and agent settings from the config (per-repository overrides by path).
+    fn add_repository(&mut self, path: PathBuf) -> Result<()> {
         let name = Git.repo_name(&path);
-        let proj_cfg = ProjectConfig {
+        let repo_cfg = RepositoryConfig {
             path: path.to_string_lossy().into_owned(),
             base_branch: None,
             agent: None,
             agent_command: None,
         };
-        let base = Git.resolve_base_branch(&path, &self.cfg.base_branch_for(&proj_cfg))?;
-        let agent = self.cfg.agent_for(&proj_cfg);
-        self.state.projects.push(Project {
+        let base = Git.resolve_base_branch(&path, &self.cfg.base_branch_for(&repo_cfg))?;
+        let agent = self.cfg.agent_for(&repo_cfg);
+        self.state.repositories.push(Repository {
             name,
             path,
             base_branch: base,
@@ -755,7 +755,7 @@ impl App {
             agent_shell: agent.shell,
             session_name: None,
             missing: false,
-            features: Vec::new(),
+            worktrees: Vec::new(),
         });
         Ok(())
     }
@@ -778,11 +778,12 @@ impl App {
     /// Startup scope discovery (interactive boot only). No prompt, no
     /// cache: the scope is what is INSIDE the startup directory.
     /// - cwd (or an ancestor) is a git repo → that repo is the scope; it is
-    ///   imported as the single project and its worktrees become features.
+    ///   imported as the single repository, and its linked worktrees are
+    ///   what the tree lists.
     /// - otherwise → the scope is scanned LIVE for git repos and each one
-    ///   is imported. Worktrees stay lazy until a project is expanded.
+    ///   is imported. Worktrees stay lazy until a repository is expanded.
     ///
-    /// Either way `scope_root` is set, and the tree only lists projects
+    /// Either way `scope_root` is set, and the tree only lists repositories
     /// inside it — different scopes never mix.
     fn boot_discovery(&mut self) -> Result<()> {
         let cwd = std::env::current_dir().unwrap_or_default();
@@ -795,7 +796,7 @@ impl App {
         if let Some(main_repo) = Git.main_repo(cwd) {
             // Single-repo scope: the repo we are standing in.
             log::info!(
-                "cwd is inside a git repo (main: {}), single-project scope",
+                "cwd is inside a git repo (main: {}), single-repository scope",
                 main_repo.display()
             );
             self.import_cwd_repo(&main_repo)?;
@@ -804,40 +805,40 @@ impl App {
             // is a few stats per dir, cheap even at hundreds of folders.
             let found = self.discover_and_import(&scope)?;
             log::info!(
-                "scope {}: {found} project(s) from live scan",
+                "scope {}: {found} repositories from live scan",
                 scope.display()
             );
         }
         self.build_tree_flags();
-        // Worktrees for every unfolded project (and for the flattened
-        // single project, whose features ARE the tree). Only the first one
+        // Worktrees for every unfolded repository (and for the flattened
+        // single repository, whose worktrees ARE the tree). Only the first one
         // is loaded here: it is what the first frame draws, and blocking
         // boot on one `git worktree list` per repo would cost seconds in a
         // scope with dozens of them. The rest are queued and drained by the
         // event loop, so the tree paints immediately and fills in.
-        let vis = self.visible_projects();
+        let vis = self.visible_repositories();
         let mut to_load: Vec<usize> = vis
             .iter()
             .copied()
-            .filter(|&pi| self.proj_expanded.get(pi).copied().unwrap_or(false))
+            .filter(|&ri| self.repo_expanded.get(ri).copied().unwrap_or(false))
             .collect();
         if self.flatten
-            && let Some(&pi) = vis.first()
-            && !to_load.contains(&pi)
+            && let Some(&ri) = vis.first()
+            && !to_load.contains(&ri)
         {
-            to_load.push(pi);
+            to_load.push(ri);
         }
         let mut queued = to_load.into_iter();
-        if let Some(pi) = queued.next() {
-            self.ensure_worktrees(pi)?;
+        if let Some(ri) = queued.next() {
+            self.ensure_worktrees(ri)?;
         }
         self.pending_worktrees.extend(queued);
-        // Re-decide flatten now that features are known (a lone project
-        // with NO features still shows its row — a blank tree would be
+        // Re-decide flatten now that worktrees are known (a lone repository
+        // with NO worktrees still shows its row — a blank tree would be
         // worse than a redundant row).
-        if let Some(&pi) = vis.first()
+        if let Some(&ri) = vis.first()
             && vis.len() == 1
-            && !self.state.projects[pi].features.is_empty()
+            && !self.state.repositories[ri].worktrees.is_empty()
         {
             self.flatten = true;
             self.build_tree_flags();
@@ -847,29 +848,29 @@ impl App {
         Ok(())
     }
 
-    /// Import (or complete) the project for `main_repo`. Worktrees are NOT
+    /// Import (or complete) the repository for `main_repo`. Worktrees are NOT
     /// listed here — [`Self::ensure_worktrees`] does that lazily when the
-    /// project is expanded (or right after boot in flatten mode). Never
+    /// repository is expanded (or right after boot in flatten mode). Never
     /// fails startup on git errors — discovery is best-effort.
     fn import_cwd_repo(&mut self, main_repo: &std::path::Path) -> Result<()> {
         let path = main_repo.to_path_buf();
-        let mut pi = self.state.projects.iter().position(|x| x.path == path);
-        if pi.is_none() {
+        let mut ri = self.state.repositories.iter().position(|x| x.path == path);
+        if ri.is_none() {
             if !Git.is_repo(&path) {
                 return Ok(()); // vanished between detect and import
             }
-            self.add_project(path.clone())?;
-            pi = Some(self.state.projects.len() - 1);
+            self.add_repository(path.clone())?;
+            ri = Some(self.state.repositories.len() - 1);
         }
-        let pi = pi.unwrap();
-        // In flatten mode the features ARE the tree — load them now.
-        self.ensure_worktrees(pi)?;
+        let ri = ri.unwrap();
+        // In flatten mode the worktrees ARE the tree — load them now.
+        self.ensure_worktrees(ri)?;
         Ok(())
     }
 
-    /// Scan `root` for git repos and import every new one (projects already
+    /// Scan `root` for git repos and import every new one (repositories already
     /// in state are skipped). No cache — the scan is live. Returns the
-    /// number of projects added.
+    /// number of repositories added.
     fn discover_and_import(&mut self, root: &std::path::Path) -> Result<usize> {
         let root = crate::util::normalize_path(root);
         let paths = crate::discovery::scan(
@@ -879,77 +880,80 @@ impl App {
         );
         let mut added = 0;
         for p in &paths {
-            if self.state.projects.iter().any(|x| x.path == *p) {
+            if self.state.repositories.iter().any(|x| x.path == *p) {
                 continue;
             }
             if !Git.is_repo(p) {
                 continue; // raced (removed mid-scan)
             }
-            match self.add_project(p.clone()) {
+            match self.add_repository(p.clone()) {
                 Ok(()) => added += 1,
                 Err(e) => log::warn!("importing {} failed: {e}", p.display()),
             }
         }
         if added > 0 {
-            log::info!("discovery: {added} new project(s) under {}", root.display());
+            log::info!(
+                "discovery: {added} new repositories under {}",
+                root.display()
+            );
         }
         Ok(added)
     }
 
-    /// Load the next queued project's worktrees. Returns false when the
-    /// queue is empty. One project per call: the event loop redraws
+    /// Load the next queued repository's worktrees. Returns false when the
+    /// queue is empty. One repository per call: the event loop redraws
     /// between calls, so a slow scope fills the tree in visibly instead of
     /// freezing before the first frame.
     pub fn drain_pending_worktrees(&mut self) -> bool {
-        let Some(pi) = self.pending_worktrees.pop_front() else {
+        let Some(ri) = self.pending_worktrees.pop_front() else {
             return false;
         };
-        if let Err(e) = self.ensure_worktrees(pi) {
-            log::warn!("background worktree load for project {pi}: {e}");
+        if let Err(e) = self.ensure_worktrees(ri) {
+            log::warn!("background worktree load for repository {ri}: {e}");
         }
         true
     }
 
     pub(crate) fn build_tree_flags(&mut self) {
-        // Scope-aware: only in-scope projects get rows, and everything
+        // Scope-aware: only in-scope repositories get rows, and everything
         // unfolds by default — the dashboard exists to show the shells, and
         // a folded tree hides them. The cap is a readability backstop for
         // scopes with a wild number of repos, not a cost guard: the
-        // `git worktree list` each unfolded project owes is queued and
+        // `git worktree list` each unfolded repository owes is queued and
         // drained in the background (see `boot_discovery_from`).
-        let vis = self.visible_projects();
-        // Flatten: exactly one project in scope WITH features → its
-        // features ARE the tree, no project row. A lone project with no
-        // features (missing, or nothing linked yet) still shows its row.
-        self.flatten = vis.len() == 1 && !self.state.projects[vis[0]].features.is_empty();
+        let vis = self.visible_repositories();
+        // Flatten: exactly one repository in scope WITH worktrees → its
+        // worktrees ARE the tree, no repository row. A lone repository with no
+        // worktrees (missing, or nothing linked yet) still shows its row.
+        self.flatten = vis.len() == 1 && !self.state.repositories[vis[0]].worktrees.is_empty();
         let expand = vis.len() <= UNFOLD_CAP;
-        self.proj_expanded = self
+        self.repo_expanded = self
             .state
-            .projects
+            .repositories
             .iter()
             .enumerate()
             .map(|(i, _)| vis.contains(&i) && expand)
             .collect();
-        self.feat_expanded = self
+        self.wt_expanded = self
             .state
-            .projects
+            .repositories
             .iter()
-            .map(|p| vec![true; p.features.len()])
+            .map(|p| vec![true; p.worktrees.len()])
             .collect();
-        // Keep the loaded flag parallel to projects.
+        // Keep the loaded flag parallel to repositories.
         self.worktrees_loaded
-            .resize(self.state.projects.len(), false);
+            .resize(self.state.repositories.len(), false);
     }
 
-    /// Indices of the projects currently in scope (path inside
-    /// `scope_root`). Projects from other scopes stay in state but never
+    /// Indices of the repositories currently in scope (path inside
+    /// `scope_root`). Repositories from other scopes stay in state but never
     /// get rows — scopes don't mix. When the scope was never set (tests,
     /// or an app that skipped boot discovery) `scope_root` is the "."
     /// sentinel and everything is visible.
-    pub(crate) fn visible_projects(&self) -> Vec<usize> {
+    pub(crate) fn visible_repositories(&self) -> Vec<usize> {
         let scoped = self.scope_root.as_os_str() != ".";
         self.state
-            .projects
+            .repositories
             .iter()
             .enumerate()
             .filter(|(_, p)| !scoped || p.path.starts_with(&self.scope_root))
@@ -957,114 +961,114 @@ impl App {
             .collect()
     }
 
-    /// Lazily load a project's worktrees (the expensive part of
-    /// discovery): `git worktree list` runs ONCE per project, when its
+    /// Lazily load a repository's worktrees (the expensive part of
+    /// discovery): `git worktree list` runs ONCE per repository, when its
     /// details are actually needed (expanded, or the flattened single
-    /// project at boot). Features are added deduplicated by worktree path.
-    fn ensure_worktrees(&mut self, pi: usize) -> Result<()> {
-        if self.worktrees_loaded.get(pi).copied().unwrap_or(false) {
+    /// repository at boot). Worktrees are added deduplicated by worktree path.
+    fn ensure_worktrees(&mut self, ri: usize) -> Result<()> {
+        if self.worktrees_loaded.get(ri).copied().unwrap_or(false) {
             return Ok(());
         }
-        let proj = self
+        let repo = self
             .state
-            .projects
-            .get(pi)
+            .repositories
+            .get(ri)
             .cloned()
-            .ok_or_else(|| Error::State(format!("project index {pi} out of range")))?;
-        if proj.missing {
+            .ok_or_else(|| Error::State(format!("repository index {ri} out of range")))?;
+        if repo.missing {
             return Ok(());
         }
-        let worktrees = match Git.worktree_list(&proj.path) {
+        let worktrees = match Git.worktree_list(&repo.path) {
             Ok(w) => w,
             Err(e) => {
-                log::warn!("worktree list failed for {}: {e}", proj.path.display());
+                log::warn!("worktree list failed for {}: {e}", repo.path.display());
                 return Ok(());
             }
         };
-        let existing: std::collections::HashSet<PathBuf> = self.state.projects[pi]
-            .features
+        let existing: std::collections::HashSet<PathBuf> = self.state.repositories[ri]
+            .worktrees
             .iter()
-            .map(|f| f.worktree_path.clone())
+            .map(|f| f.path.clone())
             .collect();
         let mut added = 0;
-        for wt in worktrees {
-            // The first entry is the main worktree — that IS the project.
-            if wt.path == proj.path || existing.contains(&wt.path) {
+        for info in worktrees {
+            // The first entry is the main worktree — that IS the repository.
+            if info.path == repo.path || existing.contains(&info.path) {
                 continue;
             }
-            let branch = wt.branch_short().unwrap_or("").to_string();
+            let branch = info.branch_short().unwrap_or("").to_string();
             let name = if branch.is_empty() {
-                wt.path
+                info.path
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "worktree".into())
             } else {
                 branch.clone()
             };
-            self.state.projects[pi].features.push(Feature {
+            self.state.repositories[ri].worktrees.push(Worktree {
                 name,
                 branch,
-                worktree_path: wt.path,
+                path: info.path,
                 created_at: String::new(),
                 shells: Vec::new(),
             });
             added += 1;
         }
-        if let Some(flag) = self.worktrees_loaded.get_mut(pi) {
+        if let Some(flag) = self.worktrees_loaded.get_mut(ri) {
             *flag = true;
         }
-        // `feat_expanded` is index-parallel to `features`; a short vector
+        // `wt_expanded` is index-parallel to `worktrees`; a short vector
         // reads as folded, so the rows this just discovered would arrive
         // collapsed. They unfold like every other row.
-        if let Some(flags) = self.feat_expanded.get_mut(pi) {
-            flags.resize(self.state.projects[pi].features.len(), true);
+        if let Some(flags) = self.wt_expanded.get_mut(ri) {
+            flags.resize(self.state.repositories[ri].worktrees.len(), true);
         }
         if added > 0 {
-            log::info!("lazy worktree load: {added} feature(s) for '{}'", proj.name);
+            log::info!("lazy worktree load: {added} worktrees for '{}'", repo.name);
         }
         Ok(())
     }
 
     // ---------------------------------------------------------- navigation
 
-    /// The shell a folded feature row stands for. The nominal case is one
-    /// worktree, one agent: a feature with exactly one shell gets no child
+    /// The shell a folded worktree row stands for. The nominal case is one
+    /// worktree, one agent: a worktree with exactly one shell gets no child
     /// row at all — its own row *is* that shell (status, preview, attach,
-    /// quick-send). Features with none or several shells keep their
-    /// subtree, so `a` on a folded feature unfolds it by giving it a
+    /// quick-send). Worktrees with none or several shells keep their
+    /// subtree, so `a` on a folded worktree unfolds it by giving it a
     /// second shell.
-    pub(crate) fn solo_shell(&self, pi: usize, fi: usize) -> Option<usize> {
-        let feat = self.state.projects.get(pi)?.features.get(fi)?;
-        (feat.shells.len() == 1).then_some(0)
+    pub(crate) fn solo_shell(&self, ri: usize, wi: usize) -> Option<usize> {
+        let wt = self.state.repositories.get(ri)?.worktrees.get(wi)?;
+        (wt.shells.len() == 1).then_some(0)
     }
 
     /// All visible tree nodes in display order (scope-filtered; in flatten
-    /// mode the single project's features sit at the top level).
+    /// mode the single repository's worktrees sit at the top level).
     fn visible_nodes(&self) -> Vec<Sel> {
         let mut v = Vec::new();
-        for pi in self.visible_projects() {
-            let proj = &self.state.projects[pi];
+        for ri in self.visible_repositories() {
+            let repo = &self.state.repositories[ri];
             if !self.flatten {
-                v.push(Sel::Project(pi));
-                if !self.proj_expanded.get(pi).copied().unwrap_or(false) {
+                v.push(Sel::Repository(ri));
+                if !self.repo_expanded.get(ri).copied().unwrap_or(false) {
                     continue;
                 }
             }
-            for (fi, feat) in proj.features.iter().enumerate() {
-                v.push(Sel::Feature(pi, fi));
+            for (wi, wt) in repo.worktrees.iter().enumerate() {
+                v.push(Sel::Worktree(ri, wi));
                 let fexp = self
-                    .feat_expanded
-                    .get(pi)
-                    .and_then(|e| e.get(fi))
+                    .wt_expanded
+                    .get(ri)
+                    .and_then(|e| e.get(wi))
                     .copied()
                     .unwrap_or(false);
-                // A solo feature is folded for good: its own row is the
+                // A solo worktree is folded for good: its own row is the
                 // shell, so it never emits a child — whatever its flag says.
-                if !fexp || self.solo_shell(pi, fi).is_some() {
+                if !fexp || self.solo_shell(ri, wi).is_some() {
                     continue;
                 }
-                for si in 0..feat.shells.len() {
-                    v.push(Sel::Shell(pi, fi, si));
+                for si in 0..wt.shells.len() {
+                    v.push(Sel::Shell(ri, wi, si));
                 }
             }
         }
@@ -1082,7 +1086,7 @@ impl App {
     pub(crate) fn clamp_sel(&mut self) {
         let nodes = self.visible_nodes();
         if nodes.is_empty() {
-            self.sel = Sel::Project(0);
+            self.sel = Sel::Repository(0);
             return;
         }
         if !nodes.contains(&self.sel) {
@@ -1102,74 +1106,74 @@ impl App {
 
     fn expand_or_attach(&mut self) {
         match self.sel {
-            Sel::Project(pi) => {
-                // Expanding a project is when its worktrees are needed:
-                // load them lazily (once per project per run).
-                if !self.proj_expanded.get(pi).copied().unwrap_or(false)
-                    && self.ensure_worktrees(pi).is_ok()
-                    && self.worktrees_loaded.get(pi).copied().unwrap_or(false)
+            Sel::Repository(ri) => {
+                // Expanding a repository is when its worktrees are needed:
+                // load them lazily (once per repository per run).
+                if !self.repo_expanded.get(ri).copied().unwrap_or(false)
+                    && self.ensure_worktrees(ri).is_ok()
+                    && self.worktrees_loaded.get(ri).copied().unwrap_or(false)
                 {
-                    // features may have appeared; refresh the per-feature
+                    // worktrees may have appeared; refresh the per-worktree
                     // expand flags
-                    let n = self.state.projects[pi].features.len();
-                    if let Some(v) = self.feat_expanded.get_mut(pi) {
+                    let n = self.state.repositories[ri].worktrees.len();
+                    if let Some(v) = self.wt_expanded.get_mut(ri) {
                         v.resize(n, false);
                     }
                 }
-                if let Some(e) = self.proj_expanded.get_mut(pi) {
+                if let Some(e) = self.repo_expanded.get_mut(ri) {
                     *e = !*e;
                 }
             }
-            Sel::Feature(pi, fi) => {
-                // Folded feature: there is nothing to expand into, so the
+            Sel::Worktree(ri, wi) => {
+                // Folded worktree: there is nothing to expand into, so the
                 // row acts as its shell and opens the agent.
-                if let Some(si) = self.solo_shell(pi, fi) {
-                    self.attach(pi, fi, si);
-                } else if let Some(e) = self.feat_expanded.get_mut(pi).and_then(|v| v.get_mut(fi)) {
+                if let Some(si) = self.solo_shell(ri, wi) {
+                    self.attach(ri, wi, si);
+                } else if let Some(e) = self.wt_expanded.get_mut(ri).and_then(|v| v.get_mut(wi)) {
                     *e = !*e;
                 }
             }
-            Sel::Shell(pi, fi, si) => self.attach(pi, fi, si),
+            Sel::Shell(ri, wi, si) => self.attach(ri, wi, si),
         }
     }
 
     fn collapse_or_up(&mut self) {
         match self.sel {
-            Sel::Project(pi) => {
-                if let Some(e) = self.proj_expanded.get_mut(pi)
+            Sel::Repository(ri) => {
+                if let Some(e) = self.repo_expanded.get_mut(ri)
                     && *e
                 {
                     *e = false;
                 }
             }
-            Sel::Feature(pi, fi) => {
+            Sel::Worktree(ri, wi) => {
                 let fexp = self
-                    .feat_expanded
-                    .get(pi)
-                    .and_then(|v| v.get(fi))
+                    .wt_expanded
+                    .get(ri)
+                    .and_then(|v| v.get(wi))
                     .copied()
                     .unwrap_or(false)
-                    && self.solo_shell(pi, fi).is_none();
+                    && self.solo_shell(ri, wi).is_none();
                 if fexp {
-                    if let Some(e) = self.feat_expanded.get_mut(pi).and_then(|v| v.get_mut(fi)) {
+                    if let Some(e) = self.wt_expanded.get_mut(ri).and_then(|v| v.get_mut(wi)) {
                         *e = false;
                     }
                 } else if !self.flatten {
-                    // In flatten mode there is no project row above the
-                    // features — `h` at a collapsed feature is a no-op.
-                    self.sel = Sel::Project(pi);
+                    // In flatten mode there is no repository row above the
+                    // worktrees — `h` at a collapsed worktree is a no-op.
+                    self.sel = Sel::Repository(ri);
                 }
             }
-            Sel::Shell(pi, fi, _) => self.sel = Sel::Feature(pi, fi),
+            Sel::Shell(ri, wi, _) => self.sel = Sel::Worktree(ri, wi),
         }
     }
 
     /// The shell the selection acts on: an explicit shell row, or the
-    /// single shell a folded feature row stands for.
+    /// single shell a folded worktree row stands for.
     pub(crate) fn selected_shell(&self) -> Option<(usize, usize, usize)> {
         match self.sel {
-            Sel::Shell(pi, fi, si) => Some((pi, fi, si)),
-            Sel::Feature(pi, fi) => self.solo_shell(pi, fi).map(|si| (pi, fi, si)),
+            Sel::Shell(ri, wi, si) => Some((ri, wi, si)),
+            Sel::Worktree(ri, wi) => self.solo_shell(ri, wi).map(|si| (ri, wi, si)),
             _ => None,
         }
     }
@@ -1200,8 +1204,8 @@ impl App {
 
     /// Pane id of the selected shell, if any.
     pub fn selected_shell_pane(&self) -> Option<String> {
-        self.selected_shell().and_then(|(pi, fi, si)| {
-            self.state.projects[pi].features[fi].shells[si]
+        self.selected_shell().and_then(|(ri, wi, si)| {
+            self.state.repositories[ri].worktrees[wi].shells[si]
                 .pane_id
                 .clone()
         })
@@ -1225,38 +1229,38 @@ impl App {
         }
     }
 
-    /// The dedicated agent-session name for a project. Deterministic:
+    /// The dedicated agent-session name for a repository. Deterministic:
     /// `wingman-session-<slug>`, suffixed with a stable hash of the path
-    /// when another project already owns that name or a foreign session
+    /// when another repository already owns that name or a foreign session
     /// occupies it.
-    fn agent_session_name(&self, tmux: &Tmux, proj: &crate::state::Project) -> String {
-        let base = Tmux::session_name(&proj.name);
+    fn agent_session_name(&self, tmux: &Tmux, repo: &crate::state::Repository) -> String {
+        let base = Tmux::session_name(&repo.name);
         let taken_by_other = self
             .state
-            .projects
+            .repositories
             .iter()
-            .any(|p| p.path != proj.path && p.session_name.as_deref() == Some(&base));
+            .any(|p| p.path != repo.path && p.session_name.as_deref() == Some(&base));
         if taken_by_other || tmux.session_exists(&base) {
-            format!("{base}-{}", Tmux::hash_suffix(&proj.path))
+            format!("{base}-{}", Tmux::hash_suffix(&repo.path))
         } else {
             base
         }
     }
 
-    /// Make sure the project's agent session exists, creating it if needed.
+    /// Make sure the repository's agent session exists, creating it if needed.
     /// Returns the session name and, when a NEW session was created, its
     /// first window (already running `shell` in `cwd`).
     fn ensure_agent_session(
         &mut self,
         tmux: &Tmux,
-        proj: &crate::state::Project,
+        repo: &crate::state::Repository,
         first_window: &str,
         cwd: &std::path::Path,
         shell: &str,
     ) -> Result<(String, Option<crate::tmux::WindowRef>)> {
-        let name = match &proj.session_name {
+        let name = match &repo.session_name {
             Some(n) if tmux.session_exists(n) => n.clone(),
-            _ => self.agent_session_name(tmux, proj),
+            _ => self.agent_session_name(tmux, repo),
         };
         if tmux.session_exists(&name) {
             return Ok((name, None));
@@ -1276,43 +1280,43 @@ impl App {
         Ok((name, Some(w)))
     }
 
-    pub fn create_feature(&mut self, pi: usize, name: &str) -> Result<()> {
-        let proj = self
+    pub fn create_worktree(&mut self, ri: usize, name: &str) -> Result<()> {
+        let repo = self
             .state
-            .projects
-            .get(pi)
+            .repositories
+            .get(ri)
             .cloned()
-            .ok_or_else(|| Error::State(format!("project index {pi} out of range")))?;
-        if proj.missing {
+            .ok_or_else(|| Error::State(format!("repository index {ri} out of range")))?;
+        if repo.missing {
             return Err(Error::State(format!(
-                "project '{}' is missing ({} is not a git repo)",
-                proj.name,
-                proj.path.display()
+                "repository '{}' is missing ({} is not a git repo)",
+                repo.name,
+                repo.path.display()
             )));
         }
         let tmux = self.require_tmux()?;
         let name = name.trim();
         if name.is_empty() {
-            return Err(Error::State("feature name is empty".into()));
+            return Err(Error::State("worktree name is empty".into()));
         }
         let slug = crate::git::slugify(name);
-        if proj.features.iter().any(|f| f.branch == slug) {
+        if repo.worktrees.iter().any(|f| f.branch == slug) {
             return Err(Error::State(format!(
-                "feature '{}' already exists in '{}'",
-                name, proj.name
+                "worktree '{}' already exists in '{}'",
+                name, repo.name
             )));
         }
-        if Git.branch_exists(&proj.path, &slug) {
+        if Git.branch_exists(&repo.path, &slug) {
             return Err(Error::Git(format!(
                 "branch '{slug}' already exists in {}",
-                proj.path.display()
+                repo.path.display()
             )));
         }
-        let base = Git.resolve_base_branch(&proj.path, &proj.base_branch)?;
+        let base = Git.resolve_base_branch(&repo.path, &repo.base_branch)?;
         let root = self
             .cfg
-            .worktree_root_for(&proj.path)
-            .join(&proj.name)
+            .worktree_root_for(&repo.path)
+            .join(&repo.name)
             .join(&slug);
         if root.exists() {
             return Err(Error::Git(format!(
@@ -1320,25 +1324,25 @@ impl App {
                 root.display()
             )));
         }
-        Git.worktree_add(&proj.path, &root, &slug, &base)?;
+        Git.worktree_add(&repo.path, &root, &slug, &base)?;
 
-        // spawn the agent shell in the project's dedicated session (created
+        // spawn the agent shell in the repository's dedicated session (created
         // on demand; never touches the dashboard's own session)
         let wname = Tmux::window_name(&slug, 0);
         let (session_name, window) =
-            self.ensure_agent_session(&tmux, &proj, &wname, &root, &proj.agent_shell)?;
+            self.ensure_agent_session(&tmux, &repo, &wname, &root, &repo.agent_shell)?;
         let w = match window {
             Some(w) => w,
-            None => tmux.new_window(&session_name, &wname, &root, &proj.agent_shell)?,
+            None => tmux.new_window(&session_name, &wname, &root, &repo.agent_shell)?,
         };
-        let spawn_cmd = self.agent_command_for_spawn(&proj.agent_command);
+        let spawn_cmd = self.agent_command_for_spawn(&repo.agent_command);
         tmux.send_keys(&w.pane_id, &spawn_cmd, true)?;
 
-        self.state.projects[pi].session_name = Some(session_name.clone());
-        self.state.projects[pi].features.push(Feature {
+        self.state.repositories[ri].session_name = Some(session_name.clone());
+        self.state.repositories[ri].worktrees.push(Worktree {
             name: name.to_string(),
             branch: slug,
-            worktree_path: root,
+            path: root,
             created_at: now_str(),
             shells: vec![Shell {
                 index: 0,
@@ -1347,85 +1351,77 @@ impl App {
                 pane_id: Some(w.pane_id),
             }],
         });
-        if let Some(v) = self.feat_expanded.get_mut(pi) {
+        if let Some(v) = self.wt_expanded.get_mut(ri) {
             v.push(false);
         }
-        self.sel = Sel::Feature(pi, self.state.projects[pi].features.len() - 1);
+        self.sel = Sel::Worktree(ri, self.state.repositories[ri].worktrees.len() - 1);
         self.clamp_sel();
         self.save_state()?;
         self.poll_dirty(true);
-        self.notify(format!("feature '{}' created", name));
+        self.notify(format!("worktree '{}' created", name));
         Ok(())
     }
 
-    /// Spawn one more shell under a feature, running `command`. An empty
-    /// (or whitespace-only) `command` means "whatever this project
-    /// normally runs" — the project's default agent command.
-    pub fn add_shell(&mut self, pi: usize, fi: usize, command: &str) -> Result<()> {
+    /// Spawn one more shell under a worktree, running `command`. An empty
+    /// (or whitespace-only) `command` means "whatever this repository
+    /// normally runs" — the repository's default agent command.
+    pub fn add_shell(&mut self, ri: usize, wi: usize, command: &str) -> Result<()> {
         let tmux = self.require_tmux()?;
-        let proj = self
+        let repo = self
             .state
-            .projects
-            .get(pi)
+            .repositories
+            .get(ri)
             .cloned()
-            .ok_or_else(|| Error::State(format!("project index {pi} out of range")))?;
-        if proj.missing {
+            .ok_or_else(|| Error::State(format!("repository index {ri} out of range")))?;
+        if repo.missing {
             return Err(Error::State(format!(
-                "project '{}' is missing ({} is not a git repo)",
-                proj.name,
-                proj.path.display()
+                "repository '{}' is missing ({} is not a git repo)",
+                repo.name,
+                repo.path.display()
             )));
         }
-        let feat = proj
-            .features
-            .get(fi)
+        let wt = repo
+            .worktrees
+            .get(wi)
             .cloned()
-            .ok_or_else(|| Error::State(format!("feature index {fi} out of range")))?;
-        let idx = feat.next_shell_index();
-        let wname = Tmux::window_name(&feat.branch, idx);
-        let (session_name, window) = self.ensure_agent_session(
-            &tmux,
-            &proj,
-            &wname,
-            &feat.worktree_path,
-            &proj.agent_shell,
-        )?;
+            .ok_or_else(|| Error::State(format!("worktree index {wi} out of range")))?;
+        let idx = wt.next_shell_index();
+        let wname = Tmux::window_name(&wt.branch, idx);
+        let (session_name, window) =
+            self.ensure_agent_session(&tmux, &repo, &wname, &wt.path, &repo.agent_shell)?;
         let w = match window {
             Some(w) => w,
-            None => tmux.new_window(
-                &session_name,
-                &wname,
-                &feat.worktree_path,
-                &proj.agent_shell,
-            )?,
+            None => tmux.new_window(&session_name, &wname, &wt.path, &repo.agent_shell)?,
         };
         let command = match command.trim() {
-            "" => proj.agent_command.as_str(),
+            "" => repo.agent_command.as_str(),
             c => c,
         };
-        // The command the user chose (or the project default) is what
+        // The command the user chose (or the repository default) is what
         // gets instrumented — M17 injects --settings only when it is a
         // recognised `claude`.
         let spawn_cmd = self.agent_command_for_spawn(command);
         tmux.send_keys(&w.pane_id, &spawn_cmd, true)?;
-        self.state.projects[pi].session_name = Some(session_name.clone());
-        self.state.projects[pi].features[fi].shells.push(Shell {
-            index: idx,
-            window_name: wname,
-            window_id: Some(w.window_id),
-            pane_id: Some(w.pane_id),
-        });
+        self.state.repositories[ri].session_name = Some(session_name.clone());
+        self.state.repositories[ri].worktrees[wi]
+            .shells
+            .push(Shell {
+                index: idx,
+                window_name: wname,
+                window_id: Some(w.window_id),
+                pane_id: Some(w.pane_id),
+            });
         self.save_state()?;
         self.notify(format!("shell #{} added ({})", idx, command));
         Ok(())
     }
 
-    pub fn attach(&mut self, pi: usize, fi: usize, si: usize) {
+    pub fn attach(&mut self, ri: usize, wi: usize, si: usize) {
         let Some(sh) = self
             .state
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
+            .repositories
+            .get(ri)
+            .and_then(|p| p.worktrees.get(wi))
             .and_then(|f| f.shells.get(si))
         else {
             return;
@@ -1434,8 +1430,8 @@ impl App {
             self.notify("shell has no live window");
             return;
         };
-        let Some(session) = self.state.projects[pi].session_name.clone() else {
-            self.notify("project has no agent session");
+        let Some(session) = self.state.repositories[ri].session_name.clone() else {
+            self.notify("repository has no agent session");
             return;
         };
         let res = match self.require_tmux() {
@@ -1458,13 +1454,13 @@ impl App {
         }
     }
 
-    pub fn quick_send(&mut self, pi: usize, fi: usize, si: usize, text: &str) -> Result<()> {
+    pub fn quick_send(&mut self, ri: usize, wi: usize, si: usize, text: &str) -> Result<()> {
         let tmux = self.require_tmux()?;
         let sh = self
             .state
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
+            .repositories
+            .get(ri)
+            .and_then(|p| p.worktrees.get(wi))
             .and_then(|f| f.shells.get(si))
             .cloned()
             .ok_or_else(|| Error::State("shell out of range".into()))?;
@@ -1479,20 +1475,20 @@ impl App {
         Ok(())
     }
 
-    pub fn delete_feature(&mut self, pi: usize, fi: usize, force: bool) -> Result<()> {
+    pub fn delete_worktree(&mut self, ri: usize, wi: usize, force: bool) -> Result<()> {
         let tmux = self.require_tmux()?;
-        let proj = self
+        let repo = self
             .state
-            .projects
-            .get(pi)
+            .repositories
+            .get(ri)
             .cloned()
-            .ok_or_else(|| Error::State(format!("project index {pi} out of range")))?;
-        let feat = proj
-            .features
-            .get(fi)
+            .ok_or_else(|| Error::State(format!("repository index {ri} out of range")))?;
+        let wt = repo
+            .worktrees
+            .get(wi)
             .cloned()
-            .ok_or_else(|| Error::State(format!("feature index {fi} out of range")))?;
-        for sh in &feat.shells {
+            .ok_or_else(|| Error::State(format!("worktree index {wi} out of range")))?;
+        for sh in &wt.shells {
             if let Some(wid) = &sh.window_id {
                 match tmux.kill_window(wid) {
                     Ok(()) => log::info!("killed window {wid} ({})", sh.window_name),
@@ -1500,42 +1496,42 @@ impl App {
                 }
             }
         }
-        Self::kill_session_if_empty(&tmux, &proj);
-        Git.worktree_remove(&proj.path, &feat.worktree_path, force)?;
+        Self::kill_session_if_empty(&tmux, &repo);
+        Git.worktree_remove(&repo.path, &wt.path, force)?;
         if self.cfg.worktrees.delete_branch {
-            match Git.branch_delete(&proj.path, &feat.branch) {
-                Ok(()) => log::info!("deleted branch '{}'", feat.branch),
+            match Git.branch_delete(&repo.path, &wt.branch) {
+                Ok(()) => log::info!("deleted branch '{}'", wt.branch),
                 Err(e) => log::warn!("branch delete: {e}"),
             }
         }
-        self.state.projects[pi].features.remove(fi);
-        if let Some(v) = self.feat_expanded.get_mut(pi) {
-            v.remove(fi);
+        self.state.repositories[ri].worktrees.remove(wi);
+        if let Some(v) = self.wt_expanded.get_mut(ri) {
+            v.remove(wi);
         }
         self.clamp_sel();
         self.save_state()?;
         self.poll_dirty(true);
-        self.notify(format!("feature '{}' deleted", feat.name));
+        self.notify(format!("worktree '{}' deleted", wt.name));
         Ok(())
     }
 
     /// Close one shell: kill its tmux window and drop it from the
-    /// feature. The feature itself — worktree, branch, sibling shells —
-    /// is untouched; deleting the feature is `d` on the feature row.
-    pub fn delete_shell(&mut self, pi: usize, fi: usize, si: usize) -> Result<()> {
+    /// worktree. The worktree itself — worktree, branch, sibling shells —
+    /// is untouched; deleting the worktree is `d` on the worktree row.
+    pub fn delete_shell(&mut self, ri: usize, wi: usize, si: usize) -> Result<()> {
         let tmux = self.require_tmux()?;
-        let proj = self
+        let repo = self
             .state
-            .projects
-            .get(pi)
+            .repositories
+            .get(ri)
             .cloned()
-            .ok_or_else(|| Error::State(format!("project index {pi} out of range")))?;
-        let feat = proj
-            .features
-            .get(fi)
+            .ok_or_else(|| Error::State(format!("repository index {ri} out of range")))?;
+        let wt = repo
+            .worktrees
+            .get(wi)
             .cloned()
-            .ok_or_else(|| Error::State(format!("feature index {fi} out of range")))?;
-        let sh = feat
+            .ok_or_else(|| Error::State(format!("worktree index {wi} out of range")))?;
+        let sh = wt
             .shells
             .get(si)
             .cloned()
@@ -1546,8 +1542,8 @@ impl App {
                 Err(e) => log::warn!("kill-window {wid}: {e}"),
             }
         }
-        Self::kill_session_if_empty(&tmux, &proj);
-        self.state.projects[pi].features[fi].shells.remove(si);
+        Self::kill_session_if_empty(&tmux, &repo);
+        self.state.repositories[ri].worktrees[wi].shells.remove(si);
         self.clamp_sel();
         self.save_state()?;
         self.poll_dirty(true);
@@ -1557,8 +1553,8 @@ impl App {
 
     /// Killing a session's last window destroys the session; if it
     /// survives with no LazyWingman windows left, kill it too.
-    fn kill_session_if_empty(tmux: &Tmux, proj: &crate::state::Project) {
-        if let Some(sess) = &proj.session_name
+    fn kill_session_if_empty(tmux: &Tmux, repo: &crate::state::Repository) {
+        if let Some(sess) = &repo.session_name
             && tmux.session_exists(sess)
             && tmux
                 .list_windows(sess)
@@ -1616,19 +1612,19 @@ impl App {
 
     /// Cached dirty flag for the tree — filled by [`App::poll_dirty`],
     /// never a `git status` on the render path.
-    pub fn feature_dirty_cached(&self, pi: usize, fi: usize) -> bool {
+    pub fn worktree_dirty_cached(&self, ri: usize, wi: usize) -> bool {
         self.state
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-            .and_then(|f| self.dirty.get(&f.worktree_path))
+            .repositories
+            .get(ri)
+            .and_then(|p| p.worktrees.get(wi))
+            .and_then(|f| self.dirty.get(&f.path))
             .copied()
             .unwrap_or(false)
     }
 
     /// Refresh the dirty cache, at most every [`DIRTY_INTERVAL`]. Called
     /// from the poll tick; `force` skips the interval after a change that
-    /// invalidates it (feature created/deleted).
+    /// invalidates it (worktree created/deleted).
     pub fn poll_dirty(&mut self, force: bool) {
         if !force
             && self
@@ -1640,9 +1636,9 @@ impl App {
         self.last_dirty_poll = Some(Instant::now());
         let paths: Vec<PathBuf> = self
             .state
-            .projects
+            .repositories
             .iter()
-            .flat_map(|p| p.features.iter().map(|f| f.worktree_path.clone()))
+            .flat_map(|p| p.worktrees.iter().map(|f| f.path.clone()))
             .collect();
         self.dirty = paths
             .into_iter()
@@ -1653,30 +1649,30 @@ impl App {
             .collect();
     }
 
-    /// Is the feature's worktree dirty? (drives the --force confirm option)
-    pub fn feature_is_dirty(&self, pi: usize, fi: usize) -> bool {
+    /// Is the worktree's worktree dirty? (drives the --force confirm option)
+    pub fn worktree_is_dirty(&self, ri: usize, wi: usize) -> bool {
         self.state
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-            .and_then(|f| Git.worktree_dirty(&f.worktree_path).ok())
+            .repositories
+            .get(ri)
+            .and_then(|p| p.worktrees.get(wi))
+            .and_then(|f| Git.worktree_dirty(&f.path).ok())
             .unwrap_or(false)
     }
 
-    pub fn confirm_delete_feature(&mut self) {
-        let Some((pi, fi, _)) = self.selected_feature_ctx() else {
-            self.notify("select a feature first");
+    pub fn confirm_delete_worktree(&mut self) {
+        let Some((ri, wi, _)) = self.selected_worktree_ctx() else {
+            self.notify("select a worktree first");
             return;
         };
-        let dirty = self.feature_is_dirty(pi, fi);
-        let feat = &self.state.projects[pi].features[fi];
+        let dirty = self.worktree_is_dirty(ri, wi);
+        let wt = &self.state.repositories[ri].worktrees[wi];
         self.mode = Mode::Confirm {
             confirm: Confirm {
-                title: "Delete Feature".into(),
+                title: "Delete Worktree".into(),
                 body: format!(
-                    "Delete feature '{}'?\nworktree: {}\n{}",
-                    feat.name,
-                    feat.worktree_path.display(),
+                    "Delete worktree '{}'?\nworktree: {}\n{}",
+                    wt.name,
+                    wt.path.display(),
                     if dirty {
                         format!(
                             "{} worktree has uncommitted changes — force delete will discard them",
@@ -1691,32 +1687,32 @@ impl App {
                 } else {
                     None
                 },
-                action: ConfirmAction::DeleteFeature {
-                    project: pi,
-                    feature: fi,
+                action: ConfirmAction::DeleteWorktree {
+                    repository: ri,
+                    worktree: wi,
                 },
             },
         };
     }
 
     pub fn confirm_delete_shell(&mut self) {
-        let Sel::Shell(pi, fi, si) = self.sel else {
+        let Sel::Shell(ri, wi, si) = self.sel else {
             self.notify("select a shell first");
             return;
         };
-        let feat = &self.state.projects[pi].features[fi];
-        let sh = &feat.shells[si];
+        let wt = &self.state.repositories[ri].worktrees[wi];
+        let sh = &wt.shells[si];
         self.mode = Mode::Confirm {
             confirm: Confirm {
                 title: "Close Shell".into(),
                 body: format!(
-                    "Close shell '{}' of feature '{}'?\nThe tmux window is killed; the feature, its worktree and its other shells stay.",
-                    sh.window_name, feat.name
+                    "Close shell '{}' of worktree '{}'?\nThe tmux window is killed; the worktree, its worktree and its other shells stay.",
+                    sh.window_name, wt.name
                 ),
                 force_label: None,
                 action: ConfirmAction::DeleteShell {
-                    project: pi,
-                    feature: fi,
+                    repository: ri,
+                    worktree: wi,
                     shell: si,
                 },
             },
@@ -1724,84 +1720,84 @@ impl App {
     }
 
     /// Open the add-shell prompt (`a`). The field starts empty; the popup
-    /// shows the project's default command as a hint and an empty submit
+    /// shows the repository's default command as a hint and an empty submit
     /// falls back to it.
     fn open_add_shell(&mut self) {
-        if self.selected_feature_ctx().is_some() {
+        if self.selected_worktree_ctx().is_some() {
             self.mode = Mode::Input {
                 kind: InputKind::AddShell,
                 text: String::new(),
             };
         } else {
-            self.notify("select a feature to add a shell");
+            self.notify("select a worktree to add a shell");
         }
     }
 
-    /// Open the New Feature popup for the selected project, resolving the
+    /// Open the New Worktree popup for the selected repository, resolving the
     /// branch the worktree would be cut from up front so the popup can name
-    /// it. A feature always branches from the project's base branch, never
+    /// it. A worktree always branches from the repository's base branch, never
     /// from whatever the repo currently has checked out.
-    pub(crate) fn open_new_feature(&mut self) {
-        let pi = match self.sel {
-            Sel::Project(pi) | Sel::Feature(pi, _) => pi,
+    pub(crate) fn open_new_worktree(&mut self) {
+        let ri = match self.sel {
+            Sel::Repository(ri) | Sel::Worktree(ri, _) => ri,
             Sel::Shell(..) => {
-                self.notify("select a project to add a feature");
+                self.notify("select a repository to add a worktree");
                 return;
             }
         };
-        self.new_feature_base = self.base_hint(pi);
+        self.new_worktree_base = self.base_hint(ri);
         self.mode = Mode::Input {
-            kind: InputKind::NewFeature,
+            kind: InputKind::NewWorktree,
             text: String::new(),
         };
     }
 
-    /// Resolve what `create_feature` would branch from for project `pi` —
+    /// Resolve what `create_worktree` would branch from for repository `ri` —
     /// same call, so the popup cannot promise a base the creation then
     /// ignores. `None` for a missing repo (creation refuses it anyway).
-    fn base_hint(&self, pi: usize) -> Option<BaseHint> {
-        let proj = self.state.projects.get(pi)?;
-        if proj.missing {
+    fn base_hint(&self, ri: usize) -> Option<BaseHint> {
+        let repo = self.state.repositories.get(ri)?;
+        if repo.missing {
             return None;
         }
-        let configured = proj.base_branch.trim().to_string();
-        let branch = Git.resolve_base_branch(&proj.path, &configured).ok()?;
+        let configured = repo.base_branch.trim().to_string();
+        let branch = Git.resolve_base_branch(&repo.path, &configured).ok()?;
         // `resolve_base_branch` returns the configured branch when it
         // exists, so anything else means it fell back to the checkout.
         let missing = (!configured.is_empty() && branch != configured).then_some(configured);
         Some(BaseHint { branch, missing })
     }
 
-    /// What the New Feature popup should say the branch is cut from.
-    pub fn new_feature_base(&self) -> Option<&BaseHint> {
-        self.new_feature_base.as_ref()
+    /// What the New Worktree popup should say the branch is cut from.
+    pub fn new_worktree_base(&self) -> Option<&BaseHint> {
+        self.new_worktree_base.as_ref()
     }
 
     /// The command an empty add-shell submit would run: the selected
-    /// project's default agent command. Drives the popup's hint line.
+    /// repository's default agent command. Drives the popup's hint line.
     pub fn add_shell_default(&self) -> Option<&str> {
-        let pi = match self.sel {
-            Sel::Project(pi) | Sel::Feature(pi, _) | Sel::Shell(pi, _, _) => pi,
+        let ri = match self.sel {
+            Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, _, _) => ri,
         };
         self.state
-            .projects
-            .get(pi)
+            .repositories
+            .get(ri)
             .map(|p| p.agent_command.as_str())
     }
 
-    fn selected_feature_ctx(&self) -> Option<(usize, usize, Option<usize>)> {
+    fn selected_worktree_ctx(&self) -> Option<(usize, usize, Option<usize>)> {
         match self.sel {
-            Sel::Feature(pi, fi) => Some((pi, fi, None)),
-            Sel::Shell(pi, fi, si) => Some((pi, fi, Some(si))),
+            Sel::Worktree(ri, wi) => Some((ri, wi, None)),
+            Sel::Shell(ri, wi, si) => Some((ri, wi, Some(si))),
             _ => None,
         }
     }
 
     // ---------------------------------------------------------- polling
 
-    /// Compiled status patterns for a project (cached by path).
-    fn patterns_for(&mut self, proj_path: &str, agent_command: &str) -> Compiled {
-        let key = format!("{proj_path}\u{1f}{agent_command}");
+    /// Compiled status patterns for a repository (cached by path).
+    fn patterns_for(&mut self, repo_path: &str, agent_command: &str) -> Compiled {
+        let key = format!("{repo_path}\u{1f}{agent_command}");
         if let Some(c) = self.pattern_cache.get(&key) {
             return c.clone();
         }
@@ -1836,11 +1832,11 @@ impl App {
         let sel_pane = self.selected_shell_pane();
         // Collect shell metadata first to avoid borrowing self twice.
         let mut shells: Vec<(String, String, String)> = Vec::new();
-        for proj in &self.state.projects {
-            let path = proj.path.to_string_lossy().into_owned();
-            let cmd = proj.agent_command.clone();
-            for feat in &proj.features {
-                for sh in &feat.shells {
+        for repo in &self.state.repositories {
+            let path = repo.path.to_string_lossy().into_owned();
+            let cmd = repo.agent_command.clone();
+            for wt in &repo.worktrees {
+                for sh in &wt.shells {
                     if let Some(pid) = &sh.pane_id {
                         shells.push((path.clone(), cmd.clone(), pid.clone()));
                     }
@@ -1859,7 +1855,7 @@ impl App {
             {
                 // The kill switch: `agent_hooks = false` must classify
                 // purely from `capture-pane`, exactly as before this
-                // feature existed. Turning the flag off only stops writing
+                // worktree existed. Turning the flag off only stops writing
                 // new overlays — a pane instrumented earlier (or by another
                 // LazyWingman instance sharing the tmux server) still
                 // carries one, and it outlives both a restart and this
@@ -1898,7 +1894,7 @@ impl App {
         // ctrl-u/ctrl-d half-page, ctrl-f/ctrl-b full-page, Home/End
         // first/last, ctrl-c quit — always, from any state. Handled keys
         // are consumed: they must not fall through to a mode handler
-        // (ctrl-d is navigation here, never "delete feature"). While the
+        // (ctrl-d is navigation here, never "delete worktree"). While the
         // help overlay is open these motions scroll the help (the palette
         // takes over the viewport); while the theme picker is open they
         // move the picker cursor; elsewhere they move the tree.
@@ -2168,7 +2164,7 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
             KeyCode::Char('h') | KeyCode::Left => self.collapse_or_up(),
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.expand_or_attach(),
-            KeyCode::Char('n') => self.open_new_feature(),
+            KeyCode::Char('n') => self.open_new_worktree(),
             KeyCode::Char('a') => self.open_add_shell(),
             KeyCode::Char('s') => {
                 if self.selected_shell().is_some() {
@@ -2180,7 +2176,7 @@ impl App {
             KeyCode::Char('p') => self.open_messages(),
             KeyCode::Char('d') => match self.sel {
                 Sel::Shell(..) => self.confirm_delete_shell(),
-                _ => self.confirm_delete_feature(),
+                _ => self.confirm_delete_worktree(),
             },
             KeyCode::Char('r') => {
                 self.refresh();
@@ -2221,20 +2217,20 @@ impl App {
     /// everything when no shell is selected: there is no context to
     /// resolve against, and blanks would be worse than the template.
     pub(crate) fn expand_message(&self, text: &str) -> String {
-        let Some((pi, fi, _)) = self.selected_shell() else {
+        let Some((ri, wi, _)) = self.selected_shell() else {
             return text.to_string();
         };
-        let Some(proj) = self.state.projects.get(pi) else {
+        let Some(repo) = self.state.repositories.get(ri) else {
             return text.to_string();
         };
-        let Some(feat) = proj.features.get(fi) else {
+        let Some(wt) = repo.worktrees.get(wi) else {
             return text.to_string();
         };
-        text.replace("<base_branch>", &proj.base_branch)
-            .replace("<branch>", &feat.branch)
-            .replace("<feature>", &feat.name)
-            .replace("<project>", &proj.name)
-            .replace("<worktree>", &feat.worktree_path.display().to_string())
+        text.replace("<base_branch>", &repo.base_branch)
+            .replace("<branch>", &wt.branch)
+            .replace("<worktree_path>", &wt.path.display().to_string())
+            .replace("<worktree>", &wt.name)
+            .replace("<repository>", &repo.name)
     }
 
     /// Send the configured message at `index` to the selected shell — the
@@ -2249,11 +2245,11 @@ impl App {
         else {
             return;
         };
-        let Some((pi, fi, si)) = self.selected_shell() else {
+        let Some((ri, wi, si)) = self.selected_shell() else {
             self.notify("select a shell to send a predefined message");
             return;
         };
-        if let Err(e) = self.quick_send(pi, fi, si, &text) {
+        if let Err(e) = self.quick_send(ri, wi, si, &text) {
             self.fail(&e);
         }
     }
@@ -2294,7 +2290,7 @@ impl App {
 
     /// Open the live theme picker on the current theme. Built-ins are
     /// listed before user themes (theming rule: the first rows are the
-    /// same in every project).
+    /// same in every repository).
     fn open_theme_picker(&mut self) {
         let names = match crate::theme::available_names() {
             Ok(n) if !n.is_empty() => n,
@@ -2542,7 +2538,7 @@ impl App {
     fn run_bar_action(&mut self, action: BarAction) {
         match action {
             BarAction::Help => self.open_help(),
-            BarAction::NewFeature => self.open_new_feature(),
+            BarAction::NewWorktree => self.open_new_worktree(),
             BarAction::AddShell => self.open_add_shell(),
             BarAction::QuickSend => {
                 if self.selected_shell().is_some() {
@@ -2550,11 +2546,11 @@ impl App {
                 }
             }
             BarAction::PredefinedSend => self.open_messages(),
-            BarAction::DeleteFeature => self.confirm_delete_feature(),
+            BarAction::DeleteWorktree => self.confirm_delete_worktree(),
             BarAction::DeleteShell => self.confirm_delete_shell(),
             BarAction::Attach => {
-                if let Some((pi, fi, si)) = self.selected_shell() {
-                    self.attach(pi, fi, si);
+                if let Some((ri, wi, si)) = self.selected_shell() {
+                    self.attach(ri, wi, si);
                 }
             }
         }
@@ -2721,17 +2717,17 @@ impl App {
     /// keep. Failures are toasted here either way.
     fn submit_input(&mut self, kind: InputKind, text: String) -> bool {
         let res = match kind {
-            InputKind::NewFeature => match self.sel {
-                Sel::Project(pi) => self.create_feature(pi, &text),
-                Sel::Feature(pi, _) => self.create_feature(pi, &text),
-                _ => Err(Error::State("select a project first".into())),
+            InputKind::NewWorktree => match self.sel {
+                Sel::Repository(ri) => self.create_worktree(ri, &text),
+                Sel::Worktree(ri, _) => self.create_worktree(ri, &text),
+                _ => Err(Error::State("select a repository first".into())),
             },
-            InputKind::AddShell => match self.selected_feature_ctx() {
-                Some((pi, fi, _)) => self.add_shell(pi, fi, &text),
-                None => Err(Error::State("select a feature first".into())),
+            InputKind::AddShell => match self.selected_worktree_ctx() {
+                Some((ri, wi, _)) => self.add_shell(ri, wi, &text),
+                None => Err(Error::State("select a worktree first".into())),
             },
             InputKind::QuickSend => match self.selected_shell() {
-                Some((pi, fi, si)) => self.quick_send(pi, fi, si, &text),
+                Some((ri, wi, si)) => self.quick_send(ri, wi, si, &text),
                 None => Err(Error::State("select a shell first".into())),
             },
         };
@@ -2744,14 +2740,15 @@ impl App {
 
     fn run_confirm(&mut self, action: ConfirmAction, force: bool) {
         let res = match action {
-            ConfirmAction::DeleteFeature { project, feature } => {
-                self.delete_feature(project, feature, force)
-            }
+            ConfirmAction::DeleteWorktree {
+                repository,
+                worktree,
+            } => self.delete_worktree(repository, worktree, force),
             ConfirmAction::DeleteShell {
-                project,
-                feature,
+                repository,
+                worktree,
                 shell,
-            } => self.delete_shell(project, feature, shell),
+            } => self.delete_shell(repository, worktree, shell),
         };
         if let Err(e) = res {
             self.fail(&e);
@@ -2874,7 +2871,7 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
         if app.quit {
             break;
         }
-        // Background worktree discovery: one project per iteration, so a
+        // Background worktree discovery: one repository per iteration, so a
         // scope with dozens of repos fills the tree in over the next few
         // frames instead of freezing before the first one.
         let loading = app.drain_pending_worktrees();
@@ -2882,7 +2879,7 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
             app.poll();
         }
         // wait for input, at most until the next poll is due — but never
-        // while there is still a project to load: that work owes a redraw.
+        // while there is still a repository to load: that work owes a redraw.
         let since = app.last_poll.elapsed();
         let until_poll = Duration::from_millis(app.cfg.poll_interval_ms).saturating_sub(since);
         let timeout = if loading {
@@ -2911,7 +2908,7 @@ fn dispatch_event(app: &mut App, ev: Event) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{Feature, Project, Shell};
+    use crate::state::{Repository, Shell, Worktree};
     use crate::theme;
     use crate::tmux::testutil::{tmux_inside, tmux_standalone, with_tmux_server};
     use std::path::Path;
@@ -2922,7 +2919,7 @@ mod tests {
             theme::load("ansi", false).unwrap(),
             Some(tmux),
         );
-        // Tests seed projects under /tmp without going through
+        // Tests seed repositories under /tmp without going through
         // boot_discovery — make the whole filesystem the scope.
         app.scope_root = PathBuf::from("/");
         app
@@ -2948,13 +2945,13 @@ mod tests {
         assert_eq!(app.agent_command_for_spawn("claude"), "claude");
     }
 
-    /// Seed state with one project whose agent session and first shell
+    /// Seed state with one repository whose agent session and first shell
     /// window really exist on the test tmux server.
-    fn seed_project_with_shell(tmux: &Tmux, app: &mut App) -> (String, String) {
+    fn seed_repository_with_shell(tmux: &Tmux, app: &mut App) -> (String, String) {
         let w = tmux
-            .new_session("wingman-session-p", "lw:feat/0", Path::new("/tmp"), "bash")
+            .new_session("wingman-session-p", "lw:wt/0", Path::new("/tmp"), "bash")
             .unwrap();
-        app.state.projects.push(Project {
+        app.state.repositories.push(Repository {
             name: "p".into(),
             path: PathBuf::from("/tmp/p"),
             base_branch: "master".into(),
@@ -2962,14 +2959,14 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: Some("wingman-session-p".into()),
             missing: false,
-            features: vec![Feature {
-                name: "feat".into(),
-                branch: "feat".into(),
-                worktree_path: PathBuf::from("/tmp/p-wt"),
+            worktrees: vec![Worktree {
+                name: "wt".into(),
+                branch: "wt".into(),
+                path: PathBuf::from("/tmp/p-wt"),
                 created_at: "2026-08-16".into(),
                 shells: vec![Shell {
                     index: 0,
-                    window_name: "lw:feat/0".into(),
+                    window_name: "lw:wt/0".into(),
                     window_id: Some(w.window_id.clone()),
                     pane_id: Some(w.pane_id.clone()),
                 }],
@@ -2991,7 +2988,7 @@ mod tests {
             let tmux = tmux_standalone(sock);
             let mut app = app_with(tmux.clone());
             app.cfg.defaults.agent_hooks = false;
-            let (_wid, pid) = seed_project_with_shell(&tmux, &mut app);
+            let (_wid, pid) = seed_repository_with_shell(&tmux, &mut app);
             tmux.send_keys(&pid, "cat", true).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(300));
             tmux.set_pane_option(&pid, crate::hooks::OVERLAY_KEY, "blocked:9999999999")
@@ -3015,7 +3012,7 @@ mod tests {
         with_tmux_server(|sock, _tmux| {
             let tmux = tmux_standalone(sock);
             let mut app = app_with(tmux.clone());
-            let (wid, _pid) = seed_project_with_shell(&tmux, &mut app);
+            let (wid, _pid) = seed_repository_with_shell(&tmux, &mut app);
 
             app.attach(0, 0, 0);
 
@@ -3050,7 +3047,7 @@ mod tests {
         with_tmux_server(|sock, _tmux| {
             let tmux = tmux_inside(sock);
             let mut app = app_with(tmux.clone());
-            let (_wid, _pid) = seed_project_with_shell(&tmux, &mut app);
+            let (_wid, _pid) = seed_repository_with_shell(&tmux, &mut app);
 
             app.attach(0, 0, 0);
 
@@ -3068,14 +3065,14 @@ mod tests {
     /// "no server running".
     #[test]
     fn standalone_startup_boots_without_a_server() {
-        // Isolate XDG: this test asserts an empty project list, and other
+        // Isolate XDG: this test asserts an empty repository list, and other
         // tests persist state to the real path when run in parallel.
         crate::util::testutil::with_fresh_xdg(|| {
             crate::tmux::testutil::with_no_server(|sock| {
                 let tmux = tmux_standalone(sock);
                 let mut app = app_with(tmux);
                 app.startup().unwrap();
-                assert!(app.state.projects.is_empty());
+                assert!(app.state.repositories.is_empty());
                 // the server now exists and is supervised
                 let t = app.tmux.as_ref().unwrap();
                 assert!(!t.session_exists("wingman-session-p"));
@@ -3084,7 +3081,7 @@ mod tests {
         });
     }
 
-    // ---- M8.3 — project discovery ----
+    // ---- M8.3 — repository discovery ----
 
     fn git(dir: &Path, args: &[&str]) {
         let status = std::process::Command::new("git")
@@ -3110,9 +3107,9 @@ mod tests {
     }
 
     /// `discover_and_import` finds repos under a root, imports them as
-    /// projects, and is idempotent. No cache — the scan is live.
+    /// repositories, and is idempotent. No cache — the scan is live.
     #[test]
-    fn discover_and_import_adds_new_projects_and_is_idempotent() {
+    fn discover_and_import_adds_new_repositories_and_is_idempotent() {
         crate::util::testutil::with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             let r = root.path();
@@ -3123,14 +3120,19 @@ mod tests {
             let mut app = app_with(tmux_standalone("unused"));
             let n = app.discover_and_import(r).unwrap();
             assert_eq!(n, 2);
-            assert_eq!(app.state.projects.len(), 2);
-            let names: Vec<&str> = app.state.projects.iter().map(|p| p.name.as_str()).collect();
+            assert_eq!(app.state.repositories.len(), 2);
+            let names: Vec<&str> = app
+                .state
+                .repositories
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect();
             assert!(names.contains(&"repo-a") && names.contains(&"repo-b"));
 
             // idempotent: re-scan adds nothing
             let n2 = app.discover_and_import(r).unwrap();
             assert_eq!(n2, 0);
-            assert_eq!(app.state.projects.len(), 2);
+            assert_eq!(app.state.repositories.len(), 2);
         });
     }
 
@@ -3149,25 +3151,25 @@ mod tests {
             app.boot_discovery_from(r).unwrap();
             // No prompt — the scan just ran and imported the scope.
             assert!(matches!(app.mode, Mode::Normal));
-            assert_eq!(app.state.projects.len(), 2);
+            assert_eq!(app.state.repositories.len(), 2);
             assert_eq!(app.scope_root, crate::util::normalize_path(r));
-            // Two projects → not flattened, both unfolded; the first
-            // project's worktrees load at boot and the second's is queued.
+            // Two repositories → not flattened, both unfolded; the first
+            // repository's worktrees load at boot and the second's is queued.
             assert!(!app.flatten);
-            assert!(app.visible_projects().len() == 2);
+            assert!(app.visible_repositories().len() == 2);
             assert_eq!(app.pending_worktrees.len(), 1, "the second is queued");
             while app.drain_pending_worktrees() {}
             assert!(
                 app.worktrees_loaded.iter().all(|f| *f),
-                "draining the queue loads every unfolded project"
+                "draining the queue loads every unfolded repository"
             );
             // the import is persisted — a restart must not lose it
             let loaded = State::load().unwrap();
-            assert_eq!(loaded.projects.len(), 2, "scan imports must be saved");
+            assert_eq!(loaded.repositories.len(), 2, "scan imports must be saved");
         });
     }
 
-    /// Expanding a project lazily loads its worktrees (once per run).
+    /// Expanding a repository lazily loads its worktrees (once per run).
     #[test]
     fn expand_loads_worktrees_lazily_and_only_once() {
         crate::util::testutil::with_fresh_xdg(|| {
@@ -3181,26 +3183,26 @@ mod tests {
 
             let mut app = app_with(tmux_standalone("unused"));
             app.boot_discovery_from(r).unwrap();
-            assert!(!app.flatten, "6 projects → not flattened");
+            assert!(!app.flatten, "6 repositories → not flattened");
             assert_eq!(
                 app.worktrees_loaded.iter().filter(|f| **f).count(),
                 1,
-                "boot loads the first project only; the rest wait in the queue"
+                "boot loads the first repository only; the rest wait in the queue"
             );
-            // Expanding a project the drain has not reached yet loads ITS
+            // Expanding a repository the drain has not reached yet loads ITS
             // worktrees there and then, once.
-            let pi = *app.pending_worktrees.back().unwrap();
-            app.proj_expanded[pi] = false; // ensure collapsed
-            app.sel = Sel::Project(pi);
+            let ri = *app.pending_worktrees.back().unwrap();
+            app.repo_expanded[ri] = false; // ensure collapsed
+            app.sel = Sel::Repository(ri);
             app.expand_or_attach();
-            assert!(app.worktrees_loaded[pi], "expand loads worktrees");
+            assert!(app.worktrees_loaded[ri], "expand loads worktrees");
             assert_eq!(
                 app.worktrees_loaded.iter().filter(|f| **f).count(),
                 2,
-                "only the boot project and the expanded one"
+                "only the boot repository and the expanded one"
             );
             // collapsing + expanding again does not re-run the listing
-            app.proj_expanded[pi] = false;
+            app.repo_expanded[ri] = false;
             app.expand_or_attach();
             assert_eq!(
                 app.worktrees_loaded.iter().filter(|f| **f).count(),
@@ -3213,15 +3215,15 @@ mod tests {
         });
     }
 
-    /// Everything unfolds by default up to the cap: >30 projects stay
+    /// Everything unfolds by default up to the cap: >30 repositories stay
     /// collapsed (the tree would be unreadable and every row costs a
     /// `git worktree list`), ≤30 expand.
     #[test]
-    fn many_projects_collapse_by_default_few_expand() {
+    fn many_repositories_collapse_by_default_few_expand() {
         let mut app = app_with(tmux_standalone("unused"));
         app.scope_root = PathBuf::from("/");
         for i in 0..31 {
-            app.state.projects.push(Project {
+            app.state.repositories.push(Repository {
                 name: format!("p{i}"),
                 path: PathBuf::from(format!("/tmp/p{i}")),
                 base_branch: "main".into(),
@@ -3229,18 +3231,18 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
-                features: vec![],
+                worktrees: vec![],
             });
         }
         app.build_tree_flags();
-        // 31 projects → collapsed, not flattened
+        // 31 repositories → collapsed, not flattened
         assert!(!app.flatten);
-        assert!(app.proj_expanded.iter().all(|e| !*e));
+        assert!(app.repo_expanded.iter().all(|e| !*e));
 
         let mut few = app_with(tmux_standalone("unused"));
         few.scope_root = PathBuf::from("/");
         for i in 0..30 {
-            few.state.projects.push(Project {
+            few.state.repositories.push(Repository {
                 name: format!("p{i}"),
                 path: PathBuf::from(format!("/tmp/p{i}")),
                 base_branch: "main".into(),
@@ -3248,17 +3250,17 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
-                features: vec![],
+                worktrees: vec![],
             });
         }
         few.build_tree_flags();
-        // 30 projects → expanded
-        assert!(few.proj_expanded.iter().all(|e| *e));
+        // 30 repositories → expanded
+        assert!(few.repo_expanded.iter().all(|e| *e));
 
-        // 1 project WITH features → flattened (features are the tree)
+        // 1 repository WITH worktrees → flattened (worktrees are the tree)
         let mut one = app_with(tmux_standalone("unused"));
         one.scope_root = PathBuf::from("/");
-        one.state.projects.push(Project {
+        one.state.repositories.push(Repository {
             name: "p".into(),
             path: PathBuf::from("/tmp/p"),
             base_branch: "main".into(),
@@ -3266,22 +3268,22 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features: vec![Feature {
+            worktrees: vec![Worktree {
                 name: "f".into(),
                 branch: "f".into(),
-                worktree_path: PathBuf::from("/tmp/p/f"),
+                path: PathBuf::from("/tmp/p/f"),
                 created_at: "".into(),
                 shells: vec![],
             }],
         });
         one.build_tree_flags();
-        assert!(one.flatten, "1 project with features → flat");
+        assert!(one.flatten, "1 repository with worktrees → flat");
 
-        // 1 project WITHOUT features → NOT flattened; the row stays so
-        // the project is visible instead of a blank tree.
+        // 1 repository WITHOUT worktrees → NOT flattened; the row stays so
+        // the repository is visible instead of a blank tree.
         let mut empty = app_with(tmux_standalone("unused"));
         empty.scope_root = PathBuf::from("/");
-        empty.state.projects.push(Project {
+        empty.state.repositories.push(Repository {
             name: "p".into(),
             path: PathBuf::from("/tmp/p"),
             base_branch: "main".into(),
@@ -3289,21 +3291,21 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features: vec![],
+            worktrees: vec![],
         });
         empty.build_tree_flags();
-        assert!(!empty.flatten, "no features → keep the project row");
+        assert!(!empty.flatten, "no worktrees → keep the repository row");
     }
 
-    /// Features unfold by default too — a folded feature hides the very
+    /// Worktrees unfold by default too — a folded worktree hides the very
     /// shells the dashboard exists to supervise, and expanding one costs
     /// nothing (its shells are already in state).
     #[test]
-    fn features_are_expanded_by_default() {
+    fn worktrees_are_expanded_by_default() {
         let mut app = app_with(tmux_standalone("unused"));
         app.scope_root = PathBuf::from("/");
         for i in 0..2 {
-            app.state.projects.push(Project {
+            app.state.repositories.push(Repository {
                 name: format!("p{i}"),
                 path: PathBuf::from(format!("/tmp/p{i}")),
                 base_branch: "main".into(),
@@ -3311,10 +3313,10 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
-                features: vec![Feature {
+                worktrees: vec![Worktree {
                     name: "f".into(),
                     branch: "f".into(),
-                    worktree_path: PathBuf::from(format!("/tmp/p{i}/f")),
+                    path: PathBuf::from(format!("/tmp/p{i}/f")),
                     created_at: String::new(),
                     shells: vec![],
                 }],
@@ -3322,13 +3324,13 @@ mod tests {
         }
         app.build_tree_flags();
         assert!(
-            app.feat_expanded.iter().flatten().all(|e| *e),
-            "every feature starts unfolded"
+            app.wt_expanded.iter().flatten().all(|e| *e),
+            "every worktree starts unfolded"
         );
     }
 
-    /// Boot does not block on one `git worktree list` per project: only
-    /// the first visible project loads synchronously (it is what the first
+    /// Boot does not block on one `git worktree list` per repository: only
+    /// the first visible repository loads synchronously (it is what the first
     /// frame draws), the rest are queued and drained by the event loop.
     #[test]
     fn boot_queues_worktree_loading_instead_of_blocking() {
@@ -3342,36 +3344,36 @@ mod tests {
             let mut app = app_with(tmux_standalone("unused"));
             app.boot_discovery_from(r).unwrap();
             assert!(
-                app.proj_expanded.iter().all(|e| *e),
-                "6 projects are under the cap → all unfolded"
+                app.repo_expanded.iter().all(|e| *e),
+                "6 repositories are under the cap → all unfolded"
             );
             assert_eq!(
                 app.worktrees_loaded.iter().filter(|f| **f).count(),
                 1,
-                "boot loads only the first project's worktrees"
+                "boot loads only the first repository's worktrees"
             );
             assert_eq!(app.pending_worktrees.len(), 5, "the rest are queued");
 
-            // The event loop drains one project per iteration.
+            // The event loop drains one repository per iteration.
             let mut steps = 0;
             while app.drain_pending_worktrees() {
                 steps += 1;
                 assert!(steps <= 10, "draining must terminate");
             }
-            assert_eq!(steps, 5, "one project per drain step");
+            assert_eq!(steps, 5, "one repository per drain step");
             assert!(
                 app.worktrees_loaded.iter().all(|f| *f),
-                "every project is loaded once the queue is drained"
+                "every repository is loaded once the queue is drained"
             );
         });
     }
 
-    /// Features discovered by a lazy worktree load are unfolded like every
-    /// other row: `ensure_worktrees` pushes onto `features`, so the
-    /// parallel `feat_expanded` must grow with it (it used to stay short,
+    /// Worktrees discovered by a lazy worktree load are unfolded like every
+    /// other row: `ensure_worktrees` pushes onto `worktrees`, so the
+    /// parallel `wt_expanded` must grow with it (it used to stay short,
     /// and a missing entry reads as folded).
     #[test]
-    fn lazily_loaded_features_are_expanded() {
+    fn lazily_loaded_worktrees_are_expanded() {
         crate::util::testutil::with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             let r = root.path();
@@ -3383,32 +3385,32 @@ mod tests {
             app.boot_discovery_from(r).unwrap();
             while app.drain_pending_worktrees() {}
 
-            let pi = app
-                .visible_projects()
+            let ri = app
+                .visible_repositories()
                 .into_iter()
-                .find(|&i| app.state.projects[i].name == "repo-a")
+                .find(|&i| app.state.repositories[i].name == "repo-a")
                 .expect("repo-a imported");
             assert_eq!(
-                app.state.projects[pi].features.len(),
+                app.state.repositories[ri].worktrees.len(),
                 1,
-                "the linked worktree became a feature"
+                "the linked worktree became a worktree"
             );
             assert_eq!(
-                app.feat_expanded[pi].len(),
+                app.wt_expanded[ri].len(),
                 1,
-                "feat_expanded stays parallel to features"
+                "wt_expanded stays parallel to worktrees"
             );
-            assert!(app.feat_expanded[pi][0], "the new feature is unfolded");
+            assert!(app.wt_expanded[ri][0], "the new worktree is unfolded");
         });
     }
 
-    /// Out-of-scope projects (other scopes' leftovers in state) stay saved
+    /// Out-of-scope repositories (other scopes' leftovers in state) stay saved
     /// but never get rows.
     #[test]
-    fn scope_filters_projects_from_other_scopes() {
+    fn scope_filters_repositories_from_other_scopes() {
         let mut app = app_with(tmux_standalone("unused"));
         app.scope_root = PathBuf::from("/work/scope-a");
-        app.state.projects.push(Project {
+        app.state.repositories.push(Repository {
             name: "in-a".into(),
             path: PathBuf::from("/work/scope-a/repo-x"),
             base_branch: "main".into(),
@@ -3416,9 +3418,9 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features: vec![],
+            worktrees: vec![],
         });
-        app.state.projects.push(Project {
+        app.state.repositories.push(Repository {
             name: "in-b".into(),
             path: PathBuf::from("/work/scope-b/repo-y"),
             base_branch: "main".into(),
@@ -3426,32 +3428,32 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features: vec![],
+            worktrees: vec![],
         });
-        let vis = app.visible_projects();
-        assert_eq!(vis, vec![0], "only scope-a's project is visible");
-        assert_eq!(app.state.projects.len(), 2, "state keeps both");
-        // Missing projects inside the scope still show.
-        app.state.projects[0].missing = true;
-        assert_eq!(app.visible_projects(), vec![0]);
+        let vis = app.visible_repositories();
+        assert_eq!(vis, vec![0], "only scope-a's repository is visible");
+        assert_eq!(app.state.repositories.len(), 2, "state keeps both");
+        // Missing repositories inside the scope still show.
+        app.state.repositories[0].missing = true;
+        assert_eq!(app.visible_repositories(), vec![0]);
     }
 
     /// Boot from inside a git repo auto-imports the MAIN repo (even from a
-    /// linked worktree) and adds its worktrees as features with 0 shells.
+    /// linked worktree) and adds its worktrees as worktrees with 0 shells.
     #[test]
     fn boot_discovery_auto_imports_cwd_repo_and_its_worktrees() {
         crate::util::testutil::with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             let r = root.path();
-            let repo = repo_with_commit(r, "proj");
-            let wt = r.join("wt-feature-x");
+            let repo = repo_with_commit(r, "repo");
+            let wt = r.join("wt-worktree-x");
             git(
                 &repo,
                 &[
                     "worktree",
                     "add",
                     "-b",
-                    "feature-x",
+                    "worktree-x",
                     wt.to_str().unwrap(),
                     "main",
                 ],
@@ -3459,30 +3461,34 @@ mod tests {
 
             let mut app = app_with(tmux_standalone("unused"));
             app.boot_discovery_from(&repo).unwrap();
-            assert_eq!(app.state.projects.len(), 1);
-            let proj = &app.state.projects[0];
-            assert_eq!(proj.path, repo);
-            assert_eq!(proj.features.len(), 1, "linked worktree becomes a feature");
-            assert_eq!(proj.features[0].name, "feature-x");
-            assert_eq!(proj.features[0].branch, "feature-x");
-            assert!(proj.features[0].shells.is_empty(), "0 shells");
+            assert_eq!(app.state.repositories.len(), 1);
+            let imported = &app.state.repositories[0];
+            assert_eq!(imported.path, repo);
+            assert_eq!(
+                imported.worktrees.len(),
+                1,
+                "the linked worktree is picked up"
+            );
+            assert_eq!(imported.worktrees[0].name, "worktree-x");
+            assert_eq!(imported.worktrees[0].branch, "worktree-x");
+            assert!(imported.worktrees[0].shells.is_empty(), "0 shells");
 
-            // booting again is idempotent (no duplicate features)
+            // booting again is idempotent (no duplicate worktrees)
             app.boot_discovery_from(&repo).unwrap();
-            assert_eq!(app.state.projects[0].features.len(), 1);
+            assert_eq!(app.state.repositories[0].worktrees.len(), 1);
 
             // booting from INSIDE the worktree resolves to the main repo
             let mut app2 = app_with(tmux_standalone("unused"));
             app2.boot_discovery_from(&wt).unwrap();
-            assert_eq!(app2.state.projects.len(), 1);
-            assert_eq!(app2.state.projects[0].path, repo);
-            assert_eq!(app2.state.projects[0].features.len(), 1);
+            assert_eq!(app2.state.repositories.len(), 1);
+            assert_eq!(app2.state.repositories[0].path, repo);
+            assert_eq!(app2.state.repositories[0].worktrees.len(), 1);
         });
     }
 
     /// `i` (import a repo by path) and `I` (rescan the discovery root) are
-    /// gone: projects come from boot discovery and `[[projects]]` in the
-    /// config. Both keys must be inert — no popup, no project.
+    /// gone: repositories come from boot discovery and `[[repositories]]` in the
+    /// config. Both keys must be inert — no popup, no repository.
     #[test]
     fn the_import_and_scan_keys_are_gone() {
         crate::util::testutil::with_fresh_xdg(|| {
@@ -3496,17 +3502,20 @@ mod tests {
             for k in ['i', 'I'] {
                 app.on_key(KeyEvent::new(KeyCode::Char(k), KeyModifiers::NONE));
                 assert!(matches!(app.mode, Mode::Normal), "`{k}` opened a mode");
-                assert!(app.state.projects.is_empty(), "`{k}` imported a project");
+                assert!(
+                    app.state.repositories.is_empty(),
+                    "`{k}` imported a repository"
+                );
             }
         });
     }
 
-    /// Creating a feature or adding a shell on a missing project is
+    /// Creating a worktree or adding a shell on a missing repository is
     /// rejected with a clear error instead of failing deep in git/tmux.
     #[test]
-    fn actions_reject_missing_projects() {
+    fn actions_reject_missing_repositories() {
         let mut app = app_with(tmux_standalone("unused"));
-        app.state.projects.push(Project {
+        app.state.repositories.push(Repository {
             name: "gone".into(),
             path: PathBuf::from("/definitely/not/here"),
             base_branch: "main".into(),
@@ -3514,26 +3523,26 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: true,
-            features: vec![Feature {
-                name: "feat".into(),
-                branch: "feat".into(),
-                worktree_path: PathBuf::from("/definitely/not/here/wt"),
+            worktrees: vec![Worktree {
+                name: "wt".into(),
+                branch: "wt".into(),
+                path: PathBuf::from("/definitely/not/here/wt"),
                 created_at: "".into(),
                 shells: vec![],
             }],
         });
-        let err = app.create_feature(0, "new-feat").unwrap_err();
+        let err = app.create_worktree(0, "new-wt").unwrap_err();
         assert!(err.to_string().contains("missing"), "err: {err}");
         let err = app.add_shell(0, 0, "").unwrap_err();
         assert!(err.to_string().contains("missing"), "err: {err}");
     }
 
-    /// The New Feature popup names the branch the worktree is cut from:
-    /// the project's base branch, even when the repo has something else
-    /// checked out. Same resolution `create_feature` runs, so the popup
+    /// The New Worktree popup names the branch the worktree is cut from:
+    /// the repository's base branch, even when the repo has something else
+    /// checked out. Same resolution `create_worktree` runs, so the popup
     /// cannot promise a base the creation then ignores.
     #[test]
-    fn new_feature_popup_names_the_base_branch_not_the_checkout() {
+    fn new_worktree_popup_names_the_base_branch_not_the_checkout() {
         crate::util::testutil::with_test_lock(|| {
             let root = tempfile::TempDir::new().unwrap();
             let path = repo_with_commit(root.path(), "repo");
@@ -3541,7 +3550,7 @@ mod tests {
             git(&path, &["checkout", "-b", "some-other-branch"]);
 
             let mut app = app_with(tmux_standalone("unused"));
-            app.state.projects.push(Project {
+            app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path: path.clone(),
                 base_branch: "main".into(),
@@ -3549,20 +3558,20 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
-                features: vec![],
+                worktrees: vec![],
             });
             app.build_tree_flags();
-            app.sel = Sel::Project(0);
-            app.open_new_feature();
+            app.sel = Sel::Repository(0);
+            app.open_new_worktree();
 
             assert!(matches!(
                 app.mode,
                 Mode::Input {
-                    kind: InputKind::NewFeature,
+                    kind: InputKind::NewWorktree,
                     ..
                 }
             ));
-            let hint = app.new_feature_base().expect("base hint");
+            let hint = app.new_worktree_base().expect("base hint");
             assert_eq!(hint.branch, "main");
             assert!(hint.missing.is_none(), "main exists: {hint:?}");
         });
@@ -3572,13 +3581,13 @@ mod tests {
     /// back to the current branch — so the popup says so instead of naming
     /// a base that would be a lie.
     #[test]
-    fn new_feature_popup_flags_a_missing_base_branch() {
+    fn new_worktree_popup_flags_a_missing_base_branch() {
         crate::util::testutil::with_test_lock(|| {
             let root = tempfile::TempDir::new().unwrap();
             let path = repo_with_commit(root.path(), "repo");
 
             let mut app = app_with(tmux_standalone("unused"));
-            app.state.projects.push(Project {
+            app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path: path.clone(),
                 base_branch: "master".into(), // repo only has `main`
@@ -3586,13 +3595,13 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
-                features: vec![],
+                worktrees: vec![],
             });
             app.build_tree_flags();
-            app.sel = Sel::Project(0);
-            app.open_new_feature();
+            app.sel = Sel::Repository(0);
+            app.open_new_worktree();
 
-            let hint = app.new_feature_base().expect("base hint");
+            let hint = app.new_worktree_base().expect("base hint");
             assert_eq!(hint.branch, "main"); // the fallback: current branch
             assert_eq!(hint.missing.as_deref(), Some("master"));
         });
@@ -3601,10 +3610,10 @@ mod tests {
     /// A missing repo has no base to name: the popup still opens (creation
     /// is what rejects it) but shows no branch line.
     #[test]
-    fn new_feature_popup_has_no_base_hint_for_a_missing_project() {
+    fn new_worktree_popup_has_no_base_hint_for_a_missing_repository() {
         crate::util::testutil::with_test_lock(|| {
             let mut app = app_with(tmux_standalone("unused"));
-            app.state.projects.push(Project {
+            app.state.repositories.push(Repository {
                 name: "gone".into(),
                 path: PathBuf::from("/definitely/not/here"),
                 base_branch: "main".into(),
@@ -3612,24 +3621,24 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: true,
-                features: vec![],
+                worktrees: vec![],
             });
             app.build_tree_flags();
-            app.sel = Sel::Project(0);
-            app.open_new_feature();
+            app.sel = Sel::Repository(0);
+            app.open_new_worktree();
 
-            assert!(app.new_feature_base().is_none());
+            assert!(app.new_worktree_base().is_none());
         });
     }
 
     // ---- M8.4a — accessibility keys ----
 
-    /// Seed a headless app with `n` projects (no tmux needed: navigation
+    /// Seed a headless app with `n` repositories (no tmux needed: navigation
     /// is pure state).
-    fn app_with_projects(n: usize) -> App {
+    fn app_with_repositories(n: usize) -> App {
         let mut app = app_with(tmux_standalone("unused"));
         for i in 0..n {
-            app.state.projects.push(Project {
+            app.state.repositories.push(Repository {
                 name: format!("p{i}"),
                 path: PathBuf::from(format!("/tmp/p{i}")),
                 base_branch: "main".into(),
@@ -3637,7 +3646,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
-                features: vec![],
+                worktrees: vec![],
             });
         }
         app.build_tree_flags();
@@ -3645,10 +3654,10 @@ mod tests {
         app
     }
 
-    /// A project with one feature holding one shell, for action tests.
+    /// A repository with one worktree holding one shell, for action tests.
     fn app_with_shell() -> App {
         let mut app = app_with(tmux_standalone("unused"));
-        app.state.projects.push(Project {
+        app.state.repositories.push(Repository {
             name: "p".into(),
             path: PathBuf::from("/tmp/p"),
             base_branch: "main".into(),
@@ -3656,23 +3665,23 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features: vec![Feature {
-                name: "feat".into(),
-                branch: "feat".into(),
-                worktree_path: PathBuf::from("/tmp/p/.lazywingman-worktrees/p/feat"),
+            worktrees: vec![Worktree {
+                name: "wt".into(),
+                branch: "wt".into(),
+                path: PathBuf::from("/tmp/p/.lazywingman-worktrees/p/wt"),
                 created_at: String::new(),
                 shells: vec![Shell {
                     index: 0,
-                    window_name: "lw:feat/0".into(),
+                    window_name: "lw:wt/0".into(),
                     window_id: Some("@1".into()),
                     pane_id: Some("%1".into()),
                 }],
             }],
         });
         app.build_tree_flags();
-        // One shell → the feature row is folded onto it, which is the only
+        // One shell → the worktree row is folded onto it, which is the only
         // way this shell is reachable in the tree.
-        app.sel = Sel::Feature(0, 0);
+        app.sel = Sel::Worktree(0, 0);
         app.clamp_sel();
         app
     }
@@ -3695,9 +3704,9 @@ mod tests {
     fn quick_send_drafts_are_kept_per_shell() {
         let mut app = app_with_shell();
         app.viewport = (120, 40);
-        app.state.projects[0].features[0].shells.push(Shell {
+        app.state.repositories[0].worktrees[0].shells.push(Shell {
             index: 1,
-            window_name: "lw:feat/1".into(),
+            window_name: "lw:wt/1".into(),
             window_id: Some("@2".into()),
             pane_id: Some("%2".into()),
         });
@@ -3758,10 +3767,10 @@ mod tests {
         with_tmux_server(|sock, _tmux| {
             let tmux = tmux_standalone(sock);
             let mut app = app_with(tmux.clone());
-            seed_project_with_shell(&tmux, &mut app);
+            seed_repository_with_shell(&tmux, &mut app);
             app.build_tree_flags();
             app.viewport = (120, 40);
-            app.sel = Sel::Feature(0, 0);
+            app.sel = Sel::Worktree(0, 0);
             app.clamp_sel();
 
             app.on_key(key(KeyCode::Char('s'), false));
@@ -3820,30 +3829,30 @@ mod tests {
         assert!(buf.text().ends_with('z'), "the cap is not a one-way door");
     }
 
-    /// The nominal case is one worktree, one agent: a feature with a
+    /// The nominal case is one worktree, one agent: a worktree with a
     /// single shell is folded — it gets no child row (whatever its expand
     /// flag says) and the selection resolves to that shell. A second shell
     /// unfolds the subtree again.
     #[test]
-    fn solo_feature_folds_and_a_second_shell_unfolds_it() {
+    fn solo_worktree_folds_and_a_second_shell_unfolds_it() {
         let mut app = app_with_shell();
         assert_eq!(app.solo_shell(0, 0), Some(0));
-        // even flagged expanded, a folded feature emits no shell row
-        app.feat_expanded[0][0] = true;
+        // even flagged expanded, a folded worktree emits no shell row
+        app.wt_expanded[0][0] = true;
         let nodes = app.visible_nodes();
         assert!(
             !nodes.iter().any(|n| matches!(n, Sel::Shell(..))),
-            "a one-shell feature must not emit a child row: {nodes:?}"
+            "a one-shell worktree must not emit a child row: {nodes:?}"
         );
-        // ...and the feature row acts as that shell
-        assert_eq!(app.sel, Sel::Feature(0, 0));
+        // ...and the worktree row acts as that shell
+        assert_eq!(app.sel, Sel::Worktree(0, 0));
         assert_eq!(app.selected_shell(), Some((0, 0, 0)));
         assert_eq!(app.selected_shell_pane().as_deref(), Some("%1"));
 
         // a second shell brings the subtree back
-        app.state.projects[0].features[0].shells.push(Shell {
+        app.state.repositories[0].worktrees[0].shells.push(Shell {
             index: 1,
-            window_name: "lw:feat/1".into(),
+            window_name: "lw:wt/1".into(),
             window_id: Some("@2".into()),
             pane_id: Some("%2".into()),
         });
@@ -3853,19 +3862,19 @@ mod tests {
             nodes.contains(&Sel::Shell(0, 0, 0)) && nodes.contains(&Sel::Shell(0, 0, 1)),
             "two shells must show both rows: {nodes:?}"
         );
-        // the feature row is no longer a shell — it expands again
+        // the worktree row is no longer a shell — it expands again
         assert_eq!(app.selected_shell(), None);
     }
 
     /// `d` is contextual: on a shell row it closes that shell, on a
-    /// feature row it deletes the feature. Closing a shell must never
-    /// offer to take the feature (and its sibling shells) with it.
+    /// worktree row it deletes the worktree. Closing a shell must never
+    /// offer to take the worktree (and its sibling shells) with it.
     #[test]
     fn d_on_a_shell_confirms_closing_only_that_shell() {
         let mut app = app_with_shell();
-        app.state.projects[0].features[0].shells.push(Shell {
+        app.state.repositories[0].worktrees[0].shells.push(Shell {
             index: 1,
-            window_name: "lw:feat/1".into(),
+            window_name: "lw:wt/1".into(),
             window_id: Some("@2".into()),
             pane_id: Some("%2".into()),
         });
@@ -3879,8 +3888,8 @@ mod tests {
                     matches!(
                         confirm.action,
                         ConfirmAction::DeleteShell {
-                            project: 0,
-                            feature: 0,
+                            repository: 0,
+                            worktree: 0,
                             shell: 1
                         }
                     ),
@@ -3888,7 +3897,7 @@ mod tests {
                     confirm.action
                 );
                 assert!(
-                    confirm.body.contains("lw:feat/1"),
+                    confirm.body.contains("lw:wt/1"),
                     "the confirm names the shell: {:?}",
                     confirm.body
                 );
@@ -3896,14 +3905,14 @@ mod tests {
             m => panic!("expected a confirm, got {m:?}"),
         }
 
-        // the feature row keeps the feature-level delete
+        // the worktree row keeps the worktree-level delete
         app.mode = Mode::Normal;
-        app.sel = Sel::Feature(0, 0);
+        app.sel = Sel::Worktree(0, 0);
         app.on_key(key(KeyCode::Char('d'), false));
         match &app.mode {
             Mode::Confirm { confirm } => assert!(
-                matches!(confirm.action, ConfirmAction::DeleteFeature { .. }),
-                "d on a feature still deletes the feature: {:?}",
+                matches!(confirm.action, ConfirmAction::DeleteWorktree { .. }),
+                "d on a worktree still deletes the worktree: {:?}",
                 confirm.action
             ),
             m => panic!("expected a confirm, got {m:?}"),
@@ -3917,13 +3926,13 @@ mod tests {
         with_tmux_server(|sock, _tmux| {
             let tmux = tmux_standalone(sock);
             let mut app = app_with(tmux.clone());
-            seed_project_with_shell(&tmux, &mut app);
+            seed_repository_with_shell(&tmux, &mut app);
             let w2 = tmux
-                .new_window("wingman-session-p", "lw:feat/1", Path::new("/tmp"), "bash")
+                .new_window("wingman-session-p", "lw:wt/1", Path::new("/tmp"), "bash")
                 .unwrap();
-            app.state.projects[0].features[0].shells.push(Shell {
+            app.state.repositories[0].worktrees[0].shells.push(Shell {
                 index: 1,
-                window_name: "lw:feat/1".into(),
+                window_name: "lw:wt/1".into(),
                 window_id: Some(w2.window_id.clone()),
                 pane_id: Some(w2.pane_id.clone()),
             });
@@ -3945,7 +3954,7 @@ mod tests {
                 app.mode
             );
             assert_eq!(
-                app.state.projects[0].features[0].shells.len(),
+                app.state.repositories[0].worktrees[0].shells.len(),
                 1,
                 "dd closed the selected shell"
             );
@@ -3953,19 +3962,19 @@ mod tests {
     }
 
     /// Closing a shell kills that shell's window and nothing else: the
-    /// feature, its worktree entry and the sibling shell survive.
+    /// worktree, its worktree entry and the sibling shell survive.
     #[test]
-    fn delete_shell_kills_one_window_and_keeps_the_feature() {
+    fn delete_shell_kills_one_window_and_keeps_the_worktree() {
         with_tmux_server(|sock, _tmux| {
             let tmux = tmux_standalone(sock);
             let mut app = app_with(tmux.clone());
-            seed_project_with_shell(&tmux, &mut app);
+            seed_repository_with_shell(&tmux, &mut app);
             let w2 = tmux
-                .new_window("wingman-session-p", "lw:feat/1", Path::new("/tmp"), "bash")
+                .new_window("wingman-session-p", "lw:wt/1", Path::new("/tmp"), "bash")
                 .unwrap();
-            app.state.projects[0].features[0].shells.push(Shell {
+            app.state.repositories[0].worktrees[0].shells.push(Shell {
                 index: 1,
-                window_name: "lw:feat/1".into(),
+                window_name: "lw:wt/1".into(),
                 window_id: Some(w2.window_id.clone()),
                 pane_id: Some(w2.pane_id.clone()),
             });
@@ -3977,67 +3986,71 @@ mod tests {
             crate::util::testutil::with_fresh_xdg(|| app.delete_shell(0, 0, 1).unwrap());
 
             assert_eq!(
-                app.state.projects[0].features.len(),
+                app.state.repositories[0].worktrees.len(),
                 1,
-                "the feature must survive closing one of its shells"
+                "the worktree must survive closing one of its shells"
             );
-            let feat = &app.state.projects[0].features[0];
-            assert_eq!(feat.shells.len(), 1, "only the closed shell is dropped");
-            assert_eq!(feat.shells[0].index, 0);
+            let wt = &app.state.repositories[0].worktrees[0];
+            assert_eq!(wt.shells.len(), 1, "only the closed shell is dropped");
+            assert_eq!(wt.shells[0].index, 0);
             let windows = tmux.list_windows("wingman-session-p").unwrap();
             assert!(
-                windows.iter().any(|w| w.window_name == "lw:feat/0"),
+                windows.iter().any(|w| w.window_name == "lw:wt/0"),
                 "the sibling shell's window stays: {windows:?}"
             );
             assert!(
-                !windows.iter().any(|w| w.window_name == "lw:feat/1"),
+                !windows.iter().any(|w| w.window_name == "lw:wt/1"),
                 "the closed shell's window is killed: {windows:?}"
             );
         });
     }
 
-    /// `l`/Enter on a folded feature attaches instead of expanding, and
-    /// `h` walks up to the project rather than toggling a flag nothing
+    /// `l`/Enter on a folded worktree attaches instead of expanding, and
+    /// `h` walks up to the repository rather than toggling a flag nothing
     /// renders.
     #[test]
-    fn enter_on_a_folded_feature_attaches_its_shell() {
+    fn enter_on_a_folded_worktree_attaches_its_shell() {
         with_tmux_server(|sock, _tmux| {
             let tmux = tmux_standalone(sock);
             let mut app = app_with(tmux.clone());
-            seed_project_with_shell(&tmux, &mut app);
+            seed_repository_with_shell(&tmux, &mut app);
             app.build_tree_flags();
-            app.sel = Sel::Feature(0, 0);
+            app.sel = Sel::Worktree(0, 0);
 
             app.expand_or_attach();
             assert_eq!(
                 app.pending_attach.as_deref(),
                 Some("wingman-session-p"),
-                "Enter on a folded feature must attach its shell"
+                "Enter on a folded worktree must attach its shell"
             );
             assert!(
                 !app.visible_nodes().contains(&Sel::Shell(0, 0, 0)),
-                "a folded feature must never grow a child row"
+                "a folded worktree must never grow a child row"
             );
 
             app.pending_attach = None;
-            app.feat_expanded[0][0] = true; // stale flag must not eat the key
+            app.wt_expanded[0][0] = true; // stale flag must not eat the key
             app.flatten = false; // `h` reaches a parent only when one has a row
             app.collapse_or_up();
-            assert_eq!(app.sel, Sel::Project(0), "h walks up from a folded feature");
+            assert_eq!(
+                app.sel,
+                Sel::Repository(0),
+                "h walks up from a folded worktree"
+            );
         });
     }
 
-    /// `s` on a folded feature row opens the textarea and the send lands on
+    /// `s` on a folded worktree row opens the textarea and the send lands on
     /// its shell — the row IS the agent.
     #[test]
-    fn quick_send_works_from_a_folded_feature_row() {
+    fn quick_send_works_from_a_folded_worktree_row() {
         let mut app = app_with_shell();
         app.viewport = (120, 40);
-        assert_eq!(app.sel, Sel::Feature(0, 0));
+        assert_eq!(app.sel, Sel::Worktree(0, 0));
         app.on_key(key(KeyCode::Char('s'), false));
         assert!(
             matches!(app.mode, Mode::Textarea { .. }),
-            "s on a folded feature must open the textarea"
+            "s on a folded worktree must open the textarea"
         );
         // no tmux here: the send fails at the tmux call, not at the
         // selection — "select a shell first" would mean the row did not
@@ -4056,42 +4069,46 @@ mod tests {
     /// the same code path as j/k.
     #[test]
     fn accessibility_motions_work_in_normal_mode() {
-        let mut app = app_with_projects(20);
+        let mut app = app_with_repositories(20);
         app.viewport = (120, 40);
         app.on_key(key(KeyCode::Char('j'), false));
-        assert_eq!(app.sel, Sel::Project(1));
+        assert_eq!(app.sel, Sel::Repository(1));
 
         // arrows = the same code path as j/k
         app.on_key(key(KeyCode::Up, false));
-        assert_eq!(app.sel, Sel::Project(0));
+        assert_eq!(app.sel, Sel::Repository(0));
 
         // half page down: (40-3)/2 = 18 rows
         app.on_key(key(KeyCode::PageDown, false));
-        assert_eq!(app.sel, Sel::Project(18));
+        assert_eq!(app.sel, Sel::Repository(18));
         app.on_key(key(KeyCode::PageUp, false));
-        assert_eq!(app.sel, Sel::Project(0));
+        assert_eq!(app.sel, Sel::Repository(0));
 
         // ctrl-d / ctrl-u = PageDown/PageUp spellings
         app.on_key(key(KeyCode::Char('d'), true));
-        assert_eq!(app.sel, Sel::Project(18));
+        assert_eq!(app.sel, Sel::Repository(18));
         app.on_key(key(KeyCode::Char('u'), true));
-        assert_eq!(app.sel, Sel::Project(0));
+        assert_eq!(app.sel, Sel::Repository(0));
 
         // ctrl-f / ctrl-b = full page
         app.on_key(key(KeyCode::Char('f'), true));
-        assert_eq!(app.sel, Sel::Project(19), "full page down clamps to last");
+        assert_eq!(
+            app.sel,
+            Sel::Repository(19),
+            "full page down clamps to last"
+        );
         app.on_key(key(KeyCode::Char('b'), true));
-        assert_eq!(app.sel, Sel::Project(0));
+        assert_eq!(app.sel, Sel::Repository(0));
 
         // Home / End = g / G
         app.on_key(key(KeyCode::End, false));
-        assert_eq!(app.sel, Sel::Project(19));
+        assert_eq!(app.sel, Sel::Repository(19));
         app.on_key(key(KeyCode::Home, false));
-        assert_eq!(app.sel, Sel::Project(0));
+        assert_eq!(app.sel, Sel::Repository(0));
         app.on_key(key(KeyCode::Char('G'), false));
-        assert_eq!(app.sel, Sel::Project(19));
+        assert_eq!(app.sel, Sel::Repository(19));
         app.on_key(key(KeyCode::Char('g'), false));
-        assert_eq!(app.sel, Sel::Project(0));
+        assert_eq!(app.sel, Sel::Repository(0));
     }
 
     /// The ctrl/accessibility layer dispatches ABOVE text input, so
@@ -4099,14 +4116,18 @@ mod tests {
     /// ctrl-c quits from any state (it used to type a 'c' into the input).
     #[test]
     fn ctrl_layer_works_over_text_input() {
-        let mut app = app_with_projects(20);
+        let mut app = app_with_repositories(20);
         app.viewport = (120, 40);
         app.mode = Mode::Input {
-            kind: InputKind::NewFeature,
+            kind: InputKind::NewWorktree,
             text: "abc".into(),
         };
         app.on_key(key(KeyCode::Char('d'), true));
-        assert_eq!(app.sel, Sel::Project(18), "ctrl-d moves behind the popup");
+        assert_eq!(
+            app.sel,
+            Sel::Repository(18),
+            "ctrl-d moves behind the popup"
+        );
         let Mode::Input { text, .. } = &app.mode else {
             panic!("input popup stays open");
         };
@@ -4119,9 +4140,9 @@ mod tests {
     /// `g`/`G` are motions in Normal mode but printable keys in a prompt.
     #[test]
     fn g_and_g_respect_text_input() {
-        let mut app = app_with_projects(5);
+        let mut app = app_with_repositories(5);
         app.on_key(key(KeyCode::Char('G'), false));
-        assert_eq!(app.sel, Sel::Project(4));
+        assert_eq!(app.sel, Sel::Repository(4));
         app.mode = Mode::Textarea {
             buf: TextBuf::new(),
         };
@@ -4450,17 +4471,17 @@ mod tests {
     /// Click selects the row under the cursor; double-click opens it.
     #[test]
     fn mouse_click_selects_row_and_double_click_opens() {
-        let mut app = app_with_projects(5);
+        let mut app = app_with_repositories(5);
         app.viewport = (120, 40);
         // row 3 in the tree (below the top border), inside the tree column
         app.on_mouse(click(5, 4));
-        assert_eq!(app.sel, Sel::Project(3));
-        // double-click on the same row toggles expansion (projects start
+        assert_eq!(app.sel, Sel::Repository(3));
+        // double-click on the same row toggles expansion (repositories start
         // expanded, so the toggle collapses it)
         app.on_mouse(click(5, 4));
         assert!(
-            !app.proj_expanded[3],
-            "double-click must toggle the project expansion"
+            !app.repo_expanded[3],
+            "double-click must toggle the repository expansion"
         );
     }
 
@@ -4470,12 +4491,12 @@ mod tests {
     /// click was silently lost.
     #[test]
     fn event_dispatch_routes_mouse_events() {
-        let mut app = app_with_projects(5);
+        let mut app = app_with_repositories(5);
         app.viewport = (120, 40);
         dispatch_event(&mut app, Event::Mouse(click(5, 4)));
         assert_eq!(
             app.sel,
-            Sel::Project(3),
+            Sel::Repository(3),
             "a mouse event must reach on_mouse through the event loop"
         );
     }
@@ -4484,7 +4505,7 @@ mod tests {
     /// click; clicks outside the tree column do nothing.
     #[test]
     fn mouse_wheel_scrolls_and_right_panels_are_dead() {
-        let mut app = app_with_projects(10);
+        let mut app = app_with_repositories(10);
         app.viewport = (120, 40);
         app.on_mouse(MouseEvent {
             kind: MouseEventKind::ScrollDown,
@@ -4492,7 +4513,7 @@ mod tests {
             row: 5,
             modifiers: KeyModifiers::NONE,
         });
-        assert_eq!(app.sel, Sel::Project(3));
+        assert_eq!(app.sel, Sel::Repository(3));
         let before = app.sel;
         app.on_mouse(click(60, 5)); // detail panel area
         assert_eq!(app.sel, before, "detail panel is not selectable");
@@ -4502,31 +4523,31 @@ mod tests {
     /// is clickable — discoverability rule).
     #[test]
     fn mouse_click_on_bar_entry_runs_action() {
-        let mut app = app_with_projects(3);
+        let mut app = app_with_repositories(3);
         app.viewport = (120, 40);
         // render once so the renderer computes the bar hit ranges
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         assert!(!app.bar_hits.is_empty());
-        assert_eq!(app.sel, Sel::Project(0));
-        // a project's bar has "n feature" → the new-feature input
+        assert_eq!(app.sel, Sel::Repository(0));
+        // a repository's bar has "n worktree" → the new-worktree input
         let (x0, x1, _) = app
             .bar_hits
             .iter()
-            .find(|(_, _, a)| *a == BarAction::NewFeature)
+            .find(|(_, _, a)| *a == BarAction::NewWorktree)
             .copied()
-            .expect("bar must offer 'n feature' for a project");
+            .expect("bar must offer 'n worktree' for a repository");
         app.on_mouse(click((x0 + x1) / 2, 39));
         assert!(
             matches!(
                 app.mode,
                 Mode::Input {
-                    kind: InputKind::NewFeature,
+                    kind: InputKind::NewWorktree,
                     ..
                 }
             ),
-            "clicking 'n feature' must open the input"
+            "clicking 'n worktree' must open the input"
         );
     }
 
@@ -4534,7 +4555,7 @@ mod tests {
     /// not.
     #[test]
     fn mouse_click_outside_overlay_dismisses_it() {
-        let mut app = app_with_projects(3);
+        let mut app = app_with_repositories(3);
         app.viewport = (120, 40);
         app.mode = Mode::Help;
         app.popup_area = Some(Rect::new(20, 5, 70, 20));
@@ -4547,7 +4568,7 @@ mod tests {
     /// A missing popup_area (too-small fallback) means any click dismisses.
     #[test]
     fn overlay_dismisses_when_no_popup_area_known() {
-        let mut app = app_with_projects(3);
+        let mut app = app_with_repositories(3);
         app.viewport = (20, 5);
         app.mode = Mode::Help;
         app.popup_area = None;
@@ -4560,7 +4581,7 @@ mod tests {
     /// Build a help overlay with a known popup rect so scroll math is
     /// deterministic (the popup's inner height comes from popup_area).
     fn app_with_help(n: usize) -> App {
-        let mut app = app_with_projects(n);
+        let mut app = app_with_repositories(n);
         app.open_help();
         app.popup_area = Some(Rect::new(20, 5, 70, 30)); // 28 visible rows
         app
@@ -4620,10 +4641,10 @@ mod tests {
     /// routing is mode-dependent, not key-dependent).
     #[test]
     fn page_motions_still_move_tree_outside_help() {
-        let mut app = app_with_projects(20);
+        let mut app = app_with_repositories(20);
         app.viewport = (120, 40);
         app.on_key(key(KeyCode::PageDown, false));
-        assert_eq!(app.sel, Sel::Project(18));
+        assert_eq!(app.sel, Sel::Repository(18));
     }
 
     /// The mouse wheel scrolls the help overlay while it is open, and the
@@ -4652,7 +4673,7 @@ mod tests {
     /// A helper that opens the picker on a headless app standing on the
     /// given theme (defaults to the config default when unset).
     fn app_with_picker(theme_name: &str) -> App {
-        let mut app = app_with_projects(3);
+        let mut app = app_with_repositories(3);
         if theme_name != app.theme.name {
             app.theme = theme::load(theme_name, false).unwrap();
         }
@@ -4662,7 +4683,7 @@ mod tests {
 
     /// ctrl-t opens the picker on the CURRENT theme with built-in names
     /// (Catppuccin first, per the theming rule that the first rows are the
-    /// same in every project); the cursor sits on the active theme.
+    /// same in every repository); the cursor sits on the active theme.
     #[test]
     fn ctrl_t_opens_picker_on_current_theme() {
         let mut app = app_with_picker("catppuccin-mocha");
@@ -4779,7 +4800,7 @@ mod tests {
         };
         assert_eq!(index, 0);
         // the tree selection never moved while the picker was open
-        assert_eq!(app.sel, Sel::Project(0));
+        assert_eq!(app.sel, Sel::Repository(0));
     }
 
     /// Mouse: clicking a theme row selects + previews it, double-click
@@ -4874,7 +4895,7 @@ mod tests {
     fn diagnostics_keys_scroll_and_dismiss() {
         let mut app = app_with_diagnostics(20); // 20 diags + footer in a 10-row popup
         app.mode = Mode::Diagnostics;
-        app.sel = Sel::Project(0);
+        app.sel = Sel::Repository(0);
         // j steps down, clamped by the popup height
         app.on_key(key(KeyCode::Char('j'), false));
         assert_eq!(app.diag_scroll, 1);
@@ -4890,7 +4911,7 @@ mod tests {
         let visible = app.popup_area.unwrap().height.saturating_sub(2) as usize;
         assert_eq!(app.diag_scroll, total.saturating_sub(visible));
         // the tree selection never moved while the overlay was open
-        assert_eq!(app.sel, Sel::Project(0));
+        assert_eq!(app.sel, Sel::Repository(0));
         // dismiss keys
         for k in [KeyCode::Char('q'), KeyCode::Enter, KeyCode::Char('?')] {
             app.mode = Mode::Diagnostics;
@@ -4905,7 +4926,7 @@ mod tests {
     fn diagnostics_a11y_motions_scroll_overlay_not_tree() {
         let mut app = app_with_diagnostics(30);
         app.mode = Mode::Diagnostics;
-        app.sel = Sel::Project(0);
+        app.sel = Sel::Repository(0);
         let before = app.sel;
         app.on_key(key(KeyCode::PageDown, false));
         assert!(app.diag_scroll > 0, "PageDown scrolls the diagnostics");
@@ -4995,9 +5016,9 @@ mod tests {
     #[test]
     fn p_opens_predefined_messages_only_on_a_shell() {
         let mut app = app_with_shell();
-        app.sel = Sel::Project(0);
+        app.sel = Sel::Repository(0);
         app.on_key(key(KeyCode::Char('p'), false));
-        assert!(matches!(app.mode, Mode::Normal), "no modal on a project");
+        assert!(matches!(app.mode, Mode::Normal), "no modal on a repository");
         assert!(
             app.message
                 .as_ref()
@@ -5013,15 +5034,15 @@ mod tests {
         );
     }
 
-    /// A folded one-shell feature row IS its shell (M11), so `p` opens
+    /// A folded one-shell worktree row IS its shell (M11), so `p` opens
     /// the modal there exactly like `s` sends from it.
     #[test]
-    fn p_opens_from_a_folded_feature_row() {
+    fn p_opens_from_a_folded_worktree_row() {
         let mut app = app_with_shell();
-        app.sel = Sel::Feature(0, 0);
+        app.sel = Sel::Worktree(0, 0);
         assert!(
             app.solo_shell(0, 0).is_some(),
-            "the fixture's feature is folded"
+            "the fixture's worktree is folded"
         );
         app.on_key(key(KeyCode::Char('p'), false));
         assert!(
@@ -5072,7 +5093,7 @@ mod tests {
         with_tmux_server(|sock, _tmux| {
             let tmux = tmux_standalone(sock);
             let mut app = app_with(tmux.clone());
-            let (_wid, pid) = seed_project_with_shell(&tmux, &mut app);
+            let (_wid, pid) = seed_repository_with_shell(&tmux, &mut app);
             app.build_tree_flags();
             app.sel = Sel::Shell(0, 0, 0);
             app.cfg.messages = vec![
@@ -5109,7 +5130,7 @@ mod tests {
         with_tmux_server(|sock, _tmux| {
             let tmux = tmux_standalone(sock);
             let mut app = app_with(tmux.clone());
-            let (_wid, pid) = seed_project_with_shell(&tmux, &mut app);
+            let (_wid, pid) = seed_repository_with_shell(&tmux, &mut app);
             app.build_tree_flags();
             app.sel = Sel::Shell(0, 0, 0);
             app.cfg.messages = vec![
@@ -5151,11 +5172,11 @@ mod tests {
         let app = app_with_shell();
         assert_eq!(
             app.expand_message("merge to <base_branch>, drop <branch>"),
-            "merge to main, drop feat"
+            "merge to main, drop wt"
         );
         assert_eq!(
-            app.expand_message("<project>/<feature> at <worktree>"),
-            "p/feat at /tmp/p/.lazywingman-worktrees/p/feat"
+            app.expand_message("<repository>/<worktree> at <worktree_path>"),
+            "p/wt at /tmp/p/.lazywingman-worktrees/p/wt"
         );
     }
 
@@ -5175,7 +5196,7 @@ mod tests {
     #[test]
     fn expand_message_without_a_selected_shell_keeps_the_tokens() {
         let mut app = app_with_shell();
-        app.sel = Sel::Project(0);
+        app.sel = Sel::Repository(0);
         assert_eq!(
             app.expand_message("merge to <base_branch>"),
             "merge to <base_branch>"
@@ -5190,7 +5211,7 @@ mod tests {
         with_tmux_server(|sock, _tmux| {
             let tmux = tmux_standalone(sock);
             let mut app = app_with(tmux.clone());
-            let (_wid, pid) = seed_project_with_shell(&tmux, &mut app);
+            let (_wid, pid) = seed_repository_with_shell(&tmux, &mut app);
             app.build_tree_flags();
             app.sel = Sel::Shell(0, 0, 0);
             app.cfg.messages = vec![crate::config::MessageConfig {
@@ -5290,7 +5311,7 @@ mod tests {
         assert_eq!(*kind, InputKind::AddShell);
         assert!(text.is_empty(), "the command field starts empty: {text:?}");
         assert_eq!(
-            app.state.projects[0].features[0].shells.len(),
+            app.state.repositories[0].worktrees[0].shells.len(),
             1,
             "nothing is spawned before the prompt is submitted"
         );
@@ -5298,32 +5319,32 @@ mod tests {
         app.on_key(key(KeyCode::Esc, false));
         assert!(matches!(app.mode, Mode::Normal), "Esc closes the prompt");
         assert_eq!(
-            app.state.projects[0].features[0].shells.len(),
+            app.state.repositories[0].worktrees[0].shells.len(),
             1,
             "Esc creates no shell"
         );
     }
 
     /// The command typed into the prompt is what runs in the new shell —
-    /// not the project's default agent command.
+    /// not the repository's default agent command.
     #[test]
     fn add_shell_prompt_runs_the_typed_command() {
         crate::util::testutil::with_fresh_xdg(|| {
             with_tmux_server(|sock, _tmux| {
                 let tmux = tmux_standalone(sock);
                 let mut app = app_with(tmux.clone());
-                seed_project_with_shell(&tmux, &mut app);
-                app.state.projects[0].agent_command = "echo lw-default-marker".into();
-                app.state.projects[0].features[0].worktree_path = PathBuf::from("/tmp");
+                seed_repository_with_shell(&tmux, &mut app);
+                app.state.repositories[0].agent_command = "echo lw-default-marker".into();
+                app.state.repositories[0].worktrees[0].path = PathBuf::from("/tmp");
                 app.build_tree_flags();
-                app.sel = Sel::Feature(0, 0);
+                app.sel = Sel::Worktree(0, 0);
 
                 app.on_key(key(KeyCode::Char('a'), false));
                 type_str(&mut app, "echo lw-typed-marker");
                 app.on_key(key(KeyCode::Enter, false));
                 assert!(matches!(app.mode, Mode::Normal), "Enter closes the prompt");
 
-                let shells = &app.state.projects[0].features[0].shells;
+                let shells = &app.state.repositories[0].worktrees[0].shells;
                 assert_eq!(shells.len(), 2, "the shell was created");
                 let pid = shells[1].pane_id.clone().unwrap();
                 std::thread::sleep(std::time::Duration::from_millis(300));
@@ -5334,30 +5355,30 @@ mod tests {
                 );
                 assert!(
                     !capture.contains("lw-default-marker"),
-                    "the project default must not run too, capture: {capture}"
+                    "the repository default must not run too, capture: {capture}"
                 );
             });
         });
     }
 
-    /// Submitting the prompt empty means "whatever the project normally
+    /// Submitting the prompt empty means "whatever the repository normally
     /// runs" — the default agent command.
     #[test]
-    fn add_shell_prompt_empty_falls_back_to_the_project_default() {
+    fn add_shell_prompt_empty_falls_back_to_the_repository_default() {
         crate::util::testutil::with_fresh_xdg(|| {
             with_tmux_server(|sock, _tmux| {
                 let tmux = tmux_standalone(sock);
                 let mut app = app_with(tmux.clone());
-                seed_project_with_shell(&tmux, &mut app);
-                app.state.projects[0].agent_command = "echo lw-default-marker".into();
-                app.state.projects[0].features[0].worktree_path = PathBuf::from("/tmp");
+                seed_repository_with_shell(&tmux, &mut app);
+                app.state.repositories[0].agent_command = "echo lw-default-marker".into();
+                app.state.repositories[0].worktrees[0].path = PathBuf::from("/tmp");
                 app.build_tree_flags();
-                app.sel = Sel::Feature(0, 0);
+                app.sel = Sel::Worktree(0, 0);
 
                 app.on_key(key(KeyCode::Char('a'), false));
                 app.on_key(key(KeyCode::Enter, false));
 
-                let shells = &app.state.projects[0].features[0].shells;
+                let shells = &app.state.repositories[0].worktrees[0].shells;
                 assert_eq!(shells.len(), 2, "the shell was created");
                 let pid = shells[1].pane_id.clone().unwrap();
                 std::thread::sleep(std::time::Duration::from_millis(300));

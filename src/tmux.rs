@@ -1,8 +1,8 @@
 //! tmux integration via its CLI.
 //!
 //! LazyWingman supervises agent shells that live in DEDICATED tmux sessions
-//! (`wingman-session-<project>`), never in the user's session — creating a
-//! feature or shell must not pollute the dashboard's session. The dashboard
+//! (`wingman-session-<repository>`), never in the user's session — creating a
+//! worktree or shell must not pollute the dashboard's session. The dashboard
 //! itself may run inside tmux (its coordinates are detected) or standalone
 //! in a plain terminal; every session/window/pane operation works in both
 //! cases because it goes through the tmux server.
@@ -186,14 +186,14 @@ impl Tmux {
         out
     }
 
-    /// Deterministic agent-session name for a project slug:
+    /// Deterministic agent-session name for a repository slug:
     /// `wingman-session-<slug>`. On collisions the caller appends
     /// [`Self::hash_suffix`] to keep it unique.
     pub fn session_name(slug: &str) -> String {
         format!("{SESSION_PREFIX}{}", Self::sanitize(slug))
     }
 
-    /// Stable 8-hex suffix for a path — disambiguates two projects whose
+    /// Stable 8-hex suffix for a path — disambiguates two repositories whose
     /// slugs collide. [`std::hash::DefaultHasher::new`] is deterministic
     /// (fixed keys), unlike `RandomState::new()`.
     pub fn hash_suffix(path: &Path) -> String {
@@ -203,9 +203,9 @@ impl Tmux {
         format!("{:08x}", h.finish() & 0xffff_ffff)
     }
 
-    /// Deterministic window name for a feature shell inside an agent session.
-    pub fn window_name(feature: &str, index: usize) -> String {
-        let mut name = format!("{WINDOW_PREFIX}{}/{}", Self::sanitize(feature), index);
+    /// Deterministic window name for a worktree shell inside an agent session.
+    pub fn window_name(worktree: &str, index: usize) -> String {
+        let mut name = format!("{WINDOW_PREFIX}{}/{}", Self::sanitize(worktree), index);
         // tmux window names are capped; keep ours well under.
         name.truncate(200);
         name
@@ -386,7 +386,7 @@ impl Tmux {
         })
     }
 
-    /// Kill a window by id (used on feature deletion; killing a session's
+    /// Kill a window by id (used on worktree deletion; killing a session's
     /// last window destroys the session).
     pub fn kill_window(&self, window_id: &str) -> Result<()> {
         self.run(&["kill-window", "-t", window_id])?;
@@ -575,27 +575,57 @@ impl Tmux {
         let win = dash_window_id.trim_start_matches('@');
         let keys = self.run_raw(&["list-keys", "-T", "root"])?;
         for line in keys.lines() {
-            // A legacy root binding looks like:
-            //   bind-key -T root C-o switch-client -t main \; select-window -t @0
-            if !line.starts_with("bind-key -T root")
-                || !line.contains("switch-client -t ")
-                || !line.contains(format!("-t {dash_session}").as_str())
-                || !line.contains(&format!("select-window -t @{win}"))
-            {
-                continue;
-            }
-            // The key is the token right after the table name.
-            let mut parts = line.split_whitespace().skip_while(|p| *p != "root").skip(1);
-            let Some(key) = parts.next() else {
+            let Some(key) = legacy_root_back_key(line, dash_session, win) else {
                 continue;
             };
             log::info!(
                 "removing legacy root back-key binding for {key} (prefix-table binding replaces it)"
             );
-            self.run(&["unbind-key", "-T", "root", key])?;
+            self.run(&["unbind-key", "-T", "root", &key])?;
         }
         Ok(())
     }
+}
+
+/// The key a `list-keys` line binds, if that line is *our* legacy root
+/// back-key binding for this dashboard — otherwise `None`.
+///
+/// A legacy root binding reads:
+///   `bind-key -T root C-o switch-client -t main \; select-window -t @0`
+///
+/// The line is tokenised rather than matched against a fixed-width prefix:
+/// `list-keys` output is column-aligned and the padding is version-dependent
+/// (3.6+ reserves a column for the optional `-r` flag, so `bind-key` is
+/// followed by two spaces, not one). A prefix match against one spelling
+/// stops matching entirely on the other, and the unbind then silently does
+/// nothing.
+///
+/// This runs against the user's own tmux, so it is deliberately narrow: the
+/// binding must target this exact dashboard session AND window, or it is
+/// somebody else's key and must be left alone.
+fn legacy_root_back_key(line: &str, dash_session: &str, win: &str) -> Option<String> {
+    let mut parts = line.split_whitespace();
+    if parts.next()? != "bind-key" {
+        return None;
+    }
+    // Skip any flags (`-r`) until the table selector, then take the table.
+    let table = loop {
+        match parts.next() {
+            Some("-T") => break parts.next()?,
+            Some(_) => continue,
+            None => return None,
+        }
+    };
+    if table != "root" {
+        return None;
+    }
+    let key = parts.next()?;
+    // The command follows; re-join it so the check is immune to the column
+    // padding tmux inserts between the key and the command.
+    let command = parts.collect::<Vec<_>>().join(" ");
+    let targets_our_dashboard = command.contains(&format!("switch-client -t {dash_session} "))
+        && command.contains(&format!("select-window -t @{win}"));
+    targets_our_dashboard.then(|| key.to_string())
 }
 
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
@@ -644,14 +674,68 @@ pub fn is_lazywingman_window(name: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// `list-keys` is column-aligned and the padding is version-dependent:
+    /// tmux 3.5 emits one space after `bind-key`, 3.6+ reserves a column for
+    /// the optional `-r` flag and emits two. Parsing must not care — matching
+    /// a fixed-width prefix silently stopped unbinding anything on 3.7.
+    #[test]
+    fn the_legacy_back_key_is_recognised_whatever_tmux_pads_with() {
+        let cmd = "switch-client -t main \\; select-window -t @0";
+        for (label, line) in [
+            ("tmux 3.5 spacing", format!("bind-key -T root C-o {cmd}")),
+            (
+                "tmux 3.7 spacing",
+                format!("bind-key  -T root C-o       {cmd}"),
+            ),
+            ("repeat flag", format!("bind-key -r -T root C-o {cmd}")),
+        ] {
+            assert_eq!(
+                legacy_root_back_key(&line, "main", "0").as_deref(),
+                Some("C-o"),
+                "{label}: {line:?}"
+            );
+        }
+    }
+
+    /// The scan must leave every other root binding alone — it runs against
+    /// the user's own tmux, so a false positive silently unbinds their key.
+    #[test]
+    fn other_root_bindings_are_left_alone() {
+        for (label, line) in [
+            (
+                "another key, another command",
+                "bind-key  -T root C-t choose-tree",
+            ),
+            (
+                "same shape, different dashboard session",
+                "bind-key  -T root C-o switch-client -t other \\; select-window -t @0",
+            ),
+            (
+                "same shape, different window",
+                "bind-key  -T root C-o switch-client -t main \\; select-window -t @7",
+            ),
+            (
+                "prefix table, not root",
+                "bind-key  -T prefix C-o switch-client -t main \\; select-window -t @0",
+            ),
+            ("not a binding at all", "some other output"),
+        ] {
+            assert_eq!(
+                legacy_root_back_key(line, "main", "0"),
+                None,
+                "{label}: {line:?}"
+            );
+        }
+    }
+
     #[test]
     fn session_and_window_names_are_deterministic_and_safe() {
-        let s = Tmux::session_name("my project");
-        assert_eq!(s, "wingman-session-my-project");
-        let s2 = Tmux::session_name("my project");
+        let s = Tmux::session_name("my repository");
+        assert_eq!(s, "wingman-session-my-repository");
+        let s2 = Tmux::session_name("my repository");
         assert_eq!(s, s2);
         // case is preserved: distinct names stay distinct (no silent merging)
-        assert_ne!(s, Tmux::session_name("My-Project"));
+        assert_ne!(s, Tmux::session_name("My-Repository"));
         assert!(s.starts_with(SESSION_PREFIX));
         assert!(!s.contains(' '));
 

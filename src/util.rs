@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn normalize_lexically_resolves_dotdots() {
         assert_eq!(
-            normalize_path(Path::new("/work/projects/../wt")),
+            normalize_path(Path::new("/work/repositories/../wt")),
             PathBuf::from("/work/wt")
         );
         assert_eq!(

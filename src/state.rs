@@ -1,4 +1,4 @@
-//! Persistent state: projects, features (worktrees), shells (tmux windows).
+//! Persistent state: repositories, worktrees, shells (tmux windows).
 //!
 //! Stored as JSON in `$XDG_STATE_HOME/lazywingman/state.json`. On startup the
 //! state is reconciled against reality (`git worktree list`,
@@ -6,10 +6,10 @@
 //! self-heal and running shells are rediscovered after a restart.
 //!
 //! Schema v2: agent shells live in dedicated tmux sessions
-//! (`wingman-session-<project>`, one per project) instead of windows in the
+//! (`wingman-session-<repository>`, one per repository) instead of windows in the
 //! dashboard's session. v1 files load through serde defaults; v1 shells are
 //! pruned on the first v2 reconcile (their windows are not in any agent
-//! session), while projects and worktrees survive.
+//! session), while repositories and worktrees survive.
 
 use std::path::PathBuf;
 
@@ -19,13 +19,13 @@ use crate::error::{Error, Result};
 use crate::git::Git;
 use crate::tmux::{Tmux, is_lazywingman_session, is_lazywingman_window};
 
-pub const STATE_VERSION: u32 = 2;
+pub const STATE_VERSION: u32 = 3;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct State {
     #[serde(default)]
     pub version: u32,
-    pub projects: Vec<Project>,
+    pub repositories: Vec<Repository>,
     /// Theme picked in the TUI (ctrl-t). Wins over the config's `theme`
     /// line at startup — config is never rewritten behind the user's back;
     /// in-app changes persist to state per the configuration guidelines.
@@ -33,8 +33,18 @@ pub struct State {
     pub theme: Option<String>,
 }
 
+impl Default for State {
+    fn default() -> State {
+        State {
+            version: STATE_VERSION,
+            repositories: Vec::new(),
+            theme: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Project {
+pub struct Repository {
     pub name: String,
     pub path: PathBuf,
     /// Base branch resolved at import time.
@@ -42,34 +52,34 @@ pub struct Project {
     /// Resolved agent command/shell (from config or defaults).
     pub agent_command: String,
     pub agent_shell: String,
-    /// The dedicated tmux session holding this project's shells
+    /// The dedicated tmux session holding this repository's shells
     /// (`wingman-session-<slug>`), if any has been created.
     #[serde(default)]
     pub session_name: Option<String>,
-    /// The project's path is currently not a git repo (moved, unmounted,
+    /// The repository's path is currently not a git repo (moved, unmounted,
     /// deleted). Kept in state (never pruned) and shown "(missing)" in the
     /// tree; flips back to `false` automatically when the path is a repo
     /// again.
     #[serde(default)]
     pub missing: bool,
-    pub features: Vec<Feature>,
+    pub worktrees: Vec<Worktree>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Feature {
+pub struct Worktree {
     pub name: String,
     /// Slugified name == git branch == worktree directory.
     pub branch: String,
-    pub worktree_path: PathBuf,
+    pub path: PathBuf,
     pub created_at: String,
     pub shells: Vec<Shell>,
 }
 
-impl Feature {
+impl Worktree {
     /// Index for the next shell: one past the highest in use, never a
     /// freed slot. The index names the tmux window and is what
     /// [`State::reconcile`] matches a live window back to, so a closed
-    /// shell's number must not be handed out again while the feature
+    /// shell's number must not be handed out again while the worktree
     /// lives.
     pub fn next_shell_index(&self) -> usize {
         self.shells.iter().map(|s| s.index + 1).max().unwrap_or(0)
@@ -90,16 +100,27 @@ impl State {
         let path = crate::util::state_path();
         match std::fs::read_to_string(&path) {
             Ok(text) => {
-                let mut state: State = serde_json::from_str(&text)
+                // Read the version before the state itself: v3 renamed the
+                // on-disk keys (`projects`/`features` → `repositories`/
+                // `worktrees`) with no migration path, so an older file
+                // cannot be deserialised at all. A well-formed file of the
+                // wrong version is discarded rather than treated as corrupt
+                // — reconcile rediscovers the repositories and reconstructs
+                // their worktrees from tmux and git. Malformed JSON is still
+                // an error: the user is told instead of silently losing the
+                // tree.
+                let raw: serde_json::Value = serde_json::from_str(&text)
                     .map_err(|e| Error::State(format!("{}: {e}", path.display())))?;
-                if state.version != STATE_VERSION {
-                    log::info!(
-                        "state v{} → v{} (schema migration)",
-                        state.version,
-                        STATE_VERSION
+                let version = raw.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                if version != STATE_VERSION {
+                    log::warn!(
+                        "state v{version} is not v{STATE_VERSION} — discarding {} and starting empty",
+                        path.display()
                     );
-                    state.version = STATE_VERSION;
+                    return Ok(State::default());
                 }
+                let state: State = serde_json::from_value(raw)
+                    .map_err(|e| Error::State(format!("{}: {e}", path.display())))?;
                 Ok(state)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
@@ -115,13 +136,13 @@ impl State {
         }
         let text = serde_json::to_string_pretty(self).map_err(|e| Error::State(e.to_string()))?;
         std::fs::write(&path, text)?;
-        log::info!("state saved: {} projects", self.projects.len());
+        log::info!("state saved: {} repositories", self.repositories.len());
         Ok(())
     }
 
     /// Reconcile tmux sessions against state: fill in window/pane ids and
-    /// reconstruct features that exist on disk but not in state. Windows are
-    /// matched inside the project's dedicated agent session, never in the
+    /// reconstruct worktrees that exist on disk but not in state. Windows are
+    /// matched inside the repository's dedicated agent session, never in the
     /// dashboard's own session.
     pub fn reconcile(&mut self, tmux: &Tmux) -> Result<()> {
         let sessions = tmux.list_sessions()?;
@@ -134,20 +155,20 @@ impl State {
                 .trim_start_matches(crate::tmux::SESSION_PREFIX)
                 .to_string();
             let windows = tmux.list_windows(&s.name)?;
-            // Which project owns this session? Exact session-name match
-            // first; else the slug matches the project's sanitised name;
+            // Which repository owns this session? Exact session-name match
+            // first; else the slug matches the repository's sanitised name;
             // else a hash-suffixed session; else reconstruct from pane cwd.
-            let proj_idx = self
-                .projects
+            let repo_idx = self
+                .repositories
                 .iter()
                 .position(|p| p.session_name.as_deref() == Some(&s.name))
                 .or_else(|| {
-                    self.projects
+                    self.repositories
                         .iter()
                         .position(|p| sanitize_name(&p.name) == slug)
                 })
                 .or_else(|| {
-                    self.projects.iter().position(|p| {
+                    self.repositories.iter().position(|p| {
                         n_contains_slug(p, &slug)
                             && p.session_name
                                 .as_deref()
@@ -167,83 +188,80 @@ impl State {
                 let Some((fname, idx)) = parse_window_name(&w.window_name) else {
                     continue;
                 };
-                let Some(pi) = proj_idx else {
-                    // Session for an unknown project — try reconstructing
+                let Some(ri) = repo_idx else {
+                    // Session for an unknown repository — try reconstructing
                     // from the pane's cwd (the worktree path) + git metadata.
                     if let Some(path) = pane_cwd(tmux, &w.pane_id) {
-                        self.reconstruct_feature(&path, &slug, &fname, idx);
+                        self.reconstruct_worktree(&path, &slug, &fname, idx);
                     }
                     continue;
                 };
-                let proj = &mut self.projects[pi];
-                // Remember the session this project lives in.
-                if proj.session_name.as_deref() != Some(&s.name) {
-                    proj.session_name = Some(s.name.clone());
-                    log::info!("project '{}' → agent session {}", proj.name, s.name);
+                let repo = &mut self.repositories[ri];
+                // Remember the session this repository lives in.
+                if repo.session_name.as_deref() != Some(&s.name) {
+                    repo.session_name = Some(s.name.clone());
+                    log::info!("repository '{}' → agent session {}", repo.name, s.name);
                 }
-                // Features are matched by their branch slug.
-                let feat_idx = proj
-                    .features
+                // Worktrees are matched by their branch slug.
+                let wt_idx = repo
+                    .worktrees
                     .iter()
                     .position(|f| sanitize_name(&f.branch) == fname);
-                let Some(fi) = feat_idx else {
-                    // Feature state lost but window alive: reconstruct.
+                let Some(wi) = wt_idx else {
+                    // Worktree state lost but window alive: reconstruct.
                     if let Some(path) = pane_cwd(tmux, &w.pane_id) {
-                        self.reconstruct_feature(&path, &slug, &fname, idx);
+                        self.reconstruct_worktree(&path, &slug, &fname, idx);
                     }
                     continue;
                 };
-                let feat = &mut proj.features[fi];
-                if let Some(shell) = feat.shells.iter_mut().find(|s| s.index == idx) {
+                let wt = &mut repo.worktrees[wi];
+                if let Some(shell) = wt.shells.iter_mut().find(|s| s.index == idx) {
                     shell.window_id = Some(w.window_id.clone());
                     shell.pane_id = Some(w.pane_id.clone());
                 } else {
-                    feat.shells.push(Shell {
+                    wt.shells.push(Shell {
                         index: idx,
                         window_name: w.window_name.clone(),
                         window_id: Some(w.window_id.clone()),
                         pane_id: Some(w.pane_id.clone()),
                     });
-                    feat.shells.sort_by_key(|s| s.index);
+                    wt.shells.sort_by_key(|s| s.index);
                 }
             }
         }
         Ok(())
     }
 
-    /// Rebuild a feature entry from a live window whose state was lost
+    /// Rebuild a worktree entry from a live window whose state was lost
     /// (e.g. state file deleted). The worktree path is the pane's cwd; the
-    /// branch comes from git; the owning project from the worktree's main
-    /// repo. The feature name is the sanitised window-name component.
-    fn reconstruct_feature(
+    /// branch comes from git; the owning repository from the worktree's main
+    /// repo. The worktree name is the sanitised window-name component.
+    fn reconstruct_worktree(
         &mut self,
-        worktree_path: &std::path::Path,
+        path: &std::path::Path,
         pname: &str,
         fname: &str,
         idx: usize,
     ) {
-        let Some(main_repo) = crate::git::main_repo_of_worktree(worktree_path) else {
-            log::warn!(
-                "cannot find main repo for worktree {}",
-                worktree_path.display()
-            );
+        let Some(main_repo) = crate::git::main_repo_of_worktree(path) else {
+            log::warn!("cannot find main repo for worktree {}", path.display());
             return;
         };
-        let Some(proj_idx) = self.projects.iter().position(|p| p.path == main_repo) else {
+        let Some(repo_idx) = self.repositories.iter().position(|p| p.path == main_repo) else {
             log::info!(
-                "window {pname}/{fname} belongs to unknown project, skipping reconstruction"
+                "window {pname}/{fname} belongs to unknown repository, skipping reconstruction"
             );
             return;
         };
-        let Some(branch) = Git.current_branch(worktree_path).ok() else {
-            log::warn!("cannot resolve branch for {}", worktree_path.display());
+        let Some(branch) = Git.current_branch(path).ok() else {
+            log::warn!("cannot resolve branch for {}", path.display());
             return;
         };
-        log::info!("reconstructing feature {fname} (branch {branch})");
-        self.projects[proj_idx].features.push(Feature {
+        log::info!("reconstructing worktree {fname} (branch {branch})");
+        self.repositories[repo_idx].worktrees.push(Worktree {
             name: fname.to_string(),
             branch,
-            worktree_path: worktree_path.to_path_buf(),
+            path: path.to_path_buf(),
             created_at: String::new(),
             shells: vec![Shell {
                 index: idx,
@@ -258,16 +276,17 @@ impl State {
     /// given, shells whose window has vanished are dropped too (windows are
     /// looked up across all agent sessions).
     ///
-    /// Projects are NEVER dropped here: a project whose path is not a repo
+    /// Repositories are NEVER dropped here: a repository whose path is not a repo
     /// is kept and marked `missing` (shown "(missing)" in the tree); it
     /// re-activates automatically when the path is a repo again. Only
-    /// features (worktree gone) and shells (window gone) are pruned.
+    /// worktrees (gone from `git worktree list`) and shells (window gone)
+    /// are pruned.
     ///
-    /// `verify_worktrees` is index-parallel to `projects`: `true` means
-    /// this project's worktrees have been loaded this run (it is expanded
-    /// or the flattened single project), so its features can be verified
-    /// against `git worktree list`. Projects with `false` keep their
-    /// features untouched — verifying 200 repos at boot would be the very
+    /// `verify_worktrees` is index-parallel to `repositories`: `true` means
+    /// this repository's worktrees have been loaded this run (it is expanded
+    /// or the flattened single repository), so its worktrees can be verified
+    /// against `git worktree list`. Repositories with `false` keep their
+    /// worktrees untouched — verifying 200 repos at boot would be the very
     /// cost the lazy loading exists to avoid.
     pub fn prune(&mut self, tmux: Option<&Tmux>, verify_worktrees: &[bool]) -> Result<()> {
         let git = Git;
@@ -284,97 +303,97 @@ impl State {
             }
             Some(set)
         });
-        let mut removed_features = 0;
+        let mut removed_worktrees = 0;
         let mut removed_shells = 0;
-        for (idx, proj) in self.projects.iter_mut().enumerate() {
-            let is_repo = git.is_repo(&proj.path);
+        for (idx, repo) in self.repositories.iter_mut().enumerate() {
+            let is_repo = git.is_repo(&repo.path);
             if !is_repo {
-                // Keep the project; mark it missing (re-activates when the
+                // Keep the repository; mark it missing (re-activates when the
                 // path is a repo again).
-                if !proj.missing {
-                    proj.missing = true;
+                if !repo.missing {
+                    repo.missing = true;
                     log::info!(
-                        "project '{}' marked missing ({} is not a git repo)",
-                        proj.name,
-                        proj.path.display()
+                        "repository '{}' marked missing ({} is not a git repo)",
+                        repo.name,
+                        repo.path.display()
                     );
                 }
-                // Features/shells cannot be verified while missing — keep
+                // Worktrees/shells cannot be verified while missing — keep
                 // them as they are (their windows may still be alive).
             } else {
-                if proj.missing {
-                    proj.missing = false;
+                if repo.missing {
+                    repo.missing = false;
                     log::info!(
-                        "project '{}' re-activated ({} is a git repo again)",
-                        proj.name,
-                        proj.path.display()
+                        "repository '{}' re-activated ({} is a git repo again)",
+                        repo.name,
+                        repo.path.display()
                     );
                 }
                 // Worktree verification is the expensive part — only run it
-                // for projects whose worktrees were actually loaded this
+                // for repositories whose worktrees were actually loaded this
                 // run (see `App::ensure_worktrees`).
                 let verify = verify_worktrees.get(idx).copied().unwrap_or(true);
                 if verify {
-                    if let Ok(worktrees) = git.worktree_list(&proj.path) {
+                    if let Ok(worktrees) = git.worktree_list(&repo.path) {
                         let wt_paths: Vec<PathBuf> =
                             worktrees.into_iter().map(|w| w.path).collect();
-                        proj.features.retain(|f| {
-                            let keep = wt_paths.contains(&f.worktree_path);
+                        repo.worktrees.retain(|f| {
+                            let keep = wt_paths.contains(&f.path);
                             if !keep {
                                 log::info!(
-                                    "pruning stale feature '{}' (worktree {} gone)",
+                                    "pruning stale worktree '{}' (worktree {} gone)",
                                     f.name,
-                                    f.worktree_path.display()
+                                    f.path.display()
                                 );
-                                removed_features += 1;
+                                removed_worktrees += 1;
                             }
                             keep
                         });
-                        for feat in &mut proj.features {
+                        for wt in &mut repo.worktrees {
                             if let Some(live) = &live_windows {
-                                let before = feat.shells.len();
-                                feat.shells.retain(|s| match &s.window_id {
+                                let before = wt.shells.len();
+                                wt.shells.retain(|s| match &s.window_id {
                                     Some(wid) => live.contains(wid),
                                     None => true, // reconstructed, not yet matched
                                 });
-                                removed_shells += before - feat.shells.len();
+                                removed_shells += before - wt.shells.len();
                             }
                         }
                     } else {
                         log::warn!(
-                            "worktree list failed for {} — leaving features untouched",
-                            proj.path.display()
+                            "worktree list failed for {} — leaving worktrees untouched",
+                            repo.path.display()
                         );
                     }
                 }
-                // else: features stay as-is until the project is expanded —
+                // else: worktrees stay as-is until the repository is expanded —
                 // lazy loading owns verification then.
             }
             // If the agent session vanished (crashed server, killed session)
-            // but the project still exists, drop the stale name so a new
+            // but the repository still exists, drop the stale name so a new
             // session is created on demand.
-            if let Some(sess) = &proj.session_name {
+            if let Some(sess) = &repo.session_name {
                 let alive = tmux.map(|t| t.session_exists(sess)).unwrap_or(false);
                 if !alive {
                     log::info!(
-                        "agent session {} gone for project '{}', clearing",
+                        "agent session {} gone for repository '{}', clearing",
                         sess,
-                        proj.name
+                        repo.name
                     );
-                    proj.session_name = None;
+                    repo.session_name = None;
                 }
             }
         }
-        if removed_features + removed_shells > 0 {
-            log::info!("pruned {removed_features} features, {removed_shells} shells");
+        if removed_worktrees + removed_shells > 0 {
+            log::info!("pruned {removed_worktrees} worktrees, {removed_shells} shells");
         }
         Ok(())
     }
 }
 
-/// Does the project's name match the session slug (for hash-suffixed
+/// Does the repository's name match the session slug (for hash-suffixed
 /// session names)?
-fn n_contains_slug(p: &Project, slug: &str) -> bool {
+fn n_contains_slug(p: &Repository, slug: &str) -> bool {
     let n = sanitize_name(&p.name);
     n == slug || n.starts_with(slug) || slug.starts_with(&n)
 }
@@ -392,7 +411,7 @@ pub fn sanitize_name(s: &str) -> String {
     out
 }
 
-/// Parse `lw:<feature>/<index>` (project is implied by the session).
+/// Parse `lw:<worktree>/<index>` (repository is implied by the session).
 pub fn parse_window_name(name: &str) -> Option<(String, usize)> {
     let rest = name.strip_prefix(crate::tmux::WINDOW_PREFIX)?;
     let (f, idx) = rest.rsplit_once('/')?;
@@ -429,26 +448,26 @@ mod tests {
     /// with a live window on reconcile.
     #[test]
     fn next_shell_index_never_reuses_a_freed_slot() {
-        let mut feat = Feature {
-            name: "feat".into(),
-            branch: "feat".into(),
-            worktree_path: PathBuf::from("/tmp/wt"),
+        let mut wt = Worktree {
+            name: "wt".into(),
+            branch: "wt".into(),
+            path: PathBuf::from("/tmp/wt"),
             created_at: String::new(),
             shells: vec![],
         };
-        assert_eq!(feat.next_shell_index(), 0);
+        assert_eq!(wt.next_shell_index(), 0);
         for idx in 0..3 {
-            feat.shells.push(Shell {
+            wt.shells.push(Shell {
                 index: idx,
-                window_name: format!("lw:feat/{idx}"),
+                window_name: format!("lw:wt/{idx}"),
                 window_id: None,
                 pane_id: None,
             });
         }
-        assert_eq!(feat.next_shell_index(), 3);
-        feat.shells.remove(1); // shell 1 closed
+        assert_eq!(wt.next_shell_index(), 3);
+        wt.shells.remove(1); // shell 1 closed
         assert_eq!(
-            feat.next_shell_index(),
+            wt.next_shell_index(),
             3,
             "a freed index must not be reused while shell 2 holds a window"
         );
@@ -456,10 +475,10 @@ mod tests {
 
     #[test]
     fn window_name_roundtrip() {
-        let name = crate::tmux::Tmux::window_name("feat-one", 2);
-        assert_eq!(name, "lw:feat-one/2");
+        let name = crate::tmux::Tmux::window_name("wt-one", 2);
+        assert_eq!(name, "lw:wt-one/2");
         let (f, i) = parse_window_name(&name).unwrap();
-        assert_eq!(f, "feat-one");
+        assert_eq!(f, "wt-one");
         assert_eq!(i, 2);
         assert!(parse_window_name("0:bash").is_none());
         assert!(parse_window_name("lw:a/b/x").is_none());
@@ -468,22 +487,22 @@ mod tests {
     #[test]
     fn state_json_roundtrip() {
         let mut s = State::default();
-        s.projects.push(Project {
-            name: "proj".into(),
-            path: PathBuf::from("/tmp/proj"),
+        s.repositories.push(Repository {
+            name: "repo".into(),
+            path: PathBuf::from("/tmp/repo"),
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: Some("wingman-session-proj".into()),
+            session_name: Some("wingman-session-repo".into()),
             missing: false,
-            features: vec![Feature {
-                name: "feat".into(),
-                branch: "feat".into(),
-                worktree_path: PathBuf::from("/tmp/wt/feat"),
+            worktrees: vec![Worktree {
+                name: "wt".into(),
+                branch: "wt".into(),
+                path: PathBuf::from("/tmp/wt/wt"),
                 created_at: "now".into(),
                 shells: vec![Shell {
                     index: 0,
-                    window_name: "lw:feat/0".into(),
+                    window_name: "lw:wt/0".into(),
                     window_id: Some("@5".into()),
                     pane_id: Some("%9".into()),
                 }],
@@ -491,38 +510,40 @@ mod tests {
         });
         let json = serde_json::to_string_pretty(&s).unwrap();
         let back: State = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.projects.len(), 1);
+        assert_eq!(back.repositories.len(), 1);
         assert_eq!(
-            back.projects[0].features[0].shells[0].window_id.as_deref(),
+            back.repositories[0].worktrees[0].shells[0]
+                .window_id
+                .as_deref(),
             Some("@5")
         );
         assert_eq!(
-            back.projects[0].session_name.as_deref(),
-            Some("wingman-session-proj")
+            back.repositories[0].session_name.as_deref(),
+            Some("wingman-session-repo")
         );
     }
 
     #[test]
-    fn v1_state_loads_with_defaults() {
-        // A v1 state file has no version and no session_name.
-        let v1 = r#"{"projects":[{"name":"p","path":"/tmp/p","base_branch":"main","agent_command":"claude","agent_shell":"bash","features":[]}]}"#;
+    fn missing_optional_fields_default() {
+        // session_name and missing are optional on disk.
+        let v1 = r#"{"repositories":[{"name":"p","path":"/tmp/p","base_branch":"main","agent_command":"claude","agent_shell":"bash","worktrees":[]}]}"#;
         let s: State = serde_json::from_str(v1).unwrap();
         assert_eq!(s.version, 0);
-        assert!(s.projects[0].session_name.is_none());
-        assert!(!s.projects[0].missing);
-        assert!(s.projects[0].features.is_empty());
+        assert!(s.repositories[0].session_name.is_none());
+        assert!(!s.repositories[0].missing);
+        assert!(s.repositories[0].worktrees.is_empty());
     }
 
     #[test]
     fn sanitize_matches_session_names() {
-        assert_eq!(sanitize_name("My Project"), "My-Project");
-        assert_eq!(sanitize_name("feat/one"), "feat/one");
+        assert_eq!(sanitize_name("My Repository"), "My-Repository");
+        assert_eq!(sanitize_name("wt/one"), "wt/one");
     }
 
-    /// A project whose path vanished is KEPT and marked missing; it is
+    /// A repository whose path vanished is KEPT and marked missing; it is
     /// never pruned, and it re-activates when the path is a repo again.
     #[test]
-    fn prune_keeps_missing_projects_and_reactivates_them() {
+    fn prune_keeps_missing_repositories_and_reactivates_them() {
         let root = tempfile::TempDir::new().unwrap();
         let repo = root.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -534,7 +555,7 @@ mod tests {
         run_git(&repo, &["commit", "-m", "init"]);
 
         let mut s = State::default();
-        s.projects.push(Project {
+        s.repositories.push(Repository {
             name: "repo".into(),
             path: repo.clone(),
             base_branch: "main".into(),
@@ -542,29 +563,33 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features: vec![],
+            worktrees: vec![],
         });
-        s.prune(None, &vec![true; s.projects.len()]).unwrap();
-        assert!(!s.projects[0].missing, "active repo stays active");
+        s.prune(None, &vec![true; s.repositories.len()]).unwrap();
+        assert!(!s.repositories[0].missing, "active repo stays active");
 
         // path vanishes → kept, marked missing
         std::fs::remove_dir_all(&repo).unwrap();
-        s.prune(None, &vec![true; s.projects.len()]).unwrap();
-        assert_eq!(s.projects.len(), 1, "missing project is never pruned");
-        assert!(s.projects[0].missing);
+        s.prune(None, &vec![true; s.repositories.len()]).unwrap();
+        assert_eq!(
+            s.repositories.len(),
+            1,
+            "missing repository is never pruned"
+        );
+        assert!(s.repositories[0].missing);
 
         // path is a repo again → re-activated
         std::fs::create_dir_all(&repo).unwrap();
         run_git(&repo, &["init", "-b", "main"]);
-        s.prune(None, &vec![true; s.projects.len()]).unwrap();
-        assert_eq!(s.projects.len(), 1);
-        assert!(!s.projects[0].missing, "re-activated");
+        s.prune(None, &vec![true; s.repositories.len()]).unwrap();
+        assert_eq!(s.repositories.len(), 1);
+        assert!(!s.repositories[0].missing, "re-activated");
     }
 
-    /// Missing projects keep their features (they cannot be verified while
+    /// Missing repositories keep their worktrees (they cannot be verified while
     /// the path is gone; they are not dropped).
     #[test]
-    fn prune_keeps_features_of_missing_projects() {
+    fn prune_keeps_worktrees_of_missing_repositories() {
         let root = tempfile::TempDir::new().unwrap();
         let repo = root.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -576,7 +601,7 @@ mod tests {
         run_git(&repo, &["commit", "-m", "init"]);
 
         let mut s = State::default();
-        s.projects.push(Project {
+        s.repositories.push(Repository {
             name: "repo".into(),
             path: repo.clone(),
             base_branch: "main".into(),
@@ -584,30 +609,30 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
-            features: vec![Feature {
-                name: "feat".into(),
-                branch: "feat".into(),
-                worktree_path: repo.join("../wt-feat"),
+            worktrees: vec![Worktree {
+                name: "wt".into(),
+                branch: "wt".into(),
+                path: repo.join("../wt-wt"),
                 created_at: "2026-08-16".into(),
                 shells: vec![Shell {
                     index: 0,
-                    window_name: "lw:feat/0".into(),
+                    window_name: "lw:wt/0".into(),
                     window_id: Some("@9".into()),
                     pane_id: Some("%9".into()),
                 }],
             }],
         });
-        // verify the feature is pruned while the repo is present (worktree
+        // verify the worktree is pruned while the repo is present (worktree
         // is gone)
-        s.prune(None, &vec![true; s.projects.len()]).unwrap();
-        assert!(s.projects[0].features.is_empty());
+        s.prune(None, &vec![true; s.repositories.len()]).unwrap();
+        assert!(s.repositories[0].worktrees.is_empty());
 
-        // now make the project missing: a feature added while missing is
+        // now make the repository missing: a worktree added while missing is
         // kept intact
-        s.projects[0].features.push(Feature {
+        s.repositories[0].worktrees.push(Worktree {
             name: "feat2".into(),
             branch: "feat2".into(),
-            worktree_path: repo.join("../wt-feat2"),
+            path: repo.join("../wt-feat2"),
             created_at: "".into(),
             shells: vec![Shell {
                 index: 0,
@@ -617,14 +642,14 @@ mod tests {
             }],
         });
         std::fs::remove_dir_all(&repo).unwrap();
-        s.prune(None, &vec![true; s.projects.len()]).unwrap();
-        assert!(s.projects[0].missing);
+        s.prune(None, &vec![true; s.repositories.len()]).unwrap();
+        assert!(s.repositories[0].missing);
         assert_eq!(
-            s.projects[0].features.len(),
+            s.repositories[0].worktrees.len(),
             1,
-            "features survive while missing"
+            "worktrees survive while missing"
         );
-        assert_eq!(s.projects[0].features[0].shells.len(), 1);
+        assert_eq!(s.repositories[0].worktrees[0].shells.len(), 1);
     }
 
     fn run_git(dir: &std::path::Path, args: &[&str]) {
@@ -641,7 +666,7 @@ mod tests {
     fn save_load_roundtrip() {
         crate::util::testutil::with_fresh_xdg(|| {
             let mut s = State::default();
-            s.projects.push(Project {
+            s.repositories.push(Repository {
                 name: "p".into(),
                 path: PathBuf::from("/tmp/p"),
                 base_branch: "main".into(),
@@ -649,12 +674,12 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
-                features: vec![],
+                worktrees: vec![],
             });
             s.save().unwrap();
             let loaded = State::load().unwrap();
-            assert_eq!(loaded.projects.len(), 1);
-            assert_eq!(loaded.projects[0].name, "p");
+            assert_eq!(loaded.repositories.len(), 1);
+            assert_eq!(loaded.repositories[0].name, "p");
             assert_eq!(loaded.version, STATE_VERSION);
         });
     }
@@ -663,7 +688,7 @@ mod tests {
     fn missing_state_file_is_empty() {
         crate::util::testutil::with_fresh_xdg(|| {
             let s = State::load().unwrap();
-            assert!(s.projects.is_empty());
+            assert!(s.repositories.is_empty());
         });
     }
 
