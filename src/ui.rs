@@ -8,6 +8,7 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, BarAction, InputKind, Mode, Sel};
 use crate::status::Status;
@@ -255,14 +256,16 @@ fn fits(area: Rect, min: (u16, u16)) -> bool {
     area.width >= min.0 && area.height >= min.1
 }
 
-/// App-generated glyphs with ASCII fallbacks (the user's pane content is
-/// never rewritten — only our own labels).
-pub(crate) fn warn_mark(ascii: bool) -> &'static str {
-    if ascii { "!" } else { "⚠" }
+/// App-generated glyphs, configurable via `[icons]`. These helpers return
+/// the app's own labels; `asciify` is the one that reaches further, rewriting
+/// box-drawing across whatever rect it is handed — under `border = "ascii"`
+/// that includes the preview's captured pane text and the textarea's buffer.
+pub(crate) fn warn_mark(icons: &crate::config::IconsConfig) -> &str {
+    &icons.warn
 }
 
-pub(crate) fn sep(ascii: bool) -> &'static str {
-    if ascii { " - " } else { " · " }
+pub(crate) fn sep(icons: &crate::config::IconsConfig) -> &str {
+    &icons.separator
 }
 
 /// Replace box-drawing glyphs in a rendered area with plain ASCII
@@ -331,7 +334,7 @@ fn draw_overlay_too_small(f: &mut Frame, area: Rect, app: &App, kind: OverlayKin
     let (min_w, min_h) = overlay_min(kind);
     let rect = centered_rect(area, 70, 25);
     f.render_widget(Clear, rect);
-    let block = popup_block(theme, " frame too small for this dialog ");
+    let block = popup_block(theme, &app.cfg.icons, " frame too small for this dialog ");
     let text = Text::from(vec![
         Line::from(""),
         Line::from(Span::raw(format!(
@@ -343,7 +346,7 @@ fn draw_overlay_too_small(f: &mut Frame, area: Rect, app: &App, kind: OverlayKin
         )),
     ]);
     f.render_widget(Paragraph::new(text).block(block), rect);
-    if app.ascii {
+    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
         asciify(f, rect);
     }
 }
@@ -354,16 +357,35 @@ fn title_style(theme: &ResolvedColors) -> Style {
     fg(theme.title_fg).add_modifier(Modifier::BOLD)
 }
 
-/// Overlay block: rounded corners, popup border colour, bg-less title.
-fn popup_block(theme: &ResolvedColors, title: impl Into<String>) -> Block<'static> {
+/// Overlay block: rounded (or configured) corners, popup border colour,
+/// bg-less title.
+fn popup_block(
+    theme: &ResolvedColors,
+    icons: &crate::config::IconsConfig,
+    title: impl Into<String>,
+) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(border_type(icons))
         .border_style(fg(theme.popup_border))
         .title(Span::styled(title.into(), title_style(theme)))
 }
 
-fn panel_block(theme: &ResolvedColors, title: &str, focused: bool) -> Block<'static> {
+/// `Ascii` draws `Plain` first; `asciify` rewrites the cells afterwards
+/// (ratatui has no ASCII `BorderType`).
+fn border_type(icons: &crate::config::IconsConfig) -> BorderType {
+    match icons.border {
+        crate::config::BorderStyle::Rounded => BorderType::Rounded,
+        crate::config::BorderStyle::Plain | crate::config::BorderStyle::Ascii => BorderType::Plain,
+    }
+}
+
+fn panel_block(
+    theme: &ResolvedColors,
+    icons: &crate::config::IconsConfig,
+    title: &str,
+    focused: bool,
+) -> Block<'static> {
     let border = if focused {
         theme.border_focused
     } else {
@@ -371,46 +393,25 @@ fn panel_block(theme: &ResolvedColors, title: &str, focused: bool) -> Block<'sta
     };
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(border_type(icons))
         .border_style(fg(border))
         .title(Span::styled(format!(" {title} "), title_style(theme)))
 }
 
 fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
-    // ASCII fallback (terminals that mangle box-drawing): plain markers.
-    let (exp, coll, hl) = if app.ascii {
-        ("v", ">", ">")
-    } else {
-        ("▾", "▸", "›")
-    };
-    // Tree guides: `├─ `/`└─ ` for children, `│` continuing parents.
-    let (child, last_child) = if app.ascii {
-        ("  |- ", "  `- ")
-    } else {
-        ("  ├─ ", "  └─ ")
-    };
-    let (grandchild, last_grandchild) = if app.ascii {
-        ("  |  |- ", "  |  `- ")
-    } else {
-        ("  │  ├─ ", "  │  └─ ")
-    };
-    let (no_grandchild, no_last_grandchild) = if app.ascii {
-        ("     |- ", "     `- ")
-    } else {
-        ("     ├─ ", "     └─ ")
-    };
-    // Per-type icons (aesthetic pass; ASCII keeps plain markers). Each
-    // icon carries the one fact its row cannot show otherwise: the
-    // project icon is filled when it holds features and hollow when it is
-    // empty; the feature icon is hollow for a clean worktree and filled
-    // when it has uncommitted changes. Counts stay out of the rows — the
-    // tree is expanded by default, so the children speak for themselves.
-    let (proj_icon, empty_proj_icon, feat_icon, dirty_icon, shell_icon) = if app.ascii {
-        ("*", "o", "-", "*", "")
-    } else {
-        ("▣", "▢", "◇", "◆", "● ")
-    };
+    let ic = &app.cfg.icons;
+    // Guides are composites: `[icons]` exposes three keys and the six
+    // shapes are built here. Six near-identical constants is not a
+    // configuration surface worth handing a user.
+    let child = format!("  {}", ic.guide_branch);
+    let last_child = format!("  {}", ic.guide_last);
+    let vbar = &ic.guide_vertical;
+    let vbar_blank = " ".repeat(UnicodeWidthStr::width(vbar.as_str()));
+    let grandchild = format!("  {vbar}  {}", ic.guide_branch);
+    let last_grandchild = format!("  {vbar}  {}", ic.guide_last);
+    let no_grandchild = format!("  {vbar_blank}  {}", ic.guide_branch);
+    let no_last_grandchild = format!("  {vbar_blank}  {}", ic.guide_last);
     let mut items: Vec<ListItem> = Vec::new();
     let mut sel_row: Option<usize> = None;
     let mut row: usize = 0;
@@ -421,15 +422,14 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
         let proj = &app.state.projects[pi];
         if !app.flatten {
             let expanded = app.proj_expanded.get(pi).copied().unwrap_or(false);
-            let marker = if expanded { exp } else { coll };
             let icon = if proj.features.is_empty() {
-                empty_proj_icon
+                &ic.project_empty
             } else {
-                proj_icon
+                &ic.project
             };
             let pdead = project_dead(app, proj);
             let mut spans = vec![Span::styled(
-                format!("{marker} {icon} {}", proj.name),
+                format!("{icon}{}", proj.name),
                 fg(row_color(theme, pdead, theme.tree_project)).add_modifier(Modifier::BOLD),
             )];
             if proj.missing {
@@ -459,20 +459,28 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             let fdead = feature_dead(app, feat);
             let marker = match solo {
                 // a blank of the marker's width keeps the names aligned
-                Some(_) => " ".repeat(exp.chars().count()),
-                None if fexp => exp.to_string(),
-                None => coll.to_string(),
+                Some(_) => " ".repeat(UnicodeWidthStr::width(ic.expand_open.as_str())),
+                None if fexp => ic.expand_open.clone(),
+                None => ic.expand_closed.clone(),
             };
             let n = feat.shells.len();
             let dirty = app.feature_dirty_cached(pi, fi);
-            let ficon = if dirty { dirty_icon } else { feat_icon };
+            let ficon = if dirty {
+                &ic.feature_dirty
+            } else {
+                &ic.feature
+            };
             // In flatten mode the features are the top level (no guide);
             // otherwise they hang off the project with a tree branch.
             let (prefix, icon_span) = if app.flatten {
-                (format!("{marker} "), format!("{ficon} "))
+                (marker.clone(), ficon.to_string())
             } else {
-                let guide = if fi + 1 == n_feat { last_child } else { child };
-                (format!("{guide}{marker} "), format!("{ficon} "))
+                let guide = if fi + 1 == n_feat {
+                    &last_child
+                } else {
+                    &child
+                };
+                (format!("{guide}{marker}"), ficon.to_string())
             };
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(
@@ -521,24 +529,24 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 let st = shell_status(app, sh);
                 let guide = if app.flatten {
                     if si + 1 == n {
-                        last_grandchild
+                        &last_grandchild
                     } else {
-                        grandchild
+                        &grandchild
                     }
                 } else if fi + 1 == n_feat {
                     if si + 1 == n {
-                        no_last_grandchild
+                        &no_last_grandchild
                     } else {
-                        no_grandchild
+                        &no_grandchild
                     }
                 } else if si + 1 == n {
-                    last_grandchild
+                    &last_grandchild
                 } else {
-                    grandchild
+                    &grandchild
                 };
                 items.push(ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{guide}{shell_icon}#{}", sh.index),
+                        format!("{guide}{}#{}", ic.shell, sh.index),
                         fg(row_color(theme, st == Status::Dead, theme.tree_shell)),
                     ),
                     Span::raw(" "),
@@ -566,15 +574,15 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     } else {
         format!("Projects ({})", vis.len())
     };
-    let block = panel_block(theme, &title, true);
+    let block = panel_block(theme, &app.cfg.icons, &title, true);
     let list = List::new(items)
         .block(block)
         .highlight_style(on(theme.selection_fg, theme.selection_bg))
-        .highlight_symbol(format!("{hl} "));
+        .highlight_symbol(format!("{} ", ic.cursor));
     let mut state = ListState::default();
     state.select(sel_row);
     f.render_stateful_widget(list, area, &mut state);
-    if app.ascii {
+    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
         asciify(f, area);
     }
 }
@@ -615,7 +623,7 @@ fn selected_feature_has_no_shell(app: &App) -> bool {
 
 fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
-    let block = panel_block(theme, "Preview", false);
+    let block = panel_block(theme, &app.cfg.icons, "Preview", false);
     let text = match app.selected_shell() {
         Some(_) => {
             if let Some(pid) = app.selected_shell_pane() {
@@ -625,11 +633,10 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
                     let tail = preview_tail(cap, area.height.saturating_sub(2) as usize);
                     crate::ansi::styled_text(&tail, app.cfg.preview.colors)
                 } else {
-                    Text::from(if app.ascii {
-                        "capturing... (select the shell in the tree)"
-                    } else {
-                        "capturing… (select the shell in the tree)"
-                    })
+                    Text::from(format!(
+                        "capturing{} (select the shell in the tree)",
+                        app.cfg.icons.ellipsis
+                    ))
                 }
             } else {
                 Text::from("no live pane for this shell")
@@ -654,7 +661,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         .block(block)
         .style(fg(theme.foreground));
     f.render_widget(p, area);
-    if app.ascii {
+    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
         asciify(f, area);
     }
 }
@@ -704,7 +711,7 @@ fn draw_statusbar(f: &mut Frame, area: Rect, app: &mut App) {
     // Each entry gets a hit range so a mouse click can run it. Truncated
     // (never wrapped) on narrow frames — the tail just drops off.
     let entries = bar_entries(app);
-    let sp = sep(app.ascii);
+    let sp = sep(&app.cfg.icons);
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     let mut hits: Vec<(u16, u16, BarAction)> = Vec::new();
     let mut cx: u16 = 1;
@@ -720,19 +727,18 @@ fn draw_statusbar(f: &mut Frame, area: Rect, app: &mut App) {
     }
     app.bar_hits = hits;
     f.render_widget(Paragraph::new(Line::from(spans)), area);
-    if app.ascii {
+    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
         asciify(f, area);
     }
 }
 
 /// Cut a notice to `max` columns, marking the cut with an ellipsis.
-fn truncate(text: &str, max: usize, ascii: bool) -> String {
+fn truncate(text: &str, max: usize, ellipsis: &str) -> String {
     if text.chars().count() <= max {
         return text.to_string();
     }
-    let mark = if ascii { "..." } else { "…" };
-    let keep = max.saturating_sub(mark.chars().count());
-    text.chars().take(keep).collect::<String>() + mark
+    let keep = max.saturating_sub(ellipsis.chars().count());
+    text.chars().take(keep).collect::<String>() + ellipsis
 }
 
 /// A transient notice, bottom-right above the statusbar. It expires on
@@ -758,7 +764,7 @@ fn draw_toast(f: &mut Frame, area: Rect, app: &App) {
     if max_text < 8 || area.height < 5 {
         return;
     }
-    let text = truncate(&toast.text, max_text, app.ascii);
+    let text = truncate(&toast.text, max_text, &app.cfg.icons.ellipsis);
     let w = text.chars().count() as u16 + 4;
     let rect = Rect {
         x: area.right().saturating_sub(w + 2),
@@ -769,18 +775,14 @@ fn draw_toast(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(if app.ascii {
-            BorderType::Plain
-        } else {
-            BorderType::Rounded
-        })
+        .border_type(border_type(&app.cfg.icons))
         .border_style(fg(color))
         .style(on(theme.title_fg, theme.title_bg));
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(format!(" {text} "), fg(color)))).block(block),
         rect,
     );
-    if app.ascii {
+    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
         asciify(f, rect);
     }
 }
@@ -825,16 +827,17 @@ fn draw_help(f: &mut Frame, app: &App) -> Rect {
     let window: Vec<Line> = lines.iter().skip(scroll).take(inner_h).cloned().collect();
     let mut title_text = " Help ".to_string();
     if max_scroll > 0 {
-        // The separator follows the ASCII fallback like every other label.
-        if app.ascii {
-            title_text.push_str("- j/k scrolls");
-        } else {
-            title_text.push_str("· j/k scrolls");
-        }
+        // The separator follows the configured [icons] like every other
+        // label; the title already ends in a space, so trim the
+        // separator's leading one.
+        title_text.push_str(&format!(
+            "{}j/k scrolls",
+            app.cfg.icons.separator.trim_start()
+        ));
     }
-    let block = popup_block(theme, title_text);
+    let block = popup_block(theme, &app.cfg.icons, title_text);
     f.render_widget(Paragraph::new(Text::from(window)).block(block), area);
-    if app.ascii {
+    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
         asciify(f, area);
     }
     area
@@ -911,7 +914,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
 /// the app (which must never drift from what is rendered).
 fn help_lines(app: &App) -> Vec<Line<'_>> {
     let theme = &app.theme.colors;
-    let s = sep(app.ascii);
+    let s = sep(&app.cfg.icons);
     let mut lines: Vec<Line> = Vec::new();
     for (group_title, rows) in HELP_GROUPS {
         lines.push(Line::from(Span::styled(
@@ -992,20 +995,19 @@ fn draw_diagnostics(f: &mut Frame, app: &App) -> Rect {
     let window: Vec<Line> = lines.iter().skip(scroll).take(inner_h).cloned().collect();
     let mut title_text = format!(" Startup Diagnostics ({}) ", app.cfg.diagnostics.len());
     if max_scroll > 0 {
-        if app.ascii {
-            title_text.push_str("- j/k scrolls");
-        } else {
-            title_text.push_str("· j/k scrolls");
-        }
+        title_text.push_str(&format!(
+            "{}j/k scrolls",
+            app.cfg.icons.separator.trim_start()
+        ));
     }
-    let block = popup_block(theme, title_text);
+    let block = popup_block(theme, &app.cfg.icons, title_text);
     f.render_widget(
         Paragraph::new(Text::from(window))
             .block(block)
             .style(on(theme.popup_fg, theme.popup_bg)),
         area,
     );
-    if app.ascii {
+    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
         asciify(f, area);
     }
     area
@@ -1015,7 +1017,7 @@ fn draw_diagnostics(f: &mut Frame, app: &App) -> Rect {
 /// app's scroll clamp (same pattern as the help palette).
 fn diag_lines(app: &App) -> Vec<Line<'_>> {
     let theme = &app.theme.colors;
-    let mark = warn_mark(app.ascii);
+    let mark = warn_mark(&app.cfg.icons);
     let mut lines: Vec<Line> = app
         .cfg
         .diagnostics
@@ -1077,11 +1079,14 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
     let mut lines: Vec<Line> = Vec::new();
     for (i, name) in names.iter().take(rows).enumerate() {
         let selected = i == index;
-        let marker = if app.ascii { ">" } else { "▸" };
+        let marker = &app.cfg.icons.expand_closed;
         let label = if selected {
-            format!(" {marker} {name} ")
+            format!(" {marker}{name} ")
         } else {
-            format!("   {name} ")
+            format!(
+                " {}{name} ",
+                " ".repeat(UnicodeWidthStr::width(marker.as_str()))
+            )
         };
         lines.push(Line::from(if selected {
             vec![Span::styled(
@@ -1092,14 +1097,11 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
             vec![Span::styled(label, fg(theme.foreground))]
         }));
     }
-    let footer = format!(
-        " Enter keep{}Esc cancel ",
-        if app.ascii { "-" } else { " · " }
-    );
+    let footer = format!(" Enter keep{}Esc cancel ", sep(&app.cfg.icons));
     lines.push(Line::from(Span::styled(footer, fg(theme.dim))));
-    let block = popup_block(theme, " Themes ");
+    let block = popup_block(theme, &app.cfg.icons, " Themes ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
-    if app.ascii {
+    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
         asciify(f, area);
     }
     area
@@ -1141,7 +1143,7 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
     let mut lines: Vec<Line> = Vec::new();
     for (i, label) in labels.iter().take(rows).enumerate() {
         let selected = i == index;
-        let marker = if app.ascii { ">" } else { "▸" };
+        let marker = &app.cfg.icons.expand_closed;
         // The number is the key that sends the entry (up to 9 of them).
         let num = if i < 9 {
             format!("{} ", i + 1)
@@ -1149,9 +1151,12 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
             "  ".into()
         };
         let label = if selected {
-            format!(" {marker} {num}{label} ")
+            format!(" {marker}{num}{label} ")
         } else {
-            format!("   {num}{label} ")
+            format!(
+                " {}{num}{label} ",
+                " ".repeat(UnicodeWidthStr::width(marker.as_str()))
+            )
         };
         lines.push(Line::from(if selected {
             vec![Span::styled(
@@ -1162,11 +1167,11 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
             vec![Span::styled(label, fg(theme.foreground))]
         }));
     }
-    let footer = format!(" Enter send{}Esc cancel ", sep(app.ascii));
+    let footer = format!(" Enter send{}Esc cancel ", sep(&app.cfg.icons));
     lines.push(Line::from(Span::styled(footer, fg(theme.dim))));
-    let block = popup_block(theme, " Messages ");
+    let block = popup_block(theme, &app.cfg.icons, " Messages ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
-    if app.ascii {
+    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
         asciify(f, area);
     }
     area
@@ -1192,7 +1197,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
     let Mode::Input { kind, text } = &app.mode else {
         return input_rect(f.area(), 4);
     };
-    let block = popup_block(theme, format!(" {title} "));
+    let block = popup_block(theme, &app.cfg.icons, format!(" {title} "));
     let mut lines = vec![Line::from("")];
     lines.push(Line::from(vec![
         Span::styled(label, fg(theme.accent)),
@@ -1227,7 +1232,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        format!("Enter to submit{}Esc to cancel", sep(app.ascii)),
+        format!("Enter to submit{}Esc to cancel", sep(&app.cfg.icons)),
         fg(theme.dim),
     )));
     let area = input_rect(f.area(), lines.len() as u16);
@@ -1245,7 +1250,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
             .style(popup_style),
         area,
     );
-    if app.ascii {
+    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
         asciify(f, area);
     }
     // cursor after the typed text, on the input row (the second content
@@ -1272,7 +1277,7 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
         return area;
     };
     let content_lines = crate::app::textarea_visible_lines(app.viewport.1).max(1);
-    let block = popup_block(theme, " Quick Send ");
+    let block = popup_block(theme, &app.cfg.icons, " Quick Send ");
     let inner = Rect {
         x: area.x + 1,
         y: area.y + 1,
@@ -1306,9 +1311,9 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("enter newline", fg(theme.accent)),
-        Span::styled(sep(app.ascii), fg(theme.dim)),
+        Span::styled(sep(&app.cfg.icons), fg(theme.dim)),
         Span::styled("ctrl-s send", fg(theme.accent)),
-        Span::styled(sep(app.ascii), fg(theme.dim)),
+        Span::styled(sep(&app.cfg.icons), fg(theme.dim)),
         Span::styled("esc cancel", fg(theme.accent)),
     ]));
 
@@ -1319,7 +1324,7 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
             .style(popup_style),
         area,
     );
-    if app.ascii {
+    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
         asciify(f, area);
     }
     // Cursor: the visual row relative to the content window, and the
@@ -1355,7 +1360,7 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
     };
     let area = centered_rect(f.area(), 62, 26);
     f.render_widget(Clear, area);
-    let sp = sep(app.ascii);
+    let sp = sep(&app.cfg.icons);
     let options = match &confirm.force_label {
         Some(fl) => format!(" [y/d] yes{sp}[f] {fl}{sp}[n] cancel "),
         None => format!(" [y/d] yes{sp}[n] cancel "),
@@ -1370,7 +1375,7 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
         options,
         fg(theme.accent).add_modifier(Modifier::BOLD),
     )));
-    let block = popup_block(theme, format!(" {} ", confirm.title));
+    let block = popup_block(theme, &app.cfg.icons, format!(" {} ", confirm.title));
     let popup_style = on(theme.popup_fg, theme.popup_bg);
     f.render_widget(
         Paragraph::new(Text::from(lines))
@@ -1378,7 +1383,7 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
             .style(popup_style),
         area,
     );
-    if app.ascii {
+    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
         asciify(f, area);
     }
     area
@@ -2010,12 +2015,12 @@ mod tests {
         }
     }
 
-    /// ASCII fallback: no box-drawing, no unicode markers — plain `+ - |`
+    /// ASCII preset: no box-drawing, no unicode markers — plain `+ - |`
     /// and `v`/`>` — so terminals that mangle box-drawing stay readable.
     #[test]
-    fn ascii_fallback_renders_without_box_glyphs() {
+    fn ascii_preset_renders_without_box_glyphs() {
         let mut app = seeded_app();
-        app.ascii = true;
+        app.cfg.icons = crate::config::IconsConfig::preset("ascii");
         app.state.projects.push(crate::state::Project {
             name: "repo-b".into(),
             path: std::path::PathBuf::from("/tmp/repo-b"),
@@ -2026,7 +2031,25 @@ mod tests {
             missing: false,
             features: vec![],
         });
+        // The project row lost its expand marker in this task; give the
+        // first project a multi-shell, expanded feature so a feature-row
+        // marker (`expand_open` = "v" in the ascii preset) still renders.
+        let shell = |i: usize| crate::state::Shell {
+            index: i,
+            window_name: format!("lw:f/{i}"),
+            window_id: Some(format!("@{}", i + 1)),
+            pane_id: Some(format!("%{i}")),
+        };
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "many-shells".into(),
+            branch: "many-shells".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-many"),
+            created_at: String::new(),
+            shells: vec![shell(0), shell(1)],
+        });
         app.build_tree_flags();
+        app.proj_expanded[0] = true;
+        app.feat_expanded[0][0] = true;
         app.clamp_sel();
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -2048,12 +2071,62 @@ mod tests {
     #[test]
     fn unicode_mode_keeps_box_drawing() {
         let mut app = seeded_app();
+        // The project row no longer carries an expand marker (this task);
+        // give the first project a multi-shell, expanded feature so a
+        // feature-row marker (`expand_open` = "▾" in the default preset)
+        // still renders (Ruling F1's fix applied here for the same reason).
+        let shell = |i: usize| crate::state::Shell {
+            index: i,
+            window_name: format!("lw:f/{i}"),
+            window_id: Some(format!("@{}", i + 1)),
+            pane_id: Some(format!("%{i}")),
+        };
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "many-shells".into(),
+            branch: "many-shells".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-many"),
+            created_at: String::new(),
+            shells: vec![shell(0), shell(1)],
+        });
+        app.build_tree_flags();
+        app.proj_expanded[0] = true;
+        app.feat_expanded[0][0] = true;
+        app.clamp_sel();
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
         assert!(text.contains("─"), "unicode render keeps box-drawing");
         assert!(text.contains("▾"), "unicode render keeps the tree markers");
+    }
+
+    /// `border = "plain"` must reach every panel, not just popups.
+    /// `panel_block` (tree + preview) used to hardcode `BorderType::Rounded`
+    /// while `popup_block` already read `icons.border`; a user who set
+    /// `border = "plain"` got plain popups and a rounded tree/preview — a
+    /// mixed-corner screen, exactly the defect they configured away from.
+    /// `ascii` masks this (asciify rewrites all corners to `+`), so this
+    /// test uses `plain`, which nothing else in the suite exercises.
+    #[test]
+    fn plain_border_reaches_tree_and_preview_panels() {
+        let mut app = seeded_app();
+        app.cfg.icons.border = crate::config::BorderStyle::Plain;
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        for glyph in ['╭', '╮', '╰', '╯'] {
+            assert!(
+                !text.contains(glyph),
+                "plain border must not draw rounded corner {glyph:?}: {text:?}"
+            );
+        }
+        for glyph in ['┌', '┐', '└', '┘'] {
+            assert!(
+                text.contains(glyph),
+                "plain border must draw plain corner {glyph:?}"
+            );
+        }
     }
 
     /// tree_width matches the renderer's tier math (used by both drawing
@@ -2254,8 +2327,121 @@ mod tests {
             .collect();
         let clean = rows.iter().find(|r| r.contains("clean-one")).unwrap();
         let dirty = rows.iter().find(|r| r.contains("dirty-one")).unwrap();
-        assert!(clean.contains("◇ clean-one"), "clean feature: {clean:?}");
-        assert!(dirty.contains("◆ dirty-one"), "dirty feature: {dirty:?}");
+        assert!(
+            dirty.contains(&format!("{} dirty-one", '\u{f062c}')),
+            "dirty feature carries the branch glyph: {dirty:?}"
+        );
+        // `str::find` returns a byte offset, and the nerd-font glyph is
+        // 4 bytes in UTF-8 against 1 for an ASCII space — comparing byte
+        // offsets would report a false misalignment. Compare rendered
+        // column (char) position instead, which is what "aligned" means.
+        let char_col = |row: &str, needle: &str| row[..row.find(needle).unwrap()].chars().count();
+        let clean_col = char_col(clean, "clean-one");
+        let dirty_col = char_col(dirty, "dirty-one");
+        assert_eq!(
+            clean_col, dirty_col,
+            "clean draws no icon but keeps the column, so names align"
+        );
+    }
+
+    /// The project row's type icon is its only marker: `▾`/`▸` were removed
+    /// because the icon already sits there and the children show the state.
+    #[test]
+    fn the_project_row_has_no_expand_marker() {
+        let mut app = seeded_app();
+        // seeded_app's first project starts empty, which would render the
+        // hollow `▢` icon; give it a feature so it renders the filled `▣`
+        // this test asserts on (Ruling F2 — fixture adapted, assertions
+        // kept literal).
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "some-feature".into(),
+            branch: "some-feature".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-some-feature"),
+            created_at: String::new(),
+            shells: vec![],
+        });
+        app.build_tree_flags();
+        app.clamp_sel();
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let name = &app.state.projects[0].name.clone();
+        let row: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .find(|r| r.contains(name.as_str()))
+            .unwrap();
+        let upto = &row[..row.find(name.as_str()).unwrap()];
+        assert!(
+            !upto.contains('▾'),
+            "no open marker before the project: {row:?}"
+        );
+        assert!(
+            !upto.contains('▸'),
+            "no closed marker before the project: {row:?}"
+        );
+        assert!(upto.contains('▣'), "the icon is still there: {row:?}");
+    }
+
+    /// Row indices are the contract between `draw_tree`, `visible_nodes` and
+    /// mouse hit-testing. Dropping the project marker must not shift them.
+    #[test]
+    fn rendered_tree_rows_match_visible_nodes() {
+        let mut app = seeded_app();
+        // A fixture with real depth: a multi-shell feature (renders a
+        // feature row plus one row per shell) and a solo feature (folds
+        // onto a single row, no child row at all). Two projects with zero
+        // features (the pre-fix fixture) would pass this assertion even if
+        // every feature/shell row were miscounted.
+        let shell = |i: usize| crate::state::Shell {
+            index: i,
+            window_name: format!("lw:f/{i}"),
+            window_id: Some(format!("@{}", i + 1)),
+            pane_id: Some(format!("%{i}")),
+        };
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "many-shells".into(),
+            branch: "many-shells".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-many"),
+            created_at: String::new(),
+            shells: vec![shell(0), shell(1)],
+        });
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "one-shell".into(),
+            branch: "one-shell".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/wt-one"),
+            created_at: String::new(),
+            shells: vec![shell(2)],
+        });
+        app.build_tree_flags();
+        app.proj_expanded[0] = true;
+        app.clamp_sel();
+        let expected = app.visible_nodes_len_for_test();
+        let (w, h) = (120u16, 40u16);
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        // The brief's hand-rolled border filter (leading `╭`/`╰`/`│`) also
+        // excludes every tree content row, since the block's left border
+        // is `│` on those rows too (Ruling F2 — mechanics adapted).
+        // Instead, exclude the block's border rows/columns explicitly: the
+        // tree spans the full main area (frame minus the 1-row statusbar),
+        // and `tree_width` is the same math `draw_tree`/mouse hit-testing
+        // use, so this can't drift from the real layout.
+        let tw = tree_width((w, h)).unwrap();
+        let main_h = h - 1;
+        let non_empty = (1..main_h - 1)
+            .filter(|&y| {
+                let inner: String = (1..tw - 1).map(|x| buf[(x, y)].symbol()).collect();
+                !inner.trim().is_empty()
+            })
+            .count();
+        assert_eq!(non_empty, expected, "one rendered row per visible node");
     }
 
     /// The tree folds the nominal case: a feature with one shell shows
@@ -2477,13 +2663,13 @@ mod tests {
         );
     }
 
-    /// ASCII mode: the help overlay's separators are plain `-` and no
+    /// ASCII preset: the help overlay's separators are plain `-` and no
     /// unicode glyphs survive (the sep()/arrow() code path, not a second
     /// renderer).
     #[test]
-    fn help_overlay_ascii_fallback_is_clean() {
+    fn help_overlay_ascii_preset_is_clean() {
         let mut app = seeded_app();
-        app.ascii = true;
+        app.cfg.icons = crate::config::IconsConfig::preset("ascii");
         let text = help_text(&mut app, 120, 40);
         for glyph in ["·", "→", "─", "│"] {
             assert!(
@@ -2539,11 +2725,11 @@ mod tests {
     }
 
     /// The picker is ascii-safe: plain `>` cursor, `-` separators, no
-    /// unicode glyphs survive the fallback.
+    /// unicode glyphs survive the preset.
     #[test]
-    fn theme_picker_ascii_fallback_is_clean() {
+    fn theme_picker_ascii_preset_is_clean() {
         let mut app = seeded_app();
-        app.ascii = true;
+        app.cfg.icons = crate::config::IconsConfig::preset("ascii");
         app.theme_names = crate::theme::available_names().unwrap();
         app.mode = Mode::ThemePicker { index: 0 };
         let backend = ratatui::backend::TestBackend::new(80, 24);
@@ -2627,9 +2813,9 @@ mod tests {
 
     /// The diagnostics overlay is ascii-safe: `!` mark, no box glyphs.
     #[test]
-    fn diagnostics_ascii_fallback_is_clean() {
+    fn diagnostics_ascii_preset_is_clean() {
         let mut app = app_with_diags(2);
-        app.ascii = true;
+        app.cfg.icons = crate::config::IconsConfig::preset("ascii");
         app.mode = Mode::Diagnostics;
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -2853,11 +3039,11 @@ mod tests {
         assert!(text.contains("too small"), "tiny frame refuses the modal");
     }
 
-    /// Ascii mode keeps the modal free of unicode glyphs.
+    /// Ascii preset keeps the modal free of unicode glyphs.
     #[test]
-    fn messages_modal_ascii_fallback_is_clean() {
+    fn messages_modal_ascii_preset_is_clean() {
         let mut app = seeded_app();
-        app.ascii = true;
+        app.cfg.icons = crate::config::IconsConfig::preset("ascii");
         app.mode = Mode::Messages { index: 0 };
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();

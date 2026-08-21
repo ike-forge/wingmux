@@ -536,9 +536,6 @@ pub struct App {
     pub worktrees_loaded: Vec<bool>,
     /// Last frame size — drives page-sized motions and mouse hit-testing.
     pub viewport: (u16, u16),
-    /// ASCII-only rendering (terminals that mangle box-drawing): `+ - |`
-    /// borders, `v`/`>` tree markers. Set by `run()` from the environment.
-    pub ascii: bool,
     /// Rect of the overlay currently on screen, if any. Mouse clicks
     /// outside it dismiss the overlay (accessibility rule).
     pub popup_area: Option<Rect>,
@@ -626,7 +623,6 @@ impl App {
             interactive_boot: false,
             quit: false,
             viewport: (0, 0),
-            ascii: false,
             popup_area: None,
             help_scroll: 0,
             diag_scroll: 0,
@@ -1073,6 +1069,13 @@ impl App {
             }
         }
         v
+    }
+
+    /// Row-count contract for the UI tests: see
+    /// `ui::tests::rendered_tree_rows_match_visible_nodes`.
+    #[cfg(test)]
+    pub(crate) fn visible_nodes_len_for_test(&self) -> usize {
+        self.visible_nodes().len()
     }
 
     /// Keep `sel` valid after tree mutations.
@@ -1677,7 +1680,7 @@ impl App {
                     if dirty {
                         format!(
                             "{} worktree has uncommitted changes — force delete will discard them",
-                            crate::ui::warn_mark(self.ascii)
+                            crate::ui::warn_mark(&self.cfg.icons)
                         )
                     } else {
                         "worktree is clean".into()
@@ -2751,10 +2754,6 @@ fn now_str() -> String {
 pub fn run(cfg: Config, theme: Theme, tmux: Tmux) -> Result<()> {
     let mut app = App::new(cfg, theme, Some(tmux));
     app.interactive_boot = true;
-    app.ascii = crate::util::ascii_requested();
-    if app.ascii {
-        log::info!("ascii-only rendering enabled (LW_ASCII or C locale)");
-    }
     if app.cfg.defaults.agent_hooks {
         match crate::hooks::write_settings_file() {
             Ok(p) => {

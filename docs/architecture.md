@@ -254,7 +254,9 @@ the same commit as the change.
   only repeated what was one row below. The one thing a *folded* project
   row cannot show otherwise — whether it holds anything at all — moved into
   its icon (`▣` non-empty, `▢` empty), the same trick the feature icon
-  already plays for the worktree's state.
+  uses. The expand marker was dropped from project rows: the icon already
+  occupies that slot and a collapsed project shows no children, so the
+  arrow was a second answer to a question the row already answered.
 - **Dead entries are muted whole** (user feedback: "when a shell is
   closed/dead, mute the whole entry in the tree"). Colouring only the status
   word left a dead row as visually loud as a working one, so the eye had to
@@ -364,7 +366,8 @@ the same commit as the change.
   name, a keys line duplicating the statusbar). The branch was redundant by
   construction — a feature owns its worktree and therefore its branch. The one
   fact it held alone, an uncommitted worktree, moved into the tree as the
-  feature icon (`◇` clean, `◆` dirty), so the layout is tree | preview.
+  feature icon (nothing when clean, `󰘬` when dirty, per `[icons]`), so the
+  layout is tree | preview.
 - **The statusbar is shortcuts and nothing else**: the app name, the session
   chip and the project count never changed anything the user could act on, and
   the message slot was never cleared, so the last notice stayed on screen for
@@ -385,19 +388,36 @@ the same commit as the change.
   render foreground-only — no background fill under a panel/popup title
   ("simple title display without background"). The tree draws proper guides:
   features hang off the project with `├─ `/`└─ `, shells get continuation `│`
-  (parent branch keeps running until its last child), and ASCII mode maps them
-  to `|- `/``- `/`|`. Per-type icons appear next to the expand marker: `▣`
-  projects, `◇` features, `●` shells (ASCII keeps `*`/`-`). Mouse hit-testing
-  uses the same tier math as rendering, so the wider guide prefixes changed no
-  hit areas.
+  (parent branch keeps running until its last child), and every preset maps
+  to the shapes named by `[icons]`. The six composites (`child`,
+  `last_child`, and the four grandchild forms) are built in `draw_tree`
+  from three keys — `guide_branch`, `guide_last`, `guide_vertical` — since
+  six near-identical constants is not a surface worth configuring. A type
+  icon sits next to each row: `[icons].project`/`project_empty` on
+  projects, `feature`/`feature_dirty` on features, `shell` on shells.
+  Mouse hit-testing uses the same tier math as rendering, so the wider
+  guide prefixes changed no hit areas.
 - **Small terminals**: layout tiers (Wide / Split / TreeOnly / message) at
   fixed thresholds; overlays that don't fit are refused with a "frame too
   small" box instead of drawing garbage; the input cursor is only set when
   on-buffer.
-- **ASCII fallback**: `LW_ASCII=1` or an exact C/POSIX locale (LC_ALL >
-  LC_CTYPE > LANG; `C.UTF-8` excluded) switches to `+ - |` borders (buffer cell
-  rewrite — styles untouched) and plain markers. Only the app's own labels;
-  user pane content is never rewritten.
+- **Icons**: `[icons]` (`src/config.rs`) covers the tree's type icons and
+  guides, the expand/cursor markers, the separator, the warn mark, the
+  ellipsis and the border style, chosen by a preset (`nerdfont` default,
+  plus `unicode`, `ascii`, `none`) and overridable key by key. This
+  replaced an `LW_ASCII` boolean, which conflated two independent
+  questions — whether the terminal draws box characters, and which glyphs
+  the user's font has. Keys that share a rendered column are padded to
+  equal width at resolution time, so an empty icon still holds its column.
+  A few incidental glyphs remain outside `[icons]` — the statusbar's `↵`
+  (`bar_entries`) and the help overlay's em dashes are not preset keys and
+  are not rewritten by `asciify`, so under `preset = "ascii"` a user still
+  sees `↵ attach` and literal em dashes. `border = "ascii"` rewrites buffer
+  cells to `+ - |` (`ui::asciify`) because ratatui has no ASCII
+  `BorderType`; it rewrites box-drawing across whichever rect it is given,
+  which for the preview panel and the quick-send textarea includes the
+  captured pane content and the user's typed buffer, not only the app's
+  own frame. `LW_ASCII` is reported as retired in the startup diagnostics.
 
 ## Input, mouse and accessibility
 
