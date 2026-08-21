@@ -121,16 +121,20 @@ preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "ascii
 
 # Predefined messages, offered by the `p` modal on a selected shell:
 # pick one and it is sent to the agent exactly as if you had typed it.
-# `label` is what the modal lists, `text` is what gets sent (label may be
-# omitted — then the text is listed). Defining any [[messages]] entry
-# replaces this whole list, like every other list in this file.
+# The modal lists each entry's `text` verbatim, so what you read is what
+# the agent gets. These tokens are resolved against the selected shell
+# first: <base_branch>, <branch>, <feature>, <project>, <worktree>;
+# anything else in angle brackets is sent as written. Defining any
+# [[messages]] entry replaces this whole list, like every other list in
+# this file. Entries 1-9 keep a single-key shortcut in the modal.
 [[messages]]
-label = "continue"
 text = "continue"
 
 [[messages]]
-label = "merge + drop worktree"
-text = "merge to <base_branch>, delete current branch and worktree"
+text = "merge to <base_branch>, drop the current worktree and branch"
+
+[[messages]]
+text = "summarise what you've changed and what's still left"
 
 # Agent presets, selectable per project via `agent = "<name>"`.
 # The `patterns` regexes are matched against the tail of a pane's capture
@@ -506,14 +510,14 @@ pub struct StatusPatterns {
     pub failed: Vec<String>,
 }
 
-/// One entry of the predefined-message modal (`p`): the label shown in
-/// the list and the text pasted into the agent pane.
+/// One entry of the predefined-message modal (`p`). Only the text: the
+/// modal lists it verbatim and pastes it into the agent pane, so there is
+/// no second name that could describe it inaccurately.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct MessageConfig {
-    /// Shown in the modal; falls back to `text` when left empty.
-    pub label: String,
-    /// What is sent to the shell — exactly as if it had been typed.
+    /// What is listed and sent — exactly as if it had been typed, after
+    /// `App::expand_message` resolves the selected shell's tokens.
     pub text: String,
 }
 
@@ -794,7 +798,7 @@ const ICONS_KEYS: &[&str] = &[
 const AGENT_KEYS: &[&str] = &["name", "command", "shell", "patterns"];
 const PATTERN_KEYS: &[&str] = &["working", "waiting", "failed"];
 const PROJECT_KEYS: &[&str] = &["path", "base_branch", "agent", "agent_command"];
-const MESSAGE_KEYS: &[&str] = &["label", "text"];
+const MESSAGE_KEYS: &[&str] = &["text"];
 
 impl Config {
     /// Load config, writing defaults (and built-in themes) on first run.
@@ -1039,7 +1043,7 @@ impl Config {
                 "[{}]",
                 self.messages
                     .iter()
-                    .map(|m| format!("\"{}\"", m.label))
+                    .map(|m| format!("\"{}\"", m.text))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -1834,13 +1838,6 @@ fn take_message_list(
         }
         ok
     });
-    // A label is a convenience, not a requirement: an entry without one
-    // is listed by the text it sends.
-    for m in messages.iter_mut() {
-        if m.label.trim().is_empty() {
-            m.label = m.text.clone();
-        }
-    }
     messages
 }
 
@@ -1848,16 +1845,14 @@ fn take_message_list(
 /// `[[messages]]` (a list that IS defined replaces these, like every
 /// other config list).
 pub fn default_messages() -> Vec<MessageConfig> {
-    vec![
-        MessageConfig {
-            label: "continue".into(),
-            text: "continue".into(),
-        },
-        MessageConfig {
-            label: "merge + drop worktree".into(),
-            text: "merge to <base_branch>, delete current branch and worktree".into(),
-        },
+    [
+        "continue",
+        "merge to <base_branch>, drop the current worktree and branch",
+        "summarise what you've changed and what's still left",
     ]
+    .into_iter()
+    .map(|text| MessageConfig { text: text.into() })
+    .collect()
 }
 
 /// \"Which file\" for a merged key — the layer that won it, resolved to its
@@ -2055,6 +2050,25 @@ mod tests {
         });
     }
 
+    /// The shipped presets, in the order the modal numbers them.
+    fn default_texts() -> Vec<&'static str> {
+        vec![
+            "continue",
+            "merge to <base_branch>, drop the current worktree and branch",
+            "summarise what you've changed and what's still left",
+        ]
+    }
+
+    /// The built-ins are the three moves that carry agent supervision:
+    /// unblock, integrate, take stock. Each keeps a `1`-`9` shortcut and
+    /// the merge one is a template resolved against the selected shell.
+    #[test]
+    fn built_in_messages_are_the_three_agent_staples() {
+        let built_in = default_messages();
+        let texts: Vec<&str> = built_in.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, default_texts());
+    }
+
     #[test]
     fn first_run_config_documents_predefined_messages() {
         with_fresh_xdg(|| {
@@ -2066,8 +2080,8 @@ mod tests {
             );
             // and the file that was written parses back to the same list
             let cfg = Config::load().unwrap();
-            let labels: Vec<&str> = cfg.messages.iter().map(|m| m.label.as_str()).collect();
-            assert_eq!(labels, vec!["continue", "merge + drop worktree"]);
+            let texts: Vec<&str> = cfg.messages.iter().map(|m| m.text.as_str()).collect();
+            assert_eq!(texts, default_texts());
         });
     }
 
@@ -2656,13 +2670,8 @@ mod tests {
             let cwd = tempfile::TempDir::new().unwrap();
             let cfg = load_user(cwd.path(), "theme = \"ansi\"\n");
             // no [[messages]] in the file → built-in predefined messages remain
-            let labels: Vec<&str> = cfg.messages.iter().map(|m| m.label.as_str()).collect();
-            assert_eq!(labels, vec!["continue", "merge + drop worktree"]);
-            assert_eq!(cfg.messages[0].text, "continue");
-            assert_eq!(
-                cfg.messages[1].text,
-                "merge to <base_branch>, delete current branch and worktree"
-            );
+            let texts: Vec<&str> = cfg.messages.iter().map(|m| m.text.as_str()).collect();
+            assert_eq!(texts, default_texts());
         });
     }
 
@@ -2671,23 +2680,34 @@ mod tests {
         let cfg = Config::from_str(
             r#"
             [[messages]]
-            label = "ship it"
             text = "run the gate and push"
             "#,
         )
         .unwrap();
         assert_eq!(cfg.messages.len(), 1);
-        assert_eq!(cfg.messages[0].label, "ship it");
         assert_eq!(cfg.messages[0].text, "run the gate and push");
     }
 
+    /// `label` was retired when the modal started listing the message
+    /// itself. A config still carrying one is reported like any other
+    /// stray key rather than silently ignored.
     #[test]
-    fn message_without_label_falls_back_to_its_text() {
+    fn retired_label_key_is_reported() {
         with_fresh_xdg(|| {
             let cwd = tempfile::TempDir::new().unwrap();
-            let cfg = load_user(cwd.path(), "[[messages]]\ntext = \"continue\"\n");
-            assert_eq!(cfg.messages.len(), 1);
-            assert_eq!(cfg.messages[0].label, "continue");
+            let cfg = load_user(
+                cwd.path(),
+                "[[messages]]\nlabel = \"go\"\ntext = \"continue\"\n",
+            );
+            assert_eq!(cfg.messages.len(), 1, "the entry itself is kept");
+            assert_eq!(cfg.messages[0].text, "continue");
+            assert!(
+                cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("unknown key 'messages.label'")),
+                "the retired key must be reported: {:?}",
+                cfg.diagnostics
+            );
         });
     }
 
@@ -2699,16 +2719,14 @@ mod tests {
                 cwd.path(),
                 r#"
                 [[messages]]
-                label = "empty"
                 text = ""
 
                 [[messages]]
-                label = "ok"
                 text = "continue"
                 "#,
             );
-            let labels: Vec<&str> = cfg.messages.iter().map(|m| m.label.as_str()).collect();
-            assert_eq!(labels, vec!["ok"]);
+            let texts: Vec<&str> = cfg.messages.iter().map(|m| m.text.as_str()).collect();
+            assert_eq!(texts, vec!["continue"]);
             assert!(
                 cfg.diagnostics.iter().any(|d| d.contains("empty text")),
                 "dropped message must be reported: {:?}",
@@ -2723,7 +2741,7 @@ mod tests {
             let cwd = tempfile::TempDir::new().unwrap();
             let cfg = load_user(
                 cwd.path(),
-                "[[messages]]\nlabel = \"go\"\ntext = \"continue\"\ncolour = \"red\"\n",
+                "[[messages]]\ntext = \"continue\"\ncolour = \"red\"\n",
             );
             assert_eq!(cfg.messages.len(), 1, "the entry itself is kept");
             assert!(
@@ -2744,14 +2762,19 @@ mod tests {
     }
 
     #[test]
-    fn config_dump_lists_message_labels() {
+    fn config_dump_lists_message_texts() {
         with_fresh_xdg(|| {
             let cwd = tempfile::TempDir::new().unwrap();
             let cfg = load_user(cwd.path(), "theme = \"ansi\"\n");
             assert!(
-                cfg.dump_string().contains(
-                    "messages = [\"continue\", \"merge + drop worktree\"]  # from defaults"
-                ),
+                cfg.dump_string().contains(&format!(
+                    "messages = [{}]  # from defaults",
+                    default_texts()
+                        .iter()
+                        .map(|t| format!("\"{t}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
                 "dump: {}",
                 cfg.dump_string()
             );

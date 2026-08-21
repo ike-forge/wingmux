@@ -2212,11 +2212,41 @@ impl App {
         self.mode = Mode::Messages { index: 0 };
     }
 
+    /// Resolve a message template against the selected shell's context.
+    /// Every call site — the modal that lists the presets and the send
+    /// that pastes one — goes through here, so what the list shows is
+    /// exactly what the agent receives. Reads state only (the base branch
+    /// was resolved at import time), which is what makes it safe on the
+    /// render path. Unknown tokens are left as written, and so is
+    /// everything when no shell is selected: there is no context to
+    /// resolve against, and blanks would be worse than the template.
+    pub(crate) fn expand_message(&self, text: &str) -> String {
+        let Some((pi, fi, _)) = self.selected_shell() else {
+            return text.to_string();
+        };
+        let Some(proj) = self.state.projects.get(pi) else {
+            return text.to_string();
+        };
+        let Some(feat) = proj.features.get(fi) else {
+            return text.to_string();
+        };
+        text.replace("<base_branch>", &proj.base_branch)
+            .replace("<branch>", &feat.branch)
+            .replace("<feature>", &feat.name)
+            .replace("<project>", &proj.name)
+            .replace("<worktree>", &feat.worktree_path.display().to_string())
+    }
+
     /// Send the configured message at `index` to the selected shell — the
     /// same paste path as the quick-send textarea, so a preset and a typed
     /// prompt are indistinguishable to the agent.
     fn send_predefined(&mut self, index: usize) {
-        let Some(text) = self.cfg.messages.get(index).map(|m| m.text.clone()) else {
+        let Some(text) = self
+            .cfg
+            .messages
+            .get(index)
+            .map(|m| self.expand_message(&m.text))
+        else {
             return;
         };
         let Some((pi, fi, si)) = self.selected_shell() else {
@@ -5005,14 +5035,17 @@ mod tests {
     #[test]
     fn predefined_modal_moves_and_esc_cancels() {
         let mut app = app_with_shell();
+        let last = app.cfg.messages.len() - 1;
         app.on_key(key(KeyCode::Char('p'), false));
         app.on_key(key(KeyCode::Char('j'), false));
         assert!(matches!(app.mode, Mode::Messages { index: 1 }));
-        // clamped at the end of the list
-        app.on_key(key(KeyCode::Char('j'), false));
-        assert!(matches!(app.mode, Mode::Messages { index: 1 }));
+        // clamped at the end of the list, however long it is
+        for _ in 0..app.cfg.messages.len() {
+            app.on_key(key(KeyCode::Char('j'), false));
+        }
+        assert!(matches!(app.mode, Mode::Messages { index } if index == last));
         app.on_key(key(KeyCode::Char('k'), false));
-        assert!(matches!(app.mode, Mode::Messages { index: 0 }));
+        assert!(matches!(app.mode, Mode::Messages { index } if index == last - 1));
         app.on_key(key(KeyCode::Esc, false));
         assert!(matches!(app.mode, Mode::Normal), "Esc closes the modal");
     }
@@ -5044,11 +5077,9 @@ mod tests {
             app.sel = Sel::Shell(0, 0, 0);
             app.cfg.messages = vec![
                 crate::config::MessageConfig {
-                    label: "first".into(),
                     text: "lw-first-message".into(),
                 },
                 crate::config::MessageConfig {
-                    label: "second".into(),
                     text: "lw-second-message".into(),
                 },
             ];
@@ -5083,11 +5114,9 @@ mod tests {
             app.sel = Sel::Shell(0, 0, 0);
             app.cfg.messages = vec![
                 crate::config::MessageConfig {
-                    label: "first".into(),
                     text: "lw-digit-one".into(),
                 },
                 crate::config::MessageConfig {
-                    label: "second".into(),
                     text: "lw-digit-two".into(),
                 },
             ];
@@ -5109,6 +5138,77 @@ mod tests {
             assert!(
                 matches!(app.mode, Mode::Messages { .. }),
                 "an out-of-range digit leaves the modal open"
+            );
+        });
+    }
+
+    /// A message is a template: the tokens naming the selected shell's
+    /// context are resolved from state before the text is shown or sent,
+    /// so a preset can say "merge to <base_branch>" once and be right in
+    /// every project.
+    #[test]
+    fn expand_message_resolves_the_selected_shells_context() {
+        let app = app_with_shell();
+        assert_eq!(
+            app.expand_message("merge to <base_branch>, drop <branch>"),
+            "merge to main, drop feat"
+        );
+        assert_eq!(
+            app.expand_message("<project>/<feature> at <worktree>"),
+            "p/feat at /tmp/p/.lazywingman-worktrees/p/feat"
+        );
+    }
+
+    /// Only the documented tokens are substituted: anything else is text
+    /// the user meant to send, angle brackets and all.
+    #[test]
+    fn expand_message_leaves_unknown_tokens_alone() {
+        let app = app_with_shell();
+        assert_eq!(
+            app.expand_message("rename <foo> to <base_branch>"),
+            "rename <foo> to main"
+        );
+    }
+
+    /// With nothing selected there is no context to resolve against, so
+    /// the template is left as written rather than filled with blanks.
+    #[test]
+    fn expand_message_without_a_selected_shell_keeps_the_tokens() {
+        let mut app = app_with_shell();
+        app.sel = Sel::Project(0);
+        assert_eq!(
+            app.expand_message("merge to <base_branch>"),
+            "merge to <base_branch>"
+        );
+    }
+
+    /// What the modal listed is what the pane gets: the send path resolves
+    /// the same tokens, so the preset cannot promise "merge to master" and
+    /// then paste an unresolved template.
+    #[test]
+    fn predefined_send_expands_tokens_before_pasting() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_standalone(sock);
+            let mut app = app_with(tmux.clone());
+            let (_wid, pid) = seed_project_with_shell(&tmux, &mut app);
+            app.build_tree_flags();
+            app.sel = Sel::Shell(0, 0, 0);
+            app.cfg.messages = vec![crate::config::MessageConfig {
+                text: "lw-merge to <base_branch> now".into(),
+            }];
+
+            app.on_key(key(KeyCode::Char('p'), false));
+            app.on_key(key(KeyCode::Enter, false));
+
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let capture = tmux.capture_pane(&pid, 50).unwrap();
+            assert!(
+                capture.contains("lw-merge to master now"),
+                "the token is resolved before the paste, capture: {capture}"
+            );
+            assert!(
+                !capture.contains("<base_branch>"),
+                "no raw token reaches the agent, capture: {capture}"
             );
         });
     }

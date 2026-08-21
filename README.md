@@ -79,7 +79,7 @@ the help overlay (`?`).
 | `n` | new feature (worktree + branch + agent shell) — a prompt asks for the name and names the branch it will be cut from: the project's **base branch** (`worktrees.base_branch`, per-project override), never the branch the repo has checked out |
 | `a` | add a shell to the selected feature — a prompt asks which command it runs (empty = the project's default agent command, shown as a hint) |
 | `s` | **quick-send** a line to the selected shell (or to a one-shell feature's row). `Esc` keeps the unsent text as that shell's draft — `s` on it again picks up where you left off. The draft is dropped once the message is actually delivered, and lives only for this run of LazyWingman |
-| `p` | **predefined messages** for the selected shell (or a one-shell feature's row) — a modal of configured presets (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
+| `p` | **predefined messages** for the selected shell (or a one-shell feature's row) — a modal of configured presets, each listed in full with its `<base_branch>`-style tokens already resolved (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
 | `d` | on a feature: delete it (kills windows, removes worktree; `f` = force when dirty). On a shell row: close that shell (kills its window only — the feature and its other shells stay) |
 | `r` | refresh — reconcile state against reality |
 | `?` | help overlay (grouped, scrollable: `j`/`k`, `PgUp`/`PgDn`) |
@@ -133,12 +133,14 @@ feature_dirty = "󰘬"          # any key overrides the preset; "" draws nothing
 border = "rounded"           # "rounded" | "plain" | "ascii"
 
 [[messages]]                 # `p` modal: canned prompts for the selected shell
-label = "continue"           # what the modal lists (optional — defaults to text)
-text = "continue"            # what is sent, exactly as if you had typed it
+text = "continue"            # listed and sent verbatim, as if you had typed it
+
+[[messages]]                 # tokens resolved against the selected shell:
+                             # <base_branch> <branch> <feature> <project> <worktree>
+text = "merge to <base_branch>, drop the current worktree and branch"
 
 [[messages]]
-label = "merge + drop worktree"
-text = "merge to <base_branch>, delete current branch and worktree"
+text = "summarise what you've changed and what's still left"
 
 [[agents]]                   # presets: patterns classify pane status
 name = "codex"

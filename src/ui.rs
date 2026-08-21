@@ -1116,16 +1116,23 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
         Mode::Messages { index } => *index,
         _ => 0,
     };
-    let labels: Vec<&str> = app.cfg.messages.iter().map(|m| m.label.as_str()).collect();
-    let w = labels
+    // The list shows the message itself, tokens already resolved: what is
+    // read here is exactly what the pane receives.
+    let entries: Vec<String> = app
+        .cfg
+        .messages
         .iter()
-        .map(|l| l.chars().count() as u16)
+        .map(|m| app.expand_message(&m.text))
+        .collect();
+    let w = entries
+        .iter()
+        .map(|l| UnicodeWidthStr::width(l.as_str()) as u16)
         .max()
         .unwrap_or(20)
         .saturating_add(10)
         .max(34)
         .min(f.area().width);
-    let h = (labels.len() as u16 + 3).min(f.area().height);
+    let h = (entries.len() as u16 + 3).min(f.area().height);
     let area = Rect::new(
         f.area().x + (f.area().width.saturating_sub(w)) / 2,
         f.area().y + (f.area().height.saturating_sub(h)) / 2,
@@ -1141,7 +1148,7 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
     };
     let rows = inner.height.saturating_sub(1) as usize; // last line = footer
     let mut lines: Vec<Line> = Vec::new();
-    for (i, label) in labels.iter().take(rows).enumerate() {
+    for (i, entry) in entries.iter().take(rows).enumerate() {
         let selected = i == index;
         let marker = &app.cfg.icons.expand_closed;
         // The number is the key that sends the entry (up to 9 of them).
@@ -1150,21 +1157,21 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
         } else {
             "  ".into()
         };
-        let label = if selected {
-            format!(" {marker}{num}{label} ")
+        let row = if selected {
+            format!(" {marker}{num}{entry} ")
         } else {
             format!(
-                " {}{num}{label} ",
+                " {}{num}{entry} ",
                 " ".repeat(UnicodeWidthStr::width(marker.as_str()))
             )
         };
         lines.push(Line::from(if selected {
             vec![Span::styled(
-                label,
+                row,
                 on(theme.selection_fg, theme.selection_bg).add_modifier(Modifier::BOLD),
             )]
         } else {
-            vec![Span::styled(label, fg(theme.foreground))]
+            vec![Span::styled(row, fg(theme.foreground))]
         }));
     }
     let footer = format!(" Enter send{}Esc cancel ", sep(&app.cfg.icons));
@@ -1732,6 +1739,30 @@ mod tests {
             features: vec![],
         });
         app.build_tree_flags();
+        app.clamp_sel();
+        app
+    }
+
+    /// `seeded_app` with a feature and its single shell selected — the
+    /// state the `p` modal is actually opened from. `trunk` rather than
+    /// `main` so a resolved token cannot be confused with a literal.
+    fn seeded_app_with_shell() -> App {
+        let mut app = seeded_app();
+        app.state.projects[0].base_branch = "trunk".into();
+        app.state.projects[0].features.push(crate::state::Feature {
+            name: "feat".into(),
+            branch: "feat".into(),
+            worktree_path: std::path::PathBuf::from("/tmp/repo-a-wt"),
+            created_at: String::new(),
+            shells: vec![crate::state::Shell {
+                index: 0,
+                window_name: "lw:feat/0".into(),
+                window_id: Some("@1".into()),
+                pane_id: Some("%1".into()),
+            }],
+        });
+        app.build_tree_flags();
+        app.sel = crate::app::Sel::Feature(0, 0);
         app.clamp_sel();
         app
     }
@@ -3015,14 +3046,37 @@ mod tests {
         let text = buffer_text(&terminal);
         assert!(text.contains("Messages"), "modal has a title");
         assert!(text.contains("1 continue"), "first entry is numbered");
+        // Nothing is selected in this fixture, so there is no context to
+        // resolve the template against and it is listed as written.
         assert!(
-            text.contains("2 merge + drop worktree"),
-            "second entry is numbered, got: {text}"
+            text.contains("2 merge to <base_branch>, drop the current worktree and branch"),
+            "second entry is numbered and listed in full, got: {text}"
         );
         assert!(text.contains("Enter send"), "modal states its keys");
         assert!(
             app.popup_area.is_some(),
             "modal must register its dismissable rect"
+        );
+    }
+
+    /// The modal lists what will actually be sent: the whole message, with
+    /// the selected shell's tokens already resolved. Reading "merge to
+    /// trunk" is the only way to know it will not say "merge to main".
+    #[test]
+    fn messages_modal_shows_the_expanded_message_text() {
+        let mut app = seeded_app_with_shell();
+        app.mode = Mode::Messages { index: 0 };
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("2 merge to trunk, drop the current worktree and branch"),
+            "the token is resolved in the list, got: {text}"
+        );
+        assert!(
+            !text.contains("<base_branch>"),
+            "no raw token survives to the screen, got: {text}"
         );
     }
 

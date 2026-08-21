@@ -357,6 +357,20 @@ the same commit as the change.
   editing; anything that does is what `s` is for. The text goes through the
   same `quick_send` paste path as the textarea, so the agent cannot tell a
   preset from a typed prompt.
+- **The list shows the message, not a name for it**: an entry is only its
+  `text`, and the modal renders that text in full. An earlier `label` field
+  let the list say "merge + drop worktree" while the pane received something
+  else; the one thing a send-immediately picker must get right is that you can
+  read what you are about to send. The retired key is reported as a stray key
+  rather than ignored, so a config still carrying one says so.
+- **Tokens are resolved once, for both the list and the send**:
+  `App::expand_message` substitutes `<base_branch>`, `<branch>`, `<feature>`,
+  `<project>` and `<worktree>` from the selected shell's project and feature,
+  and both `draw_messages` and `send_predefined` call it — which is what makes
+  the list honest. It reads state only (the base branch was resolved at import
+  time), so it is safe to call every frame. Unknown tokens pass through as
+  written, and so does everything when no shell is selected: there is no
+  context to resolve against, and blanks would be worse than the template.
 
 ## Layout, wording and rendering
 
@@ -501,11 +515,13 @@ the same commit as the change.
   configuration rule "make the resolved config inspectable".
 - **`[[messages]]` replaces the built-ins, like every other list**: a config
   that defines any entry defines the whole list (the layering rule "maps merge
-  deeply, lists are replaced outright"). The two defaults ("continue", "merge to
-  <base_branch>, delete current branch and worktree") therefore only apply when no layer mentions
-  `[[messages]]` — and they are written out verbatim on first run, so editing
-  them is editing a visible list, not fighting an invisible one. `label` is
-  optional: an entry without it is listed by the text it sends.
+  deeply, lists are replaced outright"). The three defaults — continue, merge
+  to `<base_branch>` and drop the worktree, summarise the work so far: unblock,
+  integrate, take stock — therefore only apply when no layer mentions
+  `[[messages]]`, and they are written out verbatim on first run, so editing
+  them is editing a visible list, not fighting an invisible one. Three because
+  the modal gives entries `1`-`9` a single-key shortcut and a picker earns
+  nothing by listing near-duplicates.
 
 ## Help and docs
 
