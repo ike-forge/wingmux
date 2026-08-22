@@ -13,6 +13,7 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, BarAction, InputKind, Mode, Sel};
+use crate::git::WorktreeState;
 use crate::status::Status;
 use crate::theme::ResolvedColors;
 
@@ -111,6 +112,29 @@ fn status_color(theme: &ResolvedColors, st: Status) -> Color {
         Status::Failed => theme.status_failed,
         Status::Ended => theme.status_ended,
         Status::Dead => theme.status_dead,
+    }
+}
+
+/// The icon for a worktree's commit state. The three glyphs share one
+/// padded column (`IconsConfig::pad`), so the names line up whichever one
+/// a row draws.
+fn worktree_icon(ic: &crate::config::IconsConfig, st: WorktreeState) -> &str {
+    match st {
+        WorktreeState::New => &ic.worktree_new,
+        WorktreeState::Ahead => &ic.worktree_ahead,
+        WorktreeState::Merged => &ic.worktree_merged,
+    }
+}
+
+/// Colour for the same three states, borrowed from the status palette so
+/// every theme already answers for them: nothing started yet reads dim,
+/// work not in the base reads like `waiting` (it needs something from
+/// you), and merged reads like `working` — green, done, safe to delete.
+fn worktree_state_color(theme: &ResolvedColors, st: WorktreeState) -> Color {
+    match st {
+        WorktreeState::New => theme.dim,
+        WorktreeState::Ahead => theme.status_waiting,
+        WorktreeState::Merged => theme.status_working,
     }
 }
 
@@ -460,12 +484,8 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             let solo = app.solo_shell(ri, wi);
             let fdead = worktree_dead(app, wt);
             let n = wt.shells.len();
-            let dirty = app.worktree_dirty_cached(ri, wi);
-            let ficon = if dirty {
-                &ic.worktree_dirty
-            } else {
-                &ic.worktree
-            };
+            let wstate = app.worktree_state_cached(ri, wi);
+            let ficon = worktree_icon(ic, wstate);
             // In flatten mode the worktrees are the top level (no guide);
             // otherwise they hang off the repository with a tree branch.
             let (prefix, icon_span) = if app.flatten {
@@ -489,11 +509,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                         theme,
                         wt,
                         fdead,
-                        if dirty {
-                            theme.status_waiting
-                        } else {
-                            theme.tree_worktree
-                        },
+                        worktree_state_color(theme, wstate),
                     )),
                 ),
                 Span::styled(
@@ -1778,6 +1794,7 @@ mod tests {
                 branch: "wt".into(),
                 path: std::path::PathBuf::from("/tmp/repo-a-wt"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![crate::state::Shell {
                     index: 0,
                     window_name: "lw:wt/0".into(),
@@ -1921,6 +1938,7 @@ mod tests {
             branch: "wt".into(),
             path: std::path::PathBuf::from("/tmp/repo-a/wt"),
             created_at: String::new(),
+            base_commit: None,
             shells: vec![],
         }]);
         assert!(app.flatten, "one repository with worktrees flattens");
@@ -1941,6 +1959,7 @@ mod tests {
             branch: name.into(),
             path: std::path::PathBuf::from(format!("/tmp/repo-a/{name}")),
             created_at: String::new(),
+            base_commit: None,
             shells: (0..n)
                 .map(|index| crate::state::Shell {
                     index,
@@ -2104,6 +2123,7 @@ mod tests {
                 branch: "many-shells".into(),
                 path: std::path::PathBuf::from("/tmp/wt-many"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![shell(0), shell(1)],
             });
         app.build_tree_flags();
@@ -2162,6 +2182,7 @@ mod tests {
                 branch: "many-shells".into(),
                 path: std::path::PathBuf::from("/tmp/wt-many"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![shell(0), shell(1)],
             });
         app.build_tree_flags();
@@ -2373,31 +2394,35 @@ mod tests {
         );
     }
 
-    /// The worktree icon carries the worktree state: hollow when clean,
-    /// filled when there are uncommitted changes.
+    /// The worktree icon carries the branch's commit state — new / ahead /
+    /// merged — and all three share one padded column, so the names line up
+    /// whichever glyph a row draws.
     #[test]
-    fn dirty_worktree_gets_a_filled_icon() {
+    fn worktree_icon_carries_the_commit_state() {
         let mut app = seeded_app();
-        app.state.repositories[0]
-            .worktrees
-            .push(crate::state::Worktree {
-                name: "clean-one".into(),
-                branch: "clean-one".into(),
-                path: std::path::PathBuf::from("/tmp/wt-clean"),
-                created_at: String::new(),
-                shells: vec![],
-            });
-        app.state.repositories[0]
-            .worktrees
-            .push(crate::state::Worktree {
-                name: "dirty-one".into(),
-                branch: "dirty-one".into(),
-                path: std::path::PathBuf::from("/tmp/wt-dirty"),
-                created_at: String::new(),
-                shells: vec![],
-            });
-        app.dirty
-            .insert(std::path::PathBuf::from("/tmp/wt-dirty"), true);
+        app.cfg.icons = crate::config::IconsConfig::preset("unicode");
+        for name in ["new-one", "ahead-one", "merged-one"] {
+            app.state.repositories[0]
+                .worktrees
+                .push(crate::state::Worktree {
+                    name: name.into(),
+                    branch: name.into(),
+                    path: std::path::PathBuf::from(format!("/tmp/wt-{name}")),
+                    created_at: String::new(),
+                    base_commit: None,
+                    shells: vec![],
+                });
+        }
+        // The cache is what the tree reads; the git calls that fill it are
+        // covered in `git::tests`.
+        for (name, st) in [
+            ("new-one", WorktreeState::New),
+            ("ahead-one", WorktreeState::Ahead),
+            ("merged-one", WorktreeState::Merged),
+        ] {
+            app.wt_state
+                .insert(std::path::PathBuf::from(format!("/tmp/wt-{name}")), st);
+        }
         app.build_tree_flags();
         app.repo_expanded[0] = true;
 
@@ -2408,22 +2433,33 @@ mod tests {
         let rows: Vec<String> = (0..buf.area.height)
             .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
             .collect();
-        let clean = rows.iter().find(|r| r.contains("clean-one")).unwrap();
-        let dirty = rows.iter().find(|r| r.contains("dirty-one")).unwrap();
+        let row = |name: &str| {
+            rows.iter()
+                .find(|r| r.contains(name))
+                .unwrap_or_else(|| panic!("no row for {name}"))
+                .clone()
+        };
+        for (name, glyph) in [("new-one", "○"), ("ahead-one", "◆"), ("merged-one", "✓")] {
+            let r = row(name);
+            assert!(
+                r.contains(&format!("{glyph} {name}")),
+                "{name} must carry {glyph:?}: {r:?}"
+            );
+        }
+        // `str::find` returns a byte offset and the glyphs differ in UTF-8
+        // length, so comparing byte offsets would report a false
+        // misalignment. Compare rendered column (char) position instead,
+        // which is what "aligned" means.
+        let char_col = |name: &str| {
+            let r = row(name);
+            r[..r.find(name).unwrap()].chars().count()
+        };
+        let cols: Vec<usize> = ["new-one", "ahead-one", "merged-one"]
+            .map(char_col)
+            .to_vec();
         assert!(
-            dirty.contains(&format!("{} dirty-one", '\u{f062c}')),
-            "dirty worktree carries the branch glyph: {dirty:?}"
-        );
-        // `str::find` returns a byte offset, and the nerd-font glyph is
-        // 4 bytes in UTF-8 against 1 for an ASCII space — comparing byte
-        // offsets would report a false misalignment. Compare rendered
-        // column (char) position instead, which is what "aligned" means.
-        let char_col = |row: &str, needle: &str| row[..row.find(needle).unwrap()].chars().count();
-        let clean_col = char_col(clean, "clean-one");
-        let dirty_col = char_col(dirty, "dirty-one");
-        assert_eq!(
-            clean_col, dirty_col,
-            "clean draws no icon but keeps the column, so names align"
+            cols.iter().all(|c| *c == cols[0]),
+            "the three icons share one column, so names align: {cols:?}"
         );
     }
 
@@ -2443,6 +2479,7 @@ mod tests {
                 branch: "some-worktree".into(),
                 path: std::path::PathBuf::from("/tmp/wt-some-worktree"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![],
             });
         app.build_tree_flags();
@@ -2495,6 +2532,7 @@ mod tests {
                 branch: "many-shells".into(),
                 path: std::path::PathBuf::from("/tmp/wt-many"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![shell(0), shell(1)],
             });
         app.state.repositories[0]
@@ -2504,6 +2542,7 @@ mod tests {
                 branch: "one-shell".into(),
                 path: std::path::PathBuf::from("/tmp/wt-one"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![shell(2)],
             });
         app.build_tree_flags();
@@ -2554,6 +2593,7 @@ mod tests {
                 branch: "many-shells".into(),
                 path: std::path::PathBuf::from("/tmp/wt-many"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![shell(0), shell(1)],
             });
         app.state.repositories[0]
@@ -2563,6 +2603,7 @@ mod tests {
                 branch: "one-shell".into(),
                 path: std::path::PathBuf::from("/tmp/wt-one"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![shell(2)],
             });
         app.statuses.insert("%0".into(), Status::Working);
@@ -2620,6 +2661,7 @@ mod tests {
                 branch: "only-worktree".into(),
                 path: std::path::PathBuf::from("/tmp/wt-one"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![crate::state::Shell {
                     index: 0,
                     window_name: "lw:f/0".into(),
@@ -2668,6 +2710,7 @@ mod tests {
                 branch: "gone-one".into(),
                 path: std::path::PathBuf::from("/tmp/wt-gone"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![shell(0)],
             });
         app.state.repositories[0]
@@ -2677,6 +2720,7 @@ mod tests {
                 branch: "half-gone".into(),
                 path: std::path::PathBuf::from("/tmp/wt-half"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![shell(1), shell(2)],
             });
         app.statuses.insert("%0".into(), Status::Dead);
@@ -3000,6 +3044,7 @@ mod tests {
                 branch: "wt".into(),
                 path: std::path::PathBuf::from("/tmp/repo-a-wt"),
                 created_at: "2026-01-01T00:00:00Z".into(),
+                base_commit: None,
                 shells: vec![crate::state::Shell {
                     index: 1,
                     window_name: "wt-1".into(),
@@ -3333,6 +3378,7 @@ mod tests {
                 branch: "needs-me".into(),
                 path: std::path::PathBuf::from("/tmp/wt-blocked"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![crate::state::Shell {
                     index: 0,
                     window_name: "lw:needs-me/0".into(),

@@ -264,6 +264,36 @@ the same commit as the change.
   collapsed row simply has no children under it. `h`/`l` still fold and
   unfold; the arrow was a second answer to a question the row already
   answered.
+- **Worktree commit state: three states, one icon.** A worktree row's icon
+  answers "how far along is this branch?" — `worktree_new` (no commits of
+  its own), `worktree_ahead` (commits the base branch does not have),
+  `worktree_merged` (all its commits are in the base). Colour follows from
+  the status palette rather than new theme keys: dim / `waiting` /
+  `working`, so every theme already answers for it.
+  - **Uncommitted changes are NOT folded in** (user's call): a branch with
+    commits reads the same whether or not the editor has unsaved work on
+    top. `git status` is still run on demand for the delete confirm's
+    `--force` option — that is the one place cleanliness decides something.
+  - **The fork point is recorded at creation** (`Worktree::base_commit`).
+    This is not incidental: once a branch is merged, `base..HEAD` is empty
+    *exactly* as it is for a fresh cut, so the two are indistinguishable
+    from the base branch alone. Storing the commit the worktree was cut
+    from makes "has it committed anything of its own?" answerable. A
+    reconciled worktree (one LazyWingman discovered rather than created)
+    has no fork point, falls back to the base branch, and reads a merged
+    worktree as new — stated in the README rather than papered over.
+  - **Merged is measured against the LOCAL base branch**, no fetching: a
+    background `git fetch` is network I/O the user did not ask for and can
+    hang on a slow remote. The cost is that a PR merged on the forge shows
+    as ahead until the merge reaches the local base.
+  - **Squash-merged reads as ahead.** Object ids differ after a squash, and
+    the alternative (patch-id matching via `git cherry`) is wrong as often
+    as it is right on a squashed history. Under-claiming beats calling a
+    branch merged when it is not.
+  - Cached in `App::wt_state`, refilled by `poll_worktree_state` every
+    `WT_STATE_INTERVAL` (5s) and forced after a create/delete — two or
+    three git calls per worktree must never sit on the render path. The
+    base branch is resolved once per repository, not once per worktree.
 - **Dead entries are muted whole** (user feedback: "when a shell is
   closed/dead, mute the whole entry in the tree"). Colouring only the status
   word left a dead row as visually loud as a working one, so the eye had to
@@ -387,8 +417,9 @@ the same commit as the change.
   process name, a keys line duplicating the statusbar). The branch was
   redundant by construction — a worktree row owns its git worktree and
   therefore its branch. The one fact it held alone, an uncommitted worktree,
-  moved into the tree as the worktree icon (nothing when clean, `󰘬` when
-  dirty, per `[icons]`), so the layout is tree | preview.
+  moved into the tree as the worktree icon, which now carries the branch's
+  commit state instead (see "Worktree commit state" under The tree), so the
+  layout is tree | preview.
 - **The statusbar is shortcuts and nothing else**: the app name, the session
   chip and the repository count never changed anything the user could act on,
   and the message slot was never cleared, so the last notice stayed on screen
@@ -415,7 +446,8 @@ the same commit as the change.
   three keys — `guide_branch`, `guide_last`, `guide_vertical` — since six
   near-identical constants is not a surface worth configuring. A type icon
   sits next to each row: `[icons].repository`/`repository_empty` on
-  repositories, `worktree`/`worktree_dirty` on worktrees, `shell` on shells.
+  repositories, the three `worktree_*` states on worktrees, `shell` on
+  shells.
   Mouse hit-testing uses the same tier math as rendering, so the wider guide
   prefixes changed no hit areas.
 - **Small terminals**: layout tiers (Wide / Split / TreeOnly / message) at

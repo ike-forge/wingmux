@@ -13,7 +13,7 @@ use ratatui::layout::Rect;
 
 use crate::config::{Config, RepositoryConfig};
 use crate::error::{Error, Result};
-use crate::git::Git;
+use crate::git::{Git, WorktreeState};
 use crate::state::{Repository, Shell, State, Worktree};
 use crate::status::{self, Compiled, Status};
 use crate::theme::Theme;
@@ -27,10 +27,11 @@ const RECENT_TAIL_LINES: usize = 10;
 const TOAST_TTL: Duration = Duration::from_secs(4);
 const TOAST_TTL_ERR: Duration = Duration::from_secs(6);
 
-/// How often the per-worktree dirty flags are recomputed. Each one shells
-/// out to `git status`, so it runs on its own slow cadence rather than on
-/// every tmux poll.
-const DIRTY_INTERVAL: Duration = Duration::from_secs(3);
+/// How often the per-worktree commit states are recomputed. Each one shells
+/// out to git two or three times, so it runs on its own slow cadence rather
+/// than on every tmux poll. Nothing it reports changes without the user
+/// committing or merging, so seconds of lag cost nothing.
+const WT_STATE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Hard ceiling on one quick-send draft. Not a limit anyone types into —
 /// a backstop so a runaway paste cannot grow the buffer without bound.
@@ -559,9 +560,9 @@ pub struct App {
     last_click: Option<(Instant, u16, u16)>,
     /// Worktree path → has uncommitted changes. The tree draws this as the
     /// worktree icon, so it must be a lookup, not a `git status` per frame;
-    /// [`App::poll_dirty`] refills it every [`DIRTY_INTERVAL`].
-    pub(crate) dirty: HashMap<PathBuf, bool>,
-    last_dirty_poll: Option<Instant>,
+    /// [`App::poll_worktree_state`] refills it every [`WT_STATE_INTERVAL`].
+    pub(crate) wt_state: HashMap<PathBuf, WorktreeState>,
+    last_wt_state_poll: Option<Instant>,
     /// What the New Worktree popup says the branch will be cut from,
     /// re-resolved every time the popup opens (a `git` call per keystroke
     /// is not on). `None` when the repository could not be read.
@@ -617,8 +618,8 @@ impl App {
             pattern_cache: HashMap::new(),
             last_poll: Instant::now(),
             message: None,
-            dirty: HashMap::new(),
-            last_dirty_poll: None,
+            wt_state: HashMap::new(),
+            last_wt_state_poll: None,
             pending_attach: None,
             interactive_boot: false,
             quit: false,
@@ -1010,6 +1011,7 @@ impl App {
                 branch,
                 path: info.path,
                 created_at: String::new(),
+                base_commit: None,
                 shells: Vec::new(),
             });
             added += 1;
@@ -1324,6 +1326,11 @@ impl App {
                 root.display()
             )));
         }
+        // The fork point, captured before anything can move: `base` will
+        // grow while this worktree lives, and "has it committed anything of
+        // its own?" is asked against where it started, not against where the
+        // base got to.
+        let base_commit = Git.rev_parse(&repo.path, &base).ok();
         Git.worktree_add(&repo.path, &root, &slug, &base)?;
 
         // spawn the agent shell in the repository's dedicated session (created
@@ -1344,6 +1351,7 @@ impl App {
             branch: slug,
             path: root,
             created_at: now_str(),
+            base_commit,
             shells: vec![Shell {
                 index: 0,
                 window_name: wname,
@@ -1357,7 +1365,7 @@ impl App {
         self.sel = Sel::Worktree(ri, self.state.repositories[ri].worktrees.len() - 1);
         self.clamp_sel();
         self.save_state()?;
-        self.poll_dirty(true);
+        self.poll_worktree_state(true);
         self.notify(format!("worktree '{}' created", name));
         Ok(())
     }
@@ -1510,7 +1518,7 @@ impl App {
         }
         self.clamp_sel();
         self.save_state()?;
-        self.poll_dirty(true);
+        self.poll_worktree_state(true);
         self.notify(format!("worktree '{}' deleted", wt.name));
         Ok(())
     }
@@ -1546,7 +1554,7 @@ impl App {
         self.state.repositories[ri].worktrees[wi].shells.remove(si);
         self.clamp_sel();
         self.save_state()?;
-        self.poll_dirty(true);
+        self.poll_worktree_state(true);
         self.notify(format!("shell '{}' closed", sh.window_name));
         Ok(())
     }
@@ -1608,43 +1616,60 @@ impl App {
         self.message.as_ref().filter(|t| !t.expired())
     }
 
-    // ------------------------------------------------------- dirty flags
+    // ---------------------------------------------------- worktree state
 
-    /// Cached dirty flag for the tree — filled by [`App::poll_dirty`],
-    /// never a `git status` on the render path.
-    pub fn worktree_dirty_cached(&self, ri: usize, wi: usize) -> bool {
+    /// Cached commit state for the tree — filled by
+    /// [`App::poll_worktree_state`], never a git call on the render path.
+    pub fn worktree_state_cached(&self, ri: usize, wi: usize) -> WorktreeState {
         self.state
             .repositories
             .get(ri)
             .and_then(|p| p.worktrees.get(wi))
-            .and_then(|f| self.dirty.get(&f.path))
+            .and_then(|f| self.wt_state.get(&f.path))
             .copied()
-            .unwrap_or(false)
+            .unwrap_or_default()
     }
 
-    /// Refresh the dirty cache, at most every [`DIRTY_INTERVAL`]. Called
-    /// from the poll tick; `force` skips the interval after a change that
-    /// invalidates it (worktree created/deleted).
-    pub fn poll_dirty(&mut self, force: bool) {
+    /// Refresh the commit-state cache, at most every [`WT_STATE_INTERVAL`].
+    /// Called from the poll tick; `force` skips the interval after a change
+    /// that invalidates it (worktree created/deleted).
+    ///
+    /// The base branch is resolved ONCE per repository — every worktree of a
+    /// repository is measured against the same base, and resolving it per
+    /// worktree would multiply the git calls for an answer that cannot
+    /// differ. A missing repository is skipped: its path is gone, so every
+    /// call would fail and the entries would churn between states.
+    pub fn poll_worktree_state(&mut self, force: bool) {
         if !force
             && self
-                .last_dirty_poll
-                .is_some_and(|t| t.elapsed() < DIRTY_INTERVAL)
+                .last_wt_state_poll
+                .is_some_and(|t| t.elapsed() < WT_STATE_INTERVAL)
         {
             return;
         }
-        self.last_dirty_poll = Some(Instant::now());
-        let paths: Vec<PathBuf> = self
+        self.last_wt_state_poll = Some(Instant::now());
+        let work: Vec<(PathBuf, String, String)> = self
             .state
             .repositories
             .iter()
-            .flat_map(|p| p.worktrees.iter().map(|f| f.path.clone()))
+            .filter(|p| !p.missing && !p.worktrees.is_empty())
+            .filter_map(|p| {
+                let base = Git.resolve_base_branch(&p.path, &p.base_branch).ok()?;
+                Some(p.worktrees.iter().map(move |f| {
+                    // No recorded fork point (reconciled worktree, or an
+                    // older state file): measure against the base branch and
+                    // accept that a merged worktree reads as new.
+                    let fork = f.base_commit.clone().unwrap_or_else(|| base.clone());
+                    (f.path.clone(), fork, base.clone())
+                }))
+            })
+            .flatten()
             .collect();
-        self.dirty = paths
+        self.wt_state = work
             .into_iter()
-            .map(|path| {
-                let d = Git.worktree_dirty(&path).unwrap_or(false);
-                (path, d)
+            .map(|(path, fork, base)| {
+                let st = Git.worktree_state(&path, &fork, &base).unwrap_or_default();
+                (path, st)
             })
             .collect();
     }
@@ -1814,7 +1839,7 @@ impl App {
     pub fn poll(&mut self) {
         // Independent of tmux (and of its own cadence) — the tree draws
         // the dirty flag whether or not a session exists.
-        self.poll_dirty(false);
+        self.poll_worktree_state(false);
         let Ok(tmux) = self.require_tmux() else {
             return;
         };
@@ -2964,6 +2989,7 @@ mod tests {
                 branch: "wt".into(),
                 path: PathBuf::from("/tmp/p-wt"),
                 created_at: "2026-08-16".into(),
+                base_commit: None,
                 shells: vec![Shell {
                     index: 0,
                     window_name: "lw:wt/0".into(),
@@ -3273,6 +3299,7 @@ mod tests {
                 branch: "f".into(),
                 path: PathBuf::from("/tmp/p/f"),
                 created_at: "".into(),
+                base_commit: None,
                 shells: vec![],
             }],
         });
@@ -3318,6 +3345,7 @@ mod tests {
                     branch: "f".into(),
                     path: PathBuf::from(format!("/tmp/p{i}/f")),
                     created_at: String::new(),
+                    base_commit: None,
                     shells: vec![],
                 }],
             });
@@ -3528,6 +3556,7 @@ mod tests {
                 branch: "wt".into(),
                 path: PathBuf::from("/definitely/not/here/wt"),
                 created_at: "".into(),
+                base_commit: None,
                 shells: vec![],
             }],
         });
@@ -3574,6 +3603,77 @@ mod tests {
             let hint = app.new_worktree_base().expect("base hint");
             assert_eq!(hint.branch, "main");
             assert!(hint.missing.is_none(), "main exists: {hint:?}");
+        });
+    }
+
+    /// The tree's commit-state cache is filled from real git state, keyed
+    /// by worktree path, and a repository whose path is gone is skipped
+    /// rather than filling the cache with failures.
+    #[test]
+    fn worktree_state_cache_reports_new_ahead_and_merged() {
+        crate::util::testutil::with_test_lock(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let path = repo_with_commit(root.path(), "repo");
+            let fork = Git.rev_parse(&path, "main").unwrap();
+
+            let mut wts = Vec::new();
+            for name in ["fresh", "ahead", "merged"] {
+                let wt = root.path().join(format!("wt-{name}"));
+                Git.worktree_add(&path, &wt, name, "main").unwrap();
+                if name != "fresh" {
+                    std::fs::write(wt.join("f.txt"), name).unwrap();
+                    git(&wt, &["add", "."]);
+                    git(&wt, &["commit", "-m", name]);
+                }
+                wts.push(Worktree {
+                    name: name.into(),
+                    branch: name.into(),
+                    path: wt,
+                    created_at: String::new(),
+                    base_commit: Some(fork.clone()),
+                    shells: vec![],
+                });
+            }
+            git(&path, &["merge", "--no-ff", "-m", "merge", "merged"]);
+
+            let mut app = app_with(tmux_standalone("unused"));
+            app.state.repositories.push(Repository {
+                name: "repo".into(),
+                path: path.clone(),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: false,
+                worktrees: wts,
+            });
+            // a missing repository must not be probed at all
+            app.state.repositories.push(Repository {
+                name: "gone".into(),
+                path: PathBuf::from("/definitely/not/here"),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: true,
+                worktrees: vec![Worktree {
+                    name: "wt".into(),
+                    branch: "wt".into(),
+                    path: PathBuf::from("/definitely/not/here/wt"),
+                    created_at: String::new(),
+                    base_commit: None,
+                    shells: vec![],
+                }],
+            });
+            app.build_tree_flags();
+            app.poll_worktree_state(true);
+
+            assert_eq!(app.worktree_state_cached(0, 0), WorktreeState::New);
+            assert_eq!(app.worktree_state_cached(0, 1), WorktreeState::Ahead);
+            assert_eq!(app.worktree_state_cached(0, 2), WorktreeState::Merged);
+            assert_eq!(app.wt_state.len(), 3, "the missing repo is skipped");
+            // an unprobed worktree reads as New rather than panicking
+            assert_eq!(app.worktree_state_cached(1, 0), WorktreeState::New);
         });
     }
 
@@ -3670,6 +3770,7 @@ mod tests {
                 branch: "wt".into(),
                 path: PathBuf::from("/tmp/p/.lazywingman-worktrees/p/wt"),
                 created_at: String::new(),
+                base_commit: None,
                 shells: vec![Shell {
                     index: 0,
                     window_name: "lw:wt/0".into(),

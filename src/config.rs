@@ -120,16 +120,17 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #preset = "nerdfont"
 
 # Every key below overrides the preset glyph by glyph. An empty string
-# draws nothing. `repository`/`repository_empty`, `worktree`/
-# `worktree_dirty` and `guide_branch`/`guide_last` are padded in pairs, so names stay aligned when one side
-# is empty. `shell`, `cursor`, `separator`, `warn` and `ellipsis` have
+# draws nothing. `repository`/`repository_empty` and `guide_branch`/
+# `guide_last` are padded in pairs, and the three `worktree_*` states as a
+# group, so names stay aligned when one of them is empty. `shell`, `cursor`, `separator`, `warn` and `ellipsis` have
 # no sibling to pad against and are used verbatim — add your own
 # trailing space if you want a gap after one (the default `shell` below
 # already has one baked in). The values shown are the "nerdfont" preset.
 #repository = "▣"              # repository holding worktrees
 #repository_empty = "▢"        # repository with none yet
-#worktree = ""                 # clean worktree
-#worktree_dirty = "󰘬"         # uncommitted changes (nf-md-source_branch)
+#worktree_new = ""            # worktree with no commits of its own
+#worktree_ahead = ""          # commits not in the base branch yet
+#worktree_merged = ""         # its commits are all in the base branch
 #shell = "● "                  # a shell inside a worktree
 #cursor = "›"                  # marks the selected row
 #guide_branch = "├─"            # tree guide, more siblings below
@@ -328,8 +329,9 @@ pub const ICON_PRESETS: &[&str] = &["nerdfont", "unicode", "ascii", "none"];
 pub struct IconsConfig {
     pub repository: String,
     pub repository_empty: String,
-    pub worktree: String,
-    pub worktree_dirty: String,
+    pub worktree_new: String,
+    pub worktree_ahead: String,
+    pub worktree_merged: String,
     pub shell: String,
     pub cursor: String,
     pub guide_branch: String,
@@ -365,8 +367,9 @@ impl IconsConfig {
         let nerdfont = IconsConfig {
             repository: "▣".into(),
             repository_empty: "▢".into(),
-            worktree: String::new(),
-            worktree_dirty: "󰘬".into(),
+            worktree_new: "".into(),
+            worktree_ahead: "".into(),
+            worktree_merged: "".into(),
             shell: "● ".into(),
             cursor: "›".into(),
             guide_branch: "├─".into(),
@@ -380,23 +383,26 @@ impl IconsConfig {
         };
         match name {
             "unicode" => IconsConfig {
-                worktree: "◇".into(),
-                worktree_dirty: "◆".into(),
+                worktree_new: "○".into(),
+                worktree_ahead: "◆".into(),
+                worktree_merged: "✓".into(),
                 ..nerdfont
             },
             "none" => IconsConfig {
                 repository: String::new(),
                 repository_empty: String::new(),
-                worktree: String::new(),
-                worktree_dirty: String::new(),
+                worktree_new: String::new(),
+                worktree_ahead: String::new(),
+                worktree_merged: String::new(),
                 shell: String::new(),
                 ..nerdfont
             },
             "ascii" => IconsConfig {
                 repository: "*".into(),
                 repository_empty: "o".into(),
-                worktree: "-".into(),
-                worktree_dirty: "*".into(),
+                worktree_new: "o".into(),
+                worktree_ahead: "*".into(),
+                worktree_merged: "=".into(),
                 shell: String::new(),
                 cursor: ">".into(),
                 guide_branch: "|-".into(),
@@ -420,17 +426,32 @@ impl IconsConfig {
     /// `warn`, `ellipsis`) are used verbatim.
     fn pad(&mut self) {
         pad_pair(&mut self.repository, &mut self.repository_empty);
-        pad_pair(&mut self.worktree, &mut self.worktree_dirty);
+        pad_group(&mut [
+            &mut self.worktree_new,
+            &mut self.worktree_ahead,
+            &mut self.worktree_merged,
+        ]);
         pad_pair(&mut self.guide_branch, &mut self.guide_last);
     }
 }
 
 fn pad_pair(a: &mut String, b: &mut String) {
-    let w = UnicodeWidthStr::width(a.as_str()).max(UnicodeWidthStr::width(b.as_str()));
+    pad_group(&mut [a, b]);
+}
+
+/// Right-pad every icon sharing one rendered column to the widest of them,
+/// plus the one trailing space that separates icon from name. All-empty
+/// (the `none` preset) keeps the column at zero width.
+fn pad_group(group: &mut [&mut String]) {
+    let w = group
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.as_str()))
+        .max()
+        .unwrap_or(0);
     if w == 0 {
         return;
     }
-    for s in [a, b] {
+    for s in group.iter_mut() {
         let pad = w - UnicodeWidthStr::width(s.as_str());
         s.push_str(&" ".repeat(pad + 1));
     }
@@ -444,8 +465,9 @@ struct IconsFile {
     preset: String,
     repository: Option<String>,
     repository_empty: Option<String>,
-    worktree: Option<String>,
-    worktree_dirty: Option<String>,
+    worktree_new: Option<String>,
+    worktree_ahead: Option<String>,
+    worktree_merged: Option<String>,
     shell: Option<String>,
     cursor: Option<String>,
     guide_branch: Option<String>,
@@ -464,8 +486,9 @@ impl Default for IconsFile {
             preset: "nerdfont".into(),
             repository: None,
             repository_empty: None,
-            worktree: None,
-            worktree_dirty: None,
+            worktree_new: None,
+            worktree_ahead: None,
+            worktree_merged: None,
             shell: None,
             cursor: None,
             guide_branch: None,
@@ -493,8 +516,9 @@ impl<'de> Deserialize<'de> for IconsConfig {
         let mut i = IconsConfig {
             repository: f.repository.unwrap_or(b.repository),
             repository_empty: f.repository_empty.unwrap_or(b.repository_empty),
-            worktree: f.worktree.unwrap_or(b.worktree),
-            worktree_dirty: f.worktree_dirty.unwrap_or(b.worktree_dirty),
+            worktree_new: f.worktree_new.unwrap_or(b.worktree_new),
+            worktree_ahead: f.worktree_ahead.unwrap_or(b.worktree_ahead),
+            worktree_merged: f.worktree_merged.unwrap_or(b.worktree_merged),
             shell: f.shell.unwrap_or(b.shell),
             cursor: f.cursor.unwrap_or(b.cursor),
             guide_branch: f.guide_branch.unwrap_or(b.guide_branch),
@@ -799,8 +823,9 @@ const ICONS_KEYS: &[&str] = &[
     "preset",
     "repository",
     "repository_empty",
-    "worktree",
-    "worktree_dirty",
+    "worktree_new",
+    "worktree_ahead",
+    "worktree_merged",
     "shell",
     "cursor",
     "guide_branch",
@@ -1070,10 +1095,17 @@ impl Config {
             "icons.repository_empty",
             format!("\"{}\"", self.icons.repository_empty),
         );
-        line("icons.worktree", format!("\"{}\"", self.icons.worktree));
         line(
-            "icons.worktree_dirty",
-            format!("\"{}\"", self.icons.worktree_dirty),
+            "icons.worktree_new",
+            format!("\"{}\"", self.icons.worktree_new),
+        );
+        line(
+            "icons.worktree_ahead",
+            format!("\"{}\"", self.icons.worktree_ahead),
+        );
+        line(
+            "icons.worktree_merged",
+            format!("\"{}\"", self.icons.worktree_merged),
         );
         line("icons.shell", format!("\"{}\"", self.icons.shell));
         line("icons.cursor", format!("\"{}\"", self.icons.cursor));
@@ -1645,8 +1677,9 @@ impl SectionSalvage for IconsConfig {
         let mut i = IconsConfig {
             repository: salvage_field(t, "repository", b.repository, file, diags),
             repository_empty: salvage_field(t, "repository_empty", b.repository_empty, file, diags),
-            worktree: salvage_field(t, "worktree", b.worktree, file, diags),
-            worktree_dirty: salvage_field(t, "worktree_dirty", b.worktree_dirty, file, diags),
+            worktree_new: salvage_field(t, "worktree_new", b.worktree_new, file, diags),
+            worktree_ahead: salvage_field(t, "worktree_ahead", b.worktree_ahead, file, diags),
+            worktree_merged: salvage_field(t, "worktree_merged", b.worktree_merged, file, diags),
             shell: salvage_field(t, "shell", b.shell, file, diags),
             cursor: salvage_field(t, "cursor", b.cursor, file, diags),
             guide_branch: salvage_field(t, "guide_branch", b.guide_branch, file, diags),
@@ -1904,22 +1937,28 @@ mod tests {
     #[test]
     fn icon_presets_carry_the_documented_glyphs() {
         let nf = IconsConfig::preset("nerdfont");
-        assert!(
-            nf.worktree_dirty.starts_with('\u{f062c}'),
-            "nerdfont dirty: {:?}",
-            nf.worktree_dirty
+        assert_eq!(
+            nf.worktree_new.trim_end(),
+            "\u{f418}",
+            "nerdfont new: octicon git-branch"
         );
         assert_eq!(
-            nf.worktree.trim_end(),
-            "",
-            "nerdfont clean worktree draws nothing"
+            nf.worktree_ahead.trim_end(),
+            "\u{f417}",
+            "nerdfont ahead: octicon git-commit"
+        );
+        assert_eq!(
+            nf.worktree_merged.trim_end(),
+            "\u{f419}",
+            "nerdfont merged: octicon git-merge"
         );
         assert_eq!(nf.repository.trim_end(), "▣");
         assert_eq!(nf.border, BorderStyle::Rounded);
 
         let uni = IconsConfig::preset("unicode");
-        assert_eq!(uni.worktree.trim_end(), "◇");
-        assert_eq!(uni.worktree_dirty.trim_end(), "◆");
+        assert_eq!(uni.worktree_new.trim_end(), "○");
+        assert_eq!(uni.worktree_ahead.trim_end(), "◆");
+        assert_eq!(uni.worktree_merged.trim_end(), "✓");
 
         let ascii = IconsConfig::preset("ascii");
         assert_eq!(ascii.guide_branch.trim_end(), "|-");
@@ -1929,7 +1968,8 @@ mod tests {
 
         let none = IconsConfig::preset("none");
         assert_eq!(none.repository, "", "none: no type icon, no column at all");
-        assert_eq!(none.worktree, "");
+        assert_eq!(none.worktree_new, "");
+        assert_eq!(none.worktree_merged, "");
     }
 
     #[test]
@@ -1942,15 +1982,21 @@ mod tests {
         use unicode_width::UnicodeWidthStr;
         for name in ICON_PRESETS {
             let i = IconsConfig::preset(name);
-            for (a, b, what) in [
-                (&i.repository, &i.repository_empty, "repository"),
-                (&i.worktree, &i.worktree_dirty, "worktree"),
-                (&i.guide_branch, &i.guide_last, "guide"),
+            for (group, what) in [
+                (vec![&i.repository, &i.repository_empty], "repository"),
+                (
+                    vec![&i.worktree_new, &i.worktree_ahead, &i.worktree_merged],
+                    "worktree",
+                ),
+                (vec![&i.guide_branch, &i.guide_last], "guide"),
             ] {
-                assert_eq!(
-                    UnicodeWidthStr::width(a.as_str()),
-                    UnicodeWidthStr::width(b.as_str()),
-                    "{name}: {what} pair must share a column width"
+                let widths: Vec<usize> = group
+                    .iter()
+                    .map(|s| UnicodeWidthStr::width(s.as_str()))
+                    .collect();
+                assert!(
+                    widths.iter().all(|w| *w == widths[0]),
+                    "{name}: the {what} icons must share a column width, got {widths:?}"
                 );
             }
         }
@@ -1967,14 +2013,9 @@ mod tests {
             nf.repository
         );
         assert!(
-            nf.worktree_dirty.ends_with(' '),
-            "dirty: {:?}",
-            nf.worktree_dirty
-        );
-        assert_eq!(
-            unicode_width::UnicodeWidthStr::width(nf.worktree.as_str()),
-            unicode_width::UnicodeWidthStr::width(nf.worktree_dirty.as_str()),
-            "clean pads to the dirty glyph's column, trailing space included"
+            nf.worktree_ahead.ends_with(' '),
+            "ahead: {:?}",
+            nf.worktree_ahead
         );
         assert_eq!(
             IconsConfig::preset("none").repository,
@@ -1986,16 +2027,16 @@ mod tests {
     #[test]
     fn icons_preset_and_per_key_override() {
         let cfg =
-            Config::from_str("[icons]\npreset = \"ascii\"\nworktree_dirty = \"D\"\n").unwrap();
+            Config::from_str("[icons]\npreset = \"ascii\"\nworktree_ahead = \"D\"\n").unwrap();
         // the override wins...
-        assert_eq!(cfg.icons.worktree_dirty.trim_end(), "D");
+        assert_eq!(cfg.icons.worktree_ahead.trim_end(), "D");
         // ...and the rest of the preset survives
         assert_eq!(cfg.icons.guide_branch.trim_end(), "|-");
         assert_eq!(cfg.icons.border, BorderStyle::Ascii);
         // padding is applied once, after the override is layered on
         assert_eq!(
-            UnicodeWidthStr::width(cfg.icons.worktree.as_str()),
-            UnicodeWidthStr::width(cfg.icons.worktree_dirty.as_str())
+            UnicodeWidthStr::width(cfg.icons.worktree_new.as_str()),
+            UnicodeWidthStr::width(cfg.icons.worktree_ahead.as_str())
         );
     }
 
@@ -2042,7 +2083,7 @@ mod tests {
             // number of fields actually accepted.
             assert_eq!(
                 ICONS_KEYS.len(),
-                15,
+                16,
                 "adding an icon key means adding it to ICONS_KEYS too"
             );
         });
@@ -2763,7 +2804,7 @@ mod tests {
             let root = tempfile::TempDir::new().unwrap();
             load_user(
                 root.path(),
-                "theme = \"dracula\"\npoll_interval_ms = 250\n[icons]\nworktree_dirty = \"D\"\n",
+                "theme = \"dracula\"\npoll_interval_ms = 250\n[icons]\nworktree_ahead = \"D\"\n",
             );
             std::fs::write(
                 root.path().join(".lazywingman.toml"),
@@ -2780,7 +2821,7 @@ mod tests {
             // [icons] must appear too: a per-key override shows its own
             // layer, and an untouched key still shows the resolved default.
             assert!(
-                dump.contains("icons.worktree_dirty = \"D \"  # from user"),
+                dump.contains("icons.worktree_ahead = \"D \"  # from user"),
                 "dump: {dump}"
             );
             assert!(

@@ -15,6 +15,23 @@ pub struct GitOutput {
     pub stdout: String,
 }
 
+/// Where a worktree's branch sits relative to its repository's base
+/// branch. Three states, deliberately: the working tree's cleanliness is a
+/// separate question (`worktree_dirty`) and is NOT folded in here — a
+/// branch with commits reads the same whether or not the editor has
+/// unsaved work on top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorktreeState {
+    /// No commits of its own yet — freshly cut from the base branch.
+    #[default]
+    New,
+    /// Has commits the base branch does not have.
+    Ahead,
+    /// Every commit of its own is already in the base branch: done, and
+    /// the worktree is free to delete.
+    Merged,
+}
+
 /// A worktree as reported by `git worktree list --porcelain`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeInfo {
@@ -84,6 +101,17 @@ impl Git {
         Ok(GitOutput {
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         })
+    }
+
+    /// Run git once for its exit code alone (git's own predicates —
+    /// `merge-base --is-ancestor` — answer that way, and a non-zero exit
+    /// is the answer, not an error). A git that will not run at all reads
+    /// as `false`.
+    fn run_status(dir: &Path, args: &[&str]) -> bool {
+        Self::command(dir, args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     /// Run git once, returning Ok(()) only on exit code 0.
@@ -254,10 +282,48 @@ impl Git {
         Ok(())
     }
 
-    /// Does the worktree have uncommitted changes?
+    /// Does the worktree have uncommitted changes? Drives the `--force`
+    /// option on the delete confirm; the tree draws
+    /// [`Git::worktree_state`] instead, which is about commits, not the
+    /// working tree.
     pub fn worktree_dirty(&self, wt_path: &Path) -> Result<bool> {
         let out = Self::run_ok(wt_path, &["status", "--porcelain"])?;
         Ok(!out.stdout.trim().is_empty())
+    }
+
+    /// Where the worktree's branch sits relative to `base`.
+    ///
+    /// `fork` is the commit the worktree was cut from (`Worktree::
+    /// base_commit`); it is what separates "never committed anything" from
+    /// "committed, and it all landed in the base" — measured against `base`
+    /// alone those two are the same empty range. Callers with no recorded
+    /// fork point pass `base` and lose the distinction in the merged
+    /// direction only.
+    ///
+    /// Known limit: a squash-merged branch keeps commits the base does not
+    /// contain by object id, so it reads as [`WorktreeState::Ahead`], not
+    /// `Merged`. Detecting that needs patch-id matching (`git cherry`),
+    /// which is wrong as often as it is right on a squashed history —
+    /// better to under-claim than to call a branch merged when it is not.
+    pub fn worktree_state(&self, wt_path: &Path, fork: &str, base: &str) -> Result<WorktreeState> {
+        let range = format!("{fork}..HEAD");
+        let out = Self::run_ok(wt_path, &["rev-list", "--count", &range])?;
+        if out.stdout.trim().parse::<u64>().unwrap_or(0) == 0 {
+            return Ok(WorktreeState::New);
+        }
+        Ok(
+            if Self::run_status(wt_path, &["merge-base", "--is-ancestor", "HEAD", base]) {
+                WorktreeState::Merged
+            } else {
+                WorktreeState::Ahead
+            },
+        )
+    }
+
+    /// Resolve a revision to its full object id.
+    pub fn rev_parse(&self, dir: &Path, rev: &str) -> Result<String> {
+        let out = Self::run_ok(dir, &["rev-parse", rev])?;
+        Ok(out.stdout.trim().to_string())
     }
 
     /// Delete a local branch (`-D`, force — the branch is orphaned once its
@@ -341,6 +407,65 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "git {} failed", args.join(" "));
+    }
+
+    /// The three commit states a worktree row draws, on a real repo:
+    /// fresh cut → New, own commit → Ahead, merged into the base → Merged.
+    /// Uncommitted changes do NOT move a worktree off New — the working
+    /// tree is a separate question (`worktree_dirty`).
+    #[test]
+    fn worktree_state_tells_new_ahead_and_merged_apart() {
+        let (_guard, repo) = temp_repo("proj");
+        let git = Git;
+        let wt = repo.parent().unwrap().join("wt-state");
+        // the fork point, exactly as `create_worktree` records it
+        let fork = git.rev_parse(&repo, "main").unwrap();
+        git.worktree_add(&repo, &wt, "state-branch", "main")
+            .unwrap();
+
+        // freshly cut: nothing of its own
+        assert_eq!(
+            git.worktree_state(&wt, &fork, "main").unwrap(),
+            WorktreeState::New
+        );
+
+        // uncommitted work is not a commit: still New, but dirty
+        fs::write(wt.join("scratch.txt"), "wip\n").unwrap();
+        assert_eq!(
+            git.worktree_state(&wt, &fork, "main").unwrap(),
+            WorktreeState::New
+        );
+        assert!(git.worktree_dirty(&wt).unwrap());
+
+        // its own commit, not in main yet
+        run(&wt, &["add", "."]);
+        run(&wt, &["commit", "-m", "work"]);
+        assert_eq!(
+            git.worktree_state(&wt, &fork, "main").unwrap(),
+            WorktreeState::Ahead
+        );
+
+        // merged into main → Merged, even though the branch still exists
+        run(&repo, &["merge", "--no-ff", "-m", "merge", "state-branch"]);
+        assert_eq!(
+            git.worktree_state(&wt, &fork, "main").unwrap(),
+            WorktreeState::Merged
+        );
+        // ...and without the recorded fork point that is indistinguishable
+        // from a fresh cut — the documented cost of a reconciled worktree.
+        assert_eq!(
+            git.worktree_state(&wt, "main", "main").unwrap(),
+            WorktreeState::New
+        );
+
+        // a commit after the merge puts it back ahead
+        fs::write(wt.join("more.txt"), "more\n").unwrap();
+        run(&wt, &["add", "."]);
+        run(&wt, &["commit", "-m", "more work"]);
+        assert_eq!(
+            git.worktree_state(&wt, &fork, "main").unwrap(),
+            WorktreeState::Ahead
+        );
     }
 
     #[test]

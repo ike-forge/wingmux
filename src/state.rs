@@ -72,6 +72,16 @@ pub struct Worktree {
     pub branch: String,
     pub path: PathBuf,
     pub created_at: String,
+    /// The base-branch commit this worktree was cut from, recorded at
+    /// creation. It is what makes "no commits of its own" answerable: once
+    /// a branch is merged, `base..HEAD` is empty exactly as it is for a
+    /// fresh cut, so the fork point is the only thing that tells the two
+    /// apart. `None` for worktrees LazyWingman did not create (reconciled
+    /// from `git worktree list`) or written by an older build — those fall
+    /// back to measuring against the base branch itself, which reads a
+    /// merged worktree as new.
+    #[serde(default)]
+    pub base_commit: Option<String>,
     pub shells: Vec<Shell>,
 }
 
@@ -263,6 +273,7 @@ impl State {
             branch,
             path: path.to_path_buf(),
             created_at: String::new(),
+            base_commit: None,
             shells: vec![Shell {
                 index: idx,
                 window_name: format!("lw:{fname}/{idx}"),
@@ -453,6 +464,7 @@ mod tests {
             branch: "wt".into(),
             path: PathBuf::from("/tmp/wt"),
             created_at: String::new(),
+            base_commit: None,
             shells: vec![],
         };
         assert_eq!(wt.next_shell_index(), 0);
@@ -500,6 +512,7 @@ mod tests {
                 branch: "wt".into(),
                 path: PathBuf::from("/tmp/wt/wt"),
                 created_at: "now".into(),
+                base_commit: None,
                 shells: vec![Shell {
                     index: 0,
                     window_name: "lw:wt/0".into(),
@@ -614,6 +627,7 @@ mod tests {
                 branch: "wt".into(),
                 path: repo.join("../wt-wt"),
                 created_at: "2026-08-16".into(),
+                base_commit: None,
                 shells: vec![Shell {
                     index: 0,
                     window_name: "lw:wt/0".into(),
@@ -634,6 +648,7 @@ mod tests {
             branch: "feat2".into(),
             path: repo.join("../wt-feat2"),
             created_at: "".into(),
+            base_commit: None,
             shells: vec![Shell {
                 index: 0,
                 window_name: "lw:feat2/0".into(),

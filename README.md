@@ -137,7 +137,7 @@ agent_hooks = true           # instrument recognised `claude` commands for accur
 
 [icons]                      # full key reference under "Layout" below
 preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "ascii" | "none"
-worktree_dirty = "󰘬"         # any key overrides the preset; "" draws nothing
+worktree_ahead = ""        # any key overrides the preset; "" draws nothing
 border = "rounded"           # "rounded" | "plain" | "ascii"
 
 [[messages]]                 # `p` modal: canned prompts for the selected shell
@@ -378,8 +378,8 @@ is happening, the bar says what you can press:
 ```
 ╭ Repositories (2) ────────╮╭ Preview ────────────────────────────╮
 │▣ repo-a                  ││ live tail of the selected shell,    │
-│  ├─     login   waiting  ││ refreshed every poll                │
-│  └─ 󰘬 search             ││                                     │
+│  ├─  login   waiting    ││ refreshed every poll                │
+│  └─  search             ││                                     │
 │     ├─ ● #0 working      ││     ╭────────────────────────╮      │
 │     └─ ● #1 waiting      ││     │ worktree 'search' cre… │      │
 │▢ repo-b                  ││     ╰────────────────────────╯      │
@@ -401,15 +401,30 @@ Status classification always runs on the stripped text, so colouring never
 changes how a pane is classified.
 
 Icons come from `[icons]` (default preset `nerdfont`): `▣` repository holding
-worktrees, `▢` empty repository, `󰘬` worktree with uncommitted changes,
-nothing for a clean one, `●` shell. A clean worktree keeps its column, so
-names stay aligned. No patched font? Set `preset = "unicode"` for `◇`/`◆`, or
-`preset = "ascii"`. Rows carry meaning in symbols, labels and position as well
-as colour.
+worktrees, `▢` empty repository, `●` shell, and **three glyphs for a
+worktree's commit state** — `` no commits of its own yet, `` commits the
+base branch does not have, `` all its commits merged into the base. The
+three share one padded column, so names stay aligned whichever one a row
+draws. The state is also colour-coded: new is dim, ahead is the `waiting`
+colour, merged is the `working` colour. No patched font? Set
+`preset = "unicode"` for `○`/`◆`/`✓`, or `preset = "ascii"`. Rows carry
+meaning in symbols, labels and position as well as colour.
+
+Uncommitted changes are deliberately *not* in that icon — a branch with
+commits reads the same whether or not there is unsaved work on top. They
+still decide whether the delete confirm offers `f` (force).
+
+"Merged" is measured against the **local** base branch: a PR merged on the
+forge shows as ahead until that merge is in your local `main`. A
+squash-merged branch keeps commits the base does not have by object id, so
+it also reads as ahead. LazyWingman records the commit a worktree was cut
+from when it creates it — a worktree it merely discovered (or one from a
+state file written before this existed) cannot tell "merged" from "new" and
+reads as new until it has commits of its own.
 
 > A Nerd Font glyph is drawn single-width by the Mono font variants, which
 > is what the default assumes. If your font draws it double-width, add a
-> trailing space to the `worktree_dirty` value — config values are used
+> trailing space to the `worktree_*` values — config values are used
 > verbatim and the column pads around them.
 
 #### Every `[icons]` key
@@ -420,8 +435,9 @@ as colour.
 |---|---|---|---|---|---|
 | `repository` | `▣` | `▣` | `*` | — | repository holding worktrees |
 | `repository_empty` | `▢` | `▢` | `o` | — | repository with none |
-| `worktree` | — | `◇` | `-` | — | clean worktree |
-| `worktree_dirty` | `󰘬` | `◆` | `*` | — | uncommitted changes |
+| `worktree_new` | `` | `○` | `o` | — | worktree with no commits of its own |
+| `worktree_ahead` | `` | `◆` | `*` | — | commits not in the base branch |
+| `worktree_merged` | `` | `✓` | `=` | — | commits all merged into the base |
 | `shell` | `●` | `●` | — | — | before the shell number |
 | `cursor` | `›` | `›` | `>` | `›` | selection, tree and modals |
 | `guide_branch` | `├─` | `├─` | `\|-` | `├─` | guide, non-last child |
@@ -433,10 +449,10 @@ as colour.
 | `enter` | `↵` | `↵` | `Enter` | `↵` | the Enter key, in the bar |
 | `border` | `rounded` | `rounded` | `ascii` | `rounded` | panel and popup frames |
 
-An empty string draws nothing. Three pairs share a rendered column and are
-padded to equal width — `repository`/`repository_empty`,
-`worktree`/`worktree_dirty`, `guide_branch`/`guide_last` — so names stay
-aligned when one side is empty.
+An empty string draws nothing. `repository`/`repository_empty`,
+`guide_branch`/`guide_last` and the three `worktree_*` states share a
+rendered column each and are padded to equal width, so names stay aligned
+when one of them is empty.
 The rest are used verbatim: add your own trailing space if you want a gap
 after one (the default `shell = "● "` has one baked in).
 
