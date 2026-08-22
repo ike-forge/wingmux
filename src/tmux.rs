@@ -487,6 +487,14 @@ impl Tmux {
         Ok(out)
     }
 
+    /// The pane's whole scrollback, escapes included — what the preview
+    /// scrolls through. [`Tmux::capture_pane`] keeps only enough lines to
+    /// classify a status and runs for every pane on every poll; real
+    /// history is fetched once, on demand, for the selected pane alone.
+    pub fn capture_pane_full(&self, pane_id: &str) -> Result<String> {
+        self.run(&["capture-pane", "-p", "-e", "-t", pane_id, "-S", "-"])
+    }
+
     // ---------------------------------------------------------- attach / back
 
     /// Attach the current client to an agent session and its shell window.
@@ -1040,6 +1048,44 @@ mod tests {
             // kill the last window → session gone
             tmux.kill_window(&w.window_id).unwrap();
             assert!(!tmux.session_exists("wingman-session-p"));
+        });
+    }
+
+    /// The preview's scrollback source reaches past the poll's window:
+    /// `capture_pane` returns only the lines it is asked for, while
+    /// `capture_pane_full` returns everything the pane still holds.
+    #[test]
+    fn full_capture_reaches_past_the_polls_shallow_window() {
+        with_tmux_server(|_sock, tmux| {
+            let w = tmux
+                .new_session("wingman-session-s", "lw:s/0", Path::new("/tmp"), "bash")
+                .unwrap();
+            tmux.send_keys(
+                &w.pane_id,
+                "for i in $(seq 1 400); do echo lw-line-$i; done",
+                true,
+            )
+            .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+
+            // exact line match: `lw-line-1` is a prefix of `lw-line-100`
+            let has = |cap: &str, needle: &str| {
+                cap.lines()
+                    .any(|l| crate::ansi::strip(l).trim_end() == needle)
+            };
+            let shallow = tmux.capture_pane(&w.pane_id, 50).unwrap();
+            let full = tmux.capture_pane_full(&w.pane_id).unwrap();
+
+            assert!(has(&shallow, "lw-line-400"), "both end at the newest line");
+            assert!(has(&full, "lw-line-400"));
+            assert!(
+                !has(&shallow, "lw-line-1"),
+                "the poll's window stops well short of the start"
+            );
+            assert!(
+                has(&full, "lw-line-1"),
+                "the full capture reaches the oldest line the pane holds"
+            );
         });
     }
 

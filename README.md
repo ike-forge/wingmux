@@ -89,8 +89,8 @@ the help overlay (`?`).
 | `Esc` / `q` / `Enter` (startup) | dismiss the startup diagnostics overlay (shown when config problems were dropped at load) |
 
 Mouse: click a row selects, double-click opens (same as `Enter`), the wheel
-scrolls the tree, statusbar entries are clickable, and clicking outside an
-overlay dismisses it.
+scrolls the **preview** (never the tree), statusbar entries are clickable, and
+clicking outside an overlay dismisses it.
 
 **Attach & return**: `Enter` on a shell switches your client to that agent's
 window. Press the tmux prefix + the *back-key* to return to the dashboard —
@@ -444,6 +444,18 @@ emits it, `foreground` keeps the text colours but drops background colours
 so the panel keeps the theme's background, and `none` renders raw text.
 Status classification always runs on the stripped text, so colouring never
 changes how a pane is classified.
+
+**Scrolling the preview.** The mouse wheel walks back through the selected
+shell's history. The first scroll fetches the pane's whole scrollback (a poll
+keeps only enough lines to classify a status) and freezes the view there, so
+the polls cannot move the text while you read. A parked panel says so three
+ways — the offset in its title (`Preview ↑47`), a lit border, and a `live Esc`
+entry leading the statusbar — because a panel that has quietly stopped
+following its agent otherwise reads as an agent that stopped. `Esc`, or
+selecting another row, returns to the live tail. The wheel never moves the
+tree selection, so reading back through an agent's output cannot lose your
+place; below the split tier, where the preview is not drawn at all, the wheel
+falls back to the tree.
 
 Icons come from `[icons]` (default preset `nerdfont`): a **folder per
 repository** — `󰝰` open when the row is expanded, `󰉋` closed when it is

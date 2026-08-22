@@ -25,6 +25,10 @@ const WIDE_MIN: (u16, u16) = (64, 12);
 const SPLIT_MIN: (u16, u16) = (44, 9);
 const TREE_MIN: (u16, u16) = (26, 7);
 
+/// The mark a parked preview carries in its title. Plain Unicode, not a
+/// glyph from `[icons]`: it has to render in the `unicode` preset too.
+const UP_ARROW: &str = "\u{2191}";
+
 /// Cap on the tree panel's width, in columns (see [`tree_width`]).
 const TREE_MAX: u16 = 48;
 
@@ -754,15 +758,10 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-/// The slice of a pane capture the preview shows in a panel of
-/// `inner_height` rows: the *newest* lines, filling the panel down to its
-/// bottom border.
-///
-/// `capture-pane -S -N` returns a window that starts N lines back in the
-/// scrollback and ends with the blank padding of the pane's empty area, so
-/// rendering it from the top shows neither the start nor the end of the
-/// agent's output — the trailing blanks are dropped and the tail wins.
-fn preview_tail(capture: &str, inner_height: usize) -> String {
+/// The capture with its trailing blank padding dropped — the lines the
+/// preview may actually show. `capture-pane` pads the pane's empty area
+/// with rows that carry its colours but no text; they are not content.
+fn preview_lines(capture: &str) -> Vec<&str> {
     let mut lines: Vec<&str> = capture.lines().collect();
     while lines
         .last()
@@ -771,9 +770,38 @@ fn preview_tail(capture: &str, inner_height: usize) -> String {
     {
         lines.pop();
     }
+    lines
+}
+
+/// The slice of a pane capture the preview shows in a panel of
+/// `inner_height` rows, parked `scroll` lines above the live tail.
+///
+/// At `scroll == 0` this is the live tail: the *newest* lines, filling the
+/// panel down to its bottom border. `capture-pane -S -N` returns a window
+/// that starts N lines back in the scrollback and ends with the blank
+/// padding of the pane's empty area, so rendering it from the top shows
+/// neither the start nor the end of the agent's output — the trailing
+/// blanks are dropped and the tail wins. Larger `scroll` walks back
+/// through the buffer and clamps at its start, so a wheel that keeps
+/// spinning stops rather than running off.
+fn preview_window(capture: &str, inner_height: usize, scroll: usize) -> String {
+    let lines = preview_lines(capture);
     let rows = inner_height.max(1);
-    let start = lines.len().saturating_sub(rows);
-    lines[start..].join("\n")
+    let scroll = scroll.min(preview_scroll_max_lines(lines.len(), rows));
+    let end = lines.len() - scroll;
+    let start = end.saturating_sub(rows);
+    lines[start..end].join("\n")
+}
+
+/// How far back a capture may be scrolled in a panel of `inner_height`
+/// rows: everything it holds beyond the one panel-full the live tail
+/// already shows.
+pub(crate) fn preview_scroll_max(capture: &str, inner_height: usize) -> usize {
+    preview_scroll_max_lines(preview_lines(capture).len(), inner_height.max(1))
+}
+
+fn preview_scroll_max_lines(len: usize, rows: usize) -> usize {
+    len.saturating_sub(rows)
 }
 
 /// Is a worktree row selected whose worktree has no shell at all?
@@ -790,15 +818,26 @@ fn selected_worktree_has_no_shell(app: &App) -> bool {
 
 fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
-    let block = panel_block(theme, &app.cfg.icons, "Preview", false);
+    // A panel parked in the scrollback has stopped following the agent —
+    // unmarked, that reads as an agent that stopped. The title carries how
+    // far back it sits and the border lights up, the same "this panel is
+    // where the input is going" signal the rest of the UI uses.
+    let off = app.preview_offset();
+    let title = if off > 0 {
+        format!("Preview  {UP_ARROW}{off}")
+    } else {
+        "Preview".to_string()
+    };
+    let block = panel_block(theme, &app.cfg.icons, &title, off > 0);
+    let off = app.preview_offset();
     let text = match app.selected_shell() {
         Some(_) => {
-            if let Some(pid) = app.selected_shell_pane() {
-                if let Some(cap) = app.captures.get(&pid) {
+            if app.selected_shell_pane().is_some() {
+                if let Some(cap) = app.preview_source() {
                     // borders take two rows off the panel; the capture keeps
                     // the pane's escapes, rendered per [preview].colors
-                    let tail = preview_tail(cap, area.height.saturating_sub(2) as usize);
-                    crate::ansi::styled_text(&tail, app.cfg.preview.colors)
+                    let win = preview_window(cap, area.height.saturating_sub(2) as usize, off);
+                    crate::ansi::styled_text(&win, app.cfg.preview.colors)
                 } else {
                     Text::from(format!(
                         "capturing{} (select the shell in the tree)",
@@ -839,7 +878,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
     use BarAction::*;
     let ic = &app.cfg.icons;
     let h = |desc: &str, key: &str| hint(ic, desc, key);
-    match app.sel {
+    let mut entries = match app.sel {
         Sel::Repository(_) => vec![(h("worktree", "n"), NewWorktree), (h("help", "?"), Help)],
         // A folded worktree row is its shell: it offers the shell actions
         // on top of the worktree ones (`a` gives it a second shell, which
@@ -865,7 +904,13 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             (h("close", "d"), DeleteShell),
             (h("help", "?"), Help),
         ],
+    };
+    // A parked preview is a state you can be stuck in — the way out leads
+    // the bar, where the eye lands first.
+    if app.preview_offset() > 0 {
+        entries.insert(0, (h("live", "Esc"), PreviewLive));
     }
+    entries
 }
 
 /// The statusbar: the contextual shortcuts, and nothing else. No app
@@ -1055,6 +1100,11 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
     (
         "global",
         &[
+            (&["wheel"], &["scroll the preview", "back through the pane"]),
+            (
+                &["Esc"],
+                &["back to the live tail", "while the preview is parked"],
+            ),
             (&["r"], &["refresh", "reconcile state"]),
             (&["ctrl-t"], &["change theme", "live picker"]),
             (&["?"], &["this help", "palette"]),
@@ -2421,6 +2471,7 @@ mod tests {
                 "delete" => assert!(text.contains("delete worktree"), "bar 'delete d' ↔ help"),
                 "attach" => assert!(text.contains("attach"), "bar 'attach ↵' ↔ help"),
                 "close" => assert!(text.contains("close shell"), "bar 'close d' ↔ help"),
+                "live" => assert!(text.contains("live tail"), "bar 'live Esc' ↔ help"),
                 other => panic!("unmapped bar entry: {other:?}"),
             }
         }
@@ -3353,10 +3404,11 @@ mod tests {
         assert_ne!(plain.bg, Color::Blue);
     }
 
-    /// `preview_tail` edge cases: a capture shorter than the panel keeps
-    /// every line, and a zero-row panel still shows a row.
+    /// Live-tail edge cases: a capture shorter than the panel keeps every
+    /// line, and a zero-row panel still shows a row.
     #[test]
-    fn preview_tail_handles_short_captures_and_tiny_panels() {
+    fn the_live_tail_handles_short_captures_and_tiny_panels() {
+        let preview_tail = |c: &str, h: usize| preview_window(c, h, 0);
         assert_eq!(preview_tail("a\nb\nc\n\n\n", 20), "a\nb\nc");
         // capture-pane -e pads with lines that carry the pane's colours but
         // no visible text — those are padding too
@@ -3373,6 +3425,46 @@ mod tests {
         );
         assert_eq!(preview_tail(&ten, 2), "l14\nl15");
         assert_eq!(preview_tail(&ten, 0), "l15");
+    }
+
+    /// Scrolling back moves the window earlier in the capture: `scroll` is
+    /// how many lines above the live tail the panel is parked, and the
+    /// window is clamped to the start of the buffer.
+    #[test]
+    fn preview_window_slides_back_through_the_capture() {
+        let ten: String = (1..=15).map(|i| format!("l{i}\n")).collect();
+        // scroll 0 is the live tail
+        assert_eq!(
+            preview_window(&ten, 10, 0),
+            "l6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15"
+        );
+        assert_eq!(
+            preview_window(&ten, 10, 3),
+            "l3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12"
+        );
+        // parked at the very start
+        assert_eq!(
+            preview_window(&ten, 10, 5),
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10"
+        );
+        // past the start clamps rather than running off
+        assert_eq!(preview_window(&ten, 10, 99), preview_window(&ten, 10, 5));
+        // trailing blank padding is dropped before the window is taken,
+        // exactly as the live tail does it
+        assert_eq!(preview_window("a\nb\nc\n\n\n", 2, 1), "a\nb");
+    }
+
+    /// How far back the panel may be scrolled: everything the buffer holds
+    /// beyond one panel-full. A capture that does not fill the panel cannot
+    /// be scrolled at all.
+    #[test]
+    fn preview_scroll_max_is_the_history_above_one_panel() {
+        let ten: String = (1..=15).map(|i| format!("l{i}\n")).collect();
+        assert_eq!(preview_scroll_max(&ten, 10), 5);
+        assert_eq!(preview_scroll_max(&ten, 15), 0);
+        assert_eq!(preview_scroll_max(&ten, 40), 0);
+        assert_eq!(preview_scroll_max("", 10), 0);
+        assert_eq!(preview_scroll_max("a\nb\nc\n\n\n", 2), 1);
     }
 
     /// The preview shows the *tail* of the capture (what the agent just
@@ -3408,6 +3500,40 @@ mod tests {
             bottom_border - 1,
             "newest line must sit flush above the bottom border \
              (last at {last}, border at {bottom_border})"
+        );
+    }
+
+    /// A parked preview draws the older lines instead of the tail, and
+    /// marks itself: a panel that has silently stopped following the agent
+    /// would otherwise read as a stalled agent.
+    #[test]
+    fn a_parked_preview_shows_older_lines_and_says_so() {
+        let capture: String = (1..=200).map(|i| format!("cap-line-{i:03}\n")).collect();
+        let mut app = app_with_capture(&capture);
+        app.preview_pane = Some("%1".into());
+        app.preview_scroll = 50;
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let rows = buffer_rows(&terminal);
+        let text = rows.join("\n");
+
+        assert!(
+            rows.iter().any(|r| r.contains("cap-line-150")),
+            "the parked window ends 50 lines above the tail:\n{text}"
+        );
+        assert!(
+            !rows.iter().any(|r| r.contains("cap-line-200")),
+            "the live tail has scrolled out of view:\n{text}"
+        );
+        assert!(
+            text.contains("↑50"),
+            "the panel says how far back it is parked:\n{text}"
+        );
+        assert!(
+            text.contains("live Esc"),
+            "the statusbar offers the way back to the tail:\n{text}"
         );
     }
 
