@@ -484,8 +484,20 @@ the same commit as the change.
   (one column left and right, one row on top) lives on `popup_block`, so no
   overlay can forget it, and every content-sizing calculation adds the shared
   `MODAL_CHROME_W`/`MODAL_CHROME_H`. There is deliberately no bottom padding
-  row — the shortcut footer already carries a blank row above it, and a
-  second gap below would float it off the frame.
+  row — the last content row is the shortcut footer, and a gap below it would
+  float it off the frame.
+- **The footer is fenced off by a rule, not a gap**: `draw_footer_rule` paints
+  `├`–`─`–`┤` border to border on the row above the shortcuts, so the footer
+  reads as its own compartment the way a table header rule separates the
+  header from the rows. A line inside the padding would have floated, ending
+  a column short of the frame on both sides. Mechanically it paints *over* the
+  blank row every modal already reserves above its hint line, so `MODAL_FOOTER_H`
+  stays 2 and no sizing math changed; it writes the symbol and foreground only,
+  leaving each cell's background alone, because some overlays fill `popup_bg`
+  and some do not. It is called once in `draw`, off `app.popup_area`, so a new
+  overlay cannot forget it — the same discipline as `MODAL_PADDING`. The
+  "frame too small for this dialog" fallback is the one overlay without it:
+  its hint is not on the last content row, so there is nothing to fence.
 - **Panel titles are Title Case names, body text is not.** Titles name a thing
   (`Preview`, `Quick Send`, `Repositories`), so they read as proper names;
   hints, statusbar and body text stay lowercase, which is the LazyGit register
