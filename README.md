@@ -292,7 +292,7 @@ unchanged.
 **The selected row is tinted, not repainted.** The cursor row takes
 `selection_bg` as a background and leaves every foreground alone, because
 those foregrounds *are* the information: the status colour, the dimming of a
-dead shell, the worktree's commit state. Inverting them would erase what you
+dead shell, the worktree's state. Inverting them would erase what you
 moved the cursor there to read. (`selection_fg` still applies inside modals,
 where rows carry no colour of their own.)
 
@@ -448,11 +448,14 @@ Icons come from `[icons]` (default preset `nerdfont`): a **folder per
 repository** — `󰝰` open when the row is expanded, `󰉋` closed when it is
 folded, `󰉖` outline when the repository has no worktrees at all — `●` shell,
 and **three glyphs for a
-worktree's commit state** — `` no commits of its own yet, `` commits the
-base branch does not have, `` all its commits merged into the base. The
-three share one padded column, so names stay aligned whichever one a row
-draws. The state is also colour-coded: new is dim, ahead is the `waiting`
-colour, merged is the `working` colour. No patched font? Set
+worktree's state** — `` untouched, `` carrying work the base branch
+does not have, `` all its work merged into the base. "Carrying work"
+means commits *or* an unclean working tree: a worktree an agent has edited
+but not committed is no longer untouched, and a merged worktree picks the
+glyph back up as soon as something is written into it. The three share one
+padded column, so names stay aligned whichever one a row draws. The state
+is also colour-coded: new is dim, ahead is the `waiting` colour, merged is
+the `working` colour. No patched font? Set
 `preset = "unicode"` for `▣`/`▤`/`▢` and `○`/`◆`/`✓`. Rows carry
 meaning in symbols, labels and position as well as colour.
 
@@ -482,9 +485,9 @@ reads as new until it has commits of its own.
 | `repository` | `󰉋` | `▣` | — | repository with worktrees, folded |
 | `repository_open` | `󰝰` | `▤` | — | ...the same repository, expanded |
 | `repository_empty` | `󰉖` | `▢` | — | repository with no worktrees |
-| `worktree_new` | `` | `○` | — | worktree with no commits of its own |
-| `worktree_ahead` | `` | `◆` | — | commits not in the base branch |
-| `worktree_merged` | `` | `✓` | — | commits all merged into the base |
+| `worktree_new` | `` | `○` | — | untouched: no commits, clean tree |
+| `worktree_ahead` | `` | `◆` | — | commits not in the base branch, or a dirty tree |
+| `worktree_merged` | `` | `✓` | — | commits all merged into the base, clean tree |
 | `status_spinner` | `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | same | — | frames cycled while an agent works |
 | `status_waiting` | `` | `⏸` | — | agent parked at its prompt |
 | `status_blocked` | `` | `⏹` | — | agent asking for permission |

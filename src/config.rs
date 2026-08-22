@@ -131,9 +131,9 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #repository = "󰉋"              # repository holding worktrees, collapsed
 #repository_open = "󰝰"         # ...the same repository, expanded
 #repository_empty = "󰉖"        # repository with no worktrees yet
-#worktree_new = ""            # worktree with no commits of its own
-#worktree_ahead = ""          # commits not in the base branch yet
-#worktree_merged = ""         # its commits are all in the base branch
+#worktree_new = ""            # untouched: no commits, clean tree
+#worktree_ahead = ""          # commits not in the base yet, or dirty
+#worktree_merged = ""         # all in the base branch, clean tree
 # One agent status icon each, drawn in front of the status label. The
 # spinner is a string of frames, one character per animation step, cycled
 # while an agent is working; `idle` and `dead` are blank on purpose, so a

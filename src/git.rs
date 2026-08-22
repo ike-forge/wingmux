@@ -15,20 +15,25 @@ pub struct GitOutput {
     pub stdout: String,
 }
 
-/// Where a worktree's branch sits relative to its repository's base
-/// branch. Three states, deliberately: the working tree's cleanliness is a
-/// separate question (`worktree_dirty`) and is NOT folded in here — a
-/// branch with commits reads the same whether or not the editor has
-/// unsaved work on top.
+/// How much work a worktree is carrying, relative to its repository's
+/// base branch. Three states, and the question each one answers is "has
+/// anything happened here that the base branch does not already have?".
+///
+/// The working tree's cleanliness is folded in on purpose: to the user a
+/// worktree an agent has edited but not yet committed is *not* a fresh
+/// cut, and drawing it as one hides live work behind the "nothing here"
+/// icon. Uncommitted changes therefore count exactly like commits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorktreeState {
-    /// No commits of its own yet — freshly cut from the base branch.
+    /// Untouched: no commits of its own and a clean working tree —
+    /// freshly cut from the base branch, nothing has happened yet.
     #[default]
     New,
-    /// Has commits the base branch does not have.
+    /// Carries work the base branch does not have: commits of its own, an
+    /// unclean working tree, or both.
     Ahead,
-    /// Every commit of its own is already in the base branch: done, and
-    /// the worktree is free to delete.
+    /// Every commit of its own is already in the base branch and the
+    /// working tree is clean: done, and the worktree is free to delete.
     Merged,
 }
 
@@ -291,7 +296,7 @@ impl Git {
         Ok(!out.stdout.trim().is_empty())
     }
 
-    /// Where the worktree's branch sits relative to `base`.
+    /// How much work the worktree is carrying, relative to `base`.
     ///
     /// `fork` is the commit the worktree was cut from (`Worktree::
     /// base_commit`); it is what separates "never committed anything" from
@@ -299,6 +304,12 @@ impl Git {
     /// alone those two are the same empty range. Callers with no recorded
     /// fork point pass `base` and lose the distinction in the merged
     /// direction only.
+    ///
+    /// An unclean working tree counts as work: it turns both `New` and
+    /// `Merged` into [`WorktreeState::Ahead`] (see [`WorktreeState`]). The
+    /// extra `git status` only runs when the commit verdict is one of
+    /// those two — a worktree already ahead cannot be moved by it, so the
+    /// common case pays nothing.
     ///
     /// Known limit: a squash-merged branch keeps commits the base does not
     /// contain by object id, so it reads as [`WorktreeState::Ahead`], not
@@ -308,16 +319,23 @@ impl Git {
     pub fn worktree_state(&self, wt_path: &Path, fork: &str, base: &str) -> Result<WorktreeState> {
         let range = format!("{fork}..HEAD");
         let out = Self::run_ok(wt_path, &["rev-list", "--count", &range])?;
-        if out.stdout.trim().parse::<u64>().unwrap_or(0) == 0 {
-            return Ok(WorktreeState::New);
+        let committed = out.stdout.trim().parse::<u64>().unwrap_or(0) > 0;
+        let by_commits = if !committed {
+            WorktreeState::New
+        } else if Self::run_status(wt_path, &["merge-base", "--is-ancestor", "HEAD", base]) {
+            WorktreeState::Merged
+        } else {
+            WorktreeState::Ahead
+        };
+        if by_commits == WorktreeState::Ahead {
+            return Ok(by_commits);
         }
-        Ok(
-            if Self::run_status(wt_path, &["merge-base", "--is-ancestor", "HEAD", base]) {
-                WorktreeState::Merged
-            } else {
-                WorktreeState::Ahead
-            },
-        )
+        // A failed status check keeps the commit verdict: it is still a
+        // real answer, and downgrading it to the default would be worse.
+        if self.worktree_dirty(wt_path).unwrap_or(false) {
+            return Ok(WorktreeState::Ahead);
+        }
+        Ok(by_commits)
     }
 
     /// Resolve a revision to its full object id.
@@ -409,10 +427,10 @@ mod tests {
         assert!(status.success(), "git {} failed", args.join(" "));
     }
 
-    /// The three commit states a worktree row draws, on a real repo:
-    /// fresh cut → New, own commit → Ahead, merged into the base → Merged.
-    /// Uncommitted changes do NOT move a worktree off New — the working
-    /// tree is a separate question (`worktree_dirty`).
+    /// The three states a worktree row draws, on a real repo: untouched
+    /// cut → New, work of its own → Ahead, merged into the base → Merged.
+    /// "Work of its own" is commits *or* an unclean working tree — see
+    /// [`WorktreeState`].
     #[test]
     fn worktree_state_tells_new_ahead_and_merged_apart() {
         let (_guard, repo) = temp_repo("proj");
@@ -429,13 +447,13 @@ mod tests {
             WorktreeState::New
         );
 
-        // uncommitted work is not a commit: still New, but dirty
+        // uncommitted work is work: an agent has touched it → Ahead
         fs::write(wt.join("scratch.txt"), "wip\n").unwrap();
+        assert!(git.worktree_dirty(&wt).unwrap());
         assert_eq!(
             git.worktree_state(&wt, &fork, "main").unwrap(),
-            WorktreeState::New
+            WorktreeState::Ahead
         );
-        assert!(git.worktree_dirty(&wt).unwrap());
 
         // its own commit, not in main yet
         run(&wt, &["add", "."]);
@@ -457,6 +475,15 @@ mod tests {
             git.worktree_state(&wt, "main", "main").unwrap(),
             WorktreeState::New
         );
+
+        // new uncommitted work on top of a merged branch: there is
+        // something here again, so it is no longer free to delete.
+        fs::write(wt.join("after-merge.txt"), "wip\n").unwrap();
+        assert_eq!(
+            git.worktree_state(&wt, &fork, "main").unwrap(),
+            WorktreeState::Ahead
+        );
+        fs::remove_file(wt.join("after-merge.txt")).unwrap();
 
         // a commit after the merge puts it back ahead
         fs::write(wt.join("more.txt"), "more\n").unwrap();
