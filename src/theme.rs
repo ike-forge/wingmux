@@ -67,16 +67,29 @@ pub struct ThemeColors {
     pub tree_repository: Spec,
     pub tree_worktree: Spec,
     pub tree_shell: Spec,
-    pub status_working: Spec,
     pub status_waiting: Spec,
-    /// Added in M17. Optional: themes written earlier stay valid and
-    /// borrow `status_waiting`.
+    pub status_failed: Spec,
+    /// The four roles below borrow a base colour rather than get one of
+    /// their own, so a theme only has to answer for the two states that
+    /// carry a colour of their own (`status_waiting`, `status_failed`).
+    /// Each stays overridable, and themes written before this split — which
+    /// set all seven — keep working unchanged.
+    ///
+    /// `working` and `ended` read as `foreground`: an agent doing its job
+    /// needs no alarm colour, and the spinner already says it is running.
+    /// `idle` and `dead` read as `dim`: nothing to act on, so they recede.
+    /// `blocked` borrows `status_waiting` (added in M17) — both mean the
+    /// agent has stopped and wants you.
+    #[serde(default)]
+    pub status_working: Option<Spec>,
     #[serde(default)]
     pub status_blocked: Option<Spec>,
-    pub status_idle: Spec,
-    pub status_failed: Spec,
-    pub status_dead: Spec,
-    pub status_ended: Spec,
+    #[serde(default)]
+    pub status_idle: Option<Spec>,
+    #[serde(default)]
+    pub status_dead: Option<Spec>,
+    #[serde(default)]
+    pub status_ended: Option<Spec>,
     pub title_bg: Spec,
     pub title_fg: Spec,
     pub popup_bg: Spec,
@@ -409,13 +422,13 @@ fn resolve_theme(file: ThemeFile, truecolor: bool, monochrome: bool) -> Result<T
             tree_repository: resolve(c.tree_repository),
             tree_worktree: resolve(c.tree_worktree),
             tree_shell: resolve(c.tree_shell),
-            status_working: resolve(c.status_working),
+            status_working: resolve(c.status_working.unwrap_or(c.foreground)),
             status_waiting: resolve(c.status_waiting),
             status_blocked: resolve(c.status_blocked.unwrap_or(c.status_waiting)),
-            status_idle: resolve(c.status_idle),
+            status_idle: resolve(c.status_idle.unwrap_or(c.dim)),
             status_failed: resolve(c.status_failed),
-            status_dead: resolve(c.status_dead),
-            status_ended: resolve(c.status_ended),
+            status_dead: resolve(c.status_dead.unwrap_or(c.dim)),
+            status_ended: resolve(c.status_ended.unwrap_or(c.foreground)),
             title_bg: resolve(c.title_bg),
             title_fg: resolve(c.title_fg),
             popup_bg: resolve(c.popup_bg),
@@ -606,47 +619,69 @@ mod tests {
         }
     }
 
-    // ---- M17 — the `blocked` colour role ----
+    // ---- the borrowed status colour roles ----
 
-    /// Every shipped theme defines the new role explicitly, and it must be
-    /// distinguishable from `waiting` — the whole point of the state.
-    /// Reached hermetically through `BUILTIN_THEMES`/`parse_theme`/
-    /// `resolve_theme` rather than `load`, which would consult the user's
-    /// themes dir first and could pick up a shadowing user file.
+    /// A shipped theme answers for `waiting` and `failed` only: the other
+    /// five states borrow a base colour, so a theme cannot drift away from
+    /// what the states are supposed to mean. Reached hermetically through
+    /// `BUILTIN_THEMES`/`parse_theme`/`resolve_theme` rather than `load`,
+    /// which would consult the user's themes dir first and could pick up a
+    /// shadowing user file.
     #[test]
-    fn shipped_themes_define_a_distinct_blocked_colour() {
+    fn shipped_themes_leave_the_borrowed_status_roles_unset() {
         for (name, content) in BUILTIN_THEMES {
             let file = parse_theme(content, Path::new(&format!("<builtin:{name}>")))
                 .unwrap_or_else(|e| panic!("theme {name}: {e}"));
-            assert!(
-                file.colors.status_blocked.is_some(),
-                "theme {name} must define status_blocked explicitly"
-            );
-            let resolved = resolve_theme(file, true, false).unwrap();
-            assert_ne!(
-                resolved.colors.status_blocked, resolved.colors.status_waiting,
-                "theme {name} must give blocked its own colour"
-            );
+            let c = file.colors;
+            for (role, set) in [
+                ("status_working", c.status_working.is_some()),
+                ("status_blocked", c.status_blocked.is_some()),
+                ("status_idle", c.status_idle.is_some()),
+                ("status_dead", c.status_dead.is_some()),
+                ("status_ended", c.status_ended.is_some()),
+            ] {
+                assert!(!set, "theme {name} must let {role} borrow its base colour");
+            }
         }
     }
 
-    /// A theme written before M17 omits the key entirely and must keep
-    /// loading, borrowing the waiting colour rather than failing.
+    /// The borrowed roles resolve to the base colour they stand for:
+    /// working/ended read as ordinary text, idle/dead recede, and blocked
+    /// shares the waiting colour — the two are told apart by their icon,
+    /// not by hue.
     #[test]
-    fn a_theme_without_blocked_still_loads() {
+    fn borrowed_status_roles_resolve_to_their_base_colour() {
+        for (name, content) in BUILTIN_THEMES {
+            let file = parse_theme(content, Path::new(&format!("<builtin:{name}>")))
+                .unwrap_or_else(|e| panic!("theme {name}: {e}"));
+            let c = resolve_theme(file, true, false).unwrap().colors;
+            assert_eq!(c.status_working, c.foreground, "{name}: working");
+            assert_eq!(c.status_ended, c.foreground, "{name}: ended");
+            assert_eq!(c.status_idle, c.dim, "{name}: idle");
+            assert_eq!(c.status_dead, c.dim, "{name}: dead");
+            assert_eq!(c.status_blocked, c.status_waiting, "{name}: blocked");
+        }
+    }
+
+    /// A theme that does set the borrowed roles — every theme written
+    /// before the split did — must keep loading, and its own values win.
+    #[test]
+    fn a_theme_setting_the_borrowed_roles_still_loads() {
         let src = std::fs::read_to_string("themes/ansi.toml").expect("read ansi.toml");
-        let older: String = src
-            .lines()
-            .filter(|l| !l.starts_with("status_blocked"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let parsed =
-            parse_theme(&older, Path::new("ansi.toml")).expect("a pre-M17 theme must still parse");
-        assert!(parsed.colors.status_blocked.is_none());
-        let resolved = resolve_theme(parsed, true, false).unwrap();
-        assert_eq!(
-            resolved.colors.status_blocked, resolved.colors.status_waiting,
-            "an omitted status_blocked must fall back to status_waiting"
+        let older = format!(
+            "{src}\nstatus_working = \"green\"\nstatus_blocked = \"bright_yellow\"\n\
+             status_idle = \"bright_black\"\nstatus_dead = \"bright_black\"\n\
+             status_ended = \"magenta\"\n"
+        );
+        let parsed = parse_theme(&older, Path::new("ansi.toml"))
+            .expect("a theme setting every status role must still parse");
+        assert!(parsed.colors.status_working.is_some());
+        let c = resolve_theme(parsed, true, false).unwrap().colors;
+        assert_eq!(c.status_working, Color::Green, "an explicit role wins");
+        assert_eq!(c.status_ended, Color::Magenta);
+        assert_ne!(
+            c.status_blocked, c.status_waiting,
+            "an explicit blocked is not overridden by the fallback"
         );
     }
 

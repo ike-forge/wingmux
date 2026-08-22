@@ -276,7 +276,9 @@ the same commit as the change.
   its own), `worktree_ahead` (commits the base branch does not have),
   `worktree_merged` (all its commits are in the base). Colour follows from
   the status palette rather than new theme keys: dim / `waiting` /
-  `working`, so every theme already answers for it.
+  `working`, so every theme already answers for it. Since `status_working`
+  now borrows `foreground`, "merged" reads as ordinary text — done, nothing
+  owed — which is the right weight for it.
   - **Uncommitted changes are NOT folded in** (user's call): a branch with
     commits reads the same whether or not the editor has unsaved work on
     top. `git status` is still run on demand for the delete confirm's
@@ -309,6 +311,41 @@ the same commit as the change.
   all its shells dead; repository dead = all its worktrees dead) so the muting
   matches how the tree folds. Empty containers are excluded: a worktree with
   no shells is unstarted, not finished.
+- **One icon per agent status, in front of the label** (user's call:
+  "improve focus/highlights"). Seven words down a column all read alike at a
+  glance; a glyph does not. `working` is a spinner (`status_spinner`, a
+  string of frames), `waiting`/`ended` a pause mark, `blocked` a stop mark,
+  `failed` an error mark. The label stays next to it — pause and stop are
+  not self-evident, and the word is what settles an ambiguous glyph. `idle`
+  and `dead` draw nothing on purpose: a state the user cannot act on must
+  not compete for attention. All of them (spinner frames included) share one
+  padded column via the existing `pad_group`, so a blank icon still holds
+  its slot and the animation cannot make the label jitter.
+- **The spinner runs off the redraw the loop already does.** Its frame is
+  `elapsed / SPINNER_FRAME_MS % frames`, read once per frame from
+  `App::started`, so there is no timer, no extra wakeup and no per-row
+  state — and every working row animates in step, which reads as one
+  dashboard ticking rather than N unrelated ones. The frame lasts 120 ms
+  against the event loop's ~100 ms redraw floor (`event_loop` caps its poll
+  timeout); a shorter frame would only stutter.
+- **Five status colours are borrowed, not chosen** (user's call: "rework the
+  colors"). A theme answers for `status_waiting` and `status_failed`;
+  `working`/`ended` resolve to `foreground`, `idle`/`dead` to `dim`, and
+  `blocked` to `status_waiting`. Two consequences were the point: an agent
+  doing its job stops shouting in green — the spinner already says it is
+  running — and `blocked` vs `waiting` is now carried by the glyph (stop vs
+  pause) instead of two yellows a user has to learn apart. The roles stay
+  `Option<Spec>` with a fallback, extending the pattern `status_blocked`
+  already used, so themes written before the split keep loading and any key
+  can still be overridden.
+- **The selected row is tinted, not repainted** (user's call: "when a
+  worktree is hovered, it should not lose its text color"). The tree's
+  `highlight_style` sets `selection_bg` only. Every row in the tree carries
+  meaning in its foreground — the status role, the muting of a dead shell,
+  the worktree's commit state — so `on(selection_fg, selection_bg)` erased
+  exactly the signal the cursor was moved there to read. Modal lists keep
+  the full inversion: their rows have no colour of their own to protect,
+  which is why `selection_fg` survives as a role.
 - **A worktree with no shell is dimmed, and that is the whole signal.**
   `ensure_worktrees` lists every worktree the repo has, so rows appear for
   worktrees LazyWingman never created. The row state worth showing is not *who
@@ -485,9 +522,10 @@ the same commit as the change.
   drew a box a quarter of the screen tall with text jammed against the
   border.
 - **Icons**: `[icons]` (`src/config.rs`) covers the tree's type icons and
-  guides, the cursor marker, the separator, the warn mark, the ellipsis,
-  the Enter glyph and the border style, chosen by a preset (`nerdfont`
-  default, plus `unicode`, `none`) and overridable key by key. This
+  guides, the seven agent-status icons, the cursor marker, the separator,
+  the warn mark, the ellipsis, the Enter glyph and the border style, chosen
+  by a preset (`nerdfont` default, plus `unicode`, `none`) and overridable
+  key by key. This
   replaced an `LW_ASCII` boolean, which conflated two independent
   questions — whether the terminal draws box characters, and which glyphs
   the user's font has. Keys that share a rendered column are padded to

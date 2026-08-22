@@ -121,8 +121,9 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 
 # Every key below overrides the preset glyph by glyph. An empty string
 # draws nothing. `guide_branch`/`guide_last` are padded as a pair, and the
-# three `repository*` and three `worktree_*` states each as a group, so
-# names stay aligned when one of them is empty. `shell`,
+# three `repository*` states, the three `worktree_*` states and the
+# `status_*` icons (spinner frames included) each as a group, so names stay
+# aligned when one of them is empty. `shell`,
 # `cursor`, `separator`, `warn` and `ellipsis` have no sibling to pad
 # against and are used verbatim — add your own
 # trailing space if you want a gap after one (the default `shell` below
@@ -133,6 +134,17 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #worktree_new = ""            # worktree with no commits of its own
 #worktree_ahead = ""          # commits not in the base branch yet
 #worktree_merged = ""         # its commits are all in the base branch
+# One agent status icon each, drawn in front of the status label. The
+# spinner is a string of frames, one character per animation step, cycled
+# while an agent is working; `idle` and `dead` are blank on purpose, so a
+# state you cannot act on stays quiet.
+#status_spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏" # agent is working
+#status_waiting = ""          # agent is parked at its prompt
+#status_blocked = ""          # agent is asking for permission
+#status_failed = ""           # the agent reported a failure
+#status_ended = ""            # the agent exited, a shell is left
+#status_idle = ""              # agent running, state unrecognised
+#status_dead = ""              # the pane is gone
 #shell = "● "                  # a shell inside a worktree
 #cursor = "›"                  # marks the selected row
 #guide_branch = "├─"            # tree guide, more siblings below
@@ -334,6 +346,16 @@ pub struct IconsConfig {
     pub worktree_new: String,
     pub worktree_ahead: String,
     pub worktree_merged: String,
+    /// Frames of the `working` spinner, one per animation step. A frame is
+    /// picked by elapsed time at render, so an empty list (the `none`
+    /// preset) simply draws nothing.
+    pub status_spinner: Vec<String>,
+    pub status_waiting: String,
+    pub status_blocked: String,
+    pub status_failed: String,
+    pub status_ended: String,
+    pub status_idle: String,
+    pub status_dead: String,
     pub shell: String,
     pub cursor: String,
     pub guide_branch: String,
@@ -375,6 +397,13 @@ impl IconsConfig {
             worktree_new: "".into(),
             worktree_ahead: "".into(),
             worktree_merged: "".into(),
+            status_spinner: frames("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+            status_waiting: "".into(),
+            status_blocked: "".into(),
+            status_failed: "".into(),
+            status_ended: "".into(),
+            status_idle: String::new(),
+            status_dead: String::new(),
             shell: "● ".into(),
             cursor: "›".into(),
             guide_branch: "├─".into(),
@@ -395,6 +424,10 @@ impl IconsConfig {
                 worktree_new: "○".into(),
                 worktree_ahead: "◆".into(),
                 worktree_merged: "✓".into(),
+                status_waiting: "⏸".into(),
+                status_blocked: "⏹".into(),
+                status_failed: "✖".into(),
+                status_ended: "⏸".into(),
                 ..nerdfont
             },
             "none" => IconsConfig {
@@ -404,6 +437,11 @@ impl IconsConfig {
                 worktree_new: String::new(),
                 worktree_ahead: String::new(),
                 worktree_merged: String::new(),
+                status_spinner: Vec::new(),
+                status_waiting: String::new(),
+                status_blocked: String::new(),
+                status_failed: String::new(),
+                status_ended: String::new(),
                 shell: String::new(),
                 ..nerdfont
             },
@@ -411,12 +449,16 @@ impl IconsConfig {
         }
     }
 
-    /// Right-pad the three groups that share a rendered column, so an
+    /// Right-pad the four groups that share a rendered column, so an
     /// empty icon still holds its column and names stay aligned. A
     /// non-empty column also gains one trailing space, so render sites
     /// concatenate icon and name directly and an empty column costs
     /// nothing. Keys with no sibling (`shell`, `cursor`, `separator`,
     /// `warn`, `ellipsis`) are used verbatim.
+    ///
+    /// Every spinner frame joins the status group: the spinner shares that
+    /// one column with the static status icons, and a frame narrower than
+    /// its neighbours would make the label jitter as the animation runs.
     fn pad(&mut self) {
         pad_group(&mut [
             &mut self.repository,
@@ -428,8 +470,24 @@ impl IconsConfig {
             &mut self.worktree_ahead,
             &mut self.worktree_merged,
         ]);
+        let mut status: Vec<&mut String> = vec![
+            &mut self.status_waiting,
+            &mut self.status_blocked,
+            &mut self.status_failed,
+            &mut self.status_ended,
+            &mut self.status_idle,
+            &mut self.status_dead,
+        ];
+        status.extend(self.status_spinner.iter_mut());
+        pad_group(&mut status);
         pad_pair(&mut self.guide_branch, &mut self.guide_last);
     }
+}
+
+/// Split a spinner string into one frame per character. Multi-character
+/// frames are not a thing: the column is one glyph wide.
+fn frames(s: &str) -> Vec<String> {
+    s.chars().map(|c| c.to_string()).collect()
 }
 
 fn pad_pair(a: &mut String, b: &mut String) {
@@ -466,6 +524,13 @@ struct IconsFile {
     worktree_new: Option<String>,
     worktree_ahead: Option<String>,
     worktree_merged: Option<String>,
+    status_spinner: Option<String>,
+    status_waiting: Option<String>,
+    status_blocked: Option<String>,
+    status_failed: Option<String>,
+    status_ended: Option<String>,
+    status_idle: Option<String>,
+    status_dead: Option<String>,
     shell: Option<String>,
     cursor: Option<String>,
     guide_branch: Option<String>,
@@ -489,6 +554,13 @@ impl Default for IconsFile {
             worktree_new: None,
             worktree_ahead: None,
             worktree_merged: None,
+            status_spinner: None,
+            status_waiting: None,
+            status_blocked: None,
+            status_failed: None,
+            status_ended: None,
+            status_idle: None,
+            status_dead: None,
             shell: None,
             cursor: None,
             guide_branch: None,
@@ -521,6 +593,16 @@ impl<'de> Deserialize<'de> for IconsConfig {
             worktree_new: f.worktree_new.unwrap_or(b.worktree_new),
             worktree_ahead: f.worktree_ahead.unwrap_or(b.worktree_ahead),
             worktree_merged: f.worktree_merged.unwrap_or(b.worktree_merged),
+            status_spinner: f
+                .status_spinner
+                .map(|s| frames(&s))
+                .unwrap_or(b.status_spinner),
+            status_waiting: f.status_waiting.unwrap_or(b.status_waiting),
+            status_blocked: f.status_blocked.unwrap_or(b.status_blocked),
+            status_failed: f.status_failed.unwrap_or(b.status_failed),
+            status_ended: f.status_ended.unwrap_or(b.status_ended),
+            status_idle: f.status_idle.unwrap_or(b.status_idle),
+            status_dead: f.status_dead.unwrap_or(b.status_dead),
             shell: f.shell.unwrap_or(b.shell),
             cursor: f.cursor.unwrap_or(b.cursor),
             guide_branch: f.guide_branch.unwrap_or(b.guide_branch),
@@ -830,6 +912,13 @@ const ICONS_KEYS: &[&str] = &[
     "worktree_new",
     "worktree_ahead",
     "worktree_merged",
+    "status_spinner",
+    "status_waiting",
+    "status_blocked",
+    "status_failed",
+    "status_ended",
+    "status_idle",
+    "status_dead",
     "shell",
     "cursor",
     "guide_branch",
@@ -1113,6 +1202,34 @@ impl Config {
         line(
             "icons.worktree_merged",
             format!("\"{}\"", self.icons.worktree_merged),
+        );
+        line(
+            "icons.status_spinner",
+            format!("\"{}\"", self.icons.status_spinner.join("")),
+        );
+        line(
+            "icons.status_waiting",
+            format!("\"{}\"", self.icons.status_waiting),
+        );
+        line(
+            "icons.status_blocked",
+            format!("\"{}\"", self.icons.status_blocked),
+        );
+        line(
+            "icons.status_failed",
+            format!("\"{}\"", self.icons.status_failed),
+        );
+        line(
+            "icons.status_ended",
+            format!("\"{}\"", self.icons.status_ended),
+        );
+        line(
+            "icons.status_idle",
+            format!("\"{}\"", self.icons.status_idle),
+        );
+        line(
+            "icons.status_dead",
+            format!("\"{}\"", self.icons.status_dead),
         );
         line("icons.shell", format!("\"{}\"", self.icons.shell));
         line("icons.cursor", format!("\"{}\"", self.icons.cursor));
@@ -1687,6 +1804,21 @@ impl SectionSalvage for IconsConfig {
             worktree_new: salvage_field(t, "worktree_new", b.worktree_new, file, diags),
             worktree_ahead: salvage_field(t, "worktree_ahead", b.worktree_ahead, file, diags),
             worktree_merged: salvage_field(t, "worktree_merged", b.worktree_merged, file, diags),
+            // `b` is the unpadded preset, so joining its frames back into
+            // one string reproduces exactly what the key accepts.
+            status_spinner: frames(&salvage_field(
+                t,
+                "status_spinner",
+                b.status_spinner.join(""),
+                file,
+                diags,
+            )),
+            status_waiting: salvage_field(t, "status_waiting", b.status_waiting, file, diags),
+            status_blocked: salvage_field(t, "status_blocked", b.status_blocked, file, diags),
+            status_failed: salvage_field(t, "status_failed", b.status_failed, file, diags),
+            status_ended: salvage_field(t, "status_ended", b.status_ended, file, diags),
+            status_idle: salvage_field(t, "status_idle", b.status_idle, file, diags),
+            status_dead: salvage_field(t, "status_dead", b.status_dead, file, diags),
             shell: salvage_field(t, "shell", b.shell, file, diags),
             cursor: salvage_field(t, "cursor", b.cursor, file, diags),
             guide_branch: salvage_field(t, "guide_branch", b.guide_branch, file, diags),
@@ -2026,6 +2158,70 @@ mod tests {
         }
     }
 
+    /// The status icons and every spinner frame share one column: a frame
+    /// narrower than the static icons would shift the label sideways once
+    /// per animation step, which is exactly the jitter the padding exists
+    /// to prevent.
+    #[test]
+    fn spinner_frames_share_the_status_column_width() {
+        use unicode_width::UnicodeWidthStr;
+        for name in ICON_PRESETS {
+            let i = IconsConfig::preset(name);
+            let mut widths: Vec<usize> = [
+                &i.status_waiting,
+                &i.status_blocked,
+                &i.status_failed,
+                &i.status_ended,
+                &i.status_idle,
+                &i.status_dead,
+            ]
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.as_str()))
+            .collect();
+            widths.extend(
+                i.status_spinner
+                    .iter()
+                    .map(|f| UnicodeWidthStr::width(f.as_str())),
+            );
+            assert!(
+                widths.iter().all(|w| *w == widths[0]),
+                "{name}: status icons and spinner frames must share a width, got {widths:?}"
+            );
+        }
+    }
+
+    /// `idle` and `dead` are blank in every preset, but the column they
+    /// share is not: a state the user cannot act on draws nothing while
+    /// still lining its label up with the states that do draw.
+    #[test]
+    fn idle_and_dead_are_blank_but_hold_the_status_column() {
+        let nf = IconsConfig::preset("nerdfont");
+        assert_eq!(nf.status_idle.trim_end(), "");
+        assert_eq!(nf.status_dead.trim_end(), "");
+        assert_eq!(
+            UnicodeWidthStr::width(nf.status_idle.as_str()),
+            UnicodeWidthStr::width(nf.status_waiting.as_str()),
+            "a blank status icon still holds its column"
+        );
+        let none = IconsConfig::preset("none");
+        assert!(none.status_spinner.is_empty(), "no spinner without icons");
+        assert_eq!(none.status_waiting, "", "the none preset costs no width");
+    }
+
+    /// The spinner is configured as one string and split per character, so
+    /// a user swaps the whole animation with a single key.
+    #[test]
+    fn a_spinner_override_is_split_into_frames() {
+        let cfg = Config::from_str("[icons]\nstatus_spinner = \"-\\\\|/\"\n").unwrap();
+        let frames: Vec<String> = cfg
+            .icons
+            .status_spinner
+            .iter()
+            .map(|f| f.trim_end().to_string())
+            .collect();
+        assert_eq!(frames, vec!["-", "\\", "|", "/"]);
+    }
+
     #[test]
     fn a_non_empty_icon_column_carries_its_own_trailing_space() {
         // Render sites concatenate icon + name directly, so the separating
@@ -2107,7 +2303,7 @@ mod tests {
             // number of fields actually accepted.
             assert_eq!(
                 ICONS_KEYS.len(),
-                18,
+                25,
                 "adding an icon key means adding it to ICONS_KEYS too"
             );
         });
