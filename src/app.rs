@@ -1386,7 +1386,15 @@ impl App {
             }],
         });
         if let Some(v) = self.wt_expanded.get_mut(ri) {
-            v.push(false);
+            v.push(true); // new rows unfold, like the ones discovery finds
+        }
+        // Reveal what was just created: the repository may be collapsed (past
+        // the unfold cap, or folded by hand — and an empty one draws the same
+        // glyph either way, so the user cannot even tell). A collapsed
+        // repository emits no worktree rows, so the new worktree would be
+        // invisible and `clamp_sel` would drop the selection to the top row.
+        if let Some(e) = self.repo_expanded.get_mut(ri) {
+            *e = true;
         }
         self.sel = Sel::Worktree(ri, self.state.repositories[ri].worktrees.len() - 1);
         self.clamp_sel();
@@ -3679,6 +3687,58 @@ mod tests {
         assert!(err.to_string().contains("missing"), "err: {err}");
         let err = app.add_shell(0, 0, "").unwrap_err();
         assert!(err.to_string().contains("missing"), "err: {err}");
+    }
+
+    /// Creating a worktree reveals it: the repository unfolds (it may have
+    /// been collapsed, or empty — an empty repository draws the same glyph
+    /// whatever its flag says, so the user cannot tell), and the new row —
+    /// which the selection now points at — is one of the tree's visible
+    /// nodes. Without the unfold `clamp_sel` would drop the selection back
+    /// to the first row and the worktree just created would not be drawn.
+    #[test]
+    fn creating_a_worktree_opens_a_collapsed_repository() {
+        with_tmux_server(|sock, _tmux| {
+            crate::util::testutil::with_fresh_xdg(|| {
+                let root = tempfile::TempDir::new().unwrap();
+                let path = repo_with_commit(root.path(), "p");
+                let mut app = app_with(tmux_standalone(sock));
+                app.state.repositories.push(Repository {
+                    name: "p".into(),
+                    path,
+                    base_branch: "main".into(),
+                    agent_command: "true".into(),
+                    agent_shell: "bash".into(),
+                    session_name: None,
+                    missing: false,
+                    worktrees: vec![],
+                });
+                app.build_tree_flags();
+                app.repo_expanded[0] = false; // collapsed, as >30 repos or `h` leaves it
+
+                app.create_worktree(0, "feature-x").unwrap();
+
+                assert!(
+                    app.repo_expanded[0],
+                    "creating a worktree must open the repository holding it"
+                );
+                assert_eq!(
+                    app.sel,
+                    Sel::Worktree(0, 0),
+                    "the new worktree must keep the selection, not lose it to clamp_sel"
+                );
+                assert!(
+                    app.visible_nodes().contains(&Sel::Worktree(0, 0)),
+                    "the new worktree must be a drawn row"
+                );
+                // …and it unfolds like every other row: a second shell shows
+                // up instead of hiding under a folded worktree.
+                app.add_shell(0, 0, "true").unwrap();
+                assert!(
+                    app.visible_nodes().contains(&Sel::Shell(0, 0, 1)),
+                    "a created worktree unfolds like a discovered one"
+                );
+            });
+        });
     }
 
     /// The New Worktree popup names the branch the worktree is cut from:

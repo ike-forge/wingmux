@@ -253,6 +253,16 @@ the same commit as the change.
   `App::solo_shell`, and is enforced in `visible_nodes()` so navigation, mouse
   hits and `clamp_sel` cannot disagree with what is drawn. `a` (add shell) is
   the way out: two shells bring the subtree back.
+- **Creating something reveals it.** `create_worktree` unfolds the
+  repository it just added to, and gives the new worktree the same unfolded
+  flag discovery gives the rows it finds. A collapsed repository emits no
+  worktree rows at all (`visible_nodes`), so without this the worktree just
+  created would not be drawn and `clamp_sel` would drop the selection back to
+  the first row — the creation would read as a no-op. It bites hardest on an
+  *empty* repository: its icon is the outline glyph whatever its fold flag
+  says, so `l` on it toggles a state nothing renders, and `n` right after
+  would then create into a repository the user believes is open.
+
 - **Tree rows carry no counts** (`(2 worktrees)`, `[2 shells]` are gone): the
   tree is expanded by default, so the children are the count and the text
   only repeated what was one row below. The one thing a *folded* repository
