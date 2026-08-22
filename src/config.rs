@@ -116,14 +116,15 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 
 [icons]
 # Glyph set to start from: "nerdfont" (a patched font), "unicode" (no
-# patched font needed), "ascii" (7-bit only) or "none" (no row icons).
+# patched font needed) or "none" (no row icons).
 #preset = "nerdfont"
 
 # Every key below overrides the preset glyph by glyph. An empty string
 # draws nothing. `repository`/`repository_empty` and `guide_branch`/
 # `guide_last` are padded in pairs, and the three `worktree_*` states as a
-# group, so names stay aligned when one of them is empty. `shell`, `cursor`, `separator`, `warn` and `ellipsis` have
-# no sibling to pad against and are used verbatim — add your own
+# group, so names stay aligned when one of them is empty. `shell`,
+# `cursor`, `separator`, `warn` and `ellipsis` have no sibling to pad
+# against and are used verbatim — add your own
 # trailing space if you want a gap after one (the default `shell` below
 # already has one baked in). The values shown are the "nerdfont" preset.
 #repository = "▣"              # repository holding worktrees
@@ -141,8 +142,8 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #ellipsis = "…"                # marks text truncated to fit
 #enter = "↵"                   # names the Enter key in the status bar
 
-# Popup and panel borders. Not a glyph: ratatui owns the corner set, and
-# "ascii" is a post-render rewrite. "rounded" | "plain" | "ascii".
+# Popup and panel borders. Not a glyph: ratatui owns the corner set.
+# "rounded" | "plain".
 #border = "rounded"
 
 # Predefined messages, offered by the `p` modal on a selected shell:
@@ -305,19 +306,17 @@ pub struct DefaultsConfig {
 }
 
 /// Border style for popups and panels. Not a glyph string: ratatui's
-/// `BorderType` owns the corner set, and pure ASCII is not one of its
-/// variants — it is a post-render buffer rewrite (`ui::asciify`).
+/// `BorderType` owns the corner set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BorderStyle {
     #[default]
     Rounded,
     Plain,
-    Ascii,
 }
 
 /// Preset names accepted by `[icons].preset`.
-pub const ICON_PRESETS: &[&str] = &["nerdfont", "unicode", "ascii", "none"];
+pub const ICON_PRESETS: &[&str] = &["nerdfont", "unicode", "none"];
 
 /// Every glyph LazyWingman draws itself. Resolved: each field is the exact
 /// string a render site emits, already padded to its column.
@@ -396,23 +395,6 @@ impl IconsConfig {
                 worktree_merged: String::new(),
                 shell: String::new(),
                 ..nerdfont
-            },
-            "ascii" => IconsConfig {
-                repository: "*".into(),
-                repository_empty: "o".into(),
-                worktree_new: "o".into(),
-                worktree_ahead: "*".into(),
-                worktree_merged: "=".into(),
-                shell: String::new(),
-                cursor: ">".into(),
-                guide_branch: "|-".into(),
-                guide_last: "`-".into(),
-                guide_vertical: "|".into(),
-                separator: " - ".into(),
-                warn: "!".into(),
-                ellipsis: "...".into(),
-                enter: "Enter".into(),
-                border: BorderStyle::Ascii,
             },
             _ => nerdfont,
         }
@@ -883,9 +865,7 @@ impl Config {
         // Retired in favour of [icons]: a boolean answered "can this
         // terminal draw box characters?", not "which glyphs suit my font?".
         if std::env::var_os("LW_ASCII").is_some_and(|v| !v.is_empty()) {
-            diags.push(
-                "LW_ASCII is no longer read; set [icons].preset = \"ascii\" in config.toml".into(),
-            );
+            diags.push("LW_ASCII is no longer read; set [icons] glyphs in config.toml".into());
         }
 
         let mut sources: Vec<(String, &'static str)> = Vec::new();
@@ -1128,7 +1108,6 @@ impl Config {
                 match self.icons.border {
                     BorderStyle::Rounded => "rounded",
                     BorderStyle::Plain => "plain",
-                    BorderStyle::Ascii => "ascii",
                 }
             ),
         );
@@ -1960,12 +1939,6 @@ mod tests {
         assert_eq!(uni.worktree_ahead.trim_end(), "◆");
         assert_eq!(uni.worktree_merged.trim_end(), "✓");
 
-        let ascii = IconsConfig::preset("ascii");
-        assert_eq!(ascii.guide_branch.trim_end(), "|-");
-        assert_eq!(ascii.guide_last.trim_end(), "`-");
-        assert_eq!(ascii.ellipsis, "...");
-        assert_eq!(ascii.border, BorderStyle::Ascii);
-
         let none = IconsConfig::preset("none");
         assert_eq!(none.repository, "", "none: no type icon, no column at all");
         assert_eq!(none.worktree_new, "");
@@ -2027,12 +2000,12 @@ mod tests {
     #[test]
     fn icons_preset_and_per_key_override() {
         let cfg =
-            Config::from_str("[icons]\npreset = \"ascii\"\nworktree_ahead = \"D\"\n").unwrap();
+            Config::from_str("[icons]\npreset = \"unicode\"\nworktree_ahead = \"D\"\n").unwrap();
         // the override wins...
         assert_eq!(cfg.icons.worktree_ahead.trim_end(), "D");
         // ...and the rest of the preset survives
-        assert_eq!(cfg.icons.guide_branch.trim_end(), "|-");
-        assert_eq!(cfg.icons.border, BorderStyle::Ascii);
+        assert_eq!(cfg.icons.worktree_new.trim_end(), "○");
+        assert_eq!(cfg.icons.border, BorderStyle::Rounded);
         // padding is applied once, after the override is layered on
         assert_eq!(
             UnicodeWidthStr::width(cfg.icons.worktree_new.as_str()),
@@ -2791,7 +2764,7 @@ mod tests {
             assert!(
                 cfg.diagnostics
                     .iter()
-                    .any(|d| d.contains("LW_ASCII") && d.contains("[icons].preset")),
+                    .any(|d| d.contains("LW_ASCII") && d.contains("[icons]")),
                 "diagnostics: {:?}",
                 cfg.diagnostics
             );

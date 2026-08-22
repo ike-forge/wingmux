@@ -283,35 +283,13 @@ fn fits(area: Rect, min: (u16, u16)) -> bool {
 }
 
 /// App-generated glyphs, configurable via `[icons]`. These helpers return
-/// the app's own labels; `asciify` is the one that reaches further, rewriting
-/// box-drawing across whatever rect it is handed — under `border = "ascii"`
-/// that includes the preview's captured pane text and the textarea's buffer.
+/// the app's own labels.
 pub(crate) fn warn_mark(icons: &crate::config::IconsConfig) -> &str {
     &icons.warn
 }
 
 pub(crate) fn sep(icons: &crate::config::IconsConfig) -> &str {
     &icons.separator
-}
-
-/// Replace box-drawing glyphs in a rendered area with plain ASCII
-/// (`+ - |`). Terminals that mangle box-drawing stay readable. Cell
-/// styles are untouched — the fallback changes shapes, not colours.
-fn asciify(f: &mut Frame, area: Rect) {
-    let buf = f.buffer_mut();
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            let cell = &mut buf[(x, y)];
-            let repl = match cell.symbol() {
-                "─" => "-",
-                "│" => "|",
-                "┌" | "┐" | "└" | "┘" => "+",
-                "╭" | "╮" | "╰" | "╯" => "+",
-                _ => continue,
-            };
-            cell.set_symbol(repl);
-        }
-    }
 }
 
 /// Tree | preview, statusbar below. `tree_w` comes from [`tree_width`] —
@@ -372,9 +350,6 @@ fn draw_overlay_too_small(f: &mut Frame, area: Rect, app: &App, kind: OverlayKin
         )),
     ]);
     f.render_widget(Paragraph::new(text).block(block), rect);
-    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
-        asciify(f, rect);
-    }
 }
 
 /// Panel/popup title: foreground only, no background fill — the "simple
@@ -397,12 +372,10 @@ fn popup_block(
         .title(Span::styled(title.into(), title_style(theme)))
 }
 
-/// `Ascii` draws `Plain` first; `asciify` rewrites the cells afterwards
-/// (ratatui has no ASCII `BorderType`).
 fn border_type(icons: &crate::config::IconsConfig) -> BorderType {
     match icons.border {
         crate::config::BorderStyle::Rounded => BorderType::Rounded,
-        crate::config::BorderStyle::Plain | crate::config::BorderStyle::Ascii => BorderType::Plain,
+        crate::config::BorderStyle::Plain => BorderType::Plain,
     }
 }
 
@@ -594,9 +567,6 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let mut state = ListState::default();
     state.select(sel_row);
     f.render_stateful_widget(list, area, &mut state);
-    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
-        asciify(f, area);
-    }
 }
 
 /// The slice of a pane capture the preview shows in a panel of
@@ -673,9 +643,6 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         .block(block)
         .style(fg(theme.foreground));
     f.render_widget(p, area);
-    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
-        asciify(f, area);
-    }
 }
 
 /// The contextual shortcut entries for the statusbar — same words as the
@@ -739,9 +706,6 @@ fn draw_statusbar(f: &mut Frame, area: Rect, app: &mut App) {
     }
     app.bar_hits = hits;
     f.render_widget(Paragraph::new(Line::from(spans)), area);
-    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
-        asciify(f, area);
-    }
 }
 
 /// Cut a notice to `max` columns, marking the cut with an ellipsis.
@@ -794,9 +758,6 @@ fn draw_toast(f: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(Line::from(Span::styled(format!(" {text} "), fg(color)))).block(block),
         rect,
     );
-    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
-        asciify(f, rect);
-    }
 }
 
 fn centered_rect(area: Rect, w_pct: u16, h_pct: u16) -> Rect {
@@ -849,9 +810,6 @@ fn draw_help(f: &mut Frame, app: &App) -> Rect {
     }
     let block = popup_block(theme, &app.cfg.icons, title_text);
     f.render_widget(Paragraph::new(Text::from(window)).block(block), area);
-    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
-        asciify(f, area);
-    }
     area
 }
 
@@ -1019,9 +977,6 @@ fn draw_diagnostics(f: &mut Frame, app: &App) -> Rect {
             .style(on(theme.popup_fg, theme.popup_bg)),
         area,
     );
-    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
-        asciify(f, area);
-    }
     area
 }
 
@@ -1113,9 +1068,6 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
     lines.push(Line::from(Span::styled(footer, fg(theme.dim))));
     let block = popup_block(theme, &app.cfg.icons, " Themes ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
-    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
-        asciify(f, area);
-    }
     area
 }
 
@@ -1190,9 +1142,6 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
     lines.push(Line::from(Span::styled(footer, fg(theme.dim))));
     let block = popup_block(theme, &app.cfg.icons, " Messages ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
-    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
-        asciify(f, area);
-    }
     area
 }
 
@@ -1273,9 +1222,6 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
             .style(popup_style),
         area,
     );
-    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
-        asciify(f, area);
-    }
     // cursor after the typed text, on the input row (the second content
     // line below the border: one spacer line, then label + text). Only
     // when the popup fits the frame — a cursor off the buffer would
@@ -1347,9 +1293,6 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
             .style(popup_style),
         area,
     );
-    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
-        asciify(f, area);
-    }
     // Cursor: the visual row relative to the content window, and the
     // rendered column within that row (tabs expanded to 4).
     let (cur_row, render_col) = buf.visual_cursor(wrap_width);
@@ -1427,9 +1370,6 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
             .style(popup_style),
         area,
     );
-    if app.cfg.icons.border == crate::config::BorderStyle::Ascii {
-        asciify(f, area);
-    }
     area
 }
 
@@ -2092,76 +2032,6 @@ mod tests {
         }
     }
 
-    /// ASCII preset: no box-drawing, no unicode markers — plain `- | \`` and
-    /// `>` — so terminals that mangle box-drawing stay readable.
-    #[test]
-    fn ascii_preset_renders_without_box_glyphs() {
-        let mut app = seeded_app();
-        app.cfg.icons = crate::config::IconsConfig::preset("ascii");
-        app.state.repositories.push(crate::state::Repository {
-            name: "repo-b".into(),
-            path: std::path::PathBuf::from("/tmp/repo-b"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
-            session_name: None,
-            missing: false,
-            worktrees: vec![],
-        });
-        // Give the first repository a multi-shell, expanded worktree so the
-        // deeper guides (grandchild rows) render too.
-        let shell = |i: usize| crate::state::Shell {
-            index: i,
-            window_name: format!("lw:f/{i}"),
-            window_id: Some(format!("@{}", i + 1)),
-            pane_id: Some(format!("%{i}")),
-        };
-        app.state.repositories[0]
-            .worktrees
-            .push(crate::state::Worktree {
-                name: "many-shells".into(),
-                branch: "many-shells".into(),
-                path: std::path::PathBuf::from("/tmp/wt-many"),
-                created_at: String::new(),
-                base_commit: None,
-                shells: vec![shell(0), shell(1)],
-            });
-        app.build_tree_flags();
-        app.repo_expanded[0] = true;
-        app.wt_expanded[0][0] = true;
-        app.clamp_sel();
-        // Select a shell so the statusbar renders its attach entry: that is
-        // where `↵` used to leak, and with the project row selected the entry
-        // never appears at all.
-        app.sel = crate::app::Sel::Shell(0, 0, 0);
-        let backend = ratatui::backend::TestBackend::new(120, 40);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        let text = buffer_text(&terminal);
-        assert!(
-            text.contains("Enter attach"),
-            "the ascii preset spells the attach key out: {text:?}"
-        );
-        for glyph in ["─", "│", "┌", "▾", "▸", "›", "·", "→"] {
-            assert!(
-                !text.contains(glyph),
-                "ascii render must not contain {glyph:?}: {text:?}"
-            );
-        }
-        for glyph in ["-", "|", ">"] {
-            assert!(text.contains(glyph), "ascii render must use {glyph:?}");
-        }
-        // A denylist only catches the glyphs someone thought to list: `↵` and
-        // `—` slipped past the one above for the whole life of the old
-        // `LW_ASCII` mode. The preset's promise is a frame a non-UTF-8
-        // terminal can draw, so assert the whole thing.
-        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
-        assert!(
-            stray.is_empty(),
-            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
-        );
-    }
-
     /// In unicode mode the box-drawing tree guides are present — the
     /// fallback must not silently replace them.
     #[test]
@@ -2202,8 +2072,6 @@ mod tests {
     /// while `popup_block` already read `icons.border`; a user who set
     /// `border = "plain"` got plain popups and a rounded tree/preview — a
     /// mixed-corner screen, exactly the defect they configured away from.
-    /// `ascii` masks this (asciify rewrites all corners to `+`), so this
-    /// test uses `plain`, which nothing else in the suite exercises.
     #[test]
     fn plain_border_reaches_tree_and_preview_panels() {
         let mut app = seeded_app();
@@ -2806,29 +2674,6 @@ mod tests {
         );
     }
 
-    /// ASCII preset: the help overlay's separators are plain `-` and no
-    /// unicode glyphs survive (the sep()/arrow() code path, not a second
-    /// renderer).
-    #[test]
-    fn help_overlay_ascii_preset_is_clean() {
-        let mut app = seeded_app();
-        app.cfg.icons = crate::config::IconsConfig::preset("ascii");
-        let text = help_text(&mut app, 120, 40);
-        for glyph in ["·", "→", "─", "│"] {
-            assert!(
-                !text.contains(glyph),
-                "ascii help must not contain {glyph:?}"
-            );
-        }
-        // Whole-frame, not a denylist: `↵` and `—` slipped past the glyph
-        // lists here for the whole life of the old `LW_ASCII` mode.
-        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
-        assert!(
-            stray.is_empty(),
-            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
-        );
-    }
-
     /// The scroll-height math in the app and the rendered line count share
     /// one source (help_line_count), so clamping can never drift from the
     /// renderer.
@@ -2871,33 +2716,6 @@ mod tests {
         assert!(
             app.popup_area.is_some(),
             "picker must register its dismissable rect"
-        );
-    }
-
-    /// The picker is ascii-safe: plain `>` cursor, `-` separators, no
-    /// unicode glyphs survive the preset.
-    #[test]
-    fn theme_picker_ascii_preset_is_clean() {
-        let mut app = seeded_app();
-        app.cfg.icons = crate::config::IconsConfig::preset("ascii");
-        app.theme_names = crate::theme::available_names().unwrap();
-        app.mode = Mode::ThemePicker { index: 0 };
-        let backend = ratatui::backend::TestBackend::new(80, 24);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        let text = buffer_text(&terminal);
-        for glyph in ["▸", "·", "─", "│"] {
-            assert!(
-                !text.contains(glyph),
-                "ascii picker must not contain {glyph:?}"
-            );
-        }
-        // Whole-frame, not a denylist: `↵` and `—` slipped past the glyph
-        // lists here for the whole life of the old `LW_ASCII` mode.
-        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
-        assert!(
-            stray.is_empty(),
-            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
         );
     }
 
@@ -2966,32 +2784,6 @@ mod tests {
             "scrolled-out diagnostics are gone"
         );
         assert!(text.contains("j/k scrolls"), "scroll hint advertised");
-    }
-
-    /// The diagnostics overlay is ascii-safe: `!` mark, no box glyphs.
-    #[test]
-    fn diagnostics_ascii_preset_is_clean() {
-        let mut app = app_with_diags(2);
-        app.cfg.icons = crate::config::IconsConfig::preset("ascii");
-        app.mode = Mode::Diagnostics;
-        let backend = ratatui::backend::TestBackend::new(80, 20);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        let text = buffer_text(&terminal);
-        assert!(text.contains('!'), "ascii warn mark");
-        for glyph in ["⚠", "·", "─", "│"] {
-            assert!(
-                !text.contains(glyph),
-                "ascii diagnostics must not contain {glyph:?}"
-            );
-        }
-        // Whole-frame, not a denylist: `↵` and `—` slipped past the glyph
-        // lists here for the whole life of the old `LW_ASCII` mode.
-        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
-        assert!(
-            stray.is_empty(),
-            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
-        );
     }
 
     /// The diagnostics overlay on a tiny frame is refused with the standard
@@ -3227,29 +3019,6 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
         assert!(text.contains("too small"), "tiny frame refuses the modal");
-    }
-
-    /// Ascii preset keeps the modal free of unicode glyphs.
-    #[test]
-    fn messages_modal_ascii_preset_is_clean() {
-        let mut app = seeded_app();
-        app.cfg.icons = crate::config::IconsConfig::preset("ascii");
-        app.mode = Mode::Messages { index: 0 };
-        let backend = ratatui::backend::TestBackend::new(120, 40);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        let text = buffer_text(&terminal);
-        assert!(
-            text.is_ascii(),
-            "ascii mode must not emit unicode: {text:?}"
-        );
-        // Whole-frame, not a denylist: `↵` and `—` slipped past the glyph
-        // lists here for the whole life of the old `LW_ASCII` mode.
-        let stray: String = text.chars().filter(|c| !c.is_ascii()).collect();
-        assert!(
-            stray.is_empty(),
-            "ascii preset must render pure ASCII, found {stray:?} in: {text:?}"
-        );
     }
 
     /// The statusbar advertises `p` on a shell (same words as the help).

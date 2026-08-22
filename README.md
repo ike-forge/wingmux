@@ -136,9 +136,9 @@ agent_shell = "bash"
 agent_hooks = true           # instrument recognised `claude` commands for accurate status
 
 [icons]                      # full key reference under "Layout" below
-preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "ascii" | "none"
+preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "none"
 worktree_ahead = ""        # any key overrides the preset; "" draws nothing
-border = "rounded"           # "rounded" | "plain" | "ascii"
+border = "rounded"           # "rounded" | "plain"
 
 [[messages]]                 # `p` modal: canned prompts for the selected shell
 text = "continue"            # listed and sent verbatim, as if you had typed it
@@ -407,7 +407,7 @@ base branch does not have, `` all its commits merged into the base. The
 three share one padded column, so names stay aligned whichever one a row
 draws. The state is also colour-coded: new is dim, ahead is the `waiting`
 colour, merged is the `working` colour. No patched font? Set
-`preset = "unicode"` for `○`/`◆`/`✓`, or `preset = "ascii"`. Rows carry
+`preset = "unicode"` for `○`/`◆`/`✓`. Rows carry
 meaning in symbols, labels and position as well as colour.
 
 Uncommitted changes are deliberately *not* in that icon — a branch with
@@ -431,23 +431,23 @@ reads as new until it has commits of its own.
 
 `preset` picks the base set; any key below overrides it individually.
 
-| Key | `nerdfont` | `unicode` | `ascii` | `none` | Draws |
-|---|---|---|---|---|---|
-| `repository` | `▣` | `▣` | `*` | — | repository holding worktrees |
-| `repository_empty` | `▢` | `▢` | `o` | — | repository with none |
-| `worktree_new` | `` | `○` | `o` | — | worktree with no commits of its own |
-| `worktree_ahead` | `` | `◆` | `*` | — | commits not in the base branch |
-| `worktree_merged` | `` | `✓` | `=` | — | commits all merged into the base |
-| `shell` | `●` | `●` | — | — | before the shell number |
-| `cursor` | `›` | `›` | `>` | `›` | selection, tree and modals |
-| `guide_branch` | `├─` | `├─` | `\|-` | `├─` | guide, non-last child |
-| `guide_last` | `└─` | `└─` | `` `- `` | `└─` | guide, last child |
-| `guide_vertical` | `│` | `│` | `\|` | `│` | guide, continuing parent |
-| `separator` | ` · ` | ` · ` | ` - ` | ` · ` | between bar/help entries |
-| `warn` | `⚠` | `⚠` | `!` | `⚠` | startup diagnostics |
-| `ellipsis` | `…` | `…` | `...` | `…` | truncation marker |
-| `enter` | `↵` | `↵` | `Enter` | `↵` | the Enter key, in the bar |
-| `border` | `rounded` | `rounded` | `ascii` | `rounded` | panel and popup frames |
+| Key | `nerdfont` | `unicode` | `none` | Draws |
+|---|---|---|---|---|
+| `repository` | `▣` | `▣` | — | repository holding worktrees |
+| `repository_empty` | `▢` | `▢` | — | repository with none |
+| `worktree_new` | `` | `○` | — | worktree with no commits of its own |
+| `worktree_ahead` | `` | `◆` | — | commits not in the base branch |
+| `worktree_merged` | `` | `✓` | — | commits all merged into the base |
+| `shell` | `●` | `●` | — | before the shell number |
+| `cursor` | `›` | `›` | `›` | selection, tree and modals |
+| `guide_branch` | `├─` | `├─` | `├─` | guide, non-last child |
+| `guide_last` | `└─` | `└─` | `└─` | guide, last child |
+| `guide_vertical` | `│` | `│` | `│` | guide, continuing parent |
+| `separator` | ` · ` | ` · ` | ` · ` | between bar/help entries |
+| `warn` | `⚠` | `⚠` | `⚠` | startup diagnostics |
+| `ellipsis` | `…` | `…` | `…` | truncation marker |
+| `enter` | `↵` | `↵` | `↵` | the Enter key, in the bar |
+| `border` | `rounded` | `rounded` | `rounded` | panel and popup frames |
 
 An empty string draws nothing. `repository`/`repository_empty`,
 `guide_branch`/`guide_last` and the three `worktree_*` states share a
@@ -455,11 +455,6 @@ rendered column each and are padded to equal width, so names stay aligned
 when one of them is empty.
 The rest are used verbatim: add your own trailing space if you want a gap
 after one (the default `shell = "● "` has one baked in).
-
-`preset = "ascii"` renders a frame a non-UTF-8 terminal can draw, and
-`border = "ascii"` additionally rewrites box-drawing to `+ - |` after
-render — across the whole rect, so under that setting literal box-drawing
-in a captured agent pane is rewritten too.
 
 Rows carry no counts — the tree is expanded by default, so the children *are*
 the count, and the repository icon says whether a folded repository holds

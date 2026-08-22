@@ -463,27 +463,25 @@ the same commit as the change.
   drew a box a quarter of the screen tall with text jammed against the
   border.
 - **Icons**: `[icons]` (`src/config.rs`) covers the tree's type icons and
-  guides, the cursor marker, the separator, the warn mark, the
-  ellipsis, the Enter glyph and the border style, chosen by a preset
-  (`nerdfont` default, plus `unicode`, `ascii`, `none`) and overridable key
-  by key. This
+  guides, the cursor marker, the separator, the warn mark, the ellipsis,
+  the Enter glyph and the border style, chosen by a preset (`nerdfont`
+  default, plus `unicode`, `none`) and overridable key by key. This
   replaced an `LW_ASCII` boolean, which conflated two independent
   questions — whether the terminal draws box characters, and which glyphs
   the user's font has. Keys that share a rendered column are padded to
   equal width at resolution time, so an empty icon still holds its column.
-  The statusbar's `↵` is the `enter` key (`ascii` spells it `Enter`); the
-  em dashes that used to leak into rendered help and hint text were reworded
-  to ASCII punctuation rather than made configurable, since mid-sentence
-  typography is not an icon. `asciify` rewrites only box-drawing, so
-  anything outside `[icons]` that is non-ASCII would leak: the four
-  `*_ascii_preset_is_clean` tests assert the whole rendered frame is ASCII
-  rather than checking a denylist, which is what let `↵` and `—` survive
-  unnoticed under the old `LW_ASCII` mode. `border = "ascii"` rewrites buffer
-  cells to `+ - |` (`ui::asciify`) because ratatui has no ASCII
-  `BorderType`; it rewrites box-drawing across whichever rect it is given,
-  which for the preview panel and the quick-send textarea includes the
-  captured pane content and the user's typed buffer, not only the app's
-  own frame. `LW_ASCII` is reported as retired in the startup diagnostics.
+  `LW_ASCII` is reported as retired in the startup diagnostics.
+- **No ASCII fallback** (user's call). There used to be a third dimension
+  to all of this: a `preset = "ascii"` glyph set, a `border = "ascii"`
+  style, and `ui::asciify` — a post-render pass rewriting box-drawing to
+  `+ - |` in every rect, because ratatui has no ASCII `BorderType`. It
+  bought support for terminals that cannot draw UTF-8, cost a rewrite hook
+  at fourteen render sites plus five whole-frame purity tests, and reached
+  further than the app's own frame: over the preview panel and the
+  quick-send textarea it rewrote the captured agent output and the user's
+  typed buffer too. A tmux-native dashboard for coding agents does not run
+  on a terminal that cannot draw `│`. `unicode` is the no-patched-font
+  fallback; `none` is the no-icons one.
 
 ## Input, mouse and accessibility
 
