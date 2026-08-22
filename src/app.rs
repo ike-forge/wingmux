@@ -449,6 +449,8 @@ pub enum BarAction {
     DeleteWorktree,
     DeleteShell,
     Attach,
+    /// Back to the live tail from a preview parked in the scrollback.
+    PreviewLive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -497,6 +499,19 @@ pub struct App {
     pub mode: Mode,
     pub panes: HashMap<String, PaneInfo>,
     pub captures: HashMap<String, String>,
+    /// How far the preview is parked above the live tail, in lines. `0` is
+    /// the live tail — the only state the preview had before it scrolled.
+    pub preview_scroll: usize,
+    /// The deep capture the preview is scrolling through, taken once when
+    /// it leaves the live tail so the polls cannot move the text under the
+    /// reader. `None` while live.
+    pub preview_buf: Option<String>,
+    /// The pane the parked view was taken from. A parked preview belongs to
+    /// one shell: rather than resetting the scroll at every one of the six
+    /// places `sel` is assigned — and missing the seventh — the offset is
+    /// read through [`App::preview_offset`], which reports live whenever
+    /// the selection has moved on.
+    pub preview_pane: Option<String>,
     /// Unsent quick-send text, per shell (keyed by pane id, like
     /// `captures` and `statuses`). Closing the editor parks the buffer
     /// here so the next `s` on that shell resumes where it left off;
@@ -618,6 +633,9 @@ impl App {
             mode: Mode::Normal,
             panes: HashMap::new(),
             captures: HashMap::new(),
+            preview_scroll: 0,
+            preview_buf: None,
+            preview_pane: None,
             drafts: HashMap::new(),
             statuses: HashMap::new(),
             hook_settings: None,
@@ -2191,6 +2209,9 @@ impl App {
 
     fn on_key_normal(&mut self, key: KeyEvent) {
         match key.code {
+            // Innermost first: Esc leaves the parked preview before it
+            // leaves the app. `q` stays the unconditional quit.
+            KeyCode::Esc if self.preview_offset() > 0 => self.preview_live(),
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Char('j') | KeyCode::Down => self.move_sel(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
@@ -2416,6 +2437,101 @@ impl App {
         }
     }
 
+    // -------------------------------------------------- preview scrolling
+
+    /// The preview panel's inner height: the frame minus the statusbar and
+    /// the panel's two borders — the arithmetic the tree's page motions use.
+    fn preview_rows(&self) -> usize {
+        (self.viewport.1.saturating_sub(3)).max(1) as usize
+    }
+
+    /// Is the preview panel on screen at all? Below the split tier it is
+    /// the first thing the layout drops, and with nothing to scroll the
+    /// wheel goes back to the tree rather than becoming dead.
+    fn preview_on_screen(&self) -> bool {
+        matches!(
+            crate::ui::tier_impl(self.viewport.0, self.viewport.1),
+            crate::ui::Tier::Wide | crate::ui::Tier::Split
+        )
+    }
+
+    /// Is the parked view still the selected shell's?
+    fn preview_parked_here(&self) -> bool {
+        self.preview_pane.is_some() && self.preview_pane == self.selected_shell_pane()
+    }
+
+    /// How far above the live tail the preview actually draws. A parked
+    /// view belongs to the pane it was taken from, so moving the tree
+    /// selection reads as live without every caller having to say so — and
+    /// a panel the layout has dropped cannot be parked at all, or `Esc`
+    /// would refuse to quit with nothing on screen to explain why.
+    pub fn preview_offset(&self) -> usize {
+        if self.preview_on_screen() && self.preview_parked_here() {
+            self.preview_scroll
+        } else {
+            0
+        }
+    }
+
+    /// The text the preview draws: the deep buffer while it is parked, the
+    /// poll's capture while it is live.
+    pub fn preview_source(&self) -> Option<&str> {
+        let pid = self.selected_shell_pane()?;
+        if self.preview_parked_here()
+            && let Some(buf) = &self.preview_buf
+        {
+            return Some(buf);
+        }
+        self.captures.get(&pid).map(String::as_str)
+    }
+
+    /// Move the preview `delta` lines back through its scrollback
+    /// (positive = older, toward the top). Leaving the live tail fetches a
+    /// deep capture once — the poll keeps only enough lines to classify a
+    /// status, which is barely more than a screenful.
+    pub fn preview_scroll_by(&mut self, delta: i32) {
+        // A parked view left behind on another shell is already reported as
+        // live; drop it before moving so the two agree.
+        if !self.preview_parked_here() {
+            self.preview_live();
+        }
+        if delta > 0 && self.preview_buf.is_none() {
+            self.preview_pane = self.selected_shell_pane();
+            self.load_preview_buf();
+        }
+        let max = self
+            .preview_source()
+            .map(|s| crate::ui::preview_scroll_max(s, self.preview_rows()))
+            .unwrap_or(0);
+        let next = (self.preview_scroll as i64 + delta as i64).clamp(0, max as i64) as usize;
+        self.preview_scroll = next;
+        if next == 0 {
+            self.preview_buf = None;
+        }
+    }
+
+    /// Back to the live tail, dropping the deep buffer.
+    pub fn preview_live(&mut self) {
+        self.preview_scroll = 0;
+        self.preview_buf = None;
+        self.preview_pane = None;
+    }
+
+    fn load_preview_buf(&mut self) {
+        let Some(pid) = self.selected_shell_pane() else {
+            return;
+        };
+        let Some(tmux) = &self.tmux else {
+            return;
+        };
+        match tmux.capture_pane_full(&pid) {
+            Ok(t) => self.preview_buf = Some(t),
+            // No deep buffer is not a failure: the poll's shallow capture is
+            // still scrollable, just shorter.
+            Err(e) => log::debug!("capture-pane (full) {pid}: {e}"),
+        }
+    }
+
     // ---------------------------------------------------------- mouse
 
     pub fn on_mouse(&mut self, m: MouseEvent) {
@@ -2424,9 +2540,13 @@ impl App {
                 let dbl = self.is_double_click(m.column, m.row);
                 self.mouse_click(m.column, m.row, dbl);
             }
-            // Wheel scrolls the panel under the cursor without changing
-            // focus; the only scrollable panel is the tree (or the help
-            // overlay / theme picker while one is open).
+            // The wheel belongs to the preview: it walks the selected
+            // pane's scrollback and never moves the tree selection, so
+            // reading back through an agent's output cannot lose your
+            // place in the tree. An open overlay owns the viewport for as
+            // long as it is up, and below the split tier — where the
+            // preview is not drawn — the wheel falls back to the tree
+            // rather than becoming dead.
             MouseEventKind::ScrollDown => {
                 if matches!(self.mode, Mode::Help) {
                     self.help_scroll_to(self.help_scroll + 3);
@@ -2436,6 +2556,8 @@ impl App {
                     self.messages_to(self.messages_index().saturating_add(3));
                 } else if matches!(self.mode, Mode::ThemePicker { .. }) {
                     self.picker_to(self.picker_index().saturating_add(3));
+                } else if self.preview_on_screen() {
+                    self.preview_scroll_by(-3);
                 } else {
                     self.move_sel(3);
                 }
@@ -2449,6 +2571,8 @@ impl App {
                     self.messages_to(self.messages_index().saturating_sub(3));
                 } else if matches!(self.mode, Mode::ThemePicker { .. }) {
                     self.picker_to(self.picker_index().saturating_sub(3));
+                } else if self.preview_on_screen() {
+                    self.preview_scroll_by(3);
                 } else {
                     self.move_sel(-3);
                 }
@@ -2570,6 +2694,7 @@ impl App {
     fn run_bar_action(&mut self, action: BarAction) {
         match action {
             BarAction::Help => self.open_help(),
+            BarAction::PreviewLive => self.preview_live(),
             BarAction::NewWorktree => self.open_new_worktree(),
             BarAction::AddShell => self.open_add_shell(),
             BarAction::QuickSend => {
@@ -4591,22 +4716,159 @@ mod tests {
         );
     }
 
-    /// The wheel scrolls the tree (its only scrollable surface) without a
-    /// click; clicks outside the tree column do nothing.
-    #[test]
-    fn mouse_wheel_scrolls_and_right_panels_are_dead() {
-        let mut app = app_with_repositories(10);
-        app.viewport = (120, 40);
-        app.on_mouse(MouseEvent {
-            kind: MouseEventKind::ScrollDown,
+    fn wheel(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent {
+            kind,
             column: 5,
             row: 5,
             modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// An app standing on a shell whose pane captured `n` numbered lines.
+    /// A second repository keeps the tree out of the single-repository flat
+    /// layout, so there is another row to move the selection to.
+    fn app_with_preview(n: usize) -> App {
+        let mut app = app_with_shell();
+        app.state.repositories.push(Repository {
+            name: "p2".into(),
+            path: PathBuf::from("/tmp/p2"),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: false,
+            worktrees: vec![],
         });
-        assert_eq!(app.sel, Sel::Repository(3));
+        app.build_tree_flags();
+        app.sel = Sel::Worktree(0, 0);
+        app.clamp_sel();
+        app.viewport = (120, 40);
+        app.captures
+            .insert("%1".into(), (1..=n).map(|i| format!("l{i}\n")).collect());
+        app
+    }
+
+    /// The wheel belongs to the preview, not the tree: it parks the preview
+    /// in its scrollback and leaves the selection exactly where it was.
+    /// Scrolling back down to the live tail resumes tailing.
+    #[test]
+    fn mouse_wheel_scrolls_the_preview_never_the_tree() {
+        let mut app = app_with_preview(200);
         let before = app.sel;
-        app.on_mouse(click(60, 5)); // detail panel area
-        assert_eq!(app.sel, before, "detail panel is not selectable");
+
+        app.on_mouse(wheel(MouseEventKind::ScrollUp));
+        assert_eq!(
+            app.preview_scroll, 3,
+            "the wheel parks the preview 3 lines back"
+        );
+        assert_eq!(app.sel, before, "the tree never moves under the wheel");
+
+        app.on_mouse(wheel(MouseEventKind::ScrollDown));
+        assert_eq!(
+            app.preview_scroll, 0,
+            "scrolling down resumes the live tail"
+        );
+        assert!(
+            app.preview_buf.is_none(),
+            "the deep buffer is dropped once the preview is live again"
+        );
+        assert_eq!(app.sel, before);
+    }
+
+    /// The wheel stops at both ends of the buffer rather than running off:
+    /// at the live tail scrolling down is a no-op, and scrolling up parks at
+    /// the oldest line the capture holds.
+    #[test]
+    fn preview_scroll_clamps_at_both_ends() {
+        let mut app = app_with_preview(200);
+        app.on_mouse(wheel(MouseEventKind::ScrollDown));
+        assert_eq!(
+            app.preview_scroll, 0,
+            "already live; nothing below the tail"
+        );
+
+        for _ in 0..100 {
+            app.on_mouse(wheel(MouseEventKind::ScrollUp));
+        }
+        // the preview panel is the frame minus the statusbar and its borders
+        let inner = app.viewport.1 as usize - 3;
+        assert_eq!(
+            app.preview_scroll,
+            200 - inner,
+            "parked on the oldest line the capture holds"
+        );
+    }
+
+    /// Esc is innermost-first: while the preview is parked in its
+    /// scrollback it drops back to the live tail rather than quitting the
+    /// dashboard. At the live tail Esc still quits.
+    #[test]
+    fn esc_resumes_the_live_tail_before_it_quits() {
+        let mut app = app_with_preview(200);
+        app.on_mouse(wheel(MouseEventKind::ScrollUp));
+        assert_eq!(app.preview_offset(), 3);
+
+        app.on_key(key(KeyCode::Esc, false));
+        assert!(!app.quit, "Esc leaves the parked preview, not the app");
+        assert_eq!(app.preview_offset(), 0, "back to the live tail");
+
+        app.on_key(key(KeyCode::Esc, false));
+        assert!(app.quit, "Esc at the live tail still quits");
+    }
+
+    /// `q` is the unconditional quit — a parked preview never holds it up.
+    #[test]
+    fn q_quits_even_while_the_preview_is_parked() {
+        let mut app = app_with_preview(200);
+        app.on_mouse(wheel(MouseEventKind::ScrollUp));
+        app.on_key(key(KeyCode::Char('q'), false));
+        assert!(app.quit);
+    }
+
+    /// The preview follows the tree: selecting another row reads as live
+    /// again, so a parked view never outlives the shell it was taken from.
+    #[test]
+    fn moving_the_selection_snaps_the_preview_back_to_live() {
+        let mut app = app_with_preview(200);
+        app.on_mouse(wheel(MouseEventKind::ScrollUp));
+        assert_eq!(app.preview_offset(), 3);
+
+        app.on_key(key(KeyCode::Char('k'), false));
+        assert_ne!(app.sel, Sel::Worktree(0, 0), "the motion moved the tree");
+        assert_eq!(
+            app.preview_offset(),
+            0,
+            "another row is another pane: the preview is live again"
+        );
+    }
+
+    /// A preview that is not on screen cannot be parked: below the split
+    /// tier the panel is gone, and an `Esc` that quietly refused to quit
+    /// would have nothing on screen to explain itself.
+    #[test]
+    fn a_hidden_preview_is_never_parked() {
+        let mut app = app_with_preview(200);
+        app.on_mouse(wheel(MouseEventKind::ScrollUp));
+        assert_eq!(app.preview_offset(), 3);
+
+        app.viewport = (30, 20); // tree-only tier: no preview panel
+        assert_eq!(app.preview_offset(), 0, "no panel, nothing parked");
+        app.on_key(key(KeyCode::Esc, false));
+        assert!(
+            app.quit,
+            "Esc quits when there is no parked preview to leave"
+        );
+    }
+
+    /// Clicks outside the tree column do nothing.
+    #[test]
+    fn clicks_on_the_preview_panel_are_dead() {
+        let mut app = app_with_repositories(10);
+        app.viewport = (120, 40);
+        let before = app.sel;
+        app.on_mouse(click(60, 5)); // preview panel area
+        assert_eq!(app.sel, before, "the preview panel is not selectable");
     }
 
     /// Clicking a statusbar shortcut entry runs its action (a context bar

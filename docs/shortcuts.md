@@ -36,6 +36,7 @@ subtracted), recomputed every frame from the stored viewport.
 | `r` | refresh — reconcile state against tmux reality | LazyGit/Docker `r` = refresh |
 | `ctrl-t` | live theme picker (preview on move, Enter keeps, Esc restores) | ctrl layer; picker lists built-ins first |
 | `?` | open the grouped help overlay (the palette) | palette key; `?` is never rebound |
+| `Esc` (preview parked) | back to the live tail | leave innermost first |
 | `q` / `Esc` | quit | "do not rebind these" |
 | `ctrl-c` | quit from ANY state (even inside a popup / text input) | accessibility: quit always; consumed before mode handlers |
 
@@ -142,7 +143,8 @@ the trailing Enter submits.
 |---|---|---|
 | click a tree row | select | click to select |
 | double-click a row | same as `Enter` | click on row = `Enter` where unambiguous |
-| wheel over the tree | scroll one screenful (3 rows) without changing focus | wheel scrolls the panel under the cursor |
+| wheel | scroll the preview 3 lines through the selected pane's scrollback; the tree selection never moves | the wheel belongs to the panel that has something to scroll |
+| wheel below the split tier | scroll the tree (the preview is not drawn there) | no dead keys |
 | click a statusbar entry | run that action | bar entries are clickable |
 | click outside an overlay | dismiss it | click outside dismisses |
 | click in the detail/preview panels | nothing | those panels are display-only |

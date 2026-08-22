@@ -387,6 +387,34 @@ the same commit as the change.
   the theme's background, `none` is the escape hatch. Config-only — the modes
   are a preference, not a per-moment decision, so they take no keybinding.
 
+- **The wheel belongs to the preview, not the tree.** The tree is the only
+  panel with a cursor, so a wheel that moves it loses your place the moment
+  you look back at what an agent printed; the preview is the panel with
+  something to scroll. In `Mode::Normal` the wheel therefore always drives the
+  preview, wherever the pointer is — no hover hit-testing, no focus concept to
+  learn. An open overlay still owns the viewport (help, picker, diagnostics,
+  messages), and below the split tier — where the layout has already dropped
+  the preview — the wheel falls back to the tree rather than becoming dead.
+  The keyboard is untouched: `j`/`k` never change meaning under you.
+- **Parking takes its own deep capture.** The poll captures 120 lines per pane
+  because that is what `status::classify` needs; scrolling through four
+  screenfuls and hitting a wall would read as a bug. Leaving the live tail
+  therefore fetches `capture-pane -S -` **once**, for the selected pane only
+  (`Tmux::capture_pane_full`), into `App::preview_buf`. Polls never touch that
+  buffer, which is also what freezes the view: the text cannot move under the
+  reader while an agent keeps printing. A failed deep capture is not an error
+  — the poll's shallow capture is still scrollable, just shorter.
+- **The parked view belongs to a pane, and says so.** `sel` is assigned in
+  half a dozen places; resetting the scroll at each of them is a bug waiting
+  for the seventh. Instead `App::preview_pane` records which pane the buffer
+  came from and `App::preview_offset()` reports `0` whenever the selection has
+  moved on, so "the preview follows the tree" is a property of the read, not a
+  duty of every writer. A panel that has silently stopped following the agent
+  reads as a stalled agent, so the parked state is marked three ways: the
+  offset in the title, the focused border, and a `live Esc` entry that leads
+  the statusbar. `Esc` leaves the parked preview before it leaves the app
+  (innermost first); `q` and `ctrl-c` still quit outright.
+
 ## Quick send and predefined messages
 
 - **Quick-send is a multiline textarea.** The main way to talk to agents is a
