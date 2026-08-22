@@ -517,8 +517,13 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
         let repo = &app.state.repositories[ri];
         if !app.flatten {
             let expanded = app.repo_expanded.get(ri).copied().unwrap_or(false);
+            // The folder glyph carries the disclosure state, which is why
+            // repository rows draw no separate ▸/▾ marker. An empty
+            // repository has nothing to open, so it has one glyph only.
             let icon = if repo.worktrees.is_empty() {
                 &ic.repository_empty
+            } else if expanded {
+                &ic.repository_open
             } else {
                 &ic.repository
             };
@@ -2460,15 +2465,16 @@ mod tests {
         );
     }
 
-    /// The repository row's type icon is its only marker: `▾`/`▸` were removed
-    /// because the icon already sits there and the children show the state.
+    /// The repository row's folder icon is its only marker: `▾`/`▸` were
+    /// removed because the icon already sits there, and now carries the
+    /// open/closed state itself.
     #[test]
     fn the_repository_row_has_no_expand_marker() {
         let mut app = seeded_app();
         // seeded_app's first repository starts empty, which would render the
-        // hollow `▢` icon; give it a worktree so it renders the filled `▣`
-        // this test asserts on (Ruling F2 — fixture adapted, assertions
-        // kept literal).
+        // outline folder; give it a worktree so it renders the open folder
+        // this test asserts on — the fixture starts expanded (Ruling F2 —
+        // fixture adapted, assertions kept literal).
         app.state.repositories[0]
             .worktrees
             .push(crate::state::Worktree {
@@ -2503,7 +2509,10 @@ mod tests {
             !upto.contains('▸'),
             "no closed marker before the repository: {row:?}"
         );
-        assert!(upto.contains('▣'), "the icon is still there: {row:?}");
+        assert!(
+            upto.contains('\u{f0770}'),
+            "the icon is still there: {row:?}"
+        );
     }
 
     /// Row indices are the contract between `draw_tree`, `visible_nodes` and
@@ -2646,8 +2655,8 @@ mod tests {
     /// Repository rows carry no worktree count — the tree is expanded by
     /// default, so the worktrees themselves are the count. What the row
     /// cannot show otherwise is whether a folded repository holds anything
-    /// at all, and the icon says it: filled when it has worktrees, hollow
-    /// when it is empty.
+    /// at all, and the folder icon says it: open when expanded, closed when
+    /// folded, outline when it is empty.
     #[test]
     fn repository_rows_swap_the_count_for_a_full_or_empty_icon() {
         let mut app = seeded_app();
@@ -2681,10 +2690,57 @@ mod tests {
             assert!(!row.contains("worktrees)"), "no count on a row: {row:?}");
         }
         assert!(
-            full.contains("▣ repo-a"),
-            "a repository with worktrees: {full:?}"
+            full.contains("\u{f0770} repo-a"),
+            "an expanded repository with worktrees: {full:?}"
         );
-        assert!(empty.contains("▢ repo-b"), "an empty repository: {empty:?}");
+        assert!(
+            empty.contains("\u{f0256} repo-b"),
+            "an empty repository: {empty:?}"
+        );
+    }
+
+    /// Folding a repository is the one state change with no other visible
+    /// trace once its children are gone, so the folder glyph has to carry
+    /// it: the same repository draws an open folder expanded and a closed
+    /// one folded.
+    #[test]
+    fn the_repository_icon_opens_and_closes_with_the_row() {
+        let mut app = seeded_app();
+        app.state.repositories[0]
+            .worktrees
+            .push(crate::state::Worktree {
+                name: "only-worktree".into(),
+                branch: "only-worktree".into(),
+                path: std::path::PathBuf::from("/tmp/wt-one"),
+                created_at: String::new(),
+                base_commit: None,
+                shells: vec![],
+            });
+        app.build_tree_flags();
+
+        let icon_row = |app: &mut App| {
+            let backend = ratatui::backend::TestBackend::new(120, 40);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw(f, app)).unwrap();
+            buffer_rows(&terminal)
+                .into_iter()
+                .find(|r| r.contains("repo-a"))
+                .unwrap()
+        };
+
+        app.repo_expanded[0] = true;
+        let open = icon_row(&mut app);
+        app.repo_expanded[0] = false;
+        let closed = icon_row(&mut app);
+
+        assert!(
+            open.contains("\u{f0770} repo-a"),
+            "expanded draws nf-md-folder_open: {open:?}"
+        );
+        assert!(
+            closed.contains("\u{f024b} repo-a"),
+            "folded draws nf-md-folder: {closed:?}"
+        );
     }
 
     /// A dead entry is muted *whole*: once every shell under it has

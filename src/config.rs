@@ -120,15 +120,16 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #preset = "nerdfont"
 
 # Every key below overrides the preset glyph by glyph. An empty string
-# draws nothing. `repository`/`repository_empty` and `guide_branch`/
-# `guide_last` are padded in pairs, and the three `worktree_*` states as a
-# group, so names stay aligned when one of them is empty. `shell`,
+# draws nothing. `guide_branch`/`guide_last` are padded as a pair, and the
+# three `repository*` and three `worktree_*` states each as a group, so
+# names stay aligned when one of them is empty. `shell`,
 # `cursor`, `separator`, `warn` and `ellipsis` have no sibling to pad
 # against and are used verbatim — add your own
 # trailing space if you want a gap after one (the default `shell` below
 # already has one baked in). The values shown are the "nerdfont" preset.
-#repository = "▣"              # repository holding worktrees
-#repository_empty = "▢"        # repository with none yet
+#repository = "󰉋"              # repository holding worktrees, collapsed
+#repository_open = "󰝰"         # ...the same repository, expanded
+#repository_empty = "󰉖"        # repository with no worktrees yet
 #worktree_new = ""            # worktree with no commits of its own
 #worktree_ahead = ""          # commits not in the base branch yet
 #worktree_merged = ""         # its commits are all in the base branch
@@ -328,6 +329,7 @@ pub const ICON_PRESETS: &[&str] = &["nerdfont", "unicode", "none"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IconsConfig {
     pub repository: String,
+    pub repository_open: String,
     pub repository_empty: String,
     pub worktree_new: String,
     pub worktree_ahead: String,
@@ -367,8 +369,9 @@ impl IconsConfig {
     /// padded once — padding an already-padded value would compound.
     fn raw_preset(name: &str) -> IconsConfig {
         let nerdfont = IconsConfig {
-            repository: "▣".into(),
-            repository_empty: "▢".into(),
+            repository: "󰉋".into(),
+            repository_open: "󰝰".into(),
+            repository_empty: "󰉖".into(),
             worktree_new: "".into(),
             worktree_ahead: "".into(),
             worktree_merged: "".into(),
@@ -386,6 +389,9 @@ impl IconsConfig {
         };
         match name {
             "unicode" => IconsConfig {
+                repository: "▣".into(),
+                repository_open: "▤".into(),
+                repository_empty: "▢".into(),
                 worktree_new: "○".into(),
                 worktree_ahead: "◆".into(),
                 worktree_merged: "✓".into(),
@@ -393,6 +399,7 @@ impl IconsConfig {
             },
             "none" => IconsConfig {
                 repository: String::new(),
+                repository_open: String::new(),
                 repository_empty: String::new(),
                 worktree_new: String::new(),
                 worktree_ahead: String::new(),
@@ -404,14 +411,18 @@ impl IconsConfig {
         }
     }
 
-    /// Right-pad the four key pairs that share a rendered column, so an
+    /// Right-pad the three groups that share a rendered column, so an
     /// empty icon still holds its column and names stay aligned. A
     /// non-empty column also gains one trailing space, so render sites
     /// concatenate icon and name directly and an empty column costs
     /// nothing. Keys with no sibling (`shell`, `cursor`, `separator`,
     /// `warn`, `ellipsis`) are used verbatim.
     fn pad(&mut self) {
-        pad_pair(&mut self.repository, &mut self.repository_empty);
+        pad_group(&mut [
+            &mut self.repository,
+            &mut self.repository_open,
+            &mut self.repository_empty,
+        ]);
         pad_group(&mut [
             &mut self.worktree_new,
             &mut self.worktree_ahead,
@@ -450,6 +461,7 @@ fn pad_group(group: &mut [&mut String]) {
 struct IconsFile {
     preset: String,
     repository: Option<String>,
+    repository_open: Option<String>,
     repository_empty: Option<String>,
     worktree_new: Option<String>,
     worktree_ahead: Option<String>,
@@ -472,6 +484,7 @@ impl Default for IconsFile {
         IconsFile {
             preset: "nerdfont".into(),
             repository: None,
+            repository_open: None,
             repository_empty: None,
             worktree_new: None,
             worktree_ahead: None,
@@ -503,6 +516,7 @@ impl<'de> Deserialize<'de> for IconsConfig {
         let b = IconsConfig::raw_preset(&f.preset);
         let mut i = IconsConfig {
             repository: f.repository.unwrap_or(b.repository),
+            repository_open: f.repository_open.unwrap_or(b.repository_open),
             repository_empty: f.repository_empty.unwrap_or(b.repository_empty),
             worktree_new: f.worktree_new.unwrap_or(b.worktree_new),
             worktree_ahead: f.worktree_ahead.unwrap_or(b.worktree_ahead),
@@ -811,6 +825,7 @@ const DEFAULTS_KEYS: &[&str] = &["agent_command", "agent_shell", "agent_hooks"];
 const ICONS_KEYS: &[&str] = &[
     "preset",
     "repository",
+    "repository_open",
     "repository_empty",
     "worktree_new",
     "worktree_ahead",
@@ -1079,6 +1094,10 @@ impl Config {
             ),
         );
         line("icons.repository", format!("\"{}\"", self.icons.repository));
+        line(
+            "icons.repository_open",
+            format!("\"{}\"", self.icons.repository_open),
+        );
         line(
             "icons.repository_empty",
             format!("\"{}\"", self.icons.repository_empty),
@@ -1663,6 +1682,7 @@ impl SectionSalvage for IconsConfig {
         let b = IconsConfig::raw_preset(&preset);
         let mut i = IconsConfig {
             repository: salvage_field(t, "repository", b.repository, file, diags),
+            repository_open: salvage_field(t, "repository_open", b.repository_open, file, diags),
             repository_empty: salvage_field(t, "repository_empty", b.repository_empty, file, diags),
             worktree_new: salvage_field(t, "worktree_new", b.worktree_new, file, diags),
             worktree_ahead: salvage_field(t, "worktree_ahead", b.worktree_ahead, file, diags),
@@ -1940,16 +1960,35 @@ mod tests {
             "\u{e727}",
             "nerdfont merged: nf-dev-git_merge"
         );
-        assert_eq!(nf.repository.trim_end(), "▣");
+        assert_eq!(
+            nf.repository.trim_end(),
+            "\u{f024b}",
+            "nerdfont repository: nf-md-folder"
+        );
+        assert_eq!(
+            nf.repository_open.trim_end(),
+            "\u{f0770}",
+            "nerdfont repository open: nf-md-folder_open"
+        );
+        assert_eq!(
+            nf.repository_empty.trim_end(),
+            "\u{f0256}",
+            "nerdfont empty repository: nf-md-folder_outline"
+        );
         assert_eq!(nf.border, BorderStyle::Rounded);
 
         let uni = IconsConfig::preset("unicode");
+        assert_eq!(uni.repository.trim_end(), "▣");
+        assert_eq!(uni.repository_open.trim_end(), "▤");
+        assert_eq!(uni.repository_empty.trim_end(), "▢");
         assert_eq!(uni.worktree_new.trim_end(), "○");
         assert_eq!(uni.worktree_ahead.trim_end(), "◆");
         assert_eq!(uni.worktree_merged.trim_end(), "✓");
 
         let none = IconsConfig::preset("none");
         assert_eq!(none.repository, "", "none: no type icon, no column at all");
+        assert_eq!(none.repository_open, "");
+        assert_eq!(none.repository_empty, "");
         assert_eq!(none.worktree_new, "");
         assert_eq!(none.worktree_merged, "");
     }
@@ -1965,7 +2004,10 @@ mod tests {
         for name in ICON_PRESETS {
             let i = IconsConfig::preset(name);
             for (group, what) in [
-                (vec![&i.repository, &i.repository_empty], "repository"),
+                (
+                    vec![&i.repository, &i.repository_open, &i.repository_empty],
+                    "repository",
+                ),
                 (
                     vec![&i.worktree_new, &i.worktree_ahead, &i.worktree_merged],
                     "worktree",
@@ -2065,7 +2107,7 @@ mod tests {
             // number of fields actually accepted.
             assert_eq!(
                 ICONS_KEYS.len(),
-                17,
+                18,
                 "adding an icon key means adding it to ICONS_KEYS too"
             );
         });

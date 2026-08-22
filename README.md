@@ -377,12 +377,12 @@ is happening, the bar says what you can press:
 
 ```
 ╭ Repositories (2) ────────╮╭ Preview ────────────────────────────╮
-│▣ repo-a                  ││ live tail of the selected shell,    │
+│󰝰 repo-a                  ││ live tail of the selected shell,    │
 │  ├─  login   waiting    ││ refreshed every poll                │
 │  └─  search             ││                                     │
 │     ├─ ● #0 working      ││     ╭────────────────────────╮      │
 │     └─ ● #1 waiting      ││     │ worktree 'search' cre… │      │
-│▢ repo-b                  ││     ╰────────────────────────╯      │
+│󰉖 repo-b                  ││     ╰────────────────────────╯      │
 ╰──────────────────────────╯╰─────────────────────────────────────╯
  n worktree · a shell · d delete · ? help
 ```
@@ -400,14 +400,16 @@ so the panel keeps the theme's background, and `none` renders raw text.
 Status classification always runs on the stripped text, so colouring never
 changes how a pane is classified.
 
-Icons come from `[icons]` (default preset `nerdfont`): `▣` repository holding
-worktrees, `▢` empty repository, `●` shell, and **three glyphs for a
+Icons come from `[icons]` (default preset `nerdfont`): a **folder per
+repository** — `󰝰` open when the row is expanded, `󰉋` closed when it is
+folded, `󰉖` outline when the repository has no worktrees at all — `●` shell,
+and **three glyphs for a
 worktree's commit state** — `` no commits of its own yet, `` commits the
 base branch does not have, `` all its commits merged into the base. The
 three share one padded column, so names stay aligned whichever one a row
 draws. The state is also colour-coded: new is dim, ahead is the `waiting`
 colour, merged is the `working` colour. No patched font? Set
-`preset = "unicode"` for `○`/`◆`/`✓`. Rows carry
+`preset = "unicode"` for `▣`/`▤`/`▢` and `○`/`◆`/`✓`. Rows carry
 meaning in symbols, labels and position as well as colour.
 
 Uncommitted changes are deliberately *not* in that icon — a branch with
@@ -433,8 +435,9 @@ reads as new until it has commits of its own.
 
 | Key | `nerdfont` | `unicode` | `none` | Draws |
 |---|---|---|---|---|
-| `repository` | `▣` | `▣` | — | repository holding worktrees |
-| `repository_empty` | `▢` | `▢` | — | repository with none |
+| `repository` | `󰉋` | `▣` | — | repository with worktrees, folded |
+| `repository_open` | `󰝰` | `▤` | — | ...the same repository, expanded |
+| `repository_empty` | `󰉖` | `▢` | — | repository with no worktrees |
 | `worktree_new` | `` | `○` | — | worktree with no commits of its own |
 | `worktree_ahead` | `` | `◆` | — | commits not in the base branch |
 | `worktree_merged` | `` | `✓` | — | commits all merged into the base |
@@ -450,10 +453,10 @@ reads as new until it has commits of its own.
 | `arrows` | `↑↓` | `↑↓` | `↑↓` | the arrow keys, in shortcut hints |
 | `border` | `rounded` | `rounded` | `rounded` | panel and popup frames |
 
-An empty string draws nothing. `repository`/`repository_empty`,
-`guide_branch`/`guide_last` and the three `worktree_*` states share a
-rendered column each and are padded to equal width, so names stay aligned
-when one of them is empty.
+An empty string draws nothing. `guide_branch`/`guide_last`, the three
+`repository*` states and the three `worktree_*` states share a rendered
+column each and are padded to equal width, so names stay aligned when one of
+them is empty.
 The rest are used verbatim: add your own trailing space if you want a gap
 after one (the default `shell = "● "` has one baked in).
 
