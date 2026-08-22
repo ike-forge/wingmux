@@ -593,10 +593,24 @@ the same commit as the change.
 - **The Catppuccin set is the reference palette**: all four flavours ship as
   built-ins (official hex values, unmodified, mapped onto the app's roles:
   base → background, text/subtext0 → foreground/dim, surface0-2 →
-  selection/borders, flavour accents → status roles, lavender → accent).
+  selection/borders, flavour accents → status roles, peach → accent on the
+  dark flavours and lavender → accent on latte).
   `catppuccin-mocha` is the default (the TUI guideline names it the usual
   default; config files written before this keep their old `theme = "dracula"`
   line and load exactly as before).
+- **An accent must be measurably far from the foreground**: `accent` prints
+  directly beside `foreground` in every shortcut hint (`<action> <key>`), on
+  one or two characters with no space of its own, so the two have to separate
+  at a glance. The three dark Catppuccin flavours originally took lavender —
+  the swatch that sits next to text in the palette — and measured ΔE 12, 15
+  and 20 from their own foreground, which is invisible; they now take peach
+  (ΔE 52-58), the only free swatch not already spoken for by a status or tree
+  role. `theme::tests::every_builtin_accent_is_distinguishable_from_its_foreground`
+  holds every built-in to ΔE ≥ 30. The measure is CIELAB ΔE and not a
+  luminance ratio on purpose: gruvbox's yellow accent on cream text rates 1.24
+  and is unmistakable, Catppuccin's lavender on text rates 1.24 and is
+  invisible — the difference is hue, which only ΔE sees. ANSI-named roles
+  (`ansi.toml`) have no measurable value and are skipped.
 - **`ctrl-t` is a live theme picker**: it previews as the cursor moves (the
   whole screen repaints via the same load path), Enter keeps, Esc restores the
   theme it opened with. Built-ins list first (stable order), then user themes.

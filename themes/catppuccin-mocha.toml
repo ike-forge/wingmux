@@ -4,15 +4,17 @@
 # Official Catppuccin hex values, unmodified (theming guideline: never
 # hand-tune a Catppuccin colour). Roles map to the palette: base →
 # background, text/subtext0 → foreground/dim, surface0-2 → selection /
-# borders, and the flavour accents for the semantic roles, with lavender
-# reserved as the accent (key letters, focused borders).
+# borders, and the flavour accents for the semantic roles. Peach is the
+# accent (key letters): on a dark flavour lavender lands ΔE ~20 from text,
+# so a one-character key washes into the word beside it. Lavender keeps
+# the focused border, where a whole edge carries the colour.
 name = "catppuccin-mocha"
 
 [colors]
 background = "#1e1e2e"
 foreground = "#cdd6f4"
 dim = "#a6adc8"
-accent = "#b4befe"
+accent = "#fab387"
 selection_bg = "#313244"
 selection_fg = "#cdd6f4"
 border = "#45475a"

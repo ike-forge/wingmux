@@ -259,8 +259,9 @@ stats per directory, done live.
 
 The Catppuccin flavours use the official hex values, unmodified, mapped onto
 the app's roles (`base` → background, `text`/`subtext0` → text/dim,
-`surface0-2` → selection/borders, flavour accents for status, `lavender` for
-the accent).
+`surface0-2` → selection/borders, flavour accents for status, `peach` for the
+accent on the dark flavours and `lavender` on latte — `lavender` sits too
+close to `text` on a dark background for a one-character key to stand out).
 
 Press **`ctrl-t`** inside the TUI for a live theme picker: move with
 `j`/`k` (or `PgUp`/`PgDn`, `Home`/`End`) and the whole screen repaints with
