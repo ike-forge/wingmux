@@ -35,6 +35,11 @@ pub enum WorktreeState {
     /// Every commit of its own is already in the base branch and the
     /// working tree is clean: done, and the worktree is free to delete.
     Merged,
+    /// The worktree directory is gone — removed by the agent that was
+    /// working in it, or by hand — while the row is still in the state
+    /// file. Nothing can be measured any more, and nothing can be done
+    /// with the row but delete it.
+    Deleted,
 }
 
 /// A worktree as reported by `git worktree list --porcelain`.
@@ -311,12 +316,22 @@ impl Git {
     /// those two — a worktree already ahead cannot be moved by it, so the
     /// common case pays nothing.
     ///
+    /// A worktree whose directory is gone answers
+    /// [`WorktreeState::Deleted`] before any git runs: every call in a
+    /// path that does not exist fails, and the caller's fallback would
+    /// draw the row as a fresh cut — the exact opposite of what happened
+    /// to it. This is the normal end of an agent told to merge and clean
+    /// up after itself, so it is a state, not an error.
+    ///
     /// Known limit: a squash-merged branch keeps commits the base does not
     /// contain by object id, so it reads as [`WorktreeState::Ahead`], not
     /// `Merged`. Detecting that needs patch-id matching (`git cherry`),
     /// which is wrong as often as it is right on a squashed history —
     /// better to under-claim than to call a branch merged when it is not.
     pub fn worktree_state(&self, wt_path: &Path, fork: &str, base: &str) -> Result<WorktreeState> {
+        if !wt_path.exists() {
+            return Ok(WorktreeState::Deleted);
+        }
         let range = format!("{fork}..HEAD");
         let out = Self::run_ok(wt_path, &["rev-list", "--count", &range])?;
         let committed = out.stdout.trim().parse::<u64>().unwrap_or(0) > 0;
@@ -492,6 +507,36 @@ mod tests {
         assert_eq!(
             git.worktree_state(&wt, &fork, "main").unwrap(),
             WorktreeState::Ahead
+        );
+    }
+
+    /// A worktree whose directory is gone — the common end of a merge
+    /// ("merge to main, drop the current worktree"), or a `git worktree
+    /// remove` run by hand — reads as [`WorktreeState::Deleted`]. Every
+    /// git call in there fails, and answering "untouched" for a question
+    /// that could not be asked draws the row as a fresh cut.
+    #[test]
+    fn worktree_state_reads_a_removed_directory_as_deleted() {
+        let (_guard, repo) = temp_repo("proj");
+        let git = Git;
+        let wt = repo.parent().unwrap().join("wt-gone");
+        let fork = git.rev_parse(&repo, "main").unwrap();
+        git.worktree_add(&repo, &wt, "gone-branch", "main").unwrap();
+        fs::write(wt.join("f.txt"), "work\n").unwrap();
+        run(&wt, &["add", "."]);
+        run(&wt, &["commit", "-m", "work"]);
+        run(&repo, &["merge", "--no-ff", "-m", "merge", "gone-branch"]);
+        assert_eq!(
+            git.worktree_state(&wt, &fork, "main").unwrap(),
+            WorktreeState::Merged
+        );
+
+        // the agent cleans up after itself: the directory goes away
+        run(&repo, &["worktree", "remove", wt.to_str().unwrap()]);
+        assert!(!wt.exists());
+        assert_eq!(
+            git.worktree_state(&wt, &fork, "main").unwrap(),
+            WorktreeState::Deleted
         );
     }
 

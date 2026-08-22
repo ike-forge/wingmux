@@ -121,7 +121,7 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 
 # Every key below overrides the preset glyph by glyph. An empty string
 # draws nothing. `guide_branch`/`guide_last` are padded as a pair, and the
-# three `repository*` states, the three `worktree_*` states and the
+# three `repository*` states, the four `worktree_*` states and the
 # `status_*` icons (spinner frames included) each as a group, so names stay
 # aligned when one of them is empty. `shell`,
 # `cursor`, `separator`, `warn` and `ellipsis` have no sibling to pad
@@ -134,6 +134,7 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #worktree_new = ""            # untouched: no commits, clean tree
 #worktree_ahead = ""          # commits not in the base yet, or dirty
 #worktree_merged = ""         # all in the base branch, clean tree
+#worktree_deleted = "󰗨"        # its directory is gone; only `d` is left
 # One agent status icon each, drawn in front of the status label. The
 # spinner is a string of frames, one character per animation step, cycled
 # while an agent is working; `idle` and `dead` are blank on purpose, so a
@@ -346,6 +347,7 @@ pub struct IconsConfig {
     pub worktree_new: String,
     pub worktree_ahead: String,
     pub worktree_merged: String,
+    pub worktree_deleted: String,
     /// Frames of the `working` spinner, one per animation step. A frame is
     /// picked by elapsed time at render, so an empty list (the `none`
     /// preset) simply draws nothing.
@@ -397,6 +399,7 @@ impl IconsConfig {
             worktree_new: "".into(),
             worktree_ahead: "".into(),
             worktree_merged: "".into(),
+            worktree_deleted: "󰗨".into(),
             status_spinner: frames("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
             status_waiting: "".into(),
             status_blocked: "".into(),
@@ -424,6 +427,7 @@ impl IconsConfig {
                 worktree_new: "○".into(),
                 worktree_ahead: "◆".into(),
                 worktree_merged: "✓".into(),
+                worktree_deleted: "⊘".into(),
                 status_waiting: "⏸".into(),
                 status_blocked: "⏹".into(),
                 status_failed: "✖".into(),
@@ -437,6 +441,7 @@ impl IconsConfig {
                 worktree_new: String::new(),
                 worktree_ahead: String::new(),
                 worktree_merged: String::new(),
+                worktree_deleted: String::new(),
                 status_spinner: Vec::new(),
                 status_waiting: String::new(),
                 status_blocked: String::new(),
@@ -469,6 +474,7 @@ impl IconsConfig {
             &mut self.worktree_new,
             &mut self.worktree_ahead,
             &mut self.worktree_merged,
+            &mut self.worktree_deleted,
         ]);
         let mut status: Vec<&mut String> = vec![
             &mut self.status_waiting,
@@ -524,6 +530,7 @@ struct IconsFile {
     worktree_new: Option<String>,
     worktree_ahead: Option<String>,
     worktree_merged: Option<String>,
+    worktree_deleted: Option<String>,
     status_spinner: Option<String>,
     status_waiting: Option<String>,
     status_blocked: Option<String>,
@@ -554,6 +561,7 @@ impl Default for IconsFile {
             worktree_new: None,
             worktree_ahead: None,
             worktree_merged: None,
+            worktree_deleted: None,
             status_spinner: None,
             status_waiting: None,
             status_blocked: None,
@@ -593,6 +601,7 @@ impl<'de> Deserialize<'de> for IconsConfig {
             worktree_new: f.worktree_new.unwrap_or(b.worktree_new),
             worktree_ahead: f.worktree_ahead.unwrap_or(b.worktree_ahead),
             worktree_merged: f.worktree_merged.unwrap_or(b.worktree_merged),
+            worktree_deleted: f.worktree_deleted.unwrap_or(b.worktree_deleted),
             status_spinner: f
                 .status_spinner
                 .map(|s| frames(&s))
@@ -1804,6 +1813,7 @@ impl SectionSalvage for IconsConfig {
             worktree_new: salvage_field(t, "worktree_new", b.worktree_new, file, diags),
             worktree_ahead: salvage_field(t, "worktree_ahead", b.worktree_ahead, file, diags),
             worktree_merged: salvage_field(t, "worktree_merged", b.worktree_merged, file, diags),
+            worktree_deleted: salvage_field(t, "worktree_deleted", b.worktree_deleted, file, diags),
             // `b` is the unpadded preset, so joining its frames back into
             // one string reproduces exactly what the key accepts.
             status_spinner: frames(&salvage_field(
@@ -2093,6 +2103,11 @@ mod tests {
             "nerdfont merged: nf-dev-git_merge"
         );
         assert_eq!(
+            nf.worktree_deleted.trim_end(),
+            "\u{f05e8}",
+            "nerdfont deleted: nf-md-delete_forever"
+        );
+        assert_eq!(
             nf.repository.trim_end(),
             "\u{f024b}",
             "nerdfont repository: nf-md-folder"
@@ -2116,6 +2131,7 @@ mod tests {
         assert_eq!(uni.worktree_new.trim_end(), "○");
         assert_eq!(uni.worktree_ahead.trim_end(), "◆");
         assert_eq!(uni.worktree_merged.trim_end(), "✓");
+        assert_eq!(uni.worktree_deleted.trim_end(), "⊘");
 
         let none = IconsConfig::preset("none");
         assert_eq!(none.repository, "", "none: no type icon, no column at all");
@@ -2123,6 +2139,7 @@ mod tests {
         assert_eq!(none.repository_empty, "");
         assert_eq!(none.worktree_new, "");
         assert_eq!(none.worktree_merged, "");
+        assert_eq!(none.worktree_deleted, "");
     }
 
     #[test]
@@ -2141,7 +2158,12 @@ mod tests {
                     "repository",
                 ),
                 (
-                    vec![&i.worktree_new, &i.worktree_ahead, &i.worktree_merged],
+                    vec![
+                        &i.worktree_new,
+                        &i.worktree_ahead,
+                        &i.worktree_merged,
+                        &i.worktree_deleted,
+                    ],
                     "worktree",
                 ),
                 (vec![&i.guide_branch, &i.guide_last], "guide"),

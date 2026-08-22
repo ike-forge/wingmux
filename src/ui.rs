@@ -162,7 +162,7 @@ fn status_icon(ic: &IconsConfig, st: Status, elapsed: std::time::Duration) -> &s
     }
 }
 
-/// The icon for a worktree's state. The three glyphs share one
+/// The icon for a worktree's state. The four glyphs share one
 /// padded column (`IconsConfig::pad`), so the names line up whichever one
 /// a row draws.
 fn worktree_icon(ic: &crate::config::IconsConfig, st: WorktreeState) -> &str {
@@ -170,18 +170,23 @@ fn worktree_icon(ic: &crate::config::IconsConfig, st: WorktreeState) -> &str {
         WorktreeState::New => &ic.worktree_new,
         WorktreeState::Ahead => &ic.worktree_ahead,
         WorktreeState::Merged => &ic.worktree_merged,
+        WorktreeState::Deleted => &ic.worktree_deleted,
     }
 }
 
-/// Colour for the same three states, borrowed from the status palette so
+/// Colour for the same four states, borrowed from the status palette so
 /// every theme already answers for them: nothing started yet reads dim,
 /// work not in the base reads like `waiting` (it needs something from
 /// you), and merged reads like `working` — green, done, safe to delete.
+/// A worktree whose directory is gone borrows `failed`: it is the one
+/// role every theme keeps distinct from those three, and the row is
+/// broken — it cannot be attached to, sent to or previewed, only removed.
 fn worktree_state_color(theme: &ResolvedColors, st: WorktreeState) -> Color {
     match st {
         WorktreeState::New => theme.dim,
         WorktreeState::Ahead => theme.status_waiting,
         WorktreeState::Merged => theme.status_working,
+        WorktreeState::Deleted => theme.status_failed,
     }
 }
 
@@ -2532,13 +2537,13 @@ mod tests {
     }
 
     /// The worktree icon carries the branch's state — new / ahead /
-    /// merged — and all three share one padded column, so the names line up
-    /// whichever glyph a row draws.
+    /// merged / deleted — and all four share one padded column, so the
+    /// names line up whichever glyph a row draws.
     #[test]
     fn worktree_icon_carries_the_commit_state() {
         let mut app = seeded_app();
         app.cfg.icons = crate::config::IconsConfig::preset("unicode");
-        for name in ["new-one", "ahead-one", "merged-one"] {
+        for name in ["new-one", "ahead-one", "merged-one", "deleted-one"] {
             app.state.repositories[0]
                 .worktrees
                 .push(crate::state::Worktree {
@@ -2556,6 +2561,7 @@ mod tests {
             ("new-one", WorktreeState::New),
             ("ahead-one", WorktreeState::Ahead),
             ("merged-one", WorktreeState::Merged),
+            ("deleted-one", WorktreeState::Deleted),
         ] {
             app.wt_state
                 .insert(std::path::PathBuf::from(format!("/tmp/wt-{name}")), st);
@@ -2576,7 +2582,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("no row for {name}"))
                 .clone()
         };
-        for (name, glyph) in [("new-one", "○"), ("ahead-one", "◆"), ("merged-one", "✓")] {
+        for (name, glyph) in [
+            ("new-one", "○"),
+            ("ahead-one", "◆"),
+            ("merged-one", "✓"),
+            ("deleted-one", "⊘"),
+        ] {
             let r = row(name);
             assert!(
                 r.contains(&format!("{glyph} {name}")),
@@ -2591,12 +2602,12 @@ mod tests {
             let r = row(name);
             r[..r.find(name).unwrap()].chars().count()
         };
-        let cols: Vec<usize> = ["new-one", "ahead-one", "merged-one"]
+        let cols: Vec<usize> = ["new-one", "ahead-one", "merged-one", "deleted-one"]
             .map(char_col)
             .to_vec();
         assert!(
             cols.iter().all(|c| *c == cols[0]),
-            "the three icons share one column, so names align: {cols:?}"
+            "the four icons share one column, so names align: {cols:?}"
         );
     }
 
