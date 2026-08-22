@@ -271,15 +271,19 @@ the same commit as the change.
   two. `h`/`l` still fold and
   unfold; the arrow was a second answer to a question the row already
   answered.
-- **Worktree state: three states, one icon.** A worktree row's icon
+- **Worktree state: four states, one icon.** A worktree row's icon
   answers "has anything happened here yet?" — `worktree_new` (untouched:
   no commits of its own and a clean tree), `worktree_ahead` (work the base
   branch does not have), `worktree_merged` (all its commits are in the
-  base and the tree is clean). Colour follows from the status palette
-  rather than new theme keys: dim / `waiting` / `working`, so every theme
-  already answers for it. Since `status_working` now borrows `foreground`,
-  "merged" reads as ordinary text — done, nothing owed — which is the
-  right weight for it.
+  base and the tree is clean), `worktree_deleted` (the directory is gone).
+  Colour follows from the status palette rather than new theme keys: dim /
+  `waiting` / `working` / `failed`, so every theme already answers for it.
+  Since `status_working` now borrows `foreground`, "merged" reads as
+  ordinary text — done, nothing owed — which is the right weight for it.
+  `deleted` borrows `failed` because it is the one status role every
+  shipped theme keeps distinct from the other three (`dead` and `idle`
+  both fall back to `dim`, which is `new`), and the row *is* broken: it
+  cannot be attached to, sent to or previewed, only removed.
   - **Uncommitted changes ARE folded in** (user's call, reversing the
     earlier rule): an agent that has edited a worktree but not committed
     has plainly done something there, and drawing it with the "nothing
@@ -300,6 +304,16 @@ the same commit as the change.
     reconciled worktree (one LazyWingman discovered rather than created)
     has no fork point, falls back to the base branch, and reads a merged
     worktree as new — stated in the README rather than papered over.
+  - **A vanished directory is a state, not an error** (user's call: "a
+    gone directory should not just be unknown but rather deleted").
+    `Git::worktree_state` checks the path before it runs git and answers
+    `Deleted`; without that check every git call in a path that is not
+    there fails, `poll_worktree_state`'s `unwrap_or_default()` collapses
+    the failure to `WorktreeState::default()` — which is `New` — and a
+    worktree an agent merged and cleaned up after itself draws as a fresh
+    cut. That is the worst possible lie for this icon: it is the one state
+    that means "nothing has happened here". The row survives its directory
+    on purpose (its shells may still be alive), so `d` stays the way out.
   - **Merged is measured against the LOCAL base branch**, no fetching: a
     background `git fetch` is network I/O the user did not ask for and can
     hang on a slow remote. The cost is that a PR merged on the forge shows

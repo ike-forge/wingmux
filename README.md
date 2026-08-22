@@ -460,21 +460,29 @@ falls back to the tree.
 Icons come from `[icons]` (default preset `nerdfont`): a **folder per
 repository** — `󰝰` open when the row is expanded, `󰉋` closed when it is
 folded, `󰉖` outline when the repository has no worktrees at all — `●` shell,
-and **three glyphs for a
+and **four glyphs for a
 worktree's state** — `` untouched, `` carrying work the base branch
-does not have, `` all its work merged into the base. "Carrying work"
-means commits *or* an unclean working tree: a worktree an agent has edited
-but not committed is no longer untouched, and a merged worktree picks the
-glyph back up as soon as something is written into it. The three share one
-padded column, so names stay aligned whichever one a row draws. The state
-is also colour-coded: new is dim, ahead is the `waiting` colour, merged is
-the `working` colour. No patched font? Set
-`preset = "unicode"` for `▣`/`▤`/`▢` and `○`/`◆`/`✓`. Rows carry
+does not have, `` all its work merged into the base, `󰗨` its
+directory gone. "Carrying work" means commits *or* an unclean working
+tree: a worktree an agent has edited but not committed is no longer
+untouched, and a merged worktree picks the glyph back up as soon as
+something is written into it. The four share one padded column, so names
+stay aligned whichever one a row draws. The state is also colour-coded:
+new is dim, ahead is the `waiting` colour, merged is the `working` colour,
+and a deleted worktree is the `failed` colour — that row is broken, not
+finished. No patched font? Set
+`preset = "unicode"` for `▣`/`▤`/`▢` and `○`/`◆`/`✓`/`⊘`. Rows carry
 meaning in symbols, labels and position as well as colour.
 
 Uncommitted changes are deliberately *not* in that icon — a branch with
 commits reads the same whether or not there is unsaved work on top. They
 still decide whether the delete confirm offers `f` (force).
+
+A worktree whose directory has been removed — by hand, or by an agent
+told to merge and clean up after itself — keeps its row until you press
+`d`, and draws the deleted glyph while it waits: nothing can be measured
+in a path that is not there, and the alternative is a row claiming to be a
+fresh cut.
 
 "Merged" is measured against the **local** base branch: a PR merged on the
 forge shows as ahead until that merge is in your local `main`. A
@@ -501,6 +509,7 @@ reads as new until it has commits of its own.
 | `worktree_new` | `` | `○` | — | untouched: no commits, clean tree |
 | `worktree_ahead` | `` | `◆` | — | commits not in the base branch, or a dirty tree |
 | `worktree_merged` | `` | `✓` | — | commits all merged into the base, clean tree |
+| `worktree_deleted` | `󰗨` | `⊘` | — | the worktree directory is gone |
 | `status_spinner` | `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | same | — | frames cycled while an agent works |
 | `status_waiting` | `` | `⏸` | — | agent parked at its prompt |
 | `status_blocked` | `` | `⏹` | — | agent asking for permission |
