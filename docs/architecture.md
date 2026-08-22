@@ -257,11 +257,18 @@ the same commit as the change.
   tree is expanded by default, so the children are the count and the text
   only repeated what was one row below. The one thing a *folded* repository
   row cannot show otherwise — whether it holds anything at all — moved into
-  its icon (`▣` non-empty, `▢` empty), the same trick the worktree icon
-  uses. **Expand markers are gone from every row** (repositories first, then
-  worktrees): the icon already occupies that slot, and the guides below a row
-  say whether it is open far more loudly than a 1-column arrow did — a
-  collapsed row simply has no children under it. `h`/`l` still fold and
+  its icon, the same trick the worktree icon uses. **Expand markers are gone
+  from every row** (repositories first, then worktrees): the icon already
+  occupies that slot, and the guides below a row say whether it is open far
+  more loudly than a 1-column arrow did — a collapsed row simply has no
+  children under it.
+- **The repository icon is a folder in three states**: `󰝰` open (expanded),
+  `󰉋` closed (folded), `󰉖` outline (no worktrees). Folding is the one state
+  change that leaves no other trace once the children are gone, so the glyph
+  that replaced the expand marker had to absorb it; a folder is the shape
+  every file tree already uses for exactly this, so it needs no legend. An
+  empty repository has nothing to open, which is why it is one glyph and not
+  two. `h`/`l` still fold and
   unfold; the arrow was a second answer to a question the row already
   answered.
 - **Worktree commit state: three states, one icon.** A worktree row's icon
@@ -445,7 +452,7 @@ the same commit as the change.
   `last_child`, and the four grandchild forms) are built in `draw_tree` from
   three keys — `guide_branch`, `guide_last`, `guide_vertical` — since six
   near-identical constants is not a surface worth configuring. A type icon
-  sits next to each row: `[icons].repository`/`repository_empty` on
+  sits next to each row: the three `[icons].repository*` states on
   repositories, the three `worktree_*` states on worktrees, `shell` on
   shells.
   Mouse hit-testing uses the same tier math as rendering, so the wider guide
