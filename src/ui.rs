@@ -13,6 +13,7 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, BarAction, InputKind, Mode, Sel};
+use crate::config::IconsConfig;
 use crate::git::WorktreeState;
 use crate::status::Status;
 use crate::theme::ResolvedColors;
@@ -103,6 +104,15 @@ fn on(c: Color, bg: Color) -> Style {
     Style::default().fg(c).bg(bg)
 }
 
+/// Background-only style. The tree's selected row uses this rather than
+/// `on(selection_fg, selection_bg)`: every row in the tree carries meaning
+/// in its foreground colour (the status roles, the dimming of a dead
+/// shell), and repainting that on selection destroys exactly the signal
+/// the user moved the cursor there to read.
+fn bg(c: Color) -> Style {
+    Style::default().bg(c)
+}
+
 fn status_color(theme: &ResolvedColors, st: Status) -> Color {
     match st {
         Status::Working => theme.status_working,
@@ -112,6 +122,37 @@ fn status_color(theme: &ResolvedColors, st: Status) -> Color {
         Status::Failed => theme.status_failed,
         Status::Ended => theme.status_ended,
         Status::Dead => theme.status_dead,
+    }
+}
+
+/// How long one spinner frame is shown. The event loop redraws at least
+/// every 100 ms (`app::event_loop` caps its poll timeout), so a frame must
+/// last longer than that or the animation stutters at the redraw floor.
+const SPINNER_FRAME_MS: u128 = 120;
+
+/// The frame of the working spinner at `elapsed`. Empty when the icon set
+/// defines no spinner (the `none` preset), which is also why this cannot
+/// index blindly.
+fn spinner_frame(ic: &IconsConfig, elapsed: std::time::Duration) -> &str {
+    if ic.status_spinner.is_empty() {
+        return "";
+    }
+    let i = (elapsed.as_millis() / SPINNER_FRAME_MS) as usize % ic.status_spinner.len();
+    &ic.status_spinner[i]
+}
+
+/// The icon drawn in front of a status label, already padded to the shared
+/// status column. `idle` and `dead` are blank in every shipped preset: a
+/// state the user cannot act on should not compete for attention.
+fn status_icon(ic: &IconsConfig, st: Status, elapsed: std::time::Duration) -> &str {
+    match st {
+        Status::Working => spinner_frame(ic, elapsed),
+        Status::Waiting => &ic.status_waiting,
+        Status::Blocked => &ic.status_blocked,
+        Status::Failed => &ic.status_failed,
+        Status::Ended => &ic.status_ended,
+        Status::Idle => &ic.status_idle,
+        Status::Dead => &ic.status_dead,
     }
 }
 
@@ -411,6 +452,10 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let last_grandchild = format!("  {vbar}  {}", ic.guide_last);
     let no_grandchild = format!("  {vbar_blank}  {}", ic.guide_branch);
     let no_last_grandchild = format!("  {vbar_blank}  {}", ic.guide_last);
+    // One spinner phase for the whole frame: every working row animates in
+    // step, which reads as one dashboard ticking rather than N unrelated
+    // ones.
+    let spin = app.started.elapsed();
     let mut items: Vec<ListItem> = Vec::new();
     let mut sel_row: Option<usize> = None;
     let mut row: usize = 0;
@@ -492,7 +537,10 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 match solo {
                     Some(si) => {
                         let st = shell_status(app, &wt.shells[si]);
-                        Span::styled(format!("  {}", st.label()), fg(status_color(theme, st)))
+                        Span::styled(
+                            format!("  {}{}", status_icon(ic, st, spin), st.label()),
+                            fg(status_color(theme, st)),
+                        )
                     }
                     // A multi-shell worktree says nothing extra: its shells
                     // are one row below, each with its own status.
@@ -535,7 +583,10 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                         fg(row_color(theme, st == Status::Dead, theme.tree_shell)),
                     ),
                     Span::raw(" "),
-                    Span::styled(st.label(), fg(status_color(theme, st))),
+                    Span::styled(
+                        format!("{}{}", status_icon(ic, st, spin), st.label()),
+                        fg(status_color(theme, st)),
+                    ),
                 ])));
                 if app.sel == Sel::Shell(ri, wi, si) {
                     sel_row = Some(row);
@@ -562,7 +613,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let block = panel_block(theme, &app.cfg.icons, &title, true);
     let list = List::new(items)
         .block(block)
-        .highlight_style(on(theme.selection_fg, theme.selection_bg))
+        .highlight_style(bg(theme.selection_bg))
         .highlight_symbol(format!("{} ", ic.cursor));
     let mut state = ListState::default();
     state.select(sel_row);
@@ -2806,6 +2857,187 @@ mod tests {
     // ---- preview tail anchoring ----
 
     /// Rows of the rendered frame, one string per terminal line.
+    /// Each status draws its own glyph in front of the label. The label
+    /// stays: pause and stop read alike at a glance, so the glyph is the
+    /// fast scan and the word is what settles it.
+    #[test]
+    fn every_status_draws_its_own_icon_in_front_of_the_label() {
+        let mut app = seeded_app();
+        app.cfg.icons = crate::config::IconsConfig::preset("unicode");
+        let cases = [
+            ("wt-waiting", "%10", Status::Waiting, "⏸"),
+            ("wt-blocked", "%11", Status::Blocked, "⏹"),
+            ("wt-failed", "%12", Status::Failed, "✖"),
+            ("wt-ended", "%13", Status::Ended, "⏸"),
+        ];
+        for (name, pane, st, _) in cases {
+            app.state.repositories[0]
+                .worktrees
+                .push(crate::state::Worktree {
+                    name: name.into(),
+                    branch: name.into(),
+                    path: std::path::PathBuf::from(format!("/tmp/{name}")),
+                    created_at: String::new(),
+                    base_commit: None,
+                    shells: vec![crate::state::Shell {
+                        index: 0,
+                        window_name: format!("lw:{name}/0"),
+                        window_id: Some("@1".into()),
+                        pane_id: Some(pane.into()),
+                    }],
+                });
+            app.statuses.insert(pane.into(), st);
+        }
+        app.build_tree_flags();
+        app.repo_expanded[0] = true;
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let rows = buffer_rows(&terminal);
+
+        for (name, _, st, glyph) in cases {
+            let row = rows
+                .iter()
+                .find(|r| r.contains(name))
+                .unwrap_or_else(|| panic!("no row for {name}: {rows:?}"));
+            assert!(
+                row.contains(&format!("{glyph} {}", st.label())),
+                "{name} must read `{glyph} {}`: {row:?}",
+                st.label()
+            );
+        }
+    }
+
+    /// `idle` and `dead` draw no glyph — nothing to act on — but their
+    /// labels still line up with the states that do draw one.
+    #[test]
+    fn idle_and_dead_draw_no_glyph_but_stay_aligned() {
+        let mut app = seeded_app();
+        app.cfg.icons = crate::config::IconsConfig::preset("unicode");
+        let cases = [
+            ("quiet-one", "%20", Status::Idle),
+            ("gone-one", "%21", Status::Dead),
+            ("parked-one", "%22", Status::Waiting),
+        ];
+        for (name, pane, st) in cases {
+            app.state.repositories[0]
+                .worktrees
+                .push(crate::state::Worktree {
+                    name: name.into(),
+                    branch: name.into(),
+                    path: std::path::PathBuf::from(format!("/tmp/{name}")),
+                    created_at: String::new(),
+                    base_commit: None,
+                    shells: vec![crate::state::Shell {
+                        index: 0,
+                        window_name: format!("lw:{name}/0"),
+                        window_id: Some("@1".into()),
+                        pane_id: Some(pane.into()),
+                    }],
+                });
+            app.statuses.insert(pane.into(), st);
+        }
+        app.build_tree_flags();
+        app.repo_expanded[0] = true;
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let rows = buffer_rows(&terminal);
+
+        // The gap between the end of the worktree name and the start of the
+        // status label: identical whether or not the state draws a glyph.
+        let gap = |name: &str, st: Status| {
+            let row = rows.iter().find(|r| r.contains(name)).unwrap();
+            col_of(row, st.label()) - (col_of(row, name) + name.chars().count())
+        };
+        let parked = gap("parked-one", Status::Waiting);
+        assert_eq!(
+            gap("quiet-one", Status::Idle),
+            parked,
+            "a blank status icon must still hold its column: {rows:?}"
+        );
+        assert_eq!(
+            gap("gone-one", Status::Dead),
+            parked,
+            "dead draws no glyph but keeps the column: {rows:?}"
+        );
+    }
+
+    /// The spinner advances with wall-clock time and wraps, so the working
+    /// animation needs no timer of its own — just the redraws the event
+    /// loop already does.
+    #[test]
+    fn the_spinner_cycles_its_frames_over_time() {
+        use std::time::Duration;
+        let ic = crate::config::IconsConfig::preset("nerdfont");
+        let n = ic.status_spinner.len();
+        assert!(n > 1, "the nerdfont preset must ship a real animation");
+        let at = |ms: u64| spinner_frame(&ic, Duration::from_millis(ms)).to_string();
+        assert_eq!(at(0), ic.status_spinner[0]);
+        assert_ne!(at(0), at(SPINNER_FRAME_MS as u64), "one step advances");
+        assert_eq!(
+            at(0),
+            at(SPINNER_FRAME_MS as u64 * n as u64),
+            "a full cycle wraps"
+        );
+        // A frame outlives the event loop's ~100ms redraw floor, or the
+        // animation would stutter instead of ticking.
+        const { assert!(SPINNER_FRAME_MS > 100) };
+        assert_eq!(
+            spinner_frame(&crate::config::IconsConfig::preset("none"), Duration::ZERO),
+            "",
+            "no spinner configured draws nothing"
+        );
+    }
+
+    /// The cursor row tints its background and nothing else. Repainting the
+    /// foreground would erase the status colour — the one thing the user
+    /// moved the cursor there to read.
+    #[test]
+    fn the_selected_row_keeps_its_colours_and_only_gains_a_background() {
+        let mut app = seeded_app_with_shell();
+        app.statuses.insert("%1".into(), Status::Failed);
+        app.sel = crate::app::Sel::Worktree(0, 0);
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let rows = buffer_rows(&terminal);
+        let y = rows
+            .iter()
+            .position(|r| r.contains(Status::Failed.label()))
+            .unwrap_or_else(|| panic!("no selected row: {rows:?}"));
+        let x = col_of(&rows[y], Status::Failed.label()) as u16;
+
+        let buf = terminal.backend().buffer();
+        let cell = &buf[(x, y as u16)];
+        let c = &app.theme.colors;
+        assert_eq!(cell.fg, c.status_failed, "the status keeps its own colour");
+        assert_eq!(
+            cell.bg, c.selection_bg,
+            "the selection tints the background"
+        );
+        // ...and the row is genuinely the selected one: an unselected row
+        // carries no selection background at all.
+        let other = rows
+            .iter()
+            .position(|r| r.contains("repo-b"))
+            .expect("a second repository row");
+        assert_ne!(buf[(x, other as u16)].bg, c.selection_bg);
+    }
+
+    /// The screen column `needle` starts at in a rendered row. Every glyph
+    /// the tree draws is one cell wide, so a char offset is a column — a
+    /// byte offset is not, and the box-drawing guides make the two differ.
+    fn col_of(row: &str, needle: &str) -> usize {
+        let b = row
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} not in {row:?}"));
+        row[..b].chars().count()
+    }
+
     fn buffer_rows(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> Vec<String> {
         let buf = terminal.backend().buffer();
         (0..buf.area.height)

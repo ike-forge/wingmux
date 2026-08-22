@@ -508,6 +508,11 @@ pub struct App {
     pub hook_settings: Option<std::path::PathBuf>,
     pattern_cache: HashMap<String, Compiled>,
     pub last_poll: Instant,
+    /// When the dashboard started. Only the working spinner reads it: its
+    /// frame is a function of elapsed time, so the animation runs off the
+    /// redraws the event loop already does (~10 Hz) and needs no timer of
+    /// its own.
+    pub started: Instant,
     /// The transient notice shown as a toast above the statusbar. Set by
     /// [`App::notify`] / [`App::notify_err`]; read through [`App::toast`],
     /// which drops it once its TTL has passed — the statusbar is
@@ -617,6 +622,7 @@ impl App {
             hook_settings: None,
             pattern_cache: HashMap::new(),
             last_poll: Instant::now(),
+            started: Instant::now(),
             message: None,
             wt_state: HashMap::new(),
             last_wt_state_poll: None,

@@ -244,7 +244,7 @@ stats per directory, done live.
 ### Themes
 
 `$XDG_CONFIG_HOME/lazywingman/themes/<name>.toml`. Colours are named roles
-(`background`, `accent`, `tree_repository`, `status_working`, …) written as
+(`background`, `accent`, `tree_repository`, `status_waiting`, …) written as
 `#rrggbb` hex, an ANSI-16 name (`cyan`, `bright_black`, `gray`, …), or
 `default` (terminal default). Seven built-ins ship with the binary:
 
@@ -272,6 +272,29 @@ config's `theme = ...` line is the startup default.
 `NO_COLOR` (present and non-empty) switches to a monochrome render — every
 role resolves to the terminal default; the UI stays readable because meaning
 is carried by symbols, labels and position, not by colour.
+
+**A theme answers for two status colours, not seven.** Only `status_waiting`
+and `status_failed` are a theme's to choose; the other five borrow a base
+role, so no theme can drift away from what a state means:
+
+| Role | Borrows | Why |
+|---|---|---|
+| `status_working` | `foreground` | an agent doing its job is not an alarm — the spinner already says it is running |
+| `status_ended` | `foreground` | the agent is gone, the shell is ordinary |
+| `status_blocked` | `status_waiting` | both mean the agent stopped and wants you; the icon tells them apart |
+| `status_idle` | `dim` | nothing to act on, so it recedes |
+| `status_dead` | `dim` | same, and the whole row is muted anyway |
+
+Each stays overridable: set the key in your theme and your value wins.
+Themes written before this split — which set all seven — keep loading
+unchanged.
+
+**The selected row is tinted, not repainted.** The cursor row takes
+`selection_bg` as a background and leaves every foreground alone, because
+those foregrounds *are* the information: the status colour, the dimming of a
+dead shell, the worktree's commit state. Inverting them would erase what you
+moved the cursor there to read. (`selection_fg` still applies inside modals,
+where rows carry no colour of their own.)
 
 ### Agent status
 
@@ -311,6 +334,27 @@ Claude included, then classifies purely from `capture-pane`, exactly as
 before this worktree existed. `failed` stays regex-based either way —
 Claude has no "I failed" hook event — so a failing turn only surfaces
 once the session ends and the overlay clears.
+
+**Every state draws its own icon** in front of the status word — the glyph
+is the fast scan across a full tree, the word is what settles it:
+
+| State | `nerdfont` | `unicode` | Colour |
+|---|---|---|---|
+| `working` | spinner, `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | same | text |
+| `waiting` | `` | `⏸` | `status_waiting` |
+| `blocked` | `` | `⏹` | `status_waiting` |
+| `failed` | `` | `✖` | `status_failed` |
+| `ended` | `` | `⏸` | text |
+| `idle` | — | — | dim |
+| `dead` | — | — | dim |
+
+The spinner turns while an agent is working, in step across every row, and
+costs nothing extra: it is a function of elapsed time, read off the redraws
+the poll loop already does. `idle` and `dead` draw no glyph on purpose —
+a state you cannot act on should not compete for attention — but they still
+hold the column, so labels stay aligned. Every glyph is a `[icons]` key
+(`status_working` is `status_spinner`, a string of frames); see the key
+reference below.
 
 A `dead` entry is **muted whole**: the row's guide, icon, name and status all
 take the dead colour instead of only the status word. The rule climbs the tree
@@ -378,10 +422,10 @@ is happening, the bar says what you can press:
 ```
 ╭ Repositories (2) ────────╮╭ Preview ────────────────────────────╮
 │▣ repo-a                  ││ live tail of the selected shell,    │
-│  ├─  login   waiting    ││ refreshed every poll                │
+│  ├─  login  ⏸ waiting   ││ refreshed every poll                │
 │  └─  search             ││                                     │
-│     ├─ ● #0 working      ││     ╭────────────────────────╮      │
-│     └─ ● #1 waiting      ││     │ worktree 'search' cre… │      │
+│     ├─ ● #0 ⠹ working    ││     ╭────────────────────────╮      │
+│     └─ ● #1 ⏸ waiting    ││     │ worktree 'search' cre… │      │
 │▢ repo-b                  ││     ╰────────────────────────╯      │
 ╰──────────────────────────╯╰─────────────────────────────────────╯
  n worktree · a shell · d delete · ? help
@@ -438,6 +482,13 @@ reads as new until it has commits of its own.
 | `worktree_new` | `` | `○` | — | worktree with no commits of its own |
 | `worktree_ahead` | `` | `◆` | — | commits not in the base branch |
 | `worktree_merged` | `` | `✓` | — | commits all merged into the base |
+| `status_spinner` | `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | same | — | frames cycled while an agent works |
+| `status_waiting` | `` | `⏸` | — | agent parked at its prompt |
+| `status_blocked` | `` | `⏹` | — | agent asking for permission |
+| `status_failed` | `` | `✖` | — | the agent reported a failure |
+| `status_ended` | `` | `⏸` | — | the agent exited, a shell is left |
+| `status_idle` | — | — | — | agent running, state unrecognised |
+| `status_dead` | — | — | — | the pane is gone |
 | `shell` | `●` | `●` | — | before the shell number |
 | `cursor` | `›` | `›` | `›` | selection, tree and modals |
 | `guide_branch` | `├─` | `├─` | `├─` | guide, non-last child |
@@ -450,9 +501,12 @@ reads as new until it has commits of its own.
 | `border` | `rounded` | `rounded` | `rounded` | panel and popup frames |
 
 An empty string draws nothing. `repository`/`repository_empty`,
-`guide_branch`/`guide_last` and the three `worktree_*` states share a
-rendered column each and are padded to equal width, so names stay aligned
-when one of them is empty.
+`guide_branch`/`guide_last`, the three `worktree_*` states and the
+`status_*` set share a rendered column each and are padded to equal width,
+so names stay aligned when one of them is empty. `status_spinner` is one
+string split into frames, one character per animation step, and every frame
+joins the status column — a narrow frame would make the label jitter once
+per step.
 The rest are used verbatim: add your own trailing space if you want a gap
 after one (the default `shell = "● "` has one baked in).
 
