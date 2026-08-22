@@ -121,8 +121,7 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 
 # Every key below overrides the preset glyph by glyph. An empty string
 # draws nothing. `repository`/`repository_empty`, `worktree`/
-# `worktree_dirty`, `expand_open`/`expand_closed` and `guide_branch`/
-# `guide_last` are padded in pairs, so names stay aligned when one side
+# `worktree_dirty` and `guide_branch`/`guide_last` are padded in pairs, so names stay aligned when one side
 # is empty. `shell`, `cursor`, `separator`, `warn` and `ellipsis` have
 # no sibling to pad against and are used verbatim — add your own
 # trailing space if you want a gap after one (the default `shell` below
@@ -132,8 +131,6 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #worktree = ""                 # clean worktree
 #worktree_dirty = "󰘬"         # uncommitted changes (nf-md-source_branch)
 #shell = "● "                  # a shell inside a worktree
-#expand_open = "▾"             # expanded row
-#expand_closed = "▸"           # collapsed row
 #cursor = "›"                  # marks the selected row
 #guide_branch = "├─"            # tree guide, more siblings below
 #guide_last = "└─"              # tree guide, last sibling
@@ -334,8 +331,6 @@ pub struct IconsConfig {
     pub worktree: String,
     pub worktree_dirty: String,
     pub shell: String,
-    pub expand_open: String,
-    pub expand_closed: String,
     pub cursor: String,
     pub guide_branch: String,
     pub guide_last: String,
@@ -373,8 +368,6 @@ impl IconsConfig {
             worktree: String::new(),
             worktree_dirty: "󰘬".into(),
             shell: "● ".into(),
-            expand_open: "▾".into(),
-            expand_closed: "▸".into(),
             cursor: "›".into(),
             guide_branch: "├─".into(),
             guide_last: "└─".into(),
@@ -405,8 +398,6 @@ impl IconsConfig {
                 worktree: "-".into(),
                 worktree_dirty: "*".into(),
                 shell: String::new(),
-                expand_open: "v".into(),
-                expand_closed: ">".into(),
                 cursor: ">".into(),
                 guide_branch: "|-".into(),
                 guide_last: "`-".into(),
@@ -430,7 +421,6 @@ impl IconsConfig {
     fn pad(&mut self) {
         pad_pair(&mut self.repository, &mut self.repository_empty);
         pad_pair(&mut self.worktree, &mut self.worktree_dirty);
-        pad_pair(&mut self.expand_open, &mut self.expand_closed);
         pad_pair(&mut self.guide_branch, &mut self.guide_last);
     }
 }
@@ -457,8 +447,6 @@ struct IconsFile {
     worktree: Option<String>,
     worktree_dirty: Option<String>,
     shell: Option<String>,
-    expand_open: Option<String>,
-    expand_closed: Option<String>,
     cursor: Option<String>,
     guide_branch: Option<String>,
     guide_last: Option<String>,
@@ -479,8 +467,6 @@ impl Default for IconsFile {
             worktree: None,
             worktree_dirty: None,
             shell: None,
-            expand_open: None,
-            expand_closed: None,
             cursor: None,
             guide_branch: None,
             guide_last: None,
@@ -510,8 +496,6 @@ impl<'de> Deserialize<'de> for IconsConfig {
             worktree: f.worktree.unwrap_or(b.worktree),
             worktree_dirty: f.worktree_dirty.unwrap_or(b.worktree_dirty),
             shell: f.shell.unwrap_or(b.shell),
-            expand_open: f.expand_open.unwrap_or(b.expand_open),
-            expand_closed: f.expand_closed.unwrap_or(b.expand_closed),
             cursor: f.cursor.unwrap_or(b.cursor),
             guide_branch: f.guide_branch.unwrap_or(b.guide_branch),
             guide_last: f.guide_last.unwrap_or(b.guide_last),
@@ -818,8 +802,6 @@ const ICONS_KEYS: &[&str] = &[
     "worktree",
     "worktree_dirty",
     "shell",
-    "expand_open",
-    "expand_closed",
     "cursor",
     "guide_branch",
     "guide_last",
@@ -1094,14 +1076,6 @@ impl Config {
             format!("\"{}\"", self.icons.worktree_dirty),
         );
         line("icons.shell", format!("\"{}\"", self.icons.shell));
-        line(
-            "icons.expand_open",
-            format!("\"{}\"", self.icons.expand_open),
-        );
-        line(
-            "icons.expand_closed",
-            format!("\"{}\"", self.icons.expand_closed),
-        );
         line("icons.cursor", format!("\"{}\"", self.icons.cursor));
         line(
             "icons.guide_branch",
@@ -1674,8 +1648,6 @@ impl SectionSalvage for IconsConfig {
             worktree: salvage_field(t, "worktree", b.worktree, file, diags),
             worktree_dirty: salvage_field(t, "worktree_dirty", b.worktree_dirty, file, diags),
             shell: salvage_field(t, "shell", b.shell, file, diags),
-            expand_open: salvage_field(t, "expand_open", b.expand_open, file, diags),
-            expand_closed: salvage_field(t, "expand_closed", b.expand_closed, file, diags),
             cursor: salvage_field(t, "cursor", b.cursor, file, diags),
             guide_branch: salvage_field(t, "guide_branch", b.guide_branch, file, diags),
             guide_last: salvage_field(t, "guide_last", b.guide_last, file, diags),
@@ -1958,11 +1930,6 @@ mod tests {
         let none = IconsConfig::preset("none");
         assert_eq!(none.repository, "", "none: no type icon, no column at all");
         assert_eq!(none.worktree, "");
-        assert_eq!(
-            none.expand_open.trim_end(),
-            "▾",
-            "none keeps markers — a tree needs them"
-        );
     }
 
     #[test]
@@ -1978,7 +1945,6 @@ mod tests {
             for (a, b, what) in [
                 (&i.repository, &i.repository_empty, "repository"),
                 (&i.worktree, &i.worktree_dirty, "worktree"),
-                (&i.expand_open, &i.expand_closed, "expand"),
                 (&i.guide_branch, &i.guide_last, "guide"),
             ] {
                 assert_eq!(
@@ -2076,7 +2042,7 @@ mod tests {
             // number of fields actually accepted.
             assert_eq!(
                 ICONS_KEYS.len(),
-                17,
+                15,
                 "adding an icon key means adding it to ICONS_KEYS too"
             );
         });

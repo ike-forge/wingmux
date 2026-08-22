@@ -379,7 +379,7 @@ is happening, the bar says what you can press:
 ╭ Repositories (2) ────────╮╭ Preview ────────────────────────────╮
 │▣ repo-a                  ││ live tail of the selected shell,    │
 │  ├─     login   waiting  ││ refreshed every poll                │
-│  └─ ▾ 󰘬 search           ││                                     │
+│  └─ 󰘬 search             ││                                     │
 │     ├─ ● #0 working      ││     ╭────────────────────────╮      │
 │     └─ ● #1 waiting      ││     │ worktree 'search' cre… │      │
 │▢ repo-b                  ││     ╰────────────────────────╯      │
@@ -423,8 +423,6 @@ as colour.
 | `worktree` | — | `◇` | `-` | — | clean worktree |
 | `worktree_dirty` | `󰘬` | `◆` | `*` | — | uncommitted changes |
 | `shell` | `●` | `●` | — | — | before the shell number |
-| `expand_open` | `▾` | `▾` | `v` | `▾` | expanded worktree |
-| `expand_closed` | `▸` | `▸` | `>` | `▸` | collapsed worktree |
 | `cursor` | `›` | `›` | `>` | `›` | selection, tree and modals |
 | `guide_branch` | `├─` | `├─` | `\|-` | `├─` | guide, non-last child |
 | `guide_last` | `└─` | `└─` | `` `- `` | `└─` | guide, last child |
@@ -435,10 +433,10 @@ as colour.
 | `enter` | `↵` | `↵` | `Enter` | `↵` | the Enter key, in the bar |
 | `border` | `rounded` | `rounded` | `ascii` | `rounded` | panel and popup frames |
 
-An empty string draws nothing. Four pairs share a rendered column and are
+An empty string draws nothing. Three pairs share a rendered column and are
 padded to equal width — `repository`/`repository_empty`,
-`worktree`/`worktree_dirty`, `expand_open`/`expand_closed`,
-`guide_branch`/`guide_last` — so names stay aligned when one side is empty.
+`worktree`/`worktree_dirty`, `guide_branch`/`guide_last` — so names stay
+aligned when one side is empty.
 The rest are used verbatim: add your own trailing space if you want a gap
 after one (the default `shell = "● "` has one baked in).
 
@@ -464,8 +462,8 @@ rest, and `d` deletes it like any other.
 
 **The folded row** (`login` above): the nominal case is one worktree, one
 agent, so a worktree with a single shell has no child row at all — its own row
-*is* that shell. It carries the shell's status, has no expand marker, and
-`Enter` / `s` attach and quick-send to it directly. `a` gives the worktree a
+*is* that shell. It carries the shell's status, and `Enter` / `s` attach and
+quick-send to it directly. `a` gives the worktree a
 second shell, and the subtree appears. Only worktrees with several shells (or
 none) are expandable.
 

@@ -258,9 +258,12 @@ the same commit as the change.
   only repeated what was one row below. The one thing a *folded* repository
   row cannot show otherwise — whether it holds anything at all — moved into
   its icon (`▣` non-empty, `▢` empty), the same trick the worktree icon
-  uses. The expand marker was dropped from repository rows: the icon already
-  occupies that slot and a collapsed repository shows no children, so the
-  arrow was a second answer to a question the row already answered.
+  uses. **Expand markers are gone from every row** (repositories first, then
+  worktrees): the icon already occupies that slot, and the guides below a row
+  say whether it is open far more loudly than a 1-column arrow did — a
+  collapsed row simply has no children under it. `h`/`l` still fold and
+  unfold; the arrow was a second answer to a question the row already
+  answered.
 - **Dead entries are muted whole** (user feedback: "when a shell is
   closed/dead, mute the whole entry in the tree"). Colouring only the status
   word left a dead row as visually loud as a working one, so the eye had to
@@ -428,7 +431,7 @@ the same commit as the change.
   drew a box a quarter of the screen tall with text jammed against the
   border.
 - **Icons**: `[icons]` (`src/config.rs`) covers the tree's type icons and
-  guides, the expand/cursor markers, the separator, the warn mark, the
+  guides, the cursor marker, the separator, the warn mark, the
   ellipsis, the Enter glyph and the border style, chosen by a preset
   (`nerdfont` default, plus `unicode`, `ascii`, `none`) and overridable key
   by key. This

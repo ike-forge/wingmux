@@ -455,16 +455,10 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 .copied()
                 .unwrap_or(false);
             // One worktree, one agent: a worktree with a single shell is
-            // folded for good — no marker, no child row, and its own row
-            // carries that shell's status.
+            // folded for good — no child row, and its own row carries that
+            // shell's status.
             let solo = app.solo_shell(ri, wi);
             let fdead = worktree_dead(app, wt);
-            let marker = match solo {
-                // a blank of the marker's width keeps the names aligned
-                Some(_) => " ".repeat(UnicodeWidthStr::width(ic.expand_open.as_str())),
-                None if fexp => ic.expand_open.clone(),
-                None => ic.expand_closed.clone(),
-            };
             let n = wt.shells.len();
             let dirty = app.worktree_dirty_cached(ri, wi);
             let ficon = if dirty {
@@ -475,14 +469,14 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             // In flatten mode the worktrees are the top level (no guide);
             // otherwise they hang off the repository with a tree branch.
             let (prefix, icon_span) = if app.flatten {
-                (marker, ficon.to_string())
+                (String::new(), ficon.to_string())
             } else {
                 let guide = if wi + 1 == n_feat {
                     &last_child
                 } else {
                     &child
                 };
-                (format!("{guide}{marker}"), ficon.to_string())
+                (guide.clone(), ficon.to_string())
             };
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(
@@ -2079,8 +2073,8 @@ mod tests {
         }
     }
 
-    /// ASCII preset: no box-drawing, no unicode markers — plain `+ - |`
-    /// and `v`/`>` — so terminals that mangle box-drawing stay readable.
+    /// ASCII preset: no box-drawing, no unicode markers — plain `- | \`` and
+    /// `>` — so terminals that mangle box-drawing stay readable.
     #[test]
     fn ascii_preset_renders_without_box_glyphs() {
         let mut app = seeded_app();
@@ -2095,9 +2089,8 @@ mod tests {
             missing: false,
             worktrees: vec![],
         });
-        // The repository row lost its expand marker in this task; give the
-        // first repository a multi-shell, expanded worktree so a worktree-row
-        // marker (`expand_open` = "v" in the ascii preset) still renders.
+        // Give the first repository a multi-shell, expanded worktree so the
+        // deeper guides (grandchild rows) render too.
         let shell = |i: usize| crate::state::Shell {
             index: i,
             window_name: format!("lw:f/{i}"),
@@ -2135,7 +2128,7 @@ mod tests {
                 "ascii render must not contain {glyph:?}: {text:?}"
             );
         }
-        for glyph in ["+", "-", "|", "v", ">"] {
+        for glyph in ["-", "|", ">"] {
             assert!(text.contains(glyph), "ascii render must use {glyph:?}");
         }
         // A denylist only catches the glyphs someone thought to list: `↵` and
@@ -2149,15 +2142,13 @@ mod tests {
         );
     }
 
-    /// In unicode mode the box-drawing tree markers are present — the
+    /// In unicode mode the box-drawing tree guides are present — the
     /// fallback must not silently replace them.
     #[test]
     fn unicode_mode_keeps_box_drawing() {
         let mut app = seeded_app();
-        // The repository row no longer carries an expand marker (this task);
-        // give the first repository a multi-shell, expanded worktree so a
-        // worktree-row marker (`expand_open` = "▾" in the default preset)
-        // still renders (Ruling F1's fix applied here for the same reason).
+        // A multi-shell, expanded worktree so the deeper guides (the
+        // vertical bar carried down a column) render too.
         let shell = |i: usize| crate::state::Shell {
             index: i,
             window_name: format!("lw:f/{i}"),
@@ -2182,7 +2173,7 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
         assert!(text.contains("─"), "unicode render keeps box-drawing");
-        assert!(text.contains("▾"), "unicode render keeps the tree markers");
+        assert!(text.contains("│"), "unicode render keeps the carried guide");
     }
 
     /// `border = "plain"` must reach every panel, not just popups.
