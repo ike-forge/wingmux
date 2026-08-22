@@ -81,13 +81,13 @@ fn overlay_min(kind: OverlayKind) -> (u16, u16) {
     // Border + `MODAL_PADDING` included: each of these leaves the same
     // usable content box the pre-padding minimums did.
     match kind {
-        OverlayKind::Help => (48, 15),
-        OverlayKind::Diagnostics => (48, 11),
-        OverlayKind::ThemePicker => (38, 11),
-        OverlayKind::Messages => (38, 11),
-        OverlayKind::Input | OverlayKind::Confirm => (38, 11),
+        OverlayKind::Help => (48, 14),
+        OverlayKind::Diagnostics => (48, 10),
+        OverlayKind::ThemePicker => (38, 10),
+        OverlayKind::Messages => (38, 10),
+        OverlayKind::Input | OverlayKind::Confirm => (38, 10),
         // The textarea is the main interaction — it needs real estate.
-        OverlayKind::Textarea => (54, 13),
+        OverlayKind::Textarea => (54, 12),
     }
 }
 
@@ -476,15 +476,16 @@ fn title_style(theme: &ResolvedColors) -> Style {
 }
 
 /// Breathing room inside every modal border: one column left and right,
-/// one row on top. No bottom row — the last content row is the shortcut
-/// footer, fenced off by [`draw_footer_rule`], and a gap below it would
-/// float it off the frame.
-pub(crate) const MODAL_PADDING: Padding = Padding::new(1, 1, 1, 0);
+/// nothing vertically. No top row — the first content row sits right under
+/// the border, the way the panel frames carry their titles. No bottom row
+/// either — the last content row is the shortcut footer, fenced off by
+/// [`draw_footer_rule`], and a gap below it would float it off the frame.
+pub(crate) const MODAL_PADDING: Padding = Padding::new(1, 1, 0, 0);
 
 /// Columns and rows a modal spends on its border and [`MODAL_PADDING`] —
 /// what every content-sizing calculation has to add on top of its lines.
 const MODAL_CHROME_W: u16 = 4;
-const MODAL_CHROME_H: u16 = 3;
+const MODAL_CHROME_H: u16 = 2;
 
 /// Overlay block: rounded (or configured) corners, popup border colour,
 /// bg-less title, and the shared modal padding — no modal draws text
@@ -3790,8 +3791,9 @@ mod tests {
 
     /// The create/delete dialogs size themselves to what they say instead
     /// of taking a fixed slice of the frame, and keep one blank column on
-    /// each side and one blank row on top between the text and the border.
-    /// The bottom row belongs to the shortcut footer, fenced off by the
+    /// each side between the text and the border. Neither the top nor the
+    /// bottom row is padding: the first content row sits right under the
+    /// border, and the last one is the shortcut footer, fenced off by the
     /// rule — a gap below it would float the footer off the frame.
     #[test]
     fn dialogs_are_content_sized_with_one_char_padding() {
@@ -3829,18 +3831,14 @@ mod tests {
             // Content-sized: nowhere near the frame, and no taller than
             // its few lines need.
             assert!(
-                area.width < 120 * 60 / 100 && area.height <= 8,
+                area.width < 120 * 60 / 100 && area.height <= 7,
                 "dialog must fit its content, got {area:?}",
             );
-            // Padding row under the top border.
+            // No padding row: the first content row is text.
             let inside = row(area.y + 1);
             assert!(
-                inside
-                    .chars()
-                    .skip(1)
-                    .take(area.width as usize - 2)
-                    .all(|c| c == ' '),
-                "row under the top border must be blank padding, got {inside:?}",
+                !inside.trim().is_empty(),
+                "the row under the top border must carry content, got {inside:?}",
             );
             // The last content row is the shortcut footer, with a blank
             // row of its own above it.
@@ -3853,7 +3851,7 @@ mod tests {
             // Padding column on both sides of every content row — the
             // rule row is the exception: it spans border to border.
             let rule_y = area.y + area.height - 3;
-            for y in (area.y + 2..area.y + area.height - 1).filter(|y| *y != rule_y) {
+            for y in (area.y + 1..area.y + area.height - 1).filter(|y| *y != rule_y) {
                 let cells: Vec<String> = (area.x..area.x + area.width)
                     .map(|x| buf[(x, y)].symbol().to_string())
                     .collect();
@@ -3867,8 +3865,8 @@ mod tests {
         }
     }
 
-    /// Every modal keeps `MODAL_PADDING` (a blank column each side, a blank
-    /// row under the top border) and ends with its shortcut footer, fenced
+    /// Every modal keeps `MODAL_PADDING` (a blank column each side, no
+    /// blank row above or below) and ends with its shortcut footer, fenced
     /// off by a border-to-border rule. One rule, checked on all of them at
     /// once — a new overlay that forgets either fails here.
     #[test]
@@ -3892,7 +3890,13 @@ mod tests {
             (
                 "textarea",
                 Mode::Textarea {
-                    buf: crate::app::TextBuf::new(),
+                    // Non-empty: an empty buffer would leave the first
+                    // content row blank and look like a padding row.
+                    buf: {
+                        let mut buf = crate::app::TextBuf::new();
+                        buf.insert_char('x');
+                        buf
+                    },
                 },
             ),
             (
@@ -3924,10 +3928,14 @@ mod tests {
                     .map(|x| buf[(x, y)].symbol())
                     .collect()
             };
+            let first = row(area.y + 1);
             assert!(
-                row(area.y + 1).trim().is_empty(),
-                "{name}: blank padding row under the top border, got {:?}",
-                row(area.y + 1)
+                !first.trim().is_empty(),
+                "{name}: content starts right under the top border, got {first:?}"
+            );
+            assert!(
+                first.starts_with(' ') && first.ends_with(' '),
+                "{name}: padding column on both sides of the first row, got {first:?}"
             );
             let footer = row(area.y + area.height - 2);
             assert!(

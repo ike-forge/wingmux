@@ -425,10 +425,10 @@ pub(crate) fn textarea_width(viewport_w: u16) -> u16 {
 }
 
 /// Content rows of the textarea popup (inside the border and the modal
-/// padding, above the spacer and the hint row): height − 5 (2 borders +
-/// the padding's top row + spacer + hint).
+/// padding, above the spacer and the hint row): height − 4 (2 borders +
+/// spacer + hint — the modal padding costs no row).
 pub(crate) fn textarea_visible_lines(viewport_h: u16) -> usize {
-    (textarea_height(viewport_h) as usize).saturating_sub(5)
+    (textarea_height(viewport_h) as usize).saturating_sub(4)
 }
 
 /// Soft-wrap width of the textarea content: the popup width minus the two

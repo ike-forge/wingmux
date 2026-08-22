@@ -213,4 +213,4 @@ Every hint is written in one shape — `<action> <key>`, e.g. `cancel esc`,
 without reading the sentence (`ui::Hint`, `ui::hint_line`). Keys with a glyph
 form take it from `[icons]` (`enter`, `arrows`), so the `ascii` preset spells
 them out instead. Every modal ends with such a hint row, one blank row above
-it, inside `MODAL_PADDING` (one column left and right, one row on top).
+it, inside `MODAL_PADDING` (one column left and right, no vertical padding).

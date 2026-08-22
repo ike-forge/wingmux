@@ -532,11 +532,12 @@ the same commit as the change.
   teaches the modals. Keys with a glyph form (`enter`, `arrows`) resolve
   through `[icons]`, so the `ascii` preset spells them out.
 - **Every modal is padded and ends with its shortcuts**: `MODAL_PADDING`
-  (one column left and right, one row on top) lives on `popup_block`, so no
-  overlay can forget it, and every content-sizing calculation adds the shared
-  `MODAL_CHROME_W`/`MODAL_CHROME_H`. There is deliberately no bottom padding
-  row — the last content row is the shortcut footer, and a gap below it would
-  float it off the frame.
+  (one column left and right, nothing vertically) lives on `popup_block`, so
+  no overlay can forget it, and every content-sizing calculation adds the
+  shared `MODAL_CHROME_W`/`MODAL_CHROME_H`. The padding is horizontal only:
+  a top row pushed every modal's first line away from its title for no gain,
+  and a bottom row would float the shortcut footer — the last content row —
+  off the frame.
 - **The footer is fenced off by a rule, not a gap**: `draw_footer_rule` paints
   `├`–`─`–`┤` border to border on the row above the shortcuts, so the footer
   reads as its own compartment the way a table header rule separates the
