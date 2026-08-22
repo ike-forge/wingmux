@@ -129,9 +129,9 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 # already has one baked in). The values shown are the "nerdfont" preset.
 #repository = "▣"              # repository holding worktrees
 #repository_empty = "▢"        # repository with none yet
-#worktree_new = ""            # worktree with no commits of its own
-#worktree_ahead = ""          # commits not in the base branch yet
-#worktree_merged = ""         # its commits are all in the base branch
+#worktree_new = ""            # worktree with no commits of its own
+#worktree_ahead = ""          # commits not in the base branch yet
+#worktree_merged = ""         # its commits are all in the base branch
 #shell = "● "                  # a shell inside a worktree
 #cursor = "›"                  # marks the selected row
 #guide_branch = "├─"            # tree guide, more siblings below
@@ -366,9 +366,9 @@ impl IconsConfig {
         let nerdfont = IconsConfig {
             repository: "▣".into(),
             repository_empty: "▢".into(),
-            worktree_new: "".into(),
-            worktree_ahead: "".into(),
-            worktree_merged: "".into(),
+            worktree_new: "".into(),
+            worktree_ahead: "".into(),
+            worktree_merged: "".into(),
             shell: "● ".into(),
             cursor: "›".into(),
             guide_branch: "├─".into(),
@@ -1918,18 +1918,18 @@ mod tests {
         let nf = IconsConfig::preset("nerdfont");
         assert_eq!(
             nf.worktree_new.trim_end(),
-            "\u{f418}",
-            "nerdfont new: octicon git-branch"
+            "\u{eafc}",
+            "nerdfont new: nf-cod-git_commit"
         );
         assert_eq!(
             nf.worktree_ahead.trim_end(),
-            "\u{f417}",
-            "nerdfont ahead: octicon git-commit"
+            "\u{f418}",
+            "nerdfont ahead: nf-oct-git_branch"
         );
         assert_eq!(
             nf.worktree_merged.trim_end(),
-            "\u{f419}",
-            "nerdfont merged: octicon git-merge"
+            "\u{e727}",
+            "nerdfont merged: nf-dev-git_merge"
         );
         assert_eq!(nf.repository.trim_end(), "▣");
         assert_eq!(nf.border, BorderStyle::Rounded);

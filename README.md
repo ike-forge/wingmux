@@ -137,7 +137,7 @@ agent_hooks = true           # instrument recognised `claude` commands for accur
 
 [icons]                      # full key reference under "Layout" below
 preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "none"
-worktree_ahead = ""        # any key overrides the preset; "" draws nothing
+worktree_ahead = ""        # any key overrides the preset; "" draws nothing
 border = "rounded"           # "rounded" | "plain"
 
 [[messages]]                 # `p` modal: canned prompts for the selected shell
@@ -378,8 +378,8 @@ is happening, the bar says what you can press:
 ```
 ╭ Repositories (2) ────────╮╭ Preview ────────────────────────────╮
 │▣ repo-a                  ││ live tail of the selected shell,    │
-│  ├─  login   waiting    ││ refreshed every poll                │
-│  └─  search             ││                                     │
+│  ├─  login   waiting    ││ refreshed every poll                │
+│  └─  search             ││                                     │
 │     ├─ ● #0 working      ││     ╭────────────────────────╮      │
 │     └─ ● #1 waiting      ││     │ worktree 'search' cre… │      │
 │▢ repo-b                  ││     ╰────────────────────────╯      │
@@ -402,8 +402,8 @@ changes how a pane is classified.
 
 Icons come from `[icons]` (default preset `nerdfont`): `▣` repository holding
 worktrees, `▢` empty repository, `●` shell, and **three glyphs for a
-worktree's commit state** — `` no commits of its own yet, `` commits the
-base branch does not have, `` all its commits merged into the base. The
+worktree's commit state** — `` no commits of its own yet, `` commits the
+base branch does not have, `` all its commits merged into the base. The
 three share one padded column, so names stay aligned whichever one a row
 draws. The state is also colour-coded: new is dim, ahead is the `waiting`
 colour, merged is the `working` colour. No patched font? Set
@@ -435,9 +435,9 @@ reads as new until it has commits of its own.
 |---|---|---|---|---|
 | `repository` | `▣` | `▣` | — | repository holding worktrees |
 | `repository_empty` | `▢` | `▢` | — | repository with none |
-| `worktree_new` | `` | `○` | — | worktree with no commits of its own |
-| `worktree_ahead` | `` | `◆` | — | commits not in the base branch |
-| `worktree_merged` | `` | `✓` | — | commits all merged into the base |
+| `worktree_new` | `` | `○` | — | worktree with no commits of its own |
+| `worktree_ahead` | `` | `◆` | — | commits not in the base branch |
+| `worktree_merged` | `` | `✓` | — | commits all merged into the base |
 | `shell` | `●` | `●` | — | before the shell number |
 | `cursor` | `›` | `›` | `›` | selection, tree and modals |
 | `guide_branch` | `├─` | `├─` | `├─` | guide, non-last child |
