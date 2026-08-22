@@ -73,14 +73,16 @@ pub(crate) fn tree_width(viewport: (u16, u16)) -> Option<u16> {
 /// with a message ("frame too small for this dialog") instead of drawing
 /// garbage — never a crash.
 fn overlay_min(kind: OverlayKind) -> (u16, u16) {
+    // Border + `MODAL_PADDING` included: each of these leaves the same
+    // usable content box the pre-padding minimums did.
     match kind {
-        OverlayKind::Help => (44, 14),
-        OverlayKind::Diagnostics => (44, 10),
-        OverlayKind::ThemePicker => (34, 10),
-        OverlayKind::Messages => (34, 10),
-        OverlayKind::Input | OverlayKind::Confirm => (34, 10),
+        OverlayKind::Help => (48, 15),
+        OverlayKind::Diagnostics => (48, 11),
+        OverlayKind::ThemePicker => (38, 11),
+        OverlayKind::Messages => (38, 11),
+        OverlayKind::Input | OverlayKind::Confirm => (38, 11),
         // The textarea is the main interaction — it needs real estate.
-        OverlayKind::Textarea => (50, 12),
+        OverlayKind::Textarea => (54, 13),
     }
 }
 
@@ -292,6 +294,67 @@ pub(crate) fn sep(icons: &crate::config::IconsConfig) -> &str {
     &icons.separator
 }
 
+/// One shortcut hint. Every hint in the app — status bar, modal footer,
+/// help palette — is written `<description> <key>` ("cancel esc"): the
+/// word says what happens, the key comes last and is the only part that
+/// is highlighted, so the eye finds it without reading the sentence.
+#[derive(Debug, Clone)]
+pub(crate) struct Hint {
+    pub desc: String,
+    pub key: String,
+}
+
+impl Hint {
+    /// The hint as one string, exactly as it renders.
+    pub(crate) fn label(&self) -> String {
+        format!("{} {}", self.desc, self.key)
+    }
+}
+
+/// Build a hint, resolving the key to its rendered spelling.
+pub(crate) fn hint(icons: &crate::config::IconsConfig, desc: &str, key: &str) -> Hint {
+    Hint {
+        desc: desc.to_string(),
+        key: key_label(icons, key),
+    }
+}
+
+/// The rendered spelling of a key. Keys with a glyph form take it from
+/// `[icons]`, so a preset (or a user override) decides whether a hint
+/// draws `↵` or spells `Enter` out.
+pub(crate) fn key_label(icons: &crate::config::IconsConfig, key: &str) -> String {
+    match key {
+        "Enter" => icons.enter.trim().to_string(),
+        "arrows" => icons.arrows.trim().to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// The two spans of one hint: plain description, highlighted key.
+fn hint_spans(theme: &ResolvedColors, h: &Hint) -> [Span<'static>; 2] {
+    [
+        Span::styled(format!("{} ", h.desc), fg(theme.foreground)),
+        Span::styled(h.key.clone(), fg(theme.accent).add_modifier(Modifier::BOLD)),
+    ]
+}
+
+/// A row of hints joined with the app's separator — the footer every modal
+/// ends with, one blank row above it.
+fn hint_line(
+    theme: &ResolvedColors,
+    icons: &crate::config::IconsConfig,
+    hints: &[Hint],
+) -> Line<'static> {
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, h) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(sep(icons).to_string(), fg(theme.dim)));
+        }
+        spans.extend(hint_spans(theme, h));
+    }
+    Line::from(spans)
+}
+
 /// Tree | preview, statusbar below. `tree_w` comes from [`tree_width`] —
 /// the same math drives mouse hit-testing.
 fn draw_split(f: &mut Frame, area: Rect, app: &mut App, tree_w: u16) {
@@ -326,7 +389,7 @@ fn draw_too_small(f: &mut Frame, area: Rect, app: &mut App) {
             Line::from(Span::raw(
                 "enlarge the window to at least 26x7 to show the dashboard",
             )),
-            Line::from(Span::styled("q quits", fg(theme.dim))),
+            hint_line(theme, &app.cfg.icons, &[hint(&app.cfg.icons, "quit", "q")]),
         ]))
         .style(fg(theme.foreground)),
         area,
@@ -339,15 +402,13 @@ fn draw_overlay_too_small(f: &mut Frame, area: Rect, app: &App, kind: OverlayKin
     let rect = centered_rect(area, 70, 25);
     f.render_widget(Clear, rect);
     let block = popup_block(theme, &app.cfg.icons, " frame too small for this dialog ");
+    let ic = &app.cfg.icons;
     let text = Text::from(vec![
-        Line::from(""),
         Line::from(Span::raw(format!(
             "enlarge the window to at least {min_w}x{min_h}"
         ))),
-        Line::from(Span::styled(
-            "click anywhere or press Esc to dismiss",
-            fg(theme.dim),
-        )),
+        Line::from(""),
+        hint_line(theme, ic, &[hint(ic, "dismiss", "esc")]),
     ]);
     f.render_widget(Paragraph::new(text).block(block), rect);
 }
@@ -358,8 +419,20 @@ fn title_style(theme: &ResolvedColors) -> Style {
     fg(theme.title_fg).add_modifier(Modifier::BOLD)
 }
 
+/// Breathing room inside every modal border: one column left and right,
+/// one row on top. No bottom row — the shortcut footer already carries a
+/// blank row above it, and a second gap below would float it off the
+/// frame.
+pub(crate) const MODAL_PADDING: Padding = Padding::new(1, 1, 1, 0);
+
+/// Columns and rows a modal spends on its border and [`MODAL_PADDING`] —
+/// what every content-sizing calculation has to add on top of its lines.
+const MODAL_CHROME_W: u16 = 4;
+const MODAL_CHROME_H: u16 = 3;
+
 /// Overlay block: rounded (or configured) corners, popup border colour,
-/// bg-less title.
+/// bg-less title, and the shared modal padding — no modal draws text
+/// flush against its border.
 fn popup_block(
     theme: &ResolvedColors,
     icons: &crate::config::IconsConfig,
@@ -369,7 +442,30 @@ fn popup_block(
         .borders(Borders::ALL)
         .border_type(border_type(icons))
         .border_style(fg(theme.popup_border))
+        .padding(MODAL_PADDING)
         .title(Span::styled(title.into(), title_style(theme)))
+}
+
+/// The content rect of a modal: inside the border AND [`MODAL_PADDING`].
+fn modal_inner(area: Rect) -> Rect {
+    Rect {
+        x: area.x + 2,
+        y: area.y + 2,
+        width: area.width.saturating_sub(MODAL_CHROME_W),
+        height: area.height.saturating_sub(MODAL_CHROME_H),
+    }
+}
+
+/// Rows a modal footer owns: the blank spacer and the hint row itself.
+pub(crate) const MODAL_FOOTER_H: usize = 2;
+
+/// Scrollable rows a scrolling overlay of this rect shows: its content
+/// height minus the pinned footer. The app clamps its scroll offsets with
+/// this, so they can never drift from what the renderer draws.
+pub(crate) fn overlay_body_height(rect: Option<Rect>) -> usize {
+    rect.map(|r| r.height.saturating_sub(MODAL_CHROME_H) as usize)
+        .unwrap_or(10 + MODAL_FOOTER_H)
+        .saturating_sub(MODAL_FOOTER_H)
 }
 
 fn border_type(icons: &crate::config::IconsConfig) -> BorderType {
@@ -650,33 +746,35 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
 /// current state do not appear. `? help` is always there (it is the
 /// palette key); hjkl/arrows/Esc/q are assumed knowledge and never take a
 /// slot (per the discoverability rules).
-pub(crate) fn bar_entries(app: &App) -> Vec<(String, BarAction)> {
+pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
     use BarAction::*;
+    let ic = &app.cfg.icons;
+    let h = |desc: &str, key: &str| hint(ic, desc, key);
     match app.sel {
-        Sel::Repository(_) => vec![("n worktree".into(), NewWorktree), ("? help".into(), Help)],
+        Sel::Repository(_) => vec![(h("worktree", "n"), NewWorktree), (h("help", "?"), Help)],
         // A folded worktree row is its shell: it offers the shell actions
         // on top of the worktree ones (`a` gives it a second shell, which
         // unfolds the subtree).
         Sel::Worktree(ri, wi) if app.solo_shell(ri, wi).is_some() => vec![
-            ((format!("{} attach", app.cfg.icons.enter)), Attach),
-            ("s send".into(), QuickSend),
-            ("p predefined".into(), PredefinedSend),
-            ("a shell".into(), AddShell),
-            ("d delete".into(), DeleteWorktree),
-            ("? help".into(), Help),
+            (h("attach", "Enter"), Attach),
+            (h("send", "s"), QuickSend),
+            (h("predefined", "p"), PredefinedSend),
+            (h("shell", "a"), AddShell),
+            (h("delete", "d"), DeleteWorktree),
+            (h("help", "?"), Help),
         ],
         Sel::Worktree(..) => vec![
-            ("n worktree".into(), NewWorktree),
-            ("a shell".into(), AddShell),
-            ("d delete".into(), DeleteWorktree),
-            ("? help".into(), Help),
+            (h("worktree", "n"), NewWorktree),
+            (h("shell", "a"), AddShell),
+            (h("delete", "d"), DeleteWorktree),
+            (h("help", "?"), Help),
         ],
         Sel::Shell(..) => vec![
-            ((format!("{} attach", app.cfg.icons.enter)), Attach),
-            ("s send".into(), QuickSend),
-            ("p predefined".into(), PredefinedSend),
-            ("d close".into(), DeleteShell),
-            ("? help".into(), Help),
+            (h("attach", "Enter"), Attach),
+            (h("send", "s"), QuickSend),
+            (h("predefined", "p"), PredefinedSend),
+            (h("close", "d"), DeleteShell),
+            (h("help", "?"), Help),
         ],
     }
 }
@@ -694,14 +792,16 @@ fn draw_statusbar(f: &mut Frame, area: Rect, app: &mut App) {
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     let mut hits: Vec<(u16, u16, BarAction)> = Vec::new();
     let mut cx: u16 = 1;
-    for (i, (label, action)) in entries.iter().enumerate() {
+    for (i, (entry, action)) in entries.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(sp, fg(theme.dim)));
             cx += sp.chars().count() as u16;
         }
         let start = cx;
-        cx += label.chars().count() as u16;
-        spans.push(Span::styled(label.clone(), fg(theme.foreground)));
+        // `<description> <key>`, the key highlighted — the same shape the
+        // modal footers and the help palette use.
+        cx += entry.label().chars().count() as u16;
+        spans.extend(hint_spans(theme, entry));
         hits.push((start, cx, *action));
     }
     app.bar_hits = hits;
@@ -785,8 +885,8 @@ fn draw_help(f: &mut Frame, app: &App) -> Rect {
     // content scrolls (j/k, arrows, PgUp/PgDn, ctrl-u/d, Home/End) and the
     // title advertises it.
     let lines = help_lines(app);
-    let h = (lines.len() as u16 + 2).min(f.area().height);
-    let w = 74u16.min(f.area().width);
+    let h = (lines.len() as u16 + MODAL_FOOTER_H as u16 + MODAL_CHROME_H).min(f.area().height);
+    let w = (82u16 + MODAL_CHROME_W).min(f.area().width);
     let area = Rect::new(
         f.area().x + (f.area().width.saturating_sub(w)) / 2,
         f.area().y + (f.area().height.saturating_sub(h)) / 2,
@@ -794,27 +894,23 @@ fn draw_help(f: &mut Frame, app: &App) -> Rect {
         h,
     );
     f.render_widget(Clear, area);
-    let inner_h = h.saturating_sub(2) as usize;
-    let max_scroll = lines.len().saturating_sub(inner_h);
+    // The footer is pinned: it says how to leave, so it must not scroll
+    // away. Only the rows above it move.
+    let inner_h = h.saturating_sub(MODAL_CHROME_H) as usize;
+    let body_h = inner_h.saturating_sub(MODAL_FOOTER_H);
+    let max_scroll = lines.len().saturating_sub(body_h);
     let scroll = app.help_scroll.min(max_scroll);
-    let window: Vec<Line> = lines.iter().skip(scroll).take(inner_h).cloned().collect();
-    let mut title_text = " Help ".to_string();
-    if max_scroll > 0 {
-        // The separator follows the configured [icons] like every other
-        // label; the title already ends in a space, so trim the
-        // separator's leading one.
-        title_text.push_str(&format!(
-            "{}j/k scrolls",
-            app.cfg.icons.separator.trim_start()
-        ));
-    }
-    let block = popup_block(theme, &app.cfg.icons, title_text);
+    let mut window: Vec<Line> = lines.iter().skip(scroll).take(body_h).cloned().collect();
+    window.extend(help_footer(app, max_scroll > 0));
+    let block = popup_block(theme, &app.cfg.icons, " Help ");
     f.render_widget(Paragraph::new(Text::from(window)).block(block), area);
     area
 }
 
 /// One help row: the key spellings (joined with the app's separator) and
-/// the description parts (same words as the statusbar).
+/// the description parts (same words as the statusbar). The first
+/// description part is the action; the rest are notes shown dimmed after
+/// the key.
 pub(crate) type HelpRow<'a> = (&'a [&'a str], &'a [&'a str]);
 /// A help group: (group title, rows).
 pub(crate) type HelpGroup<'a> = (&'a str, &'a [HelpRow<'a>]);
@@ -884,22 +980,36 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
 /// the app (which must never drift from what is rendered).
 fn help_lines(app: &App) -> Vec<Line<'_>> {
     let theme = &app.theme.colors;
-    let s = sep(&app.cfg.icons);
+    let ic = &app.cfg.icons;
+    let s = sep(ic);
     let mut lines: Vec<Line> = Vec::new();
     for (group_title, rows) in HELP_GROUPS {
         lines.push(Line::from(Span::styled(
-            format!(" {} ", group_title),
+            group_title.to_string(),
             fg(theme.dim).add_modifier(Modifier::BOLD),
         )));
         for (keys, desc) in *rows {
-            let key_str = keys.join(s);
-            lines.push(Line::from(vec![
+            // `<description> <key>`, the same shape as every other hint:
+            // the action in a fixed column, then the key that runs it.
+            let key_str = keys
+                .iter()
+                .map(|k| key_label(ic, k))
+                .collect::<Vec<_>>()
+                .join(s);
+            let mut spans = vec![
                 Span::styled(
-                    format!(" {key_str:<24} "),
+                    format!("  {:<w$}", desc[0], w = HELP_DESC_W),
+                    fg(theme.foreground),
+                ),
+                Span::styled(
+                    format!("{key_str:<w$}", w = HELP_KEY_W),
                     fg(theme.accent).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(desc.join(s), fg(theme.foreground)),
-            ]));
+            ];
+            if desc.len() > 1 {
+                spans.push(Span::styled(desc[1..].join(s), fg(theme.dim)));
+            }
+            lines.push(Line::from(spans));
         }
         lines.push(Line::from(""));
     }
@@ -938,8 +1048,30 @@ fn help_lines(app: &App) -> Vec<Line<'_>> {
     lines
 }
 
-/// Total help line count — the app clamps its scroll offset against this
-/// (same construction as the renderer, so they cannot drift).
+/// Column widths of a help row: the action, then the key that runs it.
+/// Fixed so the keys line up in a column the eye can run down.
+const HELP_DESC_W: usize = 24;
+const HELP_KEY_W: usize = 20;
+
+/// The help palette's pinned footer: it says how to scroll and how to
+/// leave, so it never scrolls away. One blank row above it, like every
+/// modal footer.
+fn help_footer(app: &App, scrollable: bool) -> Vec<Line<'static>> {
+    let theme = &app.theme.colors;
+    let ic = &app.cfg.icons;
+    let mut hints = Vec::new();
+    // Only offer the motion when there is something below the fold — an
+    // unreachable shortcut is worse than no shortcut.
+    if scrollable {
+        hints.push(hint(ic, "scroll", "j/k"));
+    }
+    hints.push(hint(ic, "close", "esc"));
+    vec![Line::from(""), hint_line(theme, ic, &hints)]
+}
+
+/// Total scrollable help line count (the footer is pinned, so it is not
+/// part of this) — the app clamps its scroll offset against this, built
+/// the same way as the renderer so the two cannot drift.
 pub(crate) fn help_line_count(app: &App) -> usize {
     help_lines(app).len()
 }
@@ -950,8 +1082,8 @@ pub(crate) fn help_line_count(app: &App) -> usize {
 fn draw_diagnostics(f: &mut Frame, app: &App) -> Rect {
     let theme = &app.theme.colors;
     let lines = diag_lines(app);
-    let h = (lines.len() as u16 + 2).min(f.area().height);
-    let w = 74u16.min(f.area().width);
+    let h = (lines.len() as u16 + MODAL_FOOTER_H as u16 + MODAL_CHROME_H).min(f.area().height);
+    let w = (74u16 + MODAL_CHROME_W).min(f.area().width);
     let area = Rect::new(
         f.area().x + (f.area().width.saturating_sub(w)) / 2,
         f.area().y + (f.area().height.saturating_sub(h)) / 2,
@@ -959,17 +1091,13 @@ fn draw_diagnostics(f: &mut Frame, app: &App) -> Rect {
         h,
     );
     f.render_widget(Clear, area);
-    let inner_h = h.saturating_sub(2) as usize;
-    let max_scroll = lines.len().saturating_sub(inner_h);
+    let inner_h = h.saturating_sub(MODAL_CHROME_H) as usize;
+    let body_h = inner_h.saturating_sub(MODAL_FOOTER_H);
+    let max_scroll = lines.len().saturating_sub(body_h);
     let scroll = app.diag_scroll.min(max_scroll);
-    let window: Vec<Line> = lines.iter().skip(scroll).take(inner_h).cloned().collect();
-    let mut title_text = format!(" Startup Diagnostics ({}) ", app.cfg.diagnostics.len());
-    if max_scroll > 0 {
-        title_text.push_str(&format!(
-            "{}j/k scrolls",
-            app.cfg.icons.separator.trim_start()
-        ));
-    }
+    let mut window: Vec<Line> = lines.iter().skip(scroll).take(body_h).cloned().collect();
+    window.extend(diag_footer(app, max_scroll > 0));
+    let title_text = format!(" Startup Diagnostics ({}) ", app.cfg.diagnostics.len());
     let block = popup_block(theme, &app.cfg.icons, title_text);
     f.render_widget(
         Paragraph::new(Text::from(window))
@@ -985,26 +1113,37 @@ fn draw_diagnostics(f: &mut Frame, app: &App) -> Rect {
 fn diag_lines(app: &App) -> Vec<Line<'_>> {
     let theme = &app.theme.colors;
     let mark = warn_mark(&app.cfg.icons);
-    let mut lines: Vec<Line> = app
-        .cfg
+    app.cfg
         .diagnostics
         .iter()
         .map(|d| {
             Line::from(vec![
                 Span::styled(
-                    format!(" {mark} "),
+                    format!("{mark} "),
                     fg(theme.status_failed).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(d.clone(), fg(theme.foreground)),
             ])
         })
-        .collect();
-    lines.push(Line::from(Span::styled("Esc/q dismisses", fg(theme.dim))));
-    lines
+        .collect()
 }
 
-/// Total diagnostics content height (rendered lines + footer) — the app
-/// clamps its scroll against this; same construction as the renderer.
+/// The diagnostics overlay's pinned footer — same shape as the help
+/// palette's: a blank row, then the shortcuts.
+fn diag_footer(app: &App, scrollable: bool) -> Vec<Line<'static>> {
+    let theme = &app.theme.colors;
+    let ic = &app.cfg.icons;
+    let mut hints = Vec::new();
+    if scrollable {
+        hints.push(hint(ic, "scroll", "j/k"));
+    }
+    hints.push(hint(ic, "dismiss", "esc"));
+    vec![Line::from(""), hint_line(theme, ic, &hints)]
+}
+
+/// Total scrollable diagnostics height (the footer is pinned and not part
+/// of it) — the app clamps its scroll against this; same construction as
+/// the renderer.
 pub(crate) fn diag_line_count(app: &App) -> usize {
     diag_lines(app).len()
 }
@@ -1020,15 +1159,23 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
         _ => 0,
     };
     // Size to content (bounded by the frame), like the help overlay.
+    let ic = &app.cfg.icons;
+    let footer = hint_line(
+        theme,
+        ic,
+        &[hint(ic, "keep", "Enter"), hint(ic, "cancel", "esc")],
+    );
     let w = names
         .iter()
         .map(|n| n.chars().count() as u16)
         .max()
         .unwrap_or(20)
-        .saturating_add(8)
+        .saturating_add(4)
+        .max(footer.width() as u16)
+        .saturating_add(MODAL_CHROME_W)
         .max(34)
         .min(f.area().width);
-    let h = (names.len() as u16 + 3).min(f.area().height);
+    let h = (names.len() as u16 + MODAL_FOOTER_H as u16 + MODAL_CHROME_H).min(f.area().height);
     let area = Rect::new(
         f.area().x + (f.area().width.saturating_sub(w)) / 2,
         f.area().y + (f.area().height.saturating_sub(h)) / 2,
@@ -1036,22 +1183,17 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
         h,
     );
     f.render_widget(Clear, area);
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
-    let rows = inner.height.saturating_sub(1) as usize; // last line = footer
+    let inner = modal_inner(area);
+    let rows = (inner.height as usize).saturating_sub(MODAL_FOOTER_H);
     let mut lines: Vec<Line> = Vec::new();
     for (i, name) in names.iter().take(rows).enumerate() {
         let selected = i == index;
-        let marker = &app.cfg.icons.cursor;
+        let marker = &ic.cursor;
         let label = if selected {
-            format!(" {marker} {name} ")
+            format!("{marker} {name} ")
         } else {
             format!(
-                " {} {name} ",
+                "{} {name} ",
                 " ".repeat(UnicodeWidthStr::width(marker.as_str()))
             )
         };
@@ -1064,9 +1206,10 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
             vec![Span::styled(label, fg(theme.foreground))]
         }));
     }
-    let footer = format!(" Enter keep{}Esc cancel ", sep(&app.cfg.icons));
-    lines.push(Line::from(Span::styled(footer, fg(theme.dim))));
-    let block = popup_block(theme, &app.cfg.icons, " Themes ");
+    // A blank row separates the list from the shortcuts, in every modal.
+    lines.push(Line::from(""));
+    lines.push(footer);
+    let block = popup_block(theme, ic, " Themes ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     area
 }
@@ -1088,15 +1231,27 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
         .iter()
         .map(|m| app.expand_message(&m.text))
         .collect();
+    let ic = &app.cfg.icons;
+    let footer = hint_line(
+        theme,
+        ic,
+        &[
+            hint(ic, "send", "Enter"),
+            hint(ic, "pick", "1-9"),
+            hint(ic, "cancel", "esc"),
+        ],
+    );
     let w = entries
         .iter()
         .map(|l| UnicodeWidthStr::width(l.as_str()) as u16)
         .max()
         .unwrap_or(20)
-        .saturating_add(10)
+        .saturating_add(6)
+        .max(footer.width() as u16)
+        .saturating_add(MODAL_CHROME_W)
         .max(34)
         .min(f.area().width);
-    let h = (entries.len() as u16 + 3).min(f.area().height);
+    let h = (entries.len() as u16 + MODAL_FOOTER_H as u16 + MODAL_CHROME_H).min(f.area().height);
     let area = Rect::new(
         f.area().x + (f.area().width.saturating_sub(w)) / 2,
         f.area().y + (f.area().height.saturating_sub(h)) / 2,
@@ -1104,17 +1259,12 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
         h,
     );
     f.render_widget(Clear, area);
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
-    let rows = inner.height.saturating_sub(1) as usize; // last line = footer
+    let inner = modal_inner(area);
+    let rows = (inner.height as usize).saturating_sub(MODAL_FOOTER_H);
     let mut lines: Vec<Line> = Vec::new();
     for (i, entry) in entries.iter().take(rows).enumerate() {
         let selected = i == index;
-        let marker = &app.cfg.icons.cursor;
+        let marker = &ic.cursor;
         // The number is the key that sends the entry (up to 9 of them).
         let num = if i < 9 {
             format!("{} ", i + 1)
@@ -1122,10 +1272,10 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
             "  ".into()
         };
         let row = if selected {
-            format!(" {marker} {num}{entry} ")
+            format!("{marker} {num}{entry} ")
         } else {
             format!(
-                " {} {num}{entry} ",
+                "{} {num}{entry} ",
                 " ".repeat(UnicodeWidthStr::width(marker.as_str()))
             )
         };
@@ -1138,9 +1288,9 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
             vec![Span::styled(row, fg(theme.foreground))]
         }));
     }
-    let footer = format!(" Enter send{}Esc cancel ", sep(&app.cfg.icons));
-    lines.push(Line::from(Span::styled(footer, fg(theme.dim))));
-    let block = popup_block(theme, &app.cfg.icons, " Messages ");
+    lines.push(Line::from(""));
+    lines.push(footer);
+    let block = popup_block(theme, ic, " Messages ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     area
 }
@@ -1166,8 +1316,8 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
         return Rect::default();
     };
     let title_text = format!(" {title} ");
-    let block = popup_block(theme, &app.cfg.icons, title_text.clone()).padding(DIALOG_PADDING);
-    // No leading spacer line: DIALOG_PADDING already keeps the field off
+    let block = popup_block(theme, &app.cfg.icons, title_text.clone());
+    // No leading spacer line: MODAL_PADDING already keeps the field off
     // the border.
     let mut lines = vec![Line::from(vec![
         Span::styled(label, fg(theme.accent)),
@@ -1200,21 +1350,18 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
             )));
         }
     }
+    let ic = &app.cfg.icons;
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        format!("Enter to submit{}Esc to cancel", sep(&app.cfg.icons)),
-        fg(theme.dim),
-    )));
+    lines.push(hint_line(
+        theme,
+        ic,
+        &[hint(ic, "submit", "Enter"), hint(ic, "cancel", "esc")],
+    ));
     let area = dialog_rect(f.area(), &lines, &title_text, 34, dialog_max_w(f.area()));
     f.render_widget(Clear, area);
     // Inside the border AND the padding — the first content row is the
     // input row.
-    let inner = Rect {
-        x: area.x + 2,
-        y: area.y + 2,
-        width: area.width.saturating_sub(4),
-        height: area.height.saturating_sub(4),
-    };
+    let inner = modal_inner(area);
     let popup_style = on(theme.popup_fg, theme.popup_bg);
     f.render_widget(
         Paragraph::new(Text::from(lines))
@@ -1246,13 +1393,9 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
         return area;
     };
     let content_lines = crate::app::textarea_visible_lines(app.viewport.1).max(1);
-    let block = popup_block(theme, &app.cfg.icons, " Quick Send ");
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
+    let ic = &app.cfg.icons;
+    let block = popup_block(theme, ic, " Quick Send ");
+    let inner = modal_inner(area);
     // Row layout inside the border: content, spacer, hint. The popup
     // title already says "quick-send", so the content starts flush at
     // the top border — no label row.
@@ -1278,13 +1421,15 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
     }
     // Spacer, then the hint row.
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("enter newline", fg(theme.accent)),
-        Span::styled(sep(&app.cfg.icons), fg(theme.dim)),
-        Span::styled("ctrl-s send", fg(theme.accent)),
-        Span::styled(sep(&app.cfg.icons), fg(theme.dim)),
-        Span::styled("esc cancel", fg(theme.accent)),
-    ]));
+    lines.push(hint_line(
+        theme,
+        ic,
+        &[
+            hint(ic, "newline", "Enter"),
+            hint(ic, "send", "ctrl-s"),
+            hint(ic, "cancel", "esc"),
+        ],
+    ));
 
     let popup_style = on(theme.popup_fg, theme.popup_bg);
     f.render_widget(
@@ -1319,10 +1464,6 @@ fn centered_rect_wh(area: Rect, w: u16, h: u16) -> Rect {
     }
 }
 
-/// One column/row of breathing room inside the border on every side, so
-/// dialog text never touches the frame.
-const DIALOG_PADDING: Padding = Padding::new(1, 1, 1, 1);
-
 /// Geometry for a content-sized dialog: exactly as wide and as tall as its
 /// content, plus `DIALOG_PADDING` and the two border rows/columns. A
 /// dialog that asks one question used to take a fixed percentage of the
@@ -1332,10 +1473,12 @@ fn dialog_rect(frame: Rect, lines: &[Line], title: &str, min_w: u16, max_w: u16)
     let widest = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
     let w = widest
         .max(title.chars().count() as u16)
-        .saturating_add(4)
+        .saturating_add(MODAL_CHROME_W)
         .clamp(min_w, max_w.max(min_w))
         .min(frame.width);
-    let h = (lines.len() as u16).saturating_add(4).min(frame.height);
+    let h = (lines.len() as u16)
+        .saturating_add(MODAL_CHROME_H)
+        .min(frame.height);
     centered_rect_wh(frame, w, h)
 }
 
@@ -1344,23 +1487,21 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
     let Mode::Confirm { confirm } = &app.mode else {
         return Rect::default();
     };
-    let sp = sep(&app.cfg.icons);
-    let options = match &confirm.force_label {
-        Some(fl) => format!("[y/d] yes{sp}[f] {fl}{sp}[n] cancel"),
-        None => format!("[y/d] yes{sp}[n] cancel"),
-    };
+    let ic = &app.cfg.icons;
+    let mut hints = vec![hint(ic, "yes", "y/d")];
+    if let Some(fl) = &confirm.force_label {
+        hints.push(hint(ic, fl, "f"));
+    }
+    hints.push(hint(ic, "cancel", "n/esc"));
     let mut lines: Vec<Line> = confirm
         .body
         .lines()
         .map(|l| Line::from(Span::raw(l.to_string())))
         .collect();
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        options,
-        fg(theme.accent).add_modifier(Modifier::BOLD),
-    )));
+    lines.push(hint_line(theme, ic, &hints));
     let title_text = format!(" {} ", confirm.title);
-    let block = popup_block(theme, &app.cfg.icons, title_text.clone()).padding(DIALOG_PADDING);
+    let block = popup_block(theme, ic, title_text.clone());
     let popup_style = on(theme.popup_fg, theme.popup_bg);
     let area = dialog_rect(f.area(), &lines, &title_text, 34, dialog_max_w(f.area()));
     f.render_widget(Clear, area);
@@ -1535,7 +1676,7 @@ mod tests {
         for line in ["alpha", "beta", "gamma"] {
             assert!(text.contains(line), "popup must still show {line:?}");
         }
-        assert!(text.contains("ctrl-s send"), "hint names the send key");
+        assert!(text.contains("send ctrl-s"), "hint names the send key");
     }
 
     /// The popup wraps a line too long for its width instead of letting
@@ -1597,7 +1738,7 @@ mod tests {
         // The wrapped text really is spread over several rows, and the
         // row above the hint is blank.
         let hint_y = (y0 + h - 2) as usize;
-        assert!(rows[hint_y].contains("ctrl-s send"), "hint on the last row");
+        assert!(rows[hint_y].contains("send ctrl-s"), "hint on the last row");
         let spacer: String = rows[hint_y - 1]
             .chars()
             .skip(x0 as usize + 1)
@@ -2155,7 +2296,7 @@ mod tests {
         app.sel = crate::app::Sel::Repository(0);
         let labels: Vec<String> = crate::ui::bar_entries(&app)
             .into_iter()
-            .map(|(l, _)| l)
+            .map(|(h, _)| h.label())
             .collect();
         assert!(
             !labels
@@ -2173,38 +2314,25 @@ mod tests {
     /// discoverability rule that makes learning one teach the other.
     #[test]
     fn bar_entries_and_help_share_wording() {
-        // For every bar label, the action's key word appears in the help
-        // overlay (bar: "n worktree" vs help: "new worktree", etc.).
+        // For every bar entry, the action's word appears in the help
+        // overlay (bar: "worktree n" vs help: "new worktree", etc.).
         let mut app = seeded_app();
         let text = help_text(&mut app, 120, 40);
         let app2 = seeded_app();
-        for (label, _) in crate::ui::bar_entries(&app2) {
-            let word = label
-                .split(' ')
-                .nth(1)
-                .or_else(|| label.split(' ').next())
-                .unwrap_or(label.as_str());
-            if word == "help" {
-                assert!(text.contains("this help"), "bar '? help' ↔ help row");
-            } else if word == "send" {
-                assert!(text.contains("quick-send"), "bar 's send' ↔ help row");
-            } else if word == "predefined" {
-                assert!(
+        for (entry, _) in crate::ui::bar_entries(&app2) {
+            match entry.desc.as_str() {
+                "help" => assert!(text.contains("this help"), "bar 'help ?' ↔ help row"),
+                "send" => assert!(text.contains("quick-send"), "bar 'send s' ↔ help row"),
+                "predefined" => assert!(
                     text.contains("predefined message"),
-                    "bar 'p predefined' ↔ help row"
-                );
-            } else if word == "worktree" {
-                assert!(text.contains("new worktree"), "bar 'n worktree' ↔ help");
-            } else if word == "shell" {
-                assert!(text.contains("add shell"), "bar 'a shell' ↔ help");
-            } else if word == "delete" {
-                assert!(text.contains("delete worktree"), "bar 'd delete' ↔ help");
-            } else if word == "attach" {
-                assert!(text.contains("attach"), "bar '↵ attach' ↔ help");
-            } else if word == "close" {
-                assert!(text.contains("close shell"), "bar 'd close' ↔ help");
-            } else {
-                panic!("unmapped bar label: {label:?}");
+                    "bar 'predefined p' ↔ help row"
+                ),
+                "worktree" => assert!(text.contains("new worktree"), "bar 'worktree n' ↔ help"),
+                "shell" => assert!(text.contains("add shell"), "bar 'shell a' ↔ help"),
+                "delete" => assert!(text.contains("delete worktree"), "bar 'delete d' ↔ help"),
+                "attach" => assert!(text.contains("attach"), "bar 'attach ↵' ↔ help"),
+                "close" => assert!(text.contains("close shell"), "bar 'close d' ↔ help"),
+                other => panic!("unmapped bar entry: {other:?}"),
             }
         }
     }
@@ -2234,7 +2362,8 @@ mod tests {
             !last.contains("created"),
             "notices are not on the bar: {last:?}"
         );
-        for (label, _) in bar_entries(&app) {
+        for (entry, _) in bar_entries(&app) {
+            let label = entry.label();
             assert!(last.contains(&label), "bar shows {label:?}: {last:?}");
         }
     }
@@ -2656,20 +2785,21 @@ mod tests {
     }
 
     /// The help overlay scrolls: on a short frame the title advertises
-    /// 'j/k scrolls' and the content is clipped to the popup; on a tall
-    /// frame everything fits and no scroll hint appears.
+    /// the footer offers `scroll j/k` and the content is clipped to the
+    /// popup; on a tall frame everything fits and the motion is not
+    /// offered at all.
     #[test]
     fn help_overlay_scrolls_on_short_frames() {
         let mut app = seeded_app();
         let short = help_text(&mut app, 80, 18);
         assert!(
-            short.contains("j/k scrolls"),
+            short.contains("scroll j/k"),
             "short frame must advertise scrolling: {short:?}"
         );
         let mut app = seeded_app();
-        let tall = help_text(&mut app, 120, 40);
+        let tall = help_text(&mut app, 120, 50);
         assert!(
-            !tall.contains("j/k scrolls"),
+            !tall.contains("scroll j/k"),
             "tall frame fits everything: {tall:?}"
         );
     }
@@ -2775,7 +2905,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         // scroll down one screen and re-render: first items leave the frame
-        let visible = app.popup_area.unwrap().height.saturating_sub(2) as usize;
+        let visible = crate::ui::overlay_body_height(app.popup_area);
         app.diag_scroll = visible;
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
@@ -2783,7 +2913,7 @@ mod tests {
             !text.contains("config problem 0"),
             "scrolled-out diagnostics are gone"
         );
-        assert!(text.contains("j/k scrolls"), "scroll hint advertised");
+        assert!(text.contains("scroll j/k"), "scroll hint advertised");
     }
 
     /// The diagnostics overlay on a tiny frame is refused with the standard
@@ -2980,7 +3110,7 @@ mod tests {
             text.contains("2 merge to <base_branch>, drop the current worktree and branch"),
             "second entry is numbered and listed in full, got: {text}"
         );
-        assert!(text.contains("Enter send"), "modal states its keys");
+        assert!(text.contains("send ↵"), "modal states its keys");
         assert!(
             app.popup_area.is_some(),
             "modal must register its dismissable rect"
@@ -3026,9 +3156,12 @@ mod tests {
     fn statusbar_offers_predefined_on_a_shell() {
         let mut app = seeded_app();
         app.sel = crate::app::Sel::Shell(0, 0, 0);
-        let labels: Vec<String> = bar_entries(&app).into_iter().map(|(l, _)| l).collect();
+        let labels: Vec<String> = bar_entries(&app)
+            .into_iter()
+            .map(|(h, _)| h.label())
+            .collect();
         assert!(
-            labels.iter().any(|l| l == "p predefined"),
+            labels.iter().any(|l| l == "predefined p"),
             "shell shortcuts: {labels:?}"
         );
         assert!(
@@ -3050,7 +3183,7 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(l, a)| l == "d close" && *a == BarAction::DeleteShell),
+                .any(|(h, a)| h.label() == "close d" && *a == BarAction::DeleteShell),
             "a shell closes itself: {entries:?}"
         );
         assert!(
@@ -3063,12 +3196,15 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(l, a)| l == "d delete" && *a == BarAction::DeleteWorktree),
+                .any(|(h, a)| h.label() == "delete d" && *a == BarAction::DeleteWorktree),
             "a worktree deletes itself: {entries:?}"
         );
 
         app.sel = crate::app::Sel::Repository(0);
-        let labels: Vec<String> = bar_entries(&app).into_iter().map(|(l, _)| l).collect();
+        let labels: Vec<String> = bar_entries(&app)
+            .into_iter()
+            .map(|(h, _)| h.label())
+            .collect();
         assert!(
             !labels.iter().any(|l| l.contains("remove")),
             "the repository removal entry is gone: {labels:?}"
@@ -3110,7 +3246,7 @@ mod tests {
         );
     }
 
-    /// The prompt is sized to its content, so the `Esc to cancel` footer
+    /// The prompt is sized to its content, so the `cancel esc` footer
     /// survives a short frame — the add-shell hint line used to push it out
     /// of a popup whose height was a fixed percentage of the terminal.
     #[test]
@@ -3128,7 +3264,7 @@ mod tests {
                 terminal.draw(|f| draw(f, &mut app)).unwrap();
                 let text = buffer_text(&terminal);
                 assert!(
-                    text.contains("Esc to cancel"),
+                    text.contains("cancel esc"),
                     "{kind:?} popup must keep its footer at height {height}: {text}"
                 );
             }
@@ -3172,8 +3308,10 @@ mod tests {
     }
 
     /// The create/delete dialogs size themselves to what they say instead
-    /// of taking a fixed slice of the frame, and keep one blank column and
-    /// row between the text and the border on every side.
+    /// of taking a fixed slice of the frame, and keep one blank column on
+    /// each side and one blank row on top between the text and the border.
+    /// The bottom row belongs to the shortcut footer — the blank row above
+    /// it is the gap, so a second one below would float it off the frame.
     #[test]
     fn dialogs_are_content_sized_with_one_char_padding() {
         let mut app = seeded_app();
@@ -3213,20 +3351,33 @@ mod tests {
                 area.width < 120 * 60 / 100 && area.height <= 8,
                 "dialog must fit its content, got {area:?}",
             );
-            // Padding row under the top border and above the bottom one.
-            for y in [area.y + 1, area.y + area.height - 2] {
-                let inside = &row(y)[..];
-                assert!(
-                    inside
-                        .chars()
-                        .skip(1)
-                        .take(area.width as usize - 2)
-                        .all(|c| c == ' '),
-                    "row {y} must be blank padding, got {inside:?}",
-                );
-            }
+            // Padding row under the top border.
+            let inside = row(area.y + 1);
+            assert!(
+                inside
+                    .chars()
+                    .skip(1)
+                    .take(area.width as usize - 2)
+                    .all(|c| c == ' '),
+                "row under the top border must be blank padding, got {inside:?}",
+            );
+            // The last content row is the shortcut footer, with a blank
+            // row of its own above it.
+            let footer = row(area.y + area.height - 2);
+            assert!(
+                footer.contains("cancel"),
+                "the bottom content row carries the shortcuts, got {footer:?}",
+            );
+            let gap = row(area.y + area.height - 3);
+            assert!(
+                gap.chars()
+                    .skip(1)
+                    .take(area.width as usize - 2)
+                    .all(|c| c == ' '),
+                "a blank row separates the shortcuts, got {gap:?}",
+            );
             // Padding column on both sides of every content row.
-            for y in area.y + 2..area.y + area.height - 2 {
+            for y in area.y + 2..area.y + area.height - 1 {
                 let cells: Vec<String> = (area.x..area.x + area.width)
                     .map(|x| buf[(x, y)].symbol().to_string())
                     .collect();
@@ -3237,6 +3388,117 @@ mod tests {
                     "right padding column on row {y}",
                 );
             }
+        }
+    }
+
+    /// Every modal keeps `MODAL_PADDING` (a blank column each side, a blank
+    /// row under the top border) and ends with its shortcut footer, one
+    /// blank row above it. One rule, checked on all of them at once — a new
+    /// overlay that forgets either fails here.
+    #[test]
+    fn every_modal_is_padded_and_ends_with_its_shortcuts() {
+        let mut app = seeded_app_with_shell();
+        app.sel = crate::app::Sel::Shell(0, 0, 0);
+        app.cfg.messages = vec![crate::config::MessageConfig {
+            text: "run the tests".into(),
+        }];
+        let modes = [
+            ("help", Mode::Help),
+            ("themes", Mode::ThemePicker { index: 0 }),
+            ("messages", Mode::Messages { index: 0 }),
+            (
+                "input",
+                Mode::Input {
+                    kind: InputKind::AddShell,
+                    text: "claude".into(),
+                },
+            ),
+            (
+                "textarea",
+                Mode::Textarea {
+                    buf: crate::app::TextBuf::new(),
+                },
+            ),
+            (
+                "confirm",
+                Mode::Confirm {
+                    confirm: Confirm {
+                        title: "Delete Worktree".into(),
+                        body: "delete 'wt' from repo-a?".into(),
+                        force_label: None,
+                        action: ConfirmAction::DeleteWorktree {
+                            repository: 0,
+                            worktree: 0,
+                        },
+                    },
+                },
+            ),
+        ];
+        for (name, mode) in modes {
+            app.mode = mode;
+            let backend = ratatui::backend::TestBackend::new(110, 46);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let area = app
+                .popup_area
+                .unwrap_or_else(|| panic!("{name} is on screen"));
+            let buf = terminal.backend().buffer().clone();
+            let row = |y: u16| -> String {
+                (area.x + 1..area.x + area.width - 1)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect()
+            };
+            assert!(
+                row(area.y + 1).trim().is_empty(),
+                "{name}: blank padding row under the top border, got {:?}",
+                row(area.y + 1)
+            );
+            let footer = row(area.y + area.height - 2);
+            assert!(
+                footer.contains("esc"),
+                "{name}: the bottom content row names the way out, got {footer:?}"
+            );
+            assert!(
+                footer.starts_with(' ') && footer.ends_with(' '),
+                "{name}: padding column on both sides of the footer, got {footer:?}"
+            );
+            let gap = row(area.y + area.height - 3);
+            assert!(
+                gap.trim().is_empty(),
+                "{name}: a blank row separates the shortcuts, got {gap:?}"
+            );
+        }
+    }
+
+    /// Shortcuts read `<description> <key>` and only the key is
+    /// highlighted — checked on the statusbar, where every entry is one.
+    #[test]
+    fn shortcut_keys_are_the_only_highlighted_part() {
+        let mut app = seeded_app_with_shell();
+        app.sel = crate::app::Sel::Shell(0, 0, 0);
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let y = 39;
+        let accent = app.theme.colors.accent;
+        for (entry, _) in bar_entries(&app) {
+            let label = entry.label();
+            let x0 = (0..120u16)
+                .find(|x| {
+                    label
+                        .chars()
+                        .enumerate()
+                        .all(|(i, c)| buf[(x + i as u16, y)].symbol() == c.to_string())
+                })
+                .unwrap_or_else(|| panic!("bar shows {label:?}"));
+            let key_at = x0 + (entry.desc.chars().count() + 1) as u16;
+            assert_eq!(
+                buf[(key_at, y)].fg,
+                accent,
+                "{label:?}: the key is highlighted"
+            );
+            assert_ne!(buf[(x0, y)].fg, accent, "{label:?}: the description is not");
         }
     }
 }

@@ -140,7 +140,8 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #separator = " · "               # between status-bar fields
 #warn = "⚠"                    # startup diagnostics indicator
 #ellipsis = "…"                # marks text truncated to fit
-#enter = "↵"                   # names the Enter key in the status bar
+#enter = "↵"                   # names the Enter key in shortcut hints
+#arrows = "↑↓"                  # names the arrow keys in shortcut hints
 
 # Popup and panel borders. Not a glyph: ratatui owns the corner set.
 # "rounded" | "plain".
@@ -339,8 +340,10 @@ pub struct IconsConfig {
     pub separator: String,
     pub warn: String,
     pub ellipsis: String,
-    /// Glyph standing for the Enter key in the statusbar.
+    /// Glyph standing for the Enter key in shortcut hints.
     pub enter: String,
+    /// Glyph standing for the arrow keys in shortcut hints.
+    pub arrows: String,
     pub border: BorderStyle,
 }
 
@@ -378,6 +381,7 @@ impl IconsConfig {
             warn: "⚠".into(),
             ellipsis: "…".into(),
             enter: "↵".into(),
+            arrows: "↑↓".into(),
             border: BorderStyle::Rounded,
         };
         match name {
@@ -459,6 +463,7 @@ struct IconsFile {
     warn: Option<String>,
     ellipsis: Option<String>,
     enter: Option<String>,
+    arrows: Option<String>,
     border: Option<BorderStyle>,
 }
 
@@ -480,6 +485,7 @@ impl Default for IconsFile {
             warn: None,
             ellipsis: None,
             enter: None,
+            arrows: None,
             border: None,
         }
     }
@@ -510,6 +516,7 @@ impl<'de> Deserialize<'de> for IconsConfig {
             warn: f.warn.unwrap_or(b.warn),
             ellipsis: f.ellipsis.unwrap_or(b.ellipsis),
             enter: f.enter.unwrap_or(b.enter),
+            arrows: f.arrows.unwrap_or(b.arrows),
             border: f.border.unwrap_or(b.border),
         };
         i.pad();
@@ -817,6 +824,7 @@ const ICONS_KEYS: &[&str] = &[
     "warn",
     "ellipsis",
     "enter",
+    "arrows",
     "border",
 ];
 const AGENT_KEYS: &[&str] = &["name", "command", "shell", "patterns"];
@@ -1668,6 +1676,7 @@ impl SectionSalvage for IconsConfig {
             warn: salvage_field(t, "warn", b.warn, file, diags),
             ellipsis: salvage_field(t, "ellipsis", b.ellipsis, file, diags),
             enter: salvage_field(t, "enter", b.enter, file, diags),
+            arrows: salvage_field(t, "arrows", b.arrows, file, diags),
             border: salvage_field(t, "border", b.border, file, diags),
         };
         i.pad();
@@ -2056,7 +2065,7 @@ mod tests {
             // number of fields actually accepted.
             assert_eq!(
                 ICONS_KEYS.len(),
-                16,
+                17,
                 "adding an icon key means adding it to ICONS_KEYS too"
             );
         });

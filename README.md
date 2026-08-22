@@ -446,7 +446,8 @@ reads as new until it has commits of its own.
 | `separator` | ` · ` | ` · ` | ` · ` | between bar/help entries |
 | `warn` | `⚠` | `⚠` | `⚠` | startup diagnostics |
 | `ellipsis` | `…` | `…` | `…` | truncation marker |
-| `enter` | `↵` | `↵` | `↵` | the Enter key, in the bar |
+| `enter` | `↵` | `↵` | `↵` | the Enter key, in shortcut hints |
+| `arrows` | `↑↓` | `↑↓` | `↑↓` | the arrow keys, in shortcut hints |
 | `border` | `rounded` | `rounded` | `rounded` | panel and popup frames |
 
 An empty string draws nothing. `repository`/`repository_empty`,
@@ -479,7 +480,10 @@ second shell, and the subtree appears. Only worktrees with several shells (or
 none) are expandable.
 
 The statusbar carries the contextual shortcuts and nothing else — no app
-name, no session chip, no repository count. Notices ("worktree 'x' created",
+name, no session chip, no repository count. Every shortcut in the app —
+status bar, modal footer, help palette — is written the same way, `<action>
+<key>` ("cancel esc"), with only the key in the accent colour and glyphs
+from `[icons]` where a key has one (`↵`, `↑↓`). Notices ("worktree 'x' created",
 "attach failed: …") appear as a toast above the bar and fade after a few
 seconds; the log and the diagnostics overlay (`D`) keep the record.
 

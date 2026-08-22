@@ -423,17 +423,18 @@ pub(crate) fn textarea_width(viewport_w: u16) -> u16 {
     (viewport_w * 70 / 100).clamp(40, 96)
 }
 
-/// Content rows of the textarea popup (inside the border, above the
-/// spacer and the hint row): height − 4 (2 borders + spacer + hint).
+/// Content rows of the textarea popup (inside the border and the modal
+/// padding, above the spacer and the hint row): height − 5 (2 borders +
+/// the padding's top row + spacer + hint).
 pub(crate) fn textarea_visible_lines(viewport_h: u16) -> usize {
-    textarea_height(viewport_h) as usize - 4
+    (textarea_height(viewport_h) as usize).saturating_sub(5)
 }
 
-/// Soft-wrap width of the textarea content: the popup width minus the
-/// two borders, minus one column so a cursor sitting at the end of a
-/// full row still has a cell of its own inside the border.
+/// Soft-wrap width of the textarea content: the popup width minus the two
+/// borders and the padding's two columns, minus one more so a cursor
+/// sitting at the end of a full row still has a cell of its own.
 pub(crate) fn textarea_wrap_width(viewport_w: u16) -> usize {
-    (textarea_width(viewport_w).saturating_sub(3) as usize).max(1)
+    (textarea_width(viewport_w).saturating_sub(5) as usize).max(1)
 }
 
 /// An action reachable from the statusbar shortcut entries (and by mouse
@@ -2605,10 +2606,7 @@ impl App {
             self.preview_picker_theme();
         } else if matches!(self.mode, Mode::Help) {
             let total = crate::ui::help_line_count(self);
-            let visible = self
-                .popup_area
-                .map(|r| r.height.saturating_sub(2) as usize)
-                .unwrap_or(10);
+            let visible = crate::ui::overlay_body_height(self.popup_area);
             let max_scroll = total.saturating_sub(visible);
             let step = (visible / 2).max(1) * half_pages.max(0) as usize;
             if half_pages < 0 {
@@ -2618,10 +2616,7 @@ impl App {
             }
         } else if matches!(self.mode, Mode::Diagnostics) {
             let total = crate::ui::diag_line_count(self);
-            let visible = self
-                .popup_area
-                .map(|r| r.height.saturating_sub(2) as usize)
-                .unwrap_or(10);
+            let visible = crate::ui::overlay_body_height(self.popup_area);
             let max_scroll = total.saturating_sub(visible);
             let step = (visible / 2).max(1) * half_pages.max(0) as usize;
             if half_pages < 0 {
@@ -2657,17 +2652,11 @@ impl App {
             self.preview_picker_theme();
         } else if matches!(self.mode, Mode::Help) {
             let total = crate::ui::help_line_count(self);
-            let visible = self
-                .popup_area
-                .map(|r| r.height.saturating_sub(2) as usize)
-                .unwrap_or(10);
+            let visible = crate::ui::overlay_body_height(self.popup_area);
             self.help_scroll = total.saturating_sub(visible);
         } else if matches!(self.mode, Mode::Diagnostics) {
             let total = crate::ui::diag_line_count(self);
-            let visible = self
-                .popup_area
-                .map(|r| r.height.saturating_sub(2) as usize)
-                .unwrap_or(10);
+            let visible = crate::ui::overlay_body_height(self.popup_area);
             self.diag_scroll = total.saturating_sub(visible);
         } else {
             self.move_sel_last();
@@ -2678,10 +2667,7 @@ impl App {
     /// given index (`g`/`G`), clamped to the scrollable range.
     fn help_scroll_to(&mut self, n: usize) {
         let total = crate::ui::help_line_count(self);
-        let visible = self
-            .popup_area
-            .map(|r| r.height.saturating_sub(2) as usize)
-            .unwrap_or(10);
+        let visible = crate::ui::overlay_body_height(self.popup_area);
         self.help_scroll = n.min(total.saturating_sub(visible));
     }
 
@@ -2690,10 +2676,7 @@ impl App {
     /// `ui::diag_line_count`, never drifts from the renderer).
     fn diag_scroll_to(&mut self, n: usize) {
         let total = crate::ui::diag_line_count(self);
-        let visible = self
-            .popup_area
-            .map(|r| r.height.saturating_sub(2) as usize)
-            .unwrap_or(10);
+        let visible = crate::ui::overlay_body_height(self.popup_area);
         self.diag_scroll = n.min(total.saturating_sub(visible));
     }
 
@@ -5009,7 +4992,7 @@ mod tests {
         assert_eq!(app.diag_scroll, 0);
         app.on_key(key(KeyCode::Char('G'), false));
         let total = crate::ui::diag_line_count(&app);
-        let visible = app.popup_area.unwrap().height.saturating_sub(2) as usize;
+        let visible = crate::ui::overlay_body_height(app.popup_area);
         assert_eq!(app.diag_scroll, total.saturating_sub(visible));
         // the tree selection never moved while the overlay was open
         assert_eq!(app.sel, Sel::Repository(0));
@@ -5035,7 +5018,7 @@ mod tests {
         assert_eq!(app.diag_scroll, 0);
         app.on_key(key(KeyCode::End, false));
         let total = crate::ui::diag_line_count(&app);
-        let visible = app.popup_area.unwrap().height.saturating_sub(2) as usize;
+        let visible = crate::ui::overlay_body_height(app.popup_area);
         assert_eq!(app.diag_scroll, total.saturating_sub(visible));
         assert_eq!(app.sel, before, "tree selection untouched");
     }
