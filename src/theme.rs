@@ -581,14 +581,23 @@ mod tests {
     #[test]
     fn catppuccin_set_ships_with_official_hexes() {
         crate::util::testutil::with_fresh_xdg(|| {
-            // base + text + one accent per flavour, straight from catppuccin.com
-            let cases: [(&str, u32, u32, u32); 4] = [
-                ("catppuccin-latte", 0xeff1f5, 0x4c4f69, 0x7287fd),
-                ("catppuccin-frappe", 0x303446, 0xc6d0f5, 0xbabbf1),
-                ("catppuccin-macchiato", 0x24273a, 0xcad3f5, 0xb7bdf8),
-                ("catppuccin-mocha", 0x1e1e2e, 0xcdd6f4, 0xb4befe),
+            // base + text + the accent swatch per flavour, straight from
+            // catppuccin.com: peach on the dark flavours, where lavender is
+            // too close to text to read as an accent, and lavender on latte,
+            // whose text is a dark grey it separates from cleanly.
+            let cases: [(&str, u32, u32, u32, &str); 4] = [
+                ("catppuccin-latte", 0xeff1f5, 0x4c4f69, 0x7287fd, "lavender"),
+                ("catppuccin-frappe", 0x303446, 0xc6d0f5, 0xef9f76, "peach"),
+                (
+                    "catppuccin-macchiato",
+                    0x24273a,
+                    0xcad3f5,
+                    0xf5a97f,
+                    "peach",
+                ),
+                ("catppuccin-mocha", 0x1e1e2e, 0xcdd6f4, 0xfab387, "peach"),
             ];
-            for (name, base, text, accent) in cases {
+            for (name, base, text, accent, swatch) in cases {
                 let t = load(name, true).unwrap();
                 assert_eq!(
                     spec_hex(&t, |c| c.background),
@@ -603,7 +612,7 @@ mod tests {
                 assert_eq!(
                     spec_hex(&t, |c| c.accent),
                     accent,
-                    "{name} accent must be the official lavender"
+                    "{name} accent must be the official {swatch}"
                 );
             }
         });
@@ -617,6 +626,90 @@ mod tests {
             Color::Rgb(r, g, b) => ((r as u32) << 16) | ((g as u32) << 8) | b as u32,
             other => panic!("expected an RGB colour, got {other:?}"),
         }
+    }
+
+    /// An accent that reads like body text is not an accent. `accent` is
+    /// printed directly beside `foreground` in every shortcut hint
+    /// (`<action> <key>`), so the eye has to separate the two at a glance,
+    /// on one or two characters, with no space of its own.
+    ///
+    /// CIELAB ΔE is the measure that matches what the eye does here. A
+    /// luminance ratio does not: gruvbox's yellow accent on its cream text
+    /// rates 1.24 and is unmistakable, while Catppuccin's lavender on its
+    /// text rates 1.24 too and is invisible — the difference is hue, which
+    /// only ΔE sees. Below ~25 a short key stops standing out; 30 is the
+    /// floor, with room to spare.
+    ///
+    /// A theme whose roles are ANSI names (`ansi`) carries no measurable
+    /// value — the terminal decides what `cyan` is — and is skipped.
+    #[test]
+    fn every_builtin_accent_is_distinguishable_from_its_foreground() {
+        /// The smallest ΔE at which a one-or-two-character key still reads
+        /// as a different colour from the word beside it.
+        const MIN_DELTA_E: f64 = 30.0;
+
+        for (name, content) in BUILTIN_THEMES {
+            let file = parse_theme(content, Path::new(&format!("<builtin:{name}>")))
+                .unwrap_or_else(|e| panic!("theme {name}: {e}"));
+            let (Some(accent), Some(text)) = (
+                rgb(file.colors.accent.resolve(true)),
+                rgb(file.colors.foreground.resolve(true)),
+            ) else {
+                continue;
+            };
+            let d = delta_e(accent, text);
+            assert!(
+                d >= MIN_DELTA_E,
+                "{name}: accent is ΔE {d:.1} from foreground, under the {MIN_DELTA_E} floor — \
+                 the shortcut keys will wash into their descriptions",
+            );
+        }
+    }
+
+    /// The sRGB components of a colour, or `None` for a colour the terminal
+    /// defines (ANSI names, `default`), which has no value to measure.
+    fn rgb(c: Color) -> Option<(f64, f64, f64)> {
+        match c {
+            Color::Rgb(r, g, b) => Some((r as f64, g as f64, b as f64)),
+            _ => None,
+        }
+    }
+
+    /// CIE76 colour difference between two sRGB colours, via CIE XYZ and
+    /// CIELAB with a D65 white point. CIE76 is the crude one of the ΔE
+    /// family, but the threshold here is coarse and the inputs are
+    /// saturated UI colours, where its weaknesses (near-neutral blues) do
+    /// not bite.
+    fn delta_e(a: (f64, f64, f64), b: (f64, f64, f64)) -> f64 {
+        let (l1, a1, b1) = lab(a);
+        let (l2, a2, b2) = lab(b);
+        ((l1 - l2).powi(2) + (a1 - a2).powi(2) + (b1 - b2).powi(2)).sqrt()
+    }
+
+    /// sRGB (0-255) to CIELAB, D65.
+    fn lab(c: (f64, f64, f64)) -> (f64, f64, f64) {
+        // Undo the sRGB transfer function, then the XYZ matrix.
+        let lin = |v: f64| {
+            let v = v / 255.0;
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let (r, g, b) = (lin(c.0), lin(c.1), lin(c.2));
+        let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
+        let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+        let f = |t: f64| {
+            if t > 0.008856 {
+                t.cbrt()
+            } else {
+                7.787 * t + 16.0 / 116.0
+            }
+        };
+        let (fx, fy, fz) = (f(x), f(y), f(z));
+        (116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz))
     }
 
     // ---- the borrowed status colour roles ----

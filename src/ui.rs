@@ -319,6 +319,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         Mode::Normal => {}
     }
+    // The body/footer rule goes on last, over the blank row every modal
+    // reserves above its shortcuts. One place, so no overlay can forget
+    // it — the same discipline as `MODAL_PADDING`.
+    if let Some(rect) = app.popup_area {
+        draw_footer_rule(f, rect, &app.theme.colors);
+    }
 }
 
 fn fits(area: Rect, min: (u16, u16)) -> bool {
@@ -380,7 +386,7 @@ fn hint_spans(theme: &ResolvedColors, h: &Hint) -> [Span<'static>; 2] {
 }
 
 /// A row of hints joined with the app's separator — the footer every modal
-/// ends with, one blank row above it.
+/// ends with, a border-to-border rule above it.
 fn hint_line(
     theme: &ResolvedColors,
     icons: &crate::config::IconsConfig,
@@ -461,9 +467,9 @@ fn title_style(theme: &ResolvedColors) -> Style {
 }
 
 /// Breathing room inside every modal border: one column left and right,
-/// one row on top. No bottom row — the shortcut footer already carries a
-/// blank row above it, and a second gap below would float it off the
-/// frame.
+/// one row on top. No bottom row — the last content row is the shortcut
+/// footer, fenced off by [`draw_footer_rule`], and a gap below it would
+/// float it off the frame.
 pub(crate) const MODAL_PADDING: Padding = Padding::new(1, 1, 1, 0);
 
 /// Columns and rows a modal spends on its border and [`MODAL_PADDING`] —
@@ -497,8 +503,35 @@ fn modal_inner(area: Rect) -> Rect {
     }
 }
 
-/// Rows a modal footer owns: the blank spacer and the hint row itself.
+/// Rows a modal footer owns: the rule and the hint row itself.
 pub(crate) const MODAL_FOOTER_H: usize = 2;
+
+/// The rule between a modal's body and its shortcuts, drawn border to
+/// border (`\u{251c}\u{2500}\u{2524}`) so the footer reads as its own compartment instead of a
+/// stray line floating inside the padding.
+///
+/// It paints over the blank row every modal already reserves above its
+/// hint line, so no sizing math changes — and only the symbol and the
+/// foreground are written, leaving each cell's background as the modal
+/// drew it (some overlays fill `popup_bg`, some do not).
+fn draw_footer_rule(f: &mut Frame, area: Rect, theme: &ResolvedColors) {
+    // Two borders plus the hint row: a modal this short has no body to
+    // divide from its footer.
+    if area.height < 4 || area.width < 2 {
+        return;
+    }
+    let y = area.y + area.height - 3;
+    let right = area.x + area.width - 1;
+    let buf = f.buffer_mut();
+    for x in area.x..=right {
+        let symbol = match x {
+            _ if x == area.x => "\u{251c}",
+            _ if x == right => "\u{2524}",
+            _ => "\u{2500}",
+        };
+        buf[(x, y)].set_symbol(symbol).set_fg(theme.popup_border);
+    }
+}
 
 /// Scrollable rows a scrolling overlay of this rect shows: its content
 /// height minus the pinned footer. The app clamps its scroll offsets with
@@ -1110,8 +1143,8 @@ const HELP_DESC_W: usize = 24;
 const HELP_KEY_W: usize = 20;
 
 /// The help palette's pinned footer: it says how to scroll and how to
-/// leave, so it never scrolls away. One blank row above it, like every
-/// modal footer.
+/// leave, so it never scrolls away. It reserves the row above it for the
+/// footer rule, like every modal footer.
 fn help_footer(app: &App, scrollable: bool) -> Vec<Line<'static>> {
     let theme = &app.theme.colors;
     let ic = &app.cfg.icons;
@@ -1185,7 +1218,7 @@ fn diag_lines(app: &App) -> Vec<Line<'_>> {
 }
 
 /// The diagnostics overlay's pinned footer — same shape as the help
-/// palette's: a blank row, then the shortcuts.
+/// palette's: the reserved rule row, then the shortcuts.
 fn diag_footer(app: &App, scrollable: bool) -> Vec<Line<'static>> {
     let theme = &app.theme.colors;
     let ic = &app.cfg.icons;
@@ -1262,7 +1295,8 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
             vec![Span::styled(label, fg(theme.foreground))]
         }));
     }
-    // A blank row separates the list from the shortcuts, in every modal.
+    // The row the footer rule is painted over, reserved here so the
+    // list can never grow into it.
     lines.push(Line::from(""));
     lines.push(footer);
     let block = popup_block(theme, ic, " Themes ");
@@ -1737,7 +1771,7 @@ mod tests {
 
     /// The popup wraps a line too long for its width instead of letting
     /// it run past the border, drops the old "send to agent (N rows)"
-    /// label, and keeps a blank row between the text and the hint.
+    /// label, and keeps the footer rule between the text and the hint.
     #[test]
     fn textarea_popup_wraps_long_lines_and_spaces_the_hint() {
         let cfg = Config::default();
@@ -1779,7 +1813,10 @@ mod tests {
         let h = crate::app::textarea_height(40);
         let x0 = (120 - w) / 2;
         let y0 = (40 - h) / 2;
-        for y in y0..y0 + h {
+        // The footer rule meets the frame with tees; every other row
+        // has the plain side border.
+        let rule_y = y0 + h - 3;
+        for y in (y0..y0 + h).filter(|y| *y != rule_y) {
             let row: Vec<char> = rows[y as usize].chars().collect();
             assert!(
                 row[x0 as usize] == '\u{2502}' || y == y0 || y == y0 + h - 1,
@@ -1791,18 +1828,14 @@ mod tests {
             );
         }
 
-        // The wrapped text really is spread over several rows, and the
-        // row above the hint is blank.
+        // The wrapped text really is spread over several rows, and a rule
+        // separates it from the hint.
         let hint_y = (y0 + h - 2) as usize;
         assert!(rows[hint_y].contains("send ctrl-s"), "hint on the last row");
-        let spacer: String = rows[hint_y - 1]
-            .chars()
-            .skip(x0 as usize + 1)
-            .take(w as usize - 2)
-            .collect();
-        assert!(
-            spacer.trim().is_empty(),
-            "a spacer separates the text from the hint, got {spacer:?}"
+        assert_footer_rule(
+            terminal.backend().buffer(),
+            Rect::new(x0, y0, w, h),
+            "textarea",
         );
         let filled = rows[(y0 + 1) as usize..hint_y - 1]
             .iter()
@@ -3595,11 +3628,34 @@ mod tests {
         assert!(row.contains(Status::Blocked.label()), "row reads: {row:?}");
     }
 
+    /// The rule between a modal's body and its shortcuts: `├`, `─` to the
+    /// far edge, `┤` — border to border, so the footer reads as its own
+    /// compartment rather than a stray line inside the padding.
+    fn assert_footer_rule(buf: &ratatui::buffer::Buffer, area: Rect, what: &str) {
+        let y = area.y + area.height - 3;
+        let row: Vec<String> = (area.x..area.x + area.width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect();
+        assert_eq!(row[0], "\u{251c}", "{what}: the rule meets the left border");
+        assert_eq!(
+            row[area.width as usize - 1],
+            "\u{2524}",
+            "{what}: the rule meets the right border"
+        );
+        assert!(
+            row[1..area.width as usize - 1]
+                .iter()
+                .all(|c| c == "\u{2500}"),
+            "{what}: an unbroken rule above the shortcuts, got {}",
+            row.concat()
+        );
+    }
+
     /// The create/delete dialogs size themselves to what they say instead
     /// of taking a fixed slice of the frame, and keep one blank column on
     /// each side and one blank row on top between the text and the border.
-    /// The bottom row belongs to the shortcut footer — the blank row above
-    /// it is the gap, so a second one below would float it off the frame.
+    /// The bottom row belongs to the shortcut footer, fenced off by the
+    /// rule — a gap below it would float the footer off the frame.
     #[test]
     fn dialogs_are_content_sized_with_one_char_padding() {
         let mut app = seeded_app();
@@ -3656,16 +3712,11 @@ mod tests {
                 footer.contains("cancel"),
                 "the bottom content row carries the shortcuts, got {footer:?}",
             );
-            let gap = row(area.y + area.height - 3);
-            assert!(
-                gap.chars()
-                    .skip(1)
-                    .take(area.width as usize - 2)
-                    .all(|c| c == ' '),
-                "a blank row separates the shortcuts, got {gap:?}",
-            );
-            // Padding column on both sides of every content row.
-            for y in area.y + 2..area.y + area.height - 1 {
+            assert_footer_rule(&buf, area, "dialog");
+            // Padding column on both sides of every content row — the
+            // rule row is the exception: it spans border to border.
+            let rule_y = area.y + area.height - 3;
+            for y in (area.y + 2..area.y + area.height - 1).filter(|y| *y != rule_y) {
                 let cells: Vec<String> = (area.x..area.x + area.width)
                     .map(|x| buf[(x, y)].symbol().to_string())
                     .collect();
@@ -3680,9 +3731,9 @@ mod tests {
     }
 
     /// Every modal keeps `MODAL_PADDING` (a blank column each side, a blank
-    /// row under the top border) and ends with its shortcut footer, one
-    /// blank row above it. One rule, checked on all of them at once — a new
-    /// overlay that forgets either fails here.
+    /// row under the top border) and ends with its shortcut footer, fenced
+    /// off by a border-to-border rule. One rule, checked on all of them at
+    /// once — a new overlay that forgets either fails here.
     #[test]
     fn every_modal_is_padded_and_ends_with_its_shortcuts() {
         let mut app = seeded_app_with_shell();
@@ -3750,11 +3801,46 @@ mod tests {
                 footer.starts_with(' ') && footer.ends_with(' '),
                 "{name}: padding column on both sides of the footer, got {footer:?}"
             );
-            let gap = row(area.y + area.height - 3);
-            assert!(
-                gap.trim().is_empty(),
-                "{name}: a blank row separates the shortcuts, got {gap:?}"
-            );
+            assert_footer_rule(&buf, area, name);
+        }
+    }
+
+    /// The footer rule paints symbol and foreground only: it inherits
+    /// whatever background the modal drew, so it never punches a hole in
+    /// an overlay that fills `popup_bg` (`Input`) nor tints one that does
+    /// not (`ThemePicker`).
+    #[test]
+    fn the_footer_rule_keeps_the_modal_background() {
+        let mut app = seeded_app_with_shell();
+        for (name, mode) in [
+            (
+                "input",
+                Mode::Input {
+                    kind: InputKind::AddShell,
+                    text: "claude".into(),
+                },
+            ),
+            ("themes", Mode::ThemePicker { index: 0 }),
+        ] {
+            app.mode = mode;
+            let backend = ratatui::backend::TestBackend::new(110, 46);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let area = app.popup_area.unwrap();
+            let buf = terminal.backend().buffer().clone();
+            let rule_y = area.y + area.height - 3;
+            for x in area.x..area.x + area.width {
+                assert_eq!(
+                    buf[(x, rule_y)].bg,
+                    buf[(x, rule_y + 1)].bg,
+                    "{name}: the rule keeps the background of column {x}"
+                );
+                assert_eq!(
+                    buf[(x, rule_y)].fg,
+                    app.theme.colors.popup_border,
+                    "{name}: the rule is drawn in the border colour"
+                );
+            }
         }
     }
 

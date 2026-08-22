@@ -493,8 +493,20 @@ the same commit as the change.
   (one column left and right, one row on top) lives on `popup_block`, so no
   overlay can forget it, and every content-sizing calculation adds the shared
   `MODAL_CHROME_W`/`MODAL_CHROME_H`. There is deliberately no bottom padding
-  row — the shortcut footer already carries a blank row above it, and a
-  second gap below would float it off the frame.
+  row — the last content row is the shortcut footer, and a gap below it would
+  float it off the frame.
+- **The footer is fenced off by a rule, not a gap**: `draw_footer_rule` paints
+  `├`–`─`–`┤` border to border on the row above the shortcuts, so the footer
+  reads as its own compartment the way a table header rule separates the
+  header from the rows. A line inside the padding would have floated, ending
+  a column short of the frame on both sides. Mechanically it paints *over* the
+  blank row every modal already reserves above its hint line, so `MODAL_FOOTER_H`
+  stays 2 and no sizing math changed; it writes the symbol and foreground only,
+  leaving each cell's background alone, because some overlays fill `popup_bg`
+  and some do not. It is called once in `draw`, off `app.popup_area`, so a new
+  overlay cannot forget it — the same discipline as `MODAL_PADDING`. The
+  "frame too small for this dialog" fallback is the one overlay without it:
+  its hint is not on the last content row, so there is nothing to fence.
 - **Panel titles are Title Case names, body text is not.** Titles name a thing
   (`Preview`, `Quick Send`, `Repositories`), so they read as proper names;
   hints, statusbar and body text stay lowercase, which is the LazyGit register
@@ -590,10 +602,24 @@ the same commit as the change.
 - **The Catppuccin set is the reference palette**: all four flavours ship as
   built-ins (official hex values, unmodified, mapped onto the app's roles:
   base → background, text/subtext0 → foreground/dim, surface0-2 →
-  selection/borders, flavour accents → status roles, lavender → accent).
+  selection/borders, flavour accents → status roles, peach → accent on the
+  dark flavours and lavender → accent on latte).
   `catppuccin-mocha` is the default (the TUI guideline names it the usual
   default; config files written before this keep their old `theme = "dracula"`
   line and load exactly as before).
+- **An accent must be measurably far from the foreground**: `accent` prints
+  directly beside `foreground` in every shortcut hint (`<action> <key>`), on
+  one or two characters with no space of its own, so the two have to separate
+  at a glance. The three dark Catppuccin flavours originally took lavender —
+  the swatch that sits next to text in the palette — and measured ΔE 12, 15
+  and 20 from their own foreground, which is invisible; they now take peach
+  (ΔE 52-58), the only free swatch not already spoken for by a status or tree
+  role. `theme::tests::every_builtin_accent_is_distinguishable_from_its_foreground`
+  holds every built-in to ΔE ≥ 30. The measure is CIELAB ΔE and not a
+  luminance ratio on purpose: gruvbox's yellow accent on cream text rates 1.24
+  and is unmistakable, Catppuccin's lavender on text rates 1.24 and is
+  invisible — the difference is hue, which only ΔE sees. ANSI-named roles
+  (`ansi.toml`) have no measurable value and are skipped.
 - **`ctrl-t` is a live theme picker**: it previews as the cursor moves (the
   whole screen repaints via the same load path), Enter keeps, Esc restores the
   theme it opened with. Built-ins list first (stable order), then user themes.
