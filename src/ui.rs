@@ -484,8 +484,11 @@ pub(crate) const MODAL_PADDING: Padding = Padding::new(1, 1, 0, 0);
 
 /// Columns and rows a modal spends on its border and [`MODAL_PADDING`] —
 /// what every content-sizing calculation has to add on top of its lines.
-const MODAL_CHROME_W: u16 = 4;
-const MODAL_CHROME_H: u16 = 2;
+/// Derived from the padding itself: the two constants and [`modal_inner`]
+/// have drifted from it twice, each time putting the input caret a row
+/// below the text it belongs to.
+const MODAL_CHROME_W: u16 = 2 + MODAL_PADDING.left + MODAL_PADDING.right;
+const MODAL_CHROME_H: u16 = 2 + MODAL_PADDING.top + MODAL_PADDING.bottom;
 
 /// Overlay block: rounded (or configured) corners, popup border colour,
 /// bg-less title, and the shared modal padding — no modal draws text
@@ -504,10 +507,13 @@ fn popup_block(
 }
 
 /// The content rect of a modal: inside the border AND [`MODAL_PADDING`].
+/// Same box ratatui gives the block's own content, kept in step with it by
+/// `modal_inner_matches_the_block` — the padding is horizontal only today,
+/// so the first content row sits flush under the top border.
 fn modal_inner(area: Rect) -> Rect {
     Rect {
-        x: area.x + 2,
-        y: area.y + 2,
+        x: area.x + 1 + MODAL_PADDING.left,
+        y: area.y + 1 + MODAL_PADDING.top,
         width: area.width.saturating_sub(MODAL_CHROME_W),
         height: area.height.saturating_sub(MODAL_CHROME_H),
     }
@@ -1515,9 +1521,9 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
             .style(popup_style),
         area,
     );
-    // cursor after the typed text, on the input row (the second content
-    // line below the border: one spacer line, then label + text). Only
-    // when the popup fits the frame — a cursor off the buffer would
+    // cursor after the typed text, on the input row (the first content
+    // line, flush under the top border — the padding is horizontal only).
+    // Only when the popup fits the frame — a cursor off the buffer would
     // corrupt the terminal.
     let cursor_x = inner.x + label.chars().count() as u16 + text.chars().count() as u16;
     let cursor_y = inner.y;
@@ -1745,10 +1751,33 @@ mod tests {
         );
     }
 
+    /// `modal_inner` is hand-derived from the border and [`MODAL_PADDING`],
+    /// but the text it positions the caret over is laid out by the block
+    /// itself. When the two disagree the caret drifts off its row (it has,
+    /// twice), so pin them together: whatever ratatui hands the block as
+    /// content box is what `modal_inner` must return.
+    #[test]
+    fn modal_inner_matches_the_block() {
+        let app = seeded_app();
+        let block = popup_block(&app.theme.colors, &app.cfg.icons, " Title ");
+        for area in [
+            Rect::new(0, 0, 40, 10),
+            Rect::new(7, 3, 34, 8),
+            Rect::new(12, 19, 60, 20),
+        ] {
+            assert_eq!(
+                modal_inner(area),
+                block.inner(area),
+                "modal_inner drifted from the block's own content box at {area:?}",
+            );
+        }
+    }
+
     /// The input popup's block cursor must sit on the input text row, right
-    /// after the typed text. Regression: it used to be drawn one row low
-    /// (area.y + 3 instead of area.y + 2), making the caret appear below
-    /// the text in every input popup (new worktree, quick-send, import).
+    /// after the typed text. Regression, twice: `modal_inner` kept counting
+    /// a vertical padding row that `MODAL_PADDING` no longer reserves, so
+    /// the caret landed a row below the text in every input popup (new
+    /// worktree, add-shell, quick-send) — on the "branches from" hint.
     #[test]
     fn input_popup_cursor_sits_on_input_row() {
         // seeded: the add-shell hint needs a repository to name, and it adds
@@ -1778,7 +1807,7 @@ mod tests {
             // inside the border AND the one column of padding
             let expected_x =
                 area.x + 2 + label.chars().count() as u16 + text.chars().count() as u16;
-            let expected_y = area.y + 2; // input row = first content row
+            let expected_y = area.y + 1; // input row = first content row
             assert_eq!(
                 terminal.get_cursor_position().unwrap(),
                 Position::new(expected_x, expected_y),

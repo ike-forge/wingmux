@@ -547,7 +547,12 @@ the same commit as the change.
   shared `MODAL_CHROME_W`/`MODAL_CHROME_H`. The padding is horizontal only:
   a top row pushed every modal's first line away from its title for no gain,
   and a bottom row would float the shortcut footer — the last content row —
-  off the frame.
+  off the frame. `MODAL_PADDING` is the single source of truth for that
+  geometry: `MODAL_CHROME_W`/`MODAL_CHROME_H` and `modal_inner` (the rect the
+  input caret is placed in) are all derived from it, and
+  `modal_inner_matches_the_block` asserts the derivation still equals what
+  ratatui hands the block. Hand-written offsets drifted from the padding
+  twice, each time drawing the caret a row below the text it belonged to.
 - **The footer is fenced off by a rule, not a gap**: `draw_footer_rule` paints
   `├`–`─`–`┤` border to border on the row above the shortcuts, so the footer
   reads as its own compartment the way a table header rule separates the
