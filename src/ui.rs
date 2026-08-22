@@ -7,7 +7,9 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph,
+};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, BarAction, InputKind, Mode, Sel};
@@ -1184,11 +1186,11 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
     area
 }
 
-/// Popup geometry for the input prompt: 60% of the frame wide and exactly
-/// as tall as its content (`lines` plus the two border rows). A fixed
-/// height percentage used to clip the footer off short frames.
-fn input_rect(area: Rect, lines: u16) -> Rect {
-    centered_rect_wh(area, area.width * 60 / 100, lines + 2)
+/// Upper bound on a content-sized dialog: never wider than 60% of the
+/// frame, so a long typed path (or a long confirm body) still leaves the
+/// dashboard visible around it.
+fn dialog_max_w(area: Rect) -> u16 {
+    area.width * 60 / 100
 }
 
 fn draw_input(f: &mut Frame, app: &App) -> Rect {
@@ -1202,14 +1204,16 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
         _ => unreachable!(),
     };
     let Mode::Input { kind, text } = &app.mode else {
-        return input_rect(f.area(), 4);
+        return Rect::default();
     };
-    let block = popup_block(theme, &app.cfg.icons, format!(" {title} "));
-    let mut lines = vec![Line::from("")];
-    lines.push(Line::from(vec![
+    let title_text = format!(" {title} ");
+    let block = popup_block(theme, &app.cfg.icons, title_text.clone()).padding(DIALOG_PADDING);
+    // No leading spacer line: DIALOG_PADDING already keeps the field off
+    // the border.
+    let mut lines = vec![Line::from(vec![
         Span::styled(label, fg(theme.accent)),
         Span::raw(text.clone()),
-    ]));
+    ])];
     // add-shell only: an empty submit runs the repository's default command,
     // so name it right under the field instead of making it folklore.
     if *kind == InputKind::AddShell
@@ -1242,13 +1246,15 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
         format!("Enter to submit{}Esc to cancel", sep(&app.cfg.icons)),
         fg(theme.dim),
     )));
-    let area = input_rect(f.area(), lines.len() as u16);
+    let area = dialog_rect(f.area(), &lines, &title_text, 34, dialog_max_w(f.area()));
     f.render_widget(Clear, area);
+    // Inside the border AND the padding — the first content row is the
+    // input row.
     let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
+        x: area.x + 2,
+        y: area.y + 2,
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(4),
     };
     let popup_style = on(theme.popup_fg, theme.popup_bg);
     f.render_widget(
@@ -1265,7 +1271,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
     // when the popup fits the frame — a cursor off the buffer would
     // corrupt the terminal.
     let cursor_x = inner.x + label.chars().count() as u16 + text.chars().count() as u16;
-    let cursor_y = inner.y + 1;
+    let cursor_y = inner.y;
     if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
         f.set_cursor_position(Position::new(cursor_x, cursor_y));
     }
@@ -1360,17 +1366,35 @@ fn centered_rect_wh(area: Rect, w: u16, h: u16) -> Rect {
     }
 }
 
+/// One column/row of breathing room inside the border on every side, so
+/// dialog text never touches the frame.
+const DIALOG_PADDING: Padding = Padding::new(1, 1, 1, 1);
+
+/// Geometry for a content-sized dialog: exactly as wide and as tall as its
+/// content, plus `DIALOG_PADDING` and the two border rows/columns. A
+/// dialog that asks one question used to take a fixed percentage of the
+/// frame regardless of what it said; now it takes what it needs, clamped
+/// to [`min_w`, `max_w`] and to the frame.
+fn dialog_rect(frame: Rect, lines: &[Line], title: &str, min_w: u16, max_w: u16) -> Rect {
+    let widest = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let w = widest
+        .max(title.chars().count() as u16)
+        .saturating_add(4)
+        .clamp(min_w, max_w.max(min_w))
+        .min(frame.width);
+    let h = (lines.len() as u16).saturating_add(4).min(frame.height);
+    centered_rect_wh(frame, w, h)
+}
+
 fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
     let theme = &app.theme.colors;
     let Mode::Confirm { confirm } = &app.mode else {
         return Rect::default();
     };
-    let area = centered_rect(f.area(), 62, 26);
-    f.render_widget(Clear, area);
     let sp = sep(&app.cfg.icons);
     let options = match &confirm.force_label {
-        Some(fl) => format!(" [y/d] yes{sp}[f] {fl}{sp}[n] cancel "),
-        None => format!(" [y/d] yes{sp}[n] cancel "),
+        Some(fl) => format!("[y/d] yes{sp}[f] {fl}{sp}[n] cancel"),
+        None => format!("[y/d] yes{sp}[n] cancel"),
     };
     let mut lines: Vec<Line> = confirm
         .body
@@ -1382,8 +1406,11 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
         options,
         fg(theme.accent).add_modifier(Modifier::BOLD),
     )));
-    let block = popup_block(theme, &app.cfg.icons, format!(" {} ", confirm.title));
+    let title_text = format!(" {} ", confirm.title);
+    let block = popup_block(theme, &app.cfg.icons, title_text.clone()).padding(DIALOG_PADDING);
     let popup_style = on(theme.popup_fg, theme.popup_bg);
+    let area = dialog_rect(f.area(), &lines, &title_text, 34, dialog_max_w(f.area()));
+    f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(Text::from(lines))
             .block(block)
@@ -1495,11 +1522,10 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
-        for (kind, label, text, lines) in [
-            (InputKind::NewWorktree, "worktree name: ", "foo", 4),
-            // + the `default: <cmd>` hint line
-            (InputKind::AddShell, "command: ", "ls -la", 5),
-            (InputKind::QuickSend, "send to agent: ", "busy 2", 4),
+        for (kind, label, text) in [
+            (InputKind::NewWorktree, "worktree name: ", "foo"),
+            (InputKind::AddShell, "command: ", "ls -la"),
+            (InputKind::QuickSend, "send to agent: ", "busy 2"),
         ] {
             app.mode = Mode::Input {
                 kind,
@@ -1509,11 +1535,13 @@ mod tests {
                 .draw(|f| draw(f, &mut app))
                 .expect("draw must not fail");
 
-            // popup area for this backend size, same math as draw_input
-            let area = input_rect(terminal.size().unwrap().into(), lines);
+            // the popup sizes itself to its content, so take the rect the
+            // draw actually used
+            let area = app.popup_area.expect("input popup is on screen");
+            // inside the border AND the one column of padding
             let expected_x =
-                area.x + 1 + label.chars().count() as u16 + text.chars().count() as u16;
-            let expected_y = area.y + 2; // input row = second content line below the border
+                area.x + 2 + label.chars().count() as u16 + text.chars().count() as u16;
+            let expected_y = area.y + 2; // input row = first content row
             assert_eq!(
                 terminal.get_cursor_position().unwrap(),
                 Position::new(expected_x, expected_y),
@@ -3335,5 +3363,74 @@ mod tests {
 
         let row = rows.iter().find(|r| r.contains("needs-me")).unwrap();
         assert!(row.contains(Status::Blocked.label()), "row reads: {row:?}");
+    }
+
+    /// The create/delete dialogs size themselves to what they say instead
+    /// of taking a fixed slice of the frame, and keep one blank column and
+    /// row between the text and the border on every side.
+    #[test]
+    fn dialogs_are_content_sized_with_one_char_padding() {
+        let mut app = seeded_app();
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        for mode in [
+            Mode::Input {
+                kind: InputKind::NewWorktree,
+                text: "my-worktree".into(),
+            },
+            Mode::Confirm {
+                confirm: Confirm {
+                    title: "Delete Worktree".into(),
+                    body: "delete 'wt' from repo-a?".into(),
+                    force_label: Some("force".into()),
+                    action: ConfirmAction::DeleteWorktree {
+                        repository: 0,
+                        worktree: 0,
+                    },
+                },
+            },
+        ] {
+            app.mode = mode;
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let area = app.popup_area.expect("dialog is on screen");
+            let buf = terminal.backend().buffer().clone();
+            let row = |y: u16| -> String {
+                (area.x..area.x + area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect()
+            };
+
+            // Content-sized: nowhere near the frame, and no taller than
+            // its few lines need.
+            assert!(
+                area.width < 120 * 60 / 100 && area.height <= 8,
+                "dialog must fit its content, got {area:?}",
+            );
+            // Padding row under the top border and above the bottom one.
+            for y in [area.y + 1, area.y + area.height - 2] {
+                let inside = &row(y)[..];
+                assert!(
+                    inside
+                        .chars()
+                        .skip(1)
+                        .take(area.width as usize - 2)
+                        .all(|c| c == ' '),
+                    "row {y} must be blank padding, got {inside:?}",
+                );
+            }
+            // Padding column on both sides of every content row.
+            for y in area.y + 2..area.y + area.height - 2 {
+                let cells: Vec<String> = (area.x..area.x + area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect();
+                assert_eq!(cells[1], " ", "left padding column on row {y}");
+                assert_eq!(
+                    cells[area.width as usize - 2],
+                    " ",
+                    "right padding column on row {y}",
+                );
+            }
+        }
     }
 }

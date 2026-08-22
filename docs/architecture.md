@@ -419,6 +419,14 @@ the same commit as the change.
   fixed thresholds; overlays that don't fit are refused with a "frame too
   small" box instead of drawing garbage; the input cursor is only set when
   on-buffer.
+- **Dialog geometry**: the input prompt (new worktree, add shell, quick
+  send) and the confirm dialog (delete worktree/repository) are sized to
+  their content by `dialog_rect` — widest line and line count, plus one
+  column/row of `DIALOG_PADDING` inside the border on every side — clamped
+  to a 34-column floor and 60%-of-frame ceiling. They used to take a fixed
+  percentage of the frame (62%×26% for confirms), so a two-line question
+  drew a box a quarter of the screen tall with text jammed against the
+  border.
 - **Icons**: `[icons]` (`src/config.rs`) covers the tree's type icons and
   guides, the expand/cursor markers, the separator, the warn mark, the
   ellipsis, the Enter glyph and the border style, chosen by a preset
