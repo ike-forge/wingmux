@@ -27,10 +27,11 @@ const RECENT_TAIL_LINES: usize = 10;
 const TOAST_TTL: Duration = Duration::from_secs(4);
 const TOAST_TTL_ERR: Duration = Duration::from_secs(6);
 
-/// How often the per-worktree commit states are recomputed. Each one shells
+/// How often the per-worktree states are recomputed. Each one shells
 /// out to git two or three times, so it runs on its own slow cadence rather
-/// than on every tmux poll. Nothing it reports changes without the user
-/// committing or merging, so seconds of lag cost nothing.
+/// than on every tmux poll. The fastest thing it reports is an agent
+/// dirtying the tree, and a few seconds of lag on "it has started" is not
+/// something the user can act on any sooner.
 const WT_STATE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Hard ceiling on one quick-send draft. Not a limit anyone types into —
@@ -1625,7 +1626,7 @@ impl App {
 
     // ---------------------------------------------------- worktree state
 
-    /// Cached commit state for the tree — filled by
+    /// Cached worktree state for the tree — filled by
     /// [`App::poll_worktree_state`], never a git call on the render path.
     pub fn worktree_state_cached(&self, ri: usize, wi: usize) -> WorktreeState {
         self.state

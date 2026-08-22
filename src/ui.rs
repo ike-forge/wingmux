@@ -158,7 +158,7 @@ fn status_icon(ic: &IconsConfig, st: Status, elapsed: std::time::Duration) -> &s
     }
 }
 
-/// The icon for a worktree's commit state. The three glyphs share one
+/// The icon for a worktree's state. The three glyphs share one
 /// padded column (`IconsConfig::pad`), so the names line up whichever one
 /// a row draws.
 fn worktree_icon(ic: &crate::config::IconsConfig, st: WorktreeState) -> &str {
@@ -2447,7 +2447,7 @@ mod tests {
         );
     }
 
-    /// The worktree icon carries the branch's commit state — new / ahead /
+    /// The worktree icon carries the branch's state — new / ahead /
     /// merged — and all three share one padded column, so the names line up
     /// whichever glyph a row draws.
     #[test]

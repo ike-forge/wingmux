@@ -271,18 +271,27 @@ the same commit as the change.
   two. `h`/`l` still fold and
   unfold; the arrow was a second answer to a question the row already
   answered.
-- **Worktree commit state: three states, one icon.** A worktree row's icon
-  answers "how far along is this branch?" — `worktree_new` (no commits of
-  its own), `worktree_ahead` (commits the base branch does not have),
-  `worktree_merged` (all its commits are in the base). Colour follows from
-  the status palette rather than new theme keys: dim / `waiting` /
-  `working`, so every theme already answers for it. Since `status_working`
-  now borrows `foreground`, "merged" reads as ordinary text — done, nothing
-  owed — which is the right weight for it.
-  - **Uncommitted changes are NOT folded in** (user's call): a branch with
-    commits reads the same whether or not the editor has unsaved work on
-    top. `git status` is still run on demand for the delete confirm's
-    `--force` option — that is the one place cleanliness decides something.
+- **Worktree state: three states, one icon.** A worktree row's icon
+  answers "has anything happened here yet?" — `worktree_new` (untouched:
+  no commits of its own and a clean tree), `worktree_ahead` (work the base
+  branch does not have), `worktree_merged` (all its commits are in the
+  base and the tree is clean). Colour follows from the status palette
+  rather than new theme keys: dim / `waiting` / `working`, so every theme
+  already answers for it. Since `status_working` now borrows `foreground`,
+  "merged" reads as ordinary text — done, nothing owed — which is the
+  right weight for it.
+  - **Uncommitted changes ARE folded in** (user's call, reversing the
+    earlier rule): an agent that has edited a worktree but not committed
+    has plainly done something there, and drawing it with the "nothing
+    here yet" glyph hid live work. Dirty therefore reads as `ahead`
+    whether or not there are commits, and a merged worktree with new
+    uncommitted work goes back to `ahead` — it is no longer free to
+    delete. The cost is one `git status --porcelain` per worktree per
+    poll, and only when the commit verdict is `new` or `merged`: a
+    worktree already `ahead` cannot be moved by the answer, so the common
+    case skips the call. Off the render path either way (`poll_worktree_
+    state`, every 5s). The same check still runs on demand for the delete
+    confirm's `--force` option.
   - **The fork point is recorded at creation** (`Worktree::base_commit`).
     This is not incidental: once a branch is merged, `base..HEAD` is empty
     *exactly* as it is for a fresh cut, so the two are indistinguishable
@@ -342,7 +351,7 @@ the same commit as the change.
   worktree is hovered, it should not lose its text color"). The tree's
   `highlight_style` sets `selection_bg` only. Every row in the tree carries
   meaning in its foreground — the status role, the muting of a dead shell,
-  the worktree's commit state — so `on(selection_fg, selection_bg)` erased
+  the worktree's state — so `on(selection_fg, selection_bg)` erased
   exactly the signal the cursor was moved there to read. Modal lists keep
   the full inversion: their rows have no colour of their own to protect,
   which is why `selection_fg` survives as a role.
@@ -462,7 +471,7 @@ the same commit as the change.
   redundant by construction — a worktree row owns its git worktree and
   therefore its branch. The one fact it held alone, an uncommitted worktree,
   moved into the tree as the worktree icon, which now carries the branch's
-  commit state instead (see "Worktree commit state" under The tree), so the
+  state instead (see "Worktree state" under The tree), so the
   layout is tree | preview.
 - **The statusbar is shortcuts and nothing else**: the app name, the session
   chip and the repository count never changed anything the user could act on,
