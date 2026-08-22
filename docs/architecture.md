@@ -396,6 +396,21 @@ the same commit as the change.
   TTL (4s, 6s for errors) — the log and the diagnostics overlay stay the
   permanent record. The bar's entries are contextual, clickable, and computed
   per selection; hjkl/Esc/q deliberately take no slot (assumed knowledge).
+- **One shape for every shortcut hint**: `<action> <key>` ("cancel esc"),
+  with only the key in the accent colour, everywhere the app names a key —
+  status bar, modal footers, help palette (`ui::Hint`, `ui::hint_line`). The
+  three used to disagree: the bar led with the key (`n worktree`), modal
+  footers led with the key and spelled it out in prose (`Enter to submit ·
+  Esc to cancel`), the help palette put keys in a left-hand column. Action
+  first is what a reader scans for, and one shape means learning the bar
+  teaches the modals. Keys with a glyph form (`enter`, `arrows`) resolve
+  through `[icons]`, so the `ascii` preset spells them out.
+- **Every modal is padded and ends with its shortcuts**: `MODAL_PADDING`
+  (one column left and right, one row on top) lives on `popup_block`, so no
+  overlay can forget it, and every content-sizing calculation adds the shared
+  `MODAL_CHROME_W`/`MODAL_CHROME_H`. There is deliberately no bottom padding
+  row — the shortcut footer already carries a blank row above it, and a
+  second gap below would float it off the frame.
 - **Panel titles are Title Case names, body text is not.** Titles name a thing
   (`Preview`, `Quick Send`, `Repositories`), so they read as proper names;
   hints, statusbar and body text stay lowercase, which is the LazyGit register
@@ -439,7 +454,8 @@ the same commit as the change.
   questions — whether the terminal draws box characters, and which glyphs
   the user's font has. Keys that share a rendered column are padded to
   equal width at resolution time, so an empty icon still holds its column.
-  The statusbar's `↵` is the `enter` key (`ascii` spells it `Enter`); the
+  The statusbar's `↵` is the `enter` key and `↑↓` the `arrows` key (`ascii`
+  spells both out); the
   em dashes that used to leak into rendered help and hint text were reworded
   to ASCII punctuation rather than made configurable, since mid-sentence
   typography is not an icon. `asciify` rewrites only box-drawing, so
@@ -568,7 +584,10 @@ the same commit as the change.
   strings). A fuzzy-search palette was deliberately not built: the action set
   is small enough that a grouped reference + contextual bar covers
   discoverability; the palette is scrollable and the popup sizes to content
-  (clip + "j/k scrolls" hint instead of a fixed-size overlay).
+  (clip + a pinned `scroll j/k` footer instead of a fixed-size overlay). The
+  footer is pinned rather than scrolled with the body: a row that says how to
+  leave must not be the row that scrolls away, and it is only offered when
+  something is actually below the fold.
 - **Everything is documented**: `docs/shortcuts.md` lists every binding with
   the TUI rule it satisfies and every deliberately unbound key with its reason;
   it is updated in the same commit as any binding change.
