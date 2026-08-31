@@ -182,18 +182,26 @@ the same commit as the change.
   own hook report; `idle` = default.
 - Classification order (see the module doc on `src/status.rs`): dead → the
   agent's own hook-reported state, when the pane carries a live `@lw_agent`
-  overlay AND an agent is still the foreground command → failed → waiting if
-  the LAST line matches a prompt pattern (the freshest signal) → working →
-  waiting anywhere → ended → idle. Two guards keep the overlay honest: the
+  overlay AND an agent is still the foreground command → ended (the
+  foreground command is a login shell) → failed → waiting if the LAST line
+  matches a prompt pattern (the freshest signal) → working → waiting
+  anywhere → idle. Two guards keep the overlay honest: the
   login-shell check drops a value stranded by an agent that died without
   firing SessionEnd (the option lives in the tmux server, so it would
   otherwise outlive the process that wrote it), and an overlay past
   `OVERLAY_STALE_AFTER_SECS` is only distrusted when the tail ALSO looks idle
   — either condition alone would misclassify a legitimately long turn.
-- The regex ladder's tail is checked before the shell-foreground heuristic
-  because agents are often launched FROM a shell: the tail carries the
-  agent's real state, the foreground command only says "a shell is in
-  charge".
+- The shell-foreground heuristic is checked BEFORE the regex ladder (it was
+  the other way round until the `ended` state turned out to be unreachable
+  in practice). tmux's `pane_current_command` is a fact about what runs
+  now; the captured tail is scrollback that outlives the process that wrote
+  it, and a finished agent leaves its prompt glyph, spinner frames and the
+  word "error" on screen, so the ladder kept answering `waiting`/`working`/
+  `failed` for a pane whose agent had quit minutes ago. The trade is
+  accepted deliberately: a failure the agent printed on its way out now
+  reads `ended`, and the preview panel is where that text is still legible.
+  An agent launched FROM a shell is unaffected — while it runs it *is* the
+  pane's foreground command; a shell in front means nothing else is left.
 - **Dirty flags are polled, not rendered**: `git status` per worktree per
   frame would fork a process per row per redraw, so the tree reads a cache
   refreshed on the poll tick at most every 3s (and immediately after a
