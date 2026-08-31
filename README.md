@@ -252,8 +252,8 @@ stats per directory, done live.
 - **catppuccin-macchiato** — dark, middle contrast
 - **catppuccin-frappe** — dark, warm, lowest contrast
 - **catppuccin-latte** — the light theme
-- **dracula** — truecolor; falls back to xterm-256 when `COLORTERM` doesn't
-  advertise 24-bit support
+- **dracula** — truecolor; falls back to the nearest xterm-256 colour (cube or
+  grey ramp) when `COLORTERM` doesn't advertise 24-bit support
 - **gruvbox** — truecolor with the same fallback
 - **ansi** — ANSI-16 palette only, so it inherits your terminal's colours
 

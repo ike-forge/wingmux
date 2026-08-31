@@ -258,23 +258,43 @@ fn parse_ansi(s: &str) -> Option<AnsiColor> {
     })
 }
 
-/// Quantise an RGB colour to the xterm-256 cube (16 + 36r + 6g + b),
-/// mapping mid-greys to the 232-255 ramp. Pure black and white stay on the
-/// cube (16 and 231).
+/// Quantise an RGB colour to the nearest xterm-256 palette entry.
+///
+/// Both halves of the palette are candidates: the 6×6×6 cube (levels 0, 95,
+/// 135, 175, 215, 255) and the 24-step grey ramp (8, 18, … 238), and the
+/// closer of the two wins by squared RGB distance. Considering the ramp for
+/// *every* colour, not just exact greys, is what keeps near-grey theme
+/// colours apart: the cube's lowest levels are 0 and 95, so a dark
+/// background (#343646) and a dim foreground (#51576d) both round to
+/// (95, 95, 95) — the same index — and the text vanishes into its own
+/// background. The ramp separates them.
 fn quantize_256(r: u8, g: u8, b: u8) -> u8 {
-    if r == g && g == b && r > 8 && r < 255 {
-        return 232 + ((r as u16 * 23) / 255) as u8;
-    }
-    let q = |c: u8| -> u8 {
-        if c < 48 {
-            0
-        } else if c < 115 {
-            1
-        } else {
-            (c as u16 - 35) as u8 / 40
-        }
+    const CUBE: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    let dist = |a: (u8, u8, u8)| -> i32 {
+        let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2);
+        d(a.0, r) + d(a.1, g) + d(a.2, b)
     };
-    16 + 36 * q(r) + 6 * q(g) + q(b)
+    let level = |c: u8| -> usize {
+        CUBE.iter()
+            .enumerate()
+            .min_by_key(|&(_, &v)| (v as i32 - c as i32).abs())
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    };
+    let (ri, gi, bi) = (level(r), level(g), level(b));
+    let cube_index = 16 + 36 * ri as u8 + 6 * gi as u8 + bi as u8;
+    let cube_dist = dist((CUBE[ri], CUBE[gi], CUBE[bi]));
+
+    // Grey ramp: index 232 + i holds 8 + 10i, so the nearest step to the
+    // colour's mean channel is (mean - 8) / 10, rounded and clamped.
+    let mean = (r as i32 + g as i32 + b as i32) / 3;
+    let step = ((mean - 8 + 5) / 10).clamp(0, 23);
+    let grey = (8 + 10 * step) as u8;
+    if dist((grey, grey, grey)) < cube_dist {
+        232 + step as u8
+    } else {
+        cube_index
+    }
 }
 
 /// Built-in themes embedded in the binary. The Catppuccin set is the
@@ -475,13 +495,59 @@ mod tests {
         assert_eq!(quantize_256(255, 0, 0), 196);
         assert_eq!(quantize_256(0, 255, 0), 46);
         assert_eq!(quantize_256(0, 0, 255), 21);
-        // grey ramp
-        let expected: u8 = 232 + (128u16 * 23 / 255) as u8;
-        assert_eq!(quantize_256(128, 128, 128), expected);
+        // grey ramp: 232 + i holds 8 + 10i, so 128 is exactly index 244
+        assert_eq!(quantize_256(128, 128, 128), 244);
+        // A near-grey colour takes the ramp too, not just an exact grey:
+        // the cube would round both of these to (95, 95, 95).
+        assert_ne!(
+            quantize_256(0x34, 0x36, 0x46),
+            quantize_256(0x51, 0x57, 0x6d)
+        );
         let s = Spec::parse("#bd93f9").unwrap();
         assert!(matches!(s.resolve(false), Color::Indexed(_)));
         // ansi theme ignores truecolor
         assert_eq!(Spec::Ansi(AnsiColor::Cyan).resolve(false), Color::Cyan);
+    }
+
+    /// Outside tmux a terminal often leaves `COLORTERM` unset, so every
+    /// theme colour goes through [`quantize_256`]. A quantiser that collapses
+    /// neighbouring roles onto one index makes text disappear into its own
+    /// background, so no built-in theme may lose the separation between the
+    /// background and anything drawn on top of it.
+    #[test]
+    fn no_builtin_theme_loses_a_role_against_its_background_in_256_colours() {
+        for (name, content) in BUILTIN_THEMES {
+            let t = parse_theme(content, Path::new("builtin")).unwrap();
+            let c = resolve_theme(t, false, false).unwrap().colors;
+            for (role, color) in [
+                ("foreground", c.foreground),
+                ("dim", c.dim),
+                ("accent", c.accent),
+                ("border", c.border),
+                ("border_focused", c.border_focused),
+                ("tree_repository", c.tree_repository),
+                ("tree_worktree", c.tree_worktree),
+                ("tree_shell", c.tree_shell),
+                ("status_working", c.status_working),
+                ("status_waiting", c.status_waiting),
+                ("status_blocked", c.status_blocked),
+                ("status_idle", c.status_idle),
+                ("status_failed", c.status_failed),
+                ("status_dead", c.status_dead),
+                ("status_ended", c.status_ended),
+                ("selection_bg", c.selection_bg),
+            ] {
+                // `ansi.toml` leaves roles on the terminal default, which is
+                // one shade by definition — nothing to quantise there.
+                if color == Color::Reset {
+                    continue;
+                }
+                assert_ne!(
+                    color, c.background,
+                    "{name}: {role} quantises onto the background"
+                );
+            }
+        }
     }
 
     #[test]

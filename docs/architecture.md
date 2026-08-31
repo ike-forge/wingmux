@@ -657,6 +657,15 @@ the same commit as the change.
   the config dir on first run so the user can edit them. Truecolor when
   `COLORTERM` says so, else 24-bit values quantize to xterm-256; `ansi.toml`
   uses only ANSI-16 colours.
+- **The 256-colour fallback searches the whole palette, cube *and* grey ramp.**
+  tmux sets `COLORTERM=truecolor` in its panes itself, so the fallback only
+  ever runs outside tmux — which is exactly where a bad quantiser shows. The
+  6x6x6 cube's two darkest levels are 0 and 95, so rounding per channel put a
+  dark background and a dim foreground on the same index and the text vanished
+  into it; `quantize_256` now picks whichever of the nearest cube entry and the
+  nearest grey-ramp step (8 + 10i) is closer in squared RGB distance. A test
+  asserts no built-in theme collapses a role onto its background in 256
+  colours.
 - **The Catppuccin set is the reference palette**: all four flavours ship as
   built-ins (official hex values, unmodified, mapped onto the app's roles:
   base → background, text/subtext0 → foreground/dim, surface0-2 →
