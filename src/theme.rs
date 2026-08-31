@@ -137,11 +137,86 @@ pub struct ResolvedColors {
     pub popup_border: Color,
 }
 
-/// Whether the terminal supports 24-bit colour (`COLORTERM=truecolor|24bit`).
+/// Whether the terminal supports 24-bit colour.
+///
+/// `COLORTERM=truecolor|24bit` is the answer when it is there, but plenty of
+/// 24-bit terminals never export it: tmux sets it inside its own panes, so a
+/// standalone dashboard is exactly the case where it goes missing and every
+/// theme colour needlessly drops through [`quantize_256`]. So when
+/// `COLORTERM` is silent the terminal identifies itself instead — a
+/// `-direct` terminfo entry, a `TERM`/`TERM_PROGRAM` naming a terminal that
+/// has always been 24-bit, or a marker variable one of them exports.
+/// Anything unrecognised stays on the 256-colour fallback: over-claiming
+/// paints unreadable colours, under-claiming only paints approximate ones.
 pub fn supports_truecolor() -> bool {
-    std::env::var("COLORTERM")
-        .map(|v| v.contains("truecolor") || v.contains("24bit"))
-        .unwrap_or(false)
+    truecolor_from(|k| std::env::var(k).ok())
+}
+
+/// `TERM` values (matched as substrings) that mean 24-bit colour.
+const TRUECOLOR_TERMS: &[&str] = &[
+    "direct", // xterm-direct, tmux-direct, … — terminfo's own 24-bit entries
+    "truecolor",
+    "kitty",
+    "alacritty",
+    "wezterm",
+    "contour",
+    "ghostty",
+    "foot",
+];
+
+/// `TERM_PROGRAM` values (compared case-insensitively) that mean 24-bit
+/// colour. `Apple_Terminal` is deliberately absent: Terminal.app is 256.
+const TRUECOLOR_TERM_PROGRAMS: &[&str] = &[
+    "iterm.app",
+    "wezterm",
+    "vscode",
+    "hyper",
+    "ghostty",
+    "rio",
+    "tabby",
+];
+
+/// Presence alone is the signal: each is exported only by a 24-bit terminal.
+const TRUECOLOR_MARKERS: &[&str] = &[
+    "WT_SESSION",      // Windows Terminal
+    "KONSOLE_VERSION", // Konsole
+    "KITTY_WINDOW_ID", // kitty, even under a TERM it does not own
+    "GHOSTTY_RESOURCES_DIR",
+    "ALACRITTY_WINDOW_ID",
+    "WEZTERM_EXECUTABLE",
+];
+
+/// The env lookup is a parameter so the decision is testable without
+/// mutating the process environment (which no test may do concurrently).
+fn truecolor_from(env: impl Fn(&str) -> Option<String>) -> bool {
+    if let Some(ct) = env("COLORTERM") {
+        // An explicit answer is final, in both directions: a terminal that
+        // sets COLORTERM to something else is saying it is not 24-bit.
+        return ct.contains("truecolor") || ct.contains("24bit");
+    }
+    let term = env("TERM").unwrap_or_default().to_ascii_lowercase();
+    if term.is_empty() || term == "dumb" {
+        return false;
+    }
+    if TRUECOLOR_TERMS.iter().any(|t| term.contains(t)) {
+        return true;
+    }
+    if let Some(prog) = env("TERM_PROGRAM") {
+        let prog = prog.to_ascii_lowercase();
+        if TRUECOLOR_TERM_PROGRAMS.iter().any(|p| *p == prog) {
+            return true;
+        }
+    }
+    if TRUECOLOR_MARKERS
+        .iter()
+        .any(|k| env(k).is_some_and(|v| !v.is_empty()))
+    {
+        return true;
+    }
+    // VTE (GNOME Terminal, Tilix, …) gained 24-bit colour in 0.36.
+    env("VTE_VERSION")
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .is_some_and(|v| v >= 3600)
 }
 
 /// `NO_COLOR` (no-color.org): when present and not an empty string, the app
@@ -486,6 +561,67 @@ mod tests {
     fn truecolor_resolution() {
         let s = Spec::parse("#ff0000").unwrap();
         assert_eq!(s.resolve(true), Color::Rgb(255, 0, 0));
+    }
+
+    /// `COLORTERM` is the fast path, and its absence is not a "no": a
+    /// standalone dashboard usually has no `COLORTERM` at all (tmux is what
+    /// sets it in its panes), so the terminal's own identity has to answer.
+    #[test]
+    fn truecolor_detection() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| (*v).to_string())
+            }
+        };
+
+        // COLORTERM answers on its own, either way.
+        assert!(truecolor_from(env(&[("COLORTERM", "truecolor")])));
+        assert!(truecolor_from(env(&[("COLORTERM", "24bit")])));
+        assert!(!truecolor_from(env(&[
+            ("COLORTERM", "8bit"),
+            ("WT_SESSION", "abc")
+        ])));
+
+        // No COLORTERM: the terminal identifies itself.
+        assert!(truecolor_from(env(&[
+            ("TERM", "xterm-256color"),
+            ("WT_SESSION", "0525855c")
+        ])));
+        assert!(truecolor_from(env(&[("TERM", "xterm-direct")])));
+        assert!(truecolor_from(env(&[("TERM", "xterm-kitty")])));
+        assert!(truecolor_from(env(&[
+            ("TERM", "xterm-256color"),
+            ("TERM_PROGRAM", "WezTerm")
+        ])));
+        assert!(truecolor_from(env(&[
+            ("TERM", "xterm-256color"),
+            ("VTE_VERSION", "7600")
+        ])));
+
+        // Unrecognised, empty or hostile terminals keep the 256 fallback.
+        assert!(!truecolor_from(env(&[("TERM", "xterm-256color")])));
+        assert!(!truecolor_from(env(&[("TERM", "screen")])));
+        assert!(!truecolor_from(env(&[
+            ("TERM", "dumb"),
+            ("WT_SESSION", "x")
+        ])));
+        assert!(!truecolor_from(env(&[])));
+        assert!(!truecolor_from(env(&[
+            ("TERM", "xterm-256color"),
+            ("TERM_PROGRAM", "Apple_Terminal")
+        ])));
+        assert!(!truecolor_from(env(&[
+            ("TERM", "xterm-256color"),
+            ("VTE_VERSION", "3400")
+        ])));
+        // A marker present but empty says nothing.
+        assert!(!truecolor_from(env(&[
+            ("TERM", "xterm-256color"),
+            ("WT_SESSION", "")
+        ])));
     }
 
     #[test]

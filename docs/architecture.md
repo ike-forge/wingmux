@@ -668,12 +668,25 @@ the same commit as the change.
 ## Themes
 
 - Themes are TOML files in `themes/`, embedded via `include_str!` and copied to
-  the config dir on first run so the user can edit them. Truecolor when
-  `COLORTERM` says so, else 24-bit values quantize to xterm-256; `ansi.toml`
+  the config dir on first run so the user can edit them. Truecolor when the
+  terminal supports it, else 24-bit values quantize to xterm-256; `ansi.toml`
   uses only ANSI-16 colours.
+- **Truecolor detection does not stop at `COLORTERM`.** tmux exports it in its
+  own panes, so a standalone dashboard is the case where it is usually absent —
+  and treating absence as "256 only" put every theme through the quantiser on
+  terminals (Windows Terminal, kitty, VTE, …) that had 24-bit colour all along:
+  the colours came out approximated, not respected. With `COLORTERM` unset the
+  terminal identifies itself instead — a `-direct` terminfo entry, a
+  `TERM`/`TERM_PROGRAM` naming an always-24-bit terminal, a marker variable only
+  such a terminal exports (`WT_SESSION`, `KONSOLE_VERSION`, …), or
+  `VTE_VERSION >= 3600`. A *set* `COLORTERM` stays final in both directions, and
+  anything unrecognised keeps the fallback: over-claiming paints unreadable
+  colours, under-claiming only approximate ones. The lists live next to
+  `supports_truecolor`, and the decision takes its env lookup as a closure so
+  tests need no process-global env mutation.
 - **The 256-colour fallback searches the whole palette, cube *and* grey ramp.**
-  tmux sets `COLORTERM=truecolor` in its panes itself, so the fallback only
-  ever runs outside tmux — which is exactly where a bad quantiser shows. The
+  The fallback now runs only on terminals that really are 256-colour, but a bad
+  quantiser is unreadable there. The
   6x6x6 cube's two darkest levels are 0 and 95, so rounding per channel put a
   dark background and a dim foreground on the same index and the text vanished
   into it; `quantize_256` now picks whichever of the nearest cube entry and the
