@@ -3595,7 +3595,7 @@ mod tests {
         // Nothing is selected in this fixture, so there is no context to
         // resolve the template against and it is listed as written.
         assert!(
-            text.contains("2 merge to <base_branch>, drop the current worktree and branch"),
+            text.contains("2 merge to <base_branch>"),
             "second entry is numbered and listed in full, got: {text}"
         );
         assert!(text.contains("send ↵"), "modal states its keys");
@@ -3617,7 +3617,7 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
         assert!(
-            text.contains("2 merge to trunk, drop the current worktree and branch"),
+            text.contains("2 merge to trunk"),
             "the token is resolved in the list, got: {text}"
         );
         assert!(

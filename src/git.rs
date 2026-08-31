@@ -510,9 +510,9 @@ mod tests {
         );
     }
 
-    /// A worktree whose directory is gone — the common end of a merge
-    /// ("merge to main, drop the current worktree"), or a `git worktree
-    /// remove` run by hand — reads as [`WorktreeState::Deleted`]. Every
+    /// A worktree whose directory is gone — removed from the dashboard
+    /// once its work has landed, or by a `git worktree remove` run by
+    /// hand — reads as [`WorktreeState::Deleted`]. Every
     /// git call in there fails, and answering "untouched" for a question
     /// that could not be asked draws the row as a fresh cut.
     #[test]
