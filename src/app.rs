@@ -1293,6 +1293,17 @@ impl App {
         }
     }
 
+    /// Leave the quick-send textarea without sending, parking whatever is
+    /// in it. Every exit that is not a delivered send goes through here —
+    /// a theme switch or a click outside must cost no typing.
+    fn close_textarea(&mut self) {
+        if let Mode::Textarea { buf } = &self.mode {
+            let parked = buf.clone();
+            self.mode = Mode::Normal;
+            self.park_draft(parked);
+        }
+    }
+
     /// Pane id of the selected shell, if any.
     pub fn selected_shell_pane(&self) -> Option<String> {
         self.selected_shell().and_then(|(ri, wi, si)| {
@@ -2066,6 +2077,9 @@ impl App {
                 true
             }
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Park an open draft first: the picker replaces the
+                // textarea, and a theme switch must not eat the text.
+                self.close_textarea();
                 self.open_theme_picker();
                 true
             }
@@ -2730,6 +2744,9 @@ impl App {
             if !inside {
                 if matches!(self.mode, Mode::Diagnostics) {
                     self.close_diagnostics();
+                } else if matches!(self.mode, Mode::Textarea { .. }) {
+                    // click outside = Esc, and Esc keeps the draft
+                    self.close_textarea();
                 } else {
                     self.mode = Mode::Normal;
                 }
@@ -4081,6 +4098,48 @@ mod tests {
         };
         assert_eq!(buf.text(), "hello", "the first shell's draft came back");
         assert_eq!(buf.cursor_col(), 5, "and the cursor sits where it was left");
+    }
+
+    /// ctrl-t is a chord: it opens the theme picker over an open
+    /// quick-send editor. Leaving that way must park the draft, not eat
+    /// it — the text comes back when quick-send reopens.
+    #[test]
+    fn the_theme_chord_keeps_an_open_draft() {
+        let mut app = app_with_shell();
+        app.viewport = (120, 40);
+        app.on_key(key(KeyCode::Char('s'), false));
+        for c in "half written".chars() {
+            app.on_key(key(KeyCode::Char(c), false));
+        }
+        app.on_key(key(KeyCode::Char('t'), true));
+        assert!(matches!(app.mode, Mode::ThemePicker { .. }), "picker opens");
+        app.on_key(key(KeyCode::Esc, false));
+
+        app.on_key(key(KeyCode::Char('s'), false));
+        let Mode::Textarea { buf } = &app.mode else {
+            panic!("quick-send must open");
+        };
+        assert_eq!(buf.text(), "half written", "the draft survived the chord");
+    }
+
+    /// A click outside the editor dismisses it like Esc — and, like Esc,
+    /// it keeps the draft.
+    #[test]
+    fn a_click_outside_keeps_an_open_draft() {
+        let mut app = app_with_shell();
+        app.viewport = (120, 40);
+        app.on_key(key(KeyCode::Char('s'), false));
+        for c in "half written".chars() {
+            app.on_key(key(KeyCode::Char(c), false));
+        }
+        app.on_mouse(click(0, 0));
+        assert!(matches!(app.mode, Mode::Normal), "the click dismissed it");
+
+        app.on_key(key(KeyCode::Char('s'), false));
+        let Mode::Textarea { buf } = &app.mode else {
+            panic!("quick-send must open");
+        };
+        assert_eq!(buf.text(), "half written", "the draft survived the click");
     }
 
     /// A send that failed (dead pane, no tmux) must not swallow the text —
