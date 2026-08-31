@@ -174,7 +174,7 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #text = "continue"
 
 #[[messages]]
-#text = "merge to <base_branch>, drop the current worktree and branch"
+#text = "merge to <base_branch>"
 
 #[[messages]]
 #text = "summarise what you've changed and what's still left"
@@ -2046,7 +2046,7 @@ fn take_message_list(
 pub fn default_messages() -> Vec<MessageConfig> {
     [
         "continue",
-        "merge to <base_branch>, drop the current worktree and branch",
+        "merge to <base_branch>",
         "summarise what you've changed and what's still left",
     ]
     .into_iter()
@@ -2405,7 +2405,7 @@ mod tests {
     fn default_texts() -> Vec<&'static str> {
         vec![
             "continue",
-            "merge to <base_branch>, drop the current worktree and branch",
+            "merge to <base_branch>",
             "summarise what you've changed and what's still left",
         ]
     }
