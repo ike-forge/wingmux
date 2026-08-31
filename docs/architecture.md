@@ -141,14 +141,28 @@ the same commit as the change.
   application ever loses the key. Legacy root bindings are removed on startup,
   but only the exact command we bound — a user's own root binding of the same
   key is untouched. `tmux.back_key` configures the second half of the chord.
+- **The chord is one server-wide slot, and a standalone handoff borrows it.**
+  Key tables belong to the tmux *server*, not to a session, so two dashboards
+  on one server share a single back-key binding — and a dashboard running
+  inside tmux binds it to *its* window. Pressed from a standalone dashboard's
+  `tmux attach` handoff, that binding threw the user into the other dashboard
+  (and quitting that one dropped them back into the first, which is how the
+  two got confused). The handoff therefore reads the slot first
+  (`Tmux::back_key_state` → `Unbound` / `Dashboard` / `Detach` / `Foreign`),
+  rebinds it to `detach-client` — which ends the attach and lands exactly back
+  in the standalone dashboard — and restores what was there when the attach
+  returns. A `Foreign` binding (the user's own, and tmux's own default for the
+  key) is left alone: then there is no back chord outside tmux and the user
+  detaches with the tmux detach key, as before.
 - **Runs inside AND outside tmux** (per user feedback): the dashboard does not
   require tmux around itself. `Tmux` keeps optional `inside` coordinates
   (detected via TMUX/TMUX_PANE); all session/window/pane operations work
   standalone against the (auto-started) tmux server. Attach from outside tmux =
   temporary terminal handoff: TUI restores the terminal, runs
   `tmux attach -t <agent-session>` (after clientless select-window to the
-  shell's window), then re-enters the TUI on detach. No back-key exists outside
-  tmux (the user detaches with C-b d). There is no no-tmux mode.
+  shell's window), then re-enters the TUI on detach. The back chord works
+  during the handoff too when the slot is ours to borrow (see above);
+  otherwise the user detaches with C-b d. There is no no-tmux mode.
 - **The tmux server is auto-started** for a standalone dashboard: tmux 3.5a
   exits a server as soon as it has no sessions and no clients, so
   `Tmux::ensure_server()` runs `start-server \; set -g exit-empty off` in ONE

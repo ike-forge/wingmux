@@ -390,7 +390,10 @@ without hunting for the status word at the end of the row.
   exist in the repo it warns that creation falls back to the current branch.
 - **Attach (standalone)**: the terminal is handed over to `tmux attach -t
   <agent-session>` (the shell's window is preselected); detaching with `C-b
-  d` returns you to the dashboard.
+  d` returns you to the dashboard. tmux key tables are server-wide, so for the
+  length of the handoff the back chord is rebound to `detach-client` — it
+  brings you back to *this* dashboard instead of to another lazywingman's
+  window — and restored afterwards. A binding that is not ours is left alone.
 - **Quick-send** = an in-TUI multiline editor (Enter = newline, Tab =
   tab, arrows/Home/End move the cursor, **ctrl-s sends** — Alt+Enter too
   where the terminal delivers it)

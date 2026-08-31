@@ -17,7 +17,7 @@ use crate::git::{Git, WorktreeState};
 use crate::state::{Repository, Shell, State, Worktree};
 use crate::status::{self, Compiled, Status};
 use crate::theme::Theme;
-use crate::tmux::{PaneInfo, Tmux};
+use crate::tmux::{BackKeyState, PaneInfo, Tmux};
 
 /// Lines of the capture used for status classification.
 const RECENT_TAIL_LINES: usize = 10;
@@ -705,27 +705,90 @@ impl App {
         // binding of the same key is untouched), then bind behind the
         // prefix, where it cannot collide with any application.
         tmux.unbind_legacy_root_back_key(&inside.session_name, &inside.window_id)?;
-        let mut bound = 0;
-        for repo in &self.state.repositories {
-            if let Some(sess) = &repo.session_name
-                && tmux.session_exists(sess)
-            {
-                tmux.bind_back_key(
-                    &self.cfg.tmux.back_key,
-                    &inside.session_name,
-                    &inside.window_id,
-                )?;
-                bound += 1;
-            }
+        // One binding, not one per session: tmux key tables are server-wide,
+        // so this single slot serves every agent session — and is also the
+        // slot a standalone dashboard borrows for an attach handoff (see
+        // `claim_back_key`).
+        let sessions = self
+            .state
+            .repositories
+            .iter()
+            .filter(|r| {
+                r.session_name
+                    .as_deref()
+                    .is_some_and(|s| tmux.session_exists(s))
+            })
+            .count();
+        if sessions == 0 {
+            return Ok(());
         }
-        if bound > 0 {
-            log::info!(
-                "back chord <prefix>+{} bound in {bound} agent session(s) → dashboard {}",
-                self.cfg.tmux.back_key,
-                inside.window_id
-            );
-        }
+        tmux.bind_back_key(
+            &self.cfg.tmux.back_key,
+            &inside.session_name,
+            &inside.window_id,
+        )?;
+        log::info!(
+            "back chord <prefix>+{} → dashboard {} (serving {sessions} agent session(s))",
+            self.cfg.tmux.back_key,
+            inside.window_id
+        );
         Ok(())
+    }
+
+    /// Standalone attach: make `<prefix> + back-key` mean "back to THIS
+    /// dashboard" while the terminal is handed over to `tmux attach`.
+    ///
+    /// tmux key tables are server-wide, so the chord is a single slot shared
+    /// by every dashboard on the server. A lazywingman running *inside* tmux
+    /// binds it to a `switch-client` into its own dashboard window — and
+    /// pressed from our handoff client that binding throws the user into the
+    /// other dashboard instead of back here (and quitting that one then
+    /// lands in this one, which is how the two get confused). For the
+    /// duration of the handoff the chord therefore becomes `detach-client`,
+    /// which ends the attach and returns to this dashboard exactly.
+    ///
+    /// Returns the state to put back afterwards, or `None` when the chord
+    /// belongs to the user (a binding of their own is never touched, here as
+    /// everywhere else).
+    fn claim_back_key(&self) -> Option<BackKeyState> {
+        let tmux = self.tmux.as_ref()?;
+        let key = &self.cfg.tmux.back_key;
+        let previous = match tmux.back_key_state(key) {
+            Ok(BackKeyState::Foreign) => {
+                log::info!("back chord {key} is bound by the user — left alone for the handoff");
+                return None;
+            }
+            Ok(state) => state,
+            Err(e) => {
+                log::warn!("cannot read the back chord binding ({e}) — left alone");
+                return None;
+            }
+        };
+        if let Err(e) = tmux.bind_detach_back_key(key) {
+            log::warn!("cannot bind the back chord for the handoff: {e}");
+            return None;
+        }
+        log::info!("back chord <prefix>+{key} → detach-client for this handoff");
+        Some(previous)
+    }
+
+    /// Put back what [`claim_back_key`](Self::claim_back_key) replaced.
+    fn restore_back_key(&self, previous: Option<BackKeyState>) {
+        let (Some(tmux), Some(previous)) = (self.tmux.as_ref(), previous) else {
+            return;
+        };
+        let key = &self.cfg.tmux.back_key;
+        let res = match &previous {
+            BackKeyState::Dashboard { session, window } => tmux.bind_back_key(key, session, window),
+            // Nothing of ours was there before, and a leftover `detach-client`
+            // means an earlier handoff died mid-flight: either way the slot
+            // goes back to empty rather than keeping a stale meaning.
+            BackKeyState::Unbound | BackKeyState::Detach => tmux.unbind_back_key(key),
+            BackKeyState::Foreign => Ok(()),
+        };
+        if let Err(e) = res {
+            log::warn!("cannot restore the back chord after the handoff: {e}");
+        }
     }
 
     fn save_state(&mut self) -> Result<()> {
@@ -3000,6 +3063,9 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
         // Standalone attach: hand the terminal over to `tmux attach` and
         // resume the TUI when the user detaches.
         if let Some(session) = app.pending_attach.take() {
+            // The back chord belongs to this handoff while it lasts (see
+            // `claim_back_key`), and goes back to whatever it meant after.
+            let back_key = app.claim_back_key();
             let res = (|| -> Result<()> {
                 term_restore();
                 let tmux = app.require_tmux()?;
@@ -3007,6 +3073,7 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
                 term_init();
                 r
             })();
+            app.restore_back_key(back_key);
             if let Err(e) = res {
                 app.notify_err(format!("attach handoff failed: {e}"));
                 log::error!("attach handoff failed: {e}");
@@ -4193,6 +4260,79 @@ mod tests {
             ),
             m => panic!("expected a confirm, got {m:?}"),
         }
+    }
+
+    /// Two dashboards, one tmux server, one shared key table: the chord a
+    /// dashboard running INSIDE tmux bound points at *its* window, so a
+    /// standalone handoff must take the chord over for the duration of the
+    /// attach (detach = back to the standalone dashboard) and hand it back
+    /// untouched afterwards.
+    #[test]
+    fn a_standalone_handoff_borrows_the_back_chord_and_gives_it_back() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_standalone(sock);
+            let app = app_with(tmux.clone());
+            // The other lazywingman — the one inside tmux — owns the chord.
+            tmux.bind_back_key(&app.cfg.tmux.back_key, "user-session", "@7")
+                .unwrap();
+
+            let previous = app.claim_back_key();
+            assert_eq!(
+                previous,
+                Some(BackKeyState::Dashboard {
+                    session: "user-session".into(),
+                    window: "7".into()
+                }),
+                "the other dashboard's binding is what we replaced"
+            );
+            assert_eq!(
+                tmux.back_key_state(&app.cfg.tmux.back_key).unwrap(),
+                BackKeyState::Detach,
+                "during the handoff the chord must come back HERE"
+            );
+
+            app.restore_back_key(previous);
+            assert_eq!(
+                tmux.back_key_state(&app.cfg.tmux.back_key).unwrap(),
+                BackKeyState::Dashboard {
+                    session: "user-session".into(),
+                    window: "7".into()
+                },
+                "the other dashboard gets its chord back"
+            );
+        });
+    }
+
+    /// A binding that is not ours is never touched — not even for the
+    /// length of a handoff. (tmux's own default for the key reads the same
+    /// way, so the standalone dashboard simply leaves the chord alone and
+    /// the user detaches with the tmux detach key, as documented.)
+    #[test]
+    fn a_handoff_never_takes_over_someone_elses_binding() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_standalone(sock);
+            let app = app_with(tmux.clone());
+            let bound = std::process::Command::new("tmux")
+                .args([
+                    "-L",
+                    sock,
+                    "bind-key",
+                    "-T",
+                    "prefix",
+                    &app.cfg.tmux.back_key,
+                    "choose-tree",
+                ])
+                .status()
+                .unwrap();
+            assert!(bound.success());
+
+            assert_eq!(app.claim_back_key(), None, "nothing of ours to restore");
+            assert_eq!(
+                tmux.back_key_state(&app.cfg.tmux.back_key).unwrap(),
+                BackKeyState::Foreign,
+                "the user's binding survives the handoff untouched"
+            );
+        });
     }
 
     /// The confirm popup takes `d` as a yes: `dd` deletes the way vim

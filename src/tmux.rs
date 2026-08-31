@@ -570,6 +570,34 @@ impl Tmux {
         Ok(())
     }
 
+    /// Bind the back-key to `detach-client`, for the duration of a
+    /// standalone attach handoff: detaching the handed-over client is
+    /// exactly "back to the dashboard" when the dashboard is the process
+    /// that ran `tmux attach`.
+    pub fn bind_detach_back_key(&self, key: &str) -> Result<()> {
+        self.run(&["bind-key", "-T", "prefix", key, "detach-client"])?;
+        Ok(())
+    }
+
+    /// Drop the prefix-table binding for `key`.
+    pub fn unbind_back_key(&self, key: &str) -> Result<()> {
+        self.run(&["unbind-key", "-T", "prefix", key])?;
+        Ok(())
+    }
+
+    /// What the prefix table binds `key` to right now.
+    ///
+    /// Key tables are server-wide, so this is the one shared slot every
+    /// dashboard on the server competes for; reading it first is what keeps
+    /// a standalone handoff from stomping on a binding it cannot restore.
+    pub fn back_key_state(&self, key: &str) -> Result<BackKeyState> {
+        let keys = self.run_raw(&["list-keys", "-T", "prefix"])?;
+        Ok(keys
+            .lines()
+            .find_map(|l| prefix_binding(l, key))
+            .unwrap_or(BackKeyState::Unbound))
+    }
+
     /// Remove a pre-M9 root-table back-key binding if one exists: earlier
     /// versions bound `-n` (root table), hijacking the chord server-wide
     /// and breaking other TUIs. Only unbinds a binding whose command
@@ -593,6 +621,65 @@ impl Tmux {
         }
         Ok(())
     }
+}
+
+/// What `<prefix> + back-key` currently does on this tmux server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackKeyState {
+    /// Nothing is bound to the key in the prefix table.
+    Unbound,
+    /// A dashboard back binding — ours — pointing at this session/window.
+    Dashboard { session: String, window: String },
+    /// A standalone handoff's `detach-client` — also ours.
+    Detach,
+    /// Somebody else's binding. Never touched, never restored.
+    Foreign,
+}
+
+/// Read one `list-keys -T prefix` line as the state of `key`, or `None`
+/// when the line binds a different key (or is not a binding at all).
+///
+/// Tokenised, never prefix-matched: `list-keys` is column-aligned and the
+/// padding is version-dependent (see [`legacy_root_back_key`]).
+fn prefix_binding(line: &str, key: &str) -> Option<BackKeyState> {
+    let mut parts = line.split_whitespace();
+    if parts.next()? != "bind-key" {
+        return None;
+    }
+    let table = loop {
+        match parts.next() {
+            Some("-T") => break parts.next()?,
+            Some(_) => continue,
+            None => return None,
+        }
+    };
+    if table != "prefix" || parts.next()? != key {
+        return None;
+    }
+    let command: Vec<&str> = parts.collect();
+    if command == ["detach-client"] {
+        return Some(BackKeyState::Detach);
+    }
+    // `switch-client -t <session> \; select-window -t @<window>` — the
+    // shape `bind_back_key` writes, and the only one we claim as ours.
+    let target = match command.as_slice() {
+        [
+            "switch-client",
+            "-t",
+            session,
+            _,
+            "select-window",
+            "-t",
+            window,
+        ] => window
+            .strip_prefix('@')
+            .map(|w| (session.to_string(), w.to_string())),
+        _ => None,
+    };
+    Some(match target {
+        Some((session, window)) => BackKeyState::Dashboard { session, window },
+        None => BackKeyState::Foreign,
+    })
 }
 
 /// The key a `list-keys` line binds, if that line is *our* legacy root
@@ -702,6 +789,58 @@ mod tests {
                 Some("C-o"),
                 "{label}: {line:?}"
             );
+        }
+    }
+
+    /// Reading the shared back-chord slot: ours (either shape), the user's,
+    /// or empty. The padding varies by tmux version, as everywhere else.
+    #[test]
+    fn the_back_chord_slot_is_read_for_what_it_holds() {
+        let dash = r"switch-client -t main \; select-window -t @0";
+        for (label, line, expected) in [
+            (
+                "our dashboard binding",
+                format!("bind-key  -T prefix C-o     {dash}"),
+                Some(BackKeyState::Dashboard {
+                    session: "main".into(),
+                    window: "0".into(),
+                }),
+            ),
+            (
+                "3.5 spacing, same binding",
+                format!("bind-key -T prefix C-o {dash}"),
+                Some(BackKeyState::Dashboard {
+                    session: "main".into(),
+                    window: "0".into(),
+                }),
+            ),
+            (
+                "a handoff's detach binding",
+                "bind-key  -T prefix C-o     detach-client".to_string(),
+                Some(BackKeyState::Detach),
+            ),
+            (
+                "the user's own binding of our key",
+                "bind-key  -T prefix C-o     choose-tree".to_string(),
+                Some(BackKeyState::Foreign),
+            ),
+            (
+                "another key entirely",
+                format!("bind-key  -T prefix C-y     {dash}"),
+                None,
+            ),
+            (
+                "the root table, not prefix",
+                format!("bind-key  -T root C-o     {dash}"),
+                None,
+            ),
+            (
+                "not a binding at all",
+                "some other output".to_string(),
+                None,
+            ),
+        ] {
+            assert_eq!(prefix_binding(&line, "C-o"), expected, "{label}: {line:?}");
         }
     }
 
@@ -1195,6 +1334,31 @@ mod tests {
                     .any(|l| l.contains("C-o") && l.contains("switch-client -t main")),
                 "root table must not carry the back key: {root}"
             );
+        });
+    }
+
+    /// Against a real server: what `bind_back_key` writes must read back as
+    /// ours, `bind_detach_back_key` as a handoff's, and an unbind as empty.
+    #[test]
+    fn the_back_chord_round_trips_through_a_real_server() {
+        with_tmux_server(|_sock, tmux| {
+            // A key tmux itself does not bind reads as empty; `C-o` is
+            // tmux's own `rotate-window` on a fresh server, which reads as
+            // Foreign — the standalone handoff leaves that alone.
+            assert_eq!(tmux.back_key_state("F12").unwrap(), BackKeyState::Unbound);
+            assert_eq!(tmux.back_key_state("C-o").unwrap(), BackKeyState::Foreign);
+            tmux.bind_back_key("C-o", "main", "@3").unwrap();
+            assert_eq!(
+                tmux.back_key_state("C-o").unwrap(),
+                BackKeyState::Dashboard {
+                    session: "main".into(),
+                    window: "3".into()
+                }
+            );
+            tmux.bind_detach_back_key("C-o").unwrap();
+            assert_eq!(tmux.back_key_state("C-o").unwrap(), BackKeyState::Detach);
+            tmux.unbind_back_key("C-o").unwrap();
+            assert_eq!(tmux.back_key_state("C-o").unwrap(), BackKeyState::Unbound);
         });
     }
 

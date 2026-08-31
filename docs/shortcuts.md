@@ -177,7 +177,8 @@ help/picker).
 |---|---|---|
 | `Enter` on a shell | inside tmux: `switch-client` to the agent session + `select-window`; standalone: terminal handoff to `tmux attach` | domain convention |
 | `<prefix> + back-key` (default `C-b C-o`, config `tmux.back_key`) | jump back to the dashboard window from any agent window | the one configurable binding (avoids clashing with the user's tmux); bound in the PREFIX table — never the root table, so no other TUI ever loses the key |
-| `C-b d` | leave `tmux attach` (standalone) and land back in the dashboard | tmux's own detach; no back-key exists outside tmux |
+| `C-b d` | leave `tmux attach` (standalone) and land back in the dashboard | tmux's own detach; always works outside tmux |
+| `<prefix> + back-key` during a standalone attach | detach and land back in *this* dashboard | key tables are server-wide, so the chord is borrowed for the handoff (and restored after) rather than pointing at another lazywingman's window; a binding that is not ours is left alone |
 
 Why the prefix: tmux key tables are server-wide, so a root-table binding
 (`bind-key -n`) hijacks the chord in every session — vim's `C-o`, readline,
