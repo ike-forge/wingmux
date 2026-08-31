@@ -139,7 +139,7 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 # spinner is a string of frames, one character per animation step, cycled
 # while an agent is working; `idle` and `dead` are blank on purpose, so a
 # state you cannot act on stays quiet.
-#status_spinner = "⣾⣽⣻⢿⡿⣟⣯⣷" # agent is working
+#status_spinner = "⣾⣷⣯⣟⡿⢿⣻⣽" # agent is working
 #status_waiting = ""          # agent is parked at its prompt
 #status_blocked = ""          # agent is asking for permission
 #status_failed = ""           # the agent reported a failure
@@ -400,7 +400,7 @@ impl IconsConfig {
             worktree_ahead: "".into(),
             worktree_merged: "".into(),
             worktree_deleted: "󰗨".into(),
-            status_spinner: frames("⣾⣽⣻⢿⡿⣟⣯⣷"),
+            status_spinner: frames("⣾⣷⣯⣟⡿⢿⣻⣽"),
             status_waiting: "".into(),
             status_blocked: "".into(),
             status_failed: "".into(),
