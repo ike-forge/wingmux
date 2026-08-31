@@ -7,16 +7,22 @@
 //! the agent's own hook-reported state, when the pane carries a live
 //! `@lw_agent` overlay and an agent is still the foreground command (see
 //! [`OVERLAY_STALE_AFTER_SECS`] for the one case this is *not* trusted:
-//! stale AND the tail looks idle) → `failed` (any line matches a failure
-//! pattern) → `waiting` if the *last* line matches a prompt pattern (the
-//! freshest signal) → `working` (any line matches a busy pattern) →
-//! `waiting` (any line) → `ended` (foreground command is a login shell
-//! *and* the tail shows no agent activity) → `idle`.
+//! stale AND the tail looks idle) → `ended` (the foreground command is a
+//! login shell) → `failed` (any line matches a failure pattern) →
+//! `waiting` if the *last* line matches a prompt pattern (the freshest
+//! signal) → `working` (any line matches a busy pattern) → `waiting` (any
+//! line) → `idle`.
 //!
-//! The tail is checked before the shell heuristic because agents are often
-//! launched *from* a shell (e.g. `bash` running a script): the tail carries
-//! the agent's real state, the foreground command only says "a shell is in
-//! charge".
+//! The shell heuristic sits above the regex ladder, not below it: what
+//! tmux reports as the pane's foreground command is a fact about what is
+//! running *now*, while the captured tail is scrollback that outlives the
+//! process which wrote it. With the ladder first, `ended` was effectively
+//! unreachable — a finished agent leaves its prompt glyphs, spinner
+//! frames and the word "error" all over the last screenful, so the pane
+//! kept reading `waiting` (or `working`, or `failed`) for as long as that
+//! text stayed on screen. The cost is deliberate: a failure the agent
+//! printed on its way out reads as `ended` rather than `failed`, and the
+//! preview panel is where that text is still visible.
 
 use regex::Regex;
 
@@ -130,6 +136,16 @@ pub fn classify(patterns: &Compiled, tail: &str, pane: Option<&PaneInfo>) -> Sta
             return o.status;
         }
     }
+    // Nothing but a login shell is running: the agent has exited (or was
+    // never started), so every marker left in the tail is scrollback from
+    // a process that is gone. Checked ahead of the regex ladder for that
+    // reason — below it, `ended` was unreachable in practice, because a
+    // finished session's scrollback almost always still holds one of the
+    // agent's own prompt, spinner or error markers, and the pane went on
+    // reading `waiting`/`working`/`failed` long after the agent quit.
+    if is_shell_command(&pane.current_command) {
+        return Status::Ended;
+    }
     if any_match(&patterns.failed, tail) {
         return Status::Failed;
     }
@@ -141,9 +157,6 @@ pub fn classify(patterns: &Compiled, tail: &str, pane: Option<&PaneInfo>) -> Sta
     }
     if any_match(&patterns.waiting, tail) {
         return Status::Waiting;
-    }
-    if is_shell_command(&pane.current_command) {
-        return Status::Ended;
     }
     Status::Idle
 }
@@ -205,31 +218,36 @@ mod tests {
         assert_eq!(classify(&p, "What next? ❯", None), Status::Dead);
     }
 
+    /// What tmux reports as the foreground command outranks the tail: a
+    /// login shell in charge means the agent has exited, and the markers
+    /// still on screen are its leftovers. This is the whole reason `ended`
+    /// is reachable at all — see the module doc.
     #[test]
-    fn shell_foreground_with_agent_tail_is_not_ended() {
-        // bash running an agent script: the tail carries the agent's state
-        let p = c(&["Thinking"], &["❯"], &["Error"]);
-        assert_eq!(
-            classify(&p, "Thinking...", Some(&pane("bash", false))),
-            Status::Working
-        );
-        assert_eq!(
-            classify(
-                &p,
-                "What would you like to do? ❯",
-                Some(&pane("bash", false))
-            ),
-            Status::Waiting
-        );
-        assert_eq!(
-            classify(&p, "✖ Error: boom", Some(&pane("zsh", false))),
-            Status::Failed
-        );
-        // ... but a bare shell with no agent signal is Ended
-        assert_eq!(
-            classify(&p, "nothing matches", Some(&pane("bash", false))),
-            Status::Ended
-        );
+    fn a_shell_foreground_is_ended_whatever_the_scrollback_says() {
+        let p = c(&["Thinking"], &["\u{276f}"], &["Error"]);
+        for tail in [
+            "Thinking...",
+            "What would you like to do? \u{276f}",
+            "\u{2716} Error: boom",
+            "nothing matches",
+        ] {
+            assert_eq!(
+                classify(&p, tail, Some(&pane("bash", false))),
+                Status::Ended,
+                "{tail:?}"
+            );
+        }
+    }
+
+    /// The reported symptom: an agent quits, the shell prompt comes back,
+    /// and the session it left on screen keeps the row yellow. Nothing
+    /// matches the user's own prompt line, so the whole-tail fallbacks
+    /// used to answer from the dead agent's scrollback instead.
+    #[test]
+    fn a_finished_agent_session_reads_ended_not_waiting() {
+        let p = Compiled::compile(&crate::config::builtin_patterns("claude").unwrap());
+        let tail = "\u{25cf} Wrote src/main.rs\n\u{276f} \n ~/projects/lw \u{e0b0} main \u{e0b0}";
+        assert_eq!(classify(&p, tail, Some(&pane("zsh", false))), Status::Ended);
     }
 
     #[test]
@@ -244,7 +262,7 @@ mod tests {
             classify(
                 &p,
                 "Thinking about the task...\nDone.\nWhat would you like to do? ❯",
-                Some(&pane("bash", false))
+                Some(&pane("claude", false))
             ),
             Status::Waiting
         );
@@ -253,7 +271,7 @@ mod tests {
             classify(
                 &p,
                 "What would you like to do? ❯ busy 2\nWorking on it (2)...",
-                Some(&pane("bash", false))
+                Some(&pane("claude", false))
             ),
             Status::Working
         );

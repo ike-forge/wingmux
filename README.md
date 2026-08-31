@@ -303,14 +303,16 @@ where rows carry no colour of their own.)
 
 Every `poll_interval_ms`, LazyWingman captures each agent pane
 (`capture-pane`) and classifies it: `dead` → the agent's own hook-reported
-state (`working` / `waiting` / `blocked`), while it is live → `failed` →
-`working` → `waiting` → `ended` → `idle`. A shell whose pane is gone from
-tmux — it exited (ctrl-d) or its window was killed outside the dashboard —
-is `dead`, as is a pane whose process died with `remain-on-exit` set; a
-live shell with no agent activity is `ended`. Below `dead` and the hook
-overlay, classification is per-agent regex patterns over the pane's
-captured text — heuristics only, and the live preview panel lets you
-confirm what's really happening.
+state (`working` / `waiting` / `blocked`), while it is live → `ended` →
+`failed` → `waiting` → `working` → `waiting` anywhere → `idle`. A shell
+whose pane is gone from tmux — it exited (ctrl-d) or its window was killed
+outside the dashboard — is `dead`, as is a pane whose process died with
+`remain-on-exit` set; a live pane whose foreground command is a plain
+login shell is `ended` — the agent has quit (or never started), so the
+session still on screen is scrollback, not state. Below `dead`, the hook
+overlay and that shell check, classification is per-agent regex patterns
+over the pane's captured text — heuristics only, and the live preview
+panel lets you confirm what's really happening.
 
 **Claude Code shells report their own state.** `[defaults] agent_hooks`
 (default `true`) injects `--settings <state_dir>/lazywingman-activity-hooks.json`
