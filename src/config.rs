@@ -147,7 +147,7 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #status_idle = ""              # agent running, state unrecognised
 #status_dead = ""              # the pane is gone
 #shell = "● "                  # a shell inside a worktree
-#cursor = "›"                  # marks the selected row
+#cursor = "▌"                  # marks the selected row
 #guide_branch = "├─"            # tree guide, more siblings below
 #guide_last = "└─"              # tree guide, last sibling
 #guide_vertical = "│"          # tree guide, carried down a column
@@ -408,7 +408,7 @@ impl IconsConfig {
             status_idle: String::new(),
             status_dead: String::new(),
             shell: "● ".into(),
-            cursor: "›".into(),
+            cursor: "▌".into(),
             guide_branch: "├─".into(),
             guide_last: "└─".into(),
             guide_vertical: "│".into(),

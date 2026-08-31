@@ -518,7 +518,7 @@ reads as new until it has commits of its own.
 | `status_idle` | — | — | — | agent running, state unrecognised |
 | `status_dead` | — | — | — | the pane is gone |
 | `shell` | `●` | `●` | — | before the shell number |
-| `cursor` | `›` | `›` | `›` | selection, tree and modals |
+| `cursor` | `▌` | `▌` | `▌` | selection, tree and modals |
 | `guide_branch` | `├─` | `├─` | `├─` | guide, non-last child |
 | `guide_last` | `└─` | `└─` | `└─` | guide, last child |
 | `guide_vertical` | `│` | `│` | `│` | guide, continuing parent |
