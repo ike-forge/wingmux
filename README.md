@@ -274,21 +274,28 @@ config's `theme = ...` line is the startup default.
 role resolves to the terminal default; the UI stays readable because meaning
 is carried by symbols, labels and position, not by colour.
 
-**A theme answers for two status colours, not seven.** Only `status_waiting`
-and `status_failed` are a theme's to choose; the other five borrow a base
-role, so no theme can drift away from what a state means:
+**A theme answers for the states you act on; the rest borrow.** The shipped
+themes set four status colours — the ones a row's hue has to tell apart at
+a glance — and leave the other three to a base role, so no theme can drift
+away from what a state means:
+
+| Role | Shipped value | Why |
+|---|---|---|
+| `status_waiting` | yellow | the agent finished its turn and is parked |
+| `status_blocked` | orange / peach | the same "wants you" family as waiting, but its own hue: blocked owes you an answer *now* |
+| `status_failed` | red | something went wrong |
+| `status_ended` | purple / mauve | the agent is gone and a plain shell is left — not a state you act on, and not ordinary text either |
 
 | Role | Borrows | Why |
 |---|---|---|
 | `status_working` | `foreground` | an agent doing its job is not an alarm — the spinner already says it is running |
-| `status_ended` | `foreground` | the agent is gone, the shell is ordinary |
-| `status_blocked` | `status_waiting` | both mean the agent stopped and wants you; the icon tells them apart |
 | `status_idle` | `dim` | nothing to act on, so it recedes |
 | `status_dead` | `dim` | same, and the whole row is muted anyway |
 
-Each stays overridable: set the key in your theme and your value wins.
-Themes written before this split — which set all seven — keep loading
-unchanged.
+Every one of the seven stays optional and overridable: set the key in your
+theme and your value wins, omit it and it borrows (`blocked` falls back to
+`status_waiting`, `ended` to `foreground`), so a theme file setting all
+seven and one setting only two both load unchanged.
 
 **The selected row is tinted, not repainted.** The cursor row takes
 `selection_bg` as a background and leaves every foreground alone, because
@@ -344,10 +351,10 @@ is the fast scan across a full tree, the word is what settles it:
 | State | `nerdfont` | `unicode` | Colour |
 |---|---|---|---|
 | `working` | spinner, `⣾⣷⣯⣟⡿⢿⣻⣽` | same | text |
-| `waiting` | `󰏨` | `⏸` | `status_waiting` |
-| `blocked` | `` | `⏹` | `status_waiting` |
-| `failed` | `` | `✖` | `status_failed` |
-| `ended` | `` | `⏸` | text |
+| `waiting` | `󰏨` | `⏸` | `status_waiting` (yellow) |
+| `blocked` | `` | `⏹` | `status_blocked` (orange) |
+| `failed` | `` | `✖` | `status_failed` (red) |
+| `ended` | `` | `⏸` | `status_ended` (purple) |
 | `idle` | — | — | dim |
 | `dead` | — | — | dim |
 

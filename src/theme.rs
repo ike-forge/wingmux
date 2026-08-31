@@ -69,17 +69,24 @@ pub struct ThemeColors {
     pub tree_shell: Spec,
     pub status_waiting: Spec,
     pub status_failed: Spec,
-    /// The four roles below borrow a base colour rather than get one of
-    /// their own, so a theme only has to answer for the two states that
-    /// carry a colour of their own (`status_waiting`, `status_failed`).
-    /// Each stays overridable, and themes written before this split — which
-    /// set all seven — keep working unchanged.
+    /// The five roles below need no value: each borrows a base colour when
+    /// a theme leaves it out, so a theme only has to answer for the states
+    /// that must be unmistakable (`status_waiting`, `status_failed`). Every
+    /// one stays overridable, and the shipped themes do override two of
+    /// them — the states a user acts on get their own hue from the
+    /// palette:
     ///
-    /// `working` and `ended` read as `foreground`: an agent doing its job
-    /// needs no alarm colour, and the spinner already says it is running.
-    /// `idle` and `dead` read as `dim`: nothing to act on, so they recede.
-    /// `blocked` borrows `status_waiting` (added in M17) — both mean the
-    /// agent has stopped and wants you.
+    /// - `blocked` — orange/peach. It shares the "stopped, wants you"
+    ///   family with waiting's yellow while staying its own colour, because
+    ///   blocked owes the user an answer *now* and waiting does not.
+    /// - `ended` — purple/mauve. The agent is gone and the shell is
+    ///   ordinary: it must not read as a state you can act on.
+    ///
+    /// The fallbacks are what a theme file that omits them gets: `working`
+    /// and `ended` read as `foreground` (an agent doing its job needs no
+    /// alarm colour, and the spinner already says it is running), `idle`
+    /// and `dead` as `dim` (nothing to act on, so they recede), `blocked`
+    /// as `status_waiting`.
     #[serde(default)]
     pub status_working: Option<Spec>,
     #[serde(default)]
@@ -780,12 +787,12 @@ mod tests {
 
     // ---- the borrowed status colour roles ----
 
-    /// A shipped theme answers for `waiting` and `failed` only: the other
-    /// five states borrow a base colour, so a theme cannot drift away from
-    /// what the states are supposed to mean. Reached hermetically through
-    /// `BUILTIN_THEMES`/`parse_theme`/`resolve_theme` rather than `load`,
-    /// which would consult the user's themes dir first and could pick up a
-    /// shadowing user file.
+    /// `working`, `idle` and `dead` are the states a user cannot act on,
+    /// so no shipped theme spends a colour on them — they borrow, and a
+    /// theme cannot drift away from what they are supposed to mean.
+    /// Reached hermetically through `BUILTIN_THEMES`/`parse_theme`/
+    /// `resolve_theme` rather than `load`, which would consult the user's
+    /// themes dir first and could pick up a shadowing user file.
     #[test]
     fn shipped_themes_leave_the_borrowed_status_roles_unset() {
         for (name, content) in BUILTIN_THEMES {
@@ -794,20 +801,54 @@ mod tests {
             let c = file.colors;
             for (role, set) in [
                 ("status_working", c.status_working.is_some()),
-                ("status_blocked", c.status_blocked.is_some()),
                 ("status_idle", c.status_idle.is_some()),
                 ("status_dead", c.status_dead.is_some()),
-                ("status_ended", c.status_ended.is_some()),
             ] {
                 assert!(!set, "theme {name} must let {role} borrow its base colour");
             }
         }
     }
 
+    /// The three states that want the user carry three different hues in
+    /// every shipped theme: yellow (waiting), orange (blocked), red
+    /// (failed) — and `ended` a purple that reads as "nothing to do here",
+    /// not as ordinary text. A row's colour alone must answer "does this
+    /// need me?", so no two of them may collapse onto one value.
+    #[test]
+    fn shipped_themes_give_blocked_and_ended_their_own_hue() {
+        for (name, content) in BUILTIN_THEMES {
+            let file = parse_theme(content, Path::new(&format!("<builtin:{name}>")))
+                .unwrap_or_else(|e| panic!("theme {name}: {e}"));
+            assert!(
+                file.colors.status_blocked.is_some(),
+                "theme {name} must set status_blocked"
+            );
+            assert!(
+                file.colors.status_ended.is_some(),
+                "theme {name} must set status_ended"
+            );
+            // Both the truecolor and the 256-index rendering must keep them
+            // apart: quantising is where two near hues collapse.
+            for truecolor in [true, false] {
+                let file = parse_theme(content, Path::new(&format!("<builtin:{name}>"))).unwrap();
+                let c = resolve_theme(file, truecolor, false).unwrap().colors;
+                for (a, b, what) in [
+                    (c.status_blocked, c.status_waiting, "blocked vs waiting"),
+                    (c.status_blocked, c.status_failed, "blocked vs failed"),
+                    (c.status_ended, c.foreground, "ended vs foreground"),
+                    (c.status_ended, c.status_waiting, "ended vs waiting"),
+                ] {
+                    assert_ne!(a, b, "{name} (truecolor={truecolor}): {what}");
+                }
+            }
+        }
+    }
+
     /// The borrowed roles resolve to the base colour they stand for:
-    /// working/ended read as ordinary text, idle/dead recede, and blocked
-    /// shares the waiting colour — the two are told apart by their icon,
-    /// not by hue.
+    /// working reads as ordinary text, idle/dead recede. A user theme that
+    /// omits `blocked` and `ended` too still loads and still says something
+    /// sane — blocked shares waiting's colour and is told apart by its
+    /// icon, ended reads as ordinary text.
     #[test]
     fn borrowed_status_roles_resolve_to_their_base_colour() {
         for (name, content) in BUILTIN_THEMES {
@@ -815,18 +856,37 @@ mod tests {
                 .unwrap_or_else(|e| panic!("theme {name}: {e}"));
             let c = resolve_theme(file, true, false).unwrap().colors;
             assert_eq!(c.status_working, c.foreground, "{name}: working");
-            assert_eq!(c.status_ended, c.foreground, "{name}: ended");
             assert_eq!(c.status_idle, c.dim, "{name}: idle");
             assert_eq!(c.status_dead, c.dim, "{name}: dead");
-            assert_eq!(c.status_blocked, c.status_waiting, "{name}: blocked");
         }
+        // A minimal theme sets neither: the fallbacks answer for it.
+        let bare = std::fs::read_to_string("themes/ansi.toml")
+            .expect("read ansi.toml")
+            .lines()
+            .filter(|l| !l.starts_with("status_blocked") && !l.starts_with("status_ended"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let c = resolve_theme(
+            parse_theme(&bare, Path::new("ansi.toml")).unwrap(),
+            true,
+            false,
+        )
+        .unwrap()
+        .colors;
+        assert_eq!(c.status_blocked, c.status_waiting, "borrowed blocked");
+        assert_eq!(c.status_ended, c.foreground, "borrowed ended");
     }
 
     /// A theme that does set the borrowed roles — every theme written
     /// before the split did — must keep loading, and its own values win.
     #[test]
     fn a_theme_setting_the_borrowed_roles_still_loads() {
-        let src = std::fs::read_to_string("themes/ansi.toml").expect("read ansi.toml");
+        let src = std::fs::read_to_string("themes/ansi.toml")
+            .expect("read ansi.toml")
+            .lines()
+            .filter(|l| !l.starts_with("status_blocked") && !l.starts_with("status_ended"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let older = format!(
             "{src}\nstatus_working = \"green\"\nstatus_blocked = \"bright_yellow\"\n\
              status_idle = \"bright_black\"\nstatus_dead = \"bright_black\"\n\

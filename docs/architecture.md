@@ -383,16 +383,18 @@ the same commit as the change.
   dashboard ticking rather than N unrelated ones. The frame lasts 120 ms
   against the event loop's ~100 ms redraw floor (`event_loop` caps its poll
   timeout); a shorter frame would only stutter.
-- **Five status colours are borrowed, not chosen** (user's call: "rework the
-  colors"). A theme answers for `status_waiting` and `status_failed`;
-  `working`/`ended` resolve to `foreground`, `idle`/`dead` to `dim`, and
-  `blocked` to `status_waiting`. Two consequences were the point: an agent
-  doing its job stops shouting in green — the spinner already says it is
-  running — and `blocked` vs `waiting` is now carried by the glyph (stop vs
-  pause) instead of two yellows a user has to learn apart. The roles stay
-  `Option<Spec>` with a fallback, extending the pattern `status_blocked`
-  already used, so themes written before the split keep loading and any key
-  can still be overridden.
+- **Status colours are borrowed unless the state is one you act on**
+  (user's call: "rework the colors", then "waiting yellow, blocked
+  yellow/orange, ended purple"). Every role but `waiting` and `failed` is
+  an `Option<Spec>` with a fallback — `working`/`ended` → `foreground`,
+  `idle`/`dead` → `dim`, `blocked` → `status_waiting` — so a theme file can
+  set all seven or only two and both load. The shipped themes then spend a
+  colour on exactly the two extra states a user has to spot from across the
+  tree: `blocked` gets the palette's orange (next to waiting's yellow: same
+  "wants you" family, still its own hue, because blocked owes an answer now)
+  and `ended` its purple (the agent is gone; reading as plain `foreground`
+  made a finished shell look like a working one). `working` stays borrowed:
+  the spinner already says it is running, so it stopped shouting in green.
 - **The selected row is tinted, not repainted** (user's call: "when a
   worktree is hovered, it should not lose its text color"). The tree's
   `highlight_style` sets `selection_bg` only. Every row in the tree carries
