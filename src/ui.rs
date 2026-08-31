@@ -176,8 +176,11 @@ fn worktree_icon(ic: &crate::config::IconsConfig, st: WorktreeState) -> &str {
 
 /// Colour for the same four states, borrowed from the status palette so
 /// every theme already answers for them: nothing started yet reads dim,
-/// work not in the base reads like `waiting` (it needs something from
-/// you), and merged reads like `working` — green, done, safe to delete.
+/// and work not in the base reads like `waiting` (it needs something from
+/// you). Merged is the exception — it takes `worktree_merged`, the green
+/// of the worktree level, because the status role it used to borrow
+/// (`working`) is ordinary text and left "done, safe to delete" looking
+/// like every other row.
 /// A worktree whose directory is gone borrows `failed`: it is the one
 /// role every theme keeps distinct from those three, and the row is
 /// broken — it cannot be attached to, sent to or previewed, only removed.
@@ -185,7 +188,7 @@ fn worktree_state_color(theme: &ResolvedColors, st: WorktreeState) -> Color {
     match st {
         WorktreeState::New => theme.dim,
         WorktreeState::Ahead => theme.status_waiting,
-        WorktreeState::Merged => theme.status_working,
+        WorktreeState::Merged => theme.worktree_merged,
         WorktreeState::Deleted => theme.status_failed,
     }
 }

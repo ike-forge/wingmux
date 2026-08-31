@@ -97,6 +97,13 @@ pub struct ThemeColors {
     pub status_dead: Option<Spec>,
     #[serde(default)]
     pub status_ended: Option<Spec>,
+    /// The icon of a worktree whose commits are all in the base branch:
+    /// done, safe to delete. It is the one worktree state with a colour of
+    /// its own rather than a borrowed status role — `working` is ordinary
+    /// text, which left merged indistinguishable from the tree around it.
+    /// Unset, it borrows `tree_worktree`, green in every shipped theme.
+    #[serde(default)]
+    pub worktree_merged: Option<Spec>,
     pub title_bg: Spec,
     pub title_fg: Spec,
     pub popup_bg: Spec,
@@ -137,6 +144,7 @@ pub struct ResolvedColors {
     pub status_failed: Color,
     pub status_dead: Color,
     pub status_ended: Color,
+    pub worktree_merged: Color,
     pub title_bg: Color,
     pub title_fg: Color,
     pub popup_bg: Color,
@@ -456,6 +464,7 @@ fn resolve_theme(file: ThemeFile, truecolor: bool, monochrome: bool) -> Result<T
             status_failed: resolve(c.status_failed),
             status_dead: resolve(c.status_dead.unwrap_or(c.dim)),
             status_ended: resolve(c.status_ended.unwrap_or(c.foreground)),
+            worktree_merged: resolve(c.worktree_merged.unwrap_or(c.tree_worktree)),
             title_bg: resolve(c.title_bg),
             title_fg: resolve(c.title_fg),
             popup_bg: resolve(c.popup_bg),
@@ -542,6 +551,7 @@ mod tests {
                 ("status_failed", c.status_failed),
                 ("status_dead", c.status_dead),
                 ("status_ended", c.status_ended),
+                ("worktree_merged", c.worktree_merged),
                 ("selection_bg", c.selection_bg),
             ] {
                 // `ansi.toml` leaves roles on the terminal default, which is
@@ -596,6 +606,7 @@ mod tests {
                 ("status_failed", c.status_failed),
                 ("status_dead", c.status_dead),
                 ("status_ended", c.status_ended),
+                ("worktree_merged", c.worktree_merged),
                 ("title_bg", c.title_bg),
                 ("title_fg", c.title_fg),
                 ("popup_bg", c.popup_bg),
@@ -803,6 +814,7 @@ mod tests {
                 ("status_working", c.status_working.is_some()),
                 ("status_idle", c.status_idle.is_some()),
                 ("status_dead", c.status_dead.is_some()),
+                ("worktree_merged", c.worktree_merged.is_some()),
             ] {
                 assert!(!set, "theme {name} must let {role} borrow its base colour");
             }
@@ -858,6 +870,14 @@ mod tests {
             assert_eq!(c.status_working, c.foreground, "{name}: working");
             assert_eq!(c.status_idle, c.dim, "{name}: idle");
             assert_eq!(c.status_dead, c.dim, "{name}: dead");
+            assert_eq!(
+                c.worktree_merged, c.tree_worktree,
+                "{name}: merged borrows the worktree colour, not plain text"
+            );
+            assert_ne!(
+                c.worktree_merged, c.foreground,
+                "{name}: a merged worktree must not read as ordinary text"
+            );
         }
         // A minimal theme sets neither: the fallbacks answer for it.
         let bare = std::fs::read_to_string("themes/ansi.toml")
