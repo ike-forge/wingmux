@@ -20,6 +20,9 @@ the same commit as the change.
 
 - State file: JSON at `$XDG_STATE_HOME/lazywingman/state.json` (state, not
   data, is the semantically correct XDG dir for mutable runtime state).
+- Drafts file: JSON at `$XDG_STATE_HOME/lazywingman/drafts.json` — unsent
+  quick-send prompts (`src/drafts.rs`). State, not cache: a half-written
+  prompt cannot be regenerated.
 - **State schema v3**: `State.version = 3`. v3 renamed the on-disk keys
   (`repositories`/`worktrees` → `repositories`/`worktrees`) with no migration
   path, so `load` reads `version` first and discards a well-formed file of
@@ -512,14 +515,30 @@ the same commit as the change.
   chord (it dispatches over the textarea) and a click outside the popup —
   both used to replace the mode and take the text with it. Two deliberate
   limits: drafts do NOT go
-  into `state.json` — they are working state, not configuration, and a prompt
-  half-written three days ago is noise, not a worktree — and a draft is
+  into `state.json` — they are working state, not the tree, so they live in
+  their own `$XDG_STATE_HOME/lazywingman/drafts.json` (`src/drafts.rs`) that
+  can be dropped whole when it is corrupt or stale without taking the
+  repositories with it — and a draft is
   dropped only when the send actually SUCCEEDED. `submit_input` toasts and
   swallows its error, so clearing on submit would lose the text exactly when
   the user most needs it (dead pane, no server). `TEXTBUF_MAX_BYTES =
   1_000_000` is a runaway-paste backstop, not a limit anyone types into; past
   it input is dropped silently, because an error toast per keystroke would be
   worse than a buffer that stops growing.
+- **A draft's on-disk key is the shell, not the pane.** Drafts persist across
+  runs, so the key has to survive one: pane ids do not (tmux hands out new
+  ones, and `reconcile` rediscovers shells by window name), so `drafts.json`
+  is keyed by the triple that window name encodes — repository, worktree
+  branch, shell index — and `App::load_drafts` resolves it back to the
+  current pane id AFTER `reconcile` has filled them in. Lifetime follows
+  from the same choice: `save_drafts` writes by walking the tree, so a draft
+  whose shell or worktree is gone has no row to be written under and simply
+  dies with it — no timestamps, no expiry. It is written on every change
+  (park, delivery, and every `save_state`) rather than on quit alone,
+  because a dashboard killed with its terminal never reaches a quit path.
+  `Drafts::load` never errors: a missing, malformed, or wrong-version file
+  means "no drafts" and a log line — refusing to start over a parked prompt
+  would be the bigger loss.
 - **Predefined messages are a picker, not a second editor**: `p` on a shell
   opens `Mode::Messages`, a numbered list of the configured presets, and
   `Enter` (or the entry's own digit `1`-`9`) **sends immediately** — no detour

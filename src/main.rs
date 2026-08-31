@@ -10,6 +10,7 @@ mod ansi;
 mod app;
 mod config;
 mod discovery;
+mod drafts;
 mod error;
 mod git;
 mod hooks;
