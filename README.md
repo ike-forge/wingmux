@@ -293,11 +293,12 @@ away from what a state means:
 | `status_working` | `foreground` | an agent doing its job is not an alarm — the spinner already says it is running |
 | `status_idle` | `dim` | nothing to act on, so it recedes |
 | `status_dead` | `dim` | same, and the whole row is muted anyway |
+| `worktree_merged` | `tree_worktree` | the green of the worktree level: a merged worktree is done and safe to delete, and must not read as ordinary text |
 
-Every one of the seven stays optional and overridable: set the key in your
+Every one of the eight stays optional and overridable: set the key in your
 theme and your value wins, omit it and it borrows (`blocked` falls back to
 `status_waiting`, `ended` to `foreground`), so a theme file setting all
-seven and one setting only two both load unchanged.
+eight and one setting only two both load unchanged.
 
 **The selected row is tinted, not repainted.** The cursor row takes
 `selection_bg` as a background and leaves every foreground alone, because
@@ -485,8 +486,8 @@ tree: a worktree an agent has edited but not committed is no longer
 untouched, and a merged worktree picks the glyph back up as soon as
 something is written into it. The four share one padded column, so names
 stay aligned whichever one a row draws. The state is also colour-coded:
-new is dim, ahead is the `waiting` colour, merged is the `working` colour,
-and a deleted worktree is the `failed` colour — that row is broken, not
+new is dim, ahead is the `waiting` colour, merged is `worktree_merged`
+(green), and a deleted worktree is the `failed` colour — that row is broken, not
 finished. No patched font? Set
 `preset = "unicode"` for `▣`/`▤`/`▢` and `○`/`◆`/`✓`/`⊘`. Rows carry
 meaning in symbols, labels and position as well as colour.

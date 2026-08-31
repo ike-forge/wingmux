@@ -312,10 +312,14 @@ the same commit as the change.
   branch does not have), `worktree_merged` (all its commits are in the
   base and the tree is clean), `worktree_deleted` (the directory is gone).
   Colour follows from the status palette rather than new theme keys: dim /
-  `waiting` / `working` / `failed`, so every theme already answers for it.
-  Since `status_working` now borrows `foreground`, "merged" reads as
-  ordinary text — done, nothing owed — which is the right weight for it.
-  `deleted` borrows `failed` because it is the one status role every
+  `waiting` / green / `failed`, so every theme already answers for it.
+  Merged is the one exception, and it earned a key of its own: it used to
+  borrow `working`, and once `status_working` started borrowing
+  `foreground` (agents at work need no alarm colour) "merged" was drawn in
+  ordinary text and vanished into the tree. `worktree_merged` restores the
+  green it is supposed to have, and itself borrows `tree_worktree` — green
+  in every shipped theme — so no theme file had to change and a user's
+  existing theme copy picks it up unedited. `deleted` borrows `failed` because it is the one status role every
   shipped theme keeps distinct from the other three (`dead` and `idle`
   both fall back to `dim`, which is `new`), and the row *is* broken: it
   cannot be attached to, sent to or previewed, only removed.
