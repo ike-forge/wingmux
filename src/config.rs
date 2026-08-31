@@ -140,7 +140,7 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 # while an agent is working; `idle` and `dead` are blank on purpose, so a
 # state you cannot act on stays quiet.
 #status_spinner = "⣾⣷⣯⣟⡿⢿⣻⣽" # agent is working
-#status_waiting = ""          # agent is parked at its prompt
+#status_waiting = "󰏨"          # agent is parked at its prompt
 #status_blocked = ""          # agent is asking for permission
 #status_failed = ""           # the agent reported a failure
 #status_ended = ""            # the agent exited, a shell is left
@@ -401,7 +401,7 @@ impl IconsConfig {
             worktree_merged: "".into(),
             worktree_deleted: "󰗨".into(),
             status_spinner: frames("⣾⣷⣯⣟⡿⢿⣻⣽"),
-            status_waiting: "".into(),
+            status_waiting: "󰏨".into(),
             status_blocked: "".into(),
             status_failed: "".into(),
             status_ended: "".into(),
@@ -2109,8 +2109,8 @@ mod tests {
         );
         assert_eq!(
             nf.status_waiting.trim_end(),
-            "\u{f28b}",
-            "nerdfont waiting: nf-fa-pause_circle"
+            "\u{f03e8}",
+            "nerdfont waiting: nf-md-pause_octagon_outline"
         );
         assert_eq!(
             nf.status_blocked.trim_end(),
