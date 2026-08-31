@@ -507,7 +507,11 @@ the same commit as the change.
 - **Drafts are per shell, in memory, and dropped only on delivery.** A
   half-written prompt is expensive to retype, so `Esc` parks the buffer
   against the shell's pane id (the key `captures` and `statuses` already use)
-  and `s` resumes it, cursor included. Two deliberate limits: drafts do NOT go
+  and `s` resumes it, cursor included. Every other way out of the editor
+  parks it too, through the one `close_textarea` helper: the ctrl-t theme
+  chord (it dispatches over the textarea) and a click outside the popup —
+  both used to replace the mode and take the text with it. Two deliberate
+  limits: drafts do NOT go
   into `state.json` — they are working state, not configuration, and a prompt
   half-written three days ago is noise, not a worktree — and a draft is
   dropped only when the send actually SUCCEEDED. `submit_input` toasts and
