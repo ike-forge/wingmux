@@ -58,6 +58,12 @@ pub fn state_path() -> PathBuf {
     state_dir().join("state.json")
 }
 
+/// Parked quick-send drafts: `$XDG_STATE_HOME/lazywingman/drafts.json`.
+/// Beside the state file rather than in it — see [`crate::drafts`].
+pub fn drafts_path() -> PathBuf {
+    state_dir().join("drafts.json")
+}
+
 /// Log file path: `$XDG_STATE_HOME/lazywingman/lazywingman.log`.
 pub fn log_path() -> PathBuf {
     state_dir().join("lazywingman.log")

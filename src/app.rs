@@ -151,15 +151,35 @@ impl TextBuf {
     }
 
     /// Logical cursor position. The renderer uses `visual_cursor`, which
-    /// accounts for soft-wrapping; these stay for the editing tests.
-    #[cfg(test)]
+    /// accounts for soft-wrapping; these are the buffer-level view, read by
+    /// the editing tests and by draft persistence.
     pub fn cursor_row(&self) -> usize {
         self.row
     }
 
-    #[cfg(test)]
     pub fn cursor_col(&self) -> usize {
         self.col
+    }
+
+    /// Rebuild a buffer parked in a previous run: text plus the cursor it
+    /// was left at. Both coordinates are clamped — a truncated or
+    /// hand-edited `drafts.json` must not place `col` past the end of a
+    /// line or inside a multi-byte character, which the next edit would
+    /// panic on.
+    pub fn from_parked(text: &str, row: usize, col: usize) -> TextBuf {
+        let lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+        let row = row.min(lines.len().saturating_sub(1));
+        let line = &lines[row];
+        let mut col = col.min(line.len());
+        while col > 0 && !line.is_char_boundary(col) {
+            col -= 1;
+        }
+        TextBuf {
+            lines,
+            row,
+            col,
+            scroll: 0,
+        }
     }
 
     /// First visible line (clamped so the cursor is always on screen).
@@ -688,6 +708,9 @@ impl App {
         }
         self.build_tree_flags();
         self.clamp_sel();
+        // Before `save_state`: that call writes the drafts file too, and
+        // an empty in-memory map would erase what this run should resume.
+        self.load_drafts();
         self.save_state()?;
         Ok(())
     }
@@ -793,6 +816,10 @@ impl App {
 
     fn save_state(&mut self) -> Result<()> {
         self.state.save()?;
+        // The tree just changed, and a draft outlives its shell nowhere:
+        // `save_drafts` writes by walking the tree, so rewriting here is
+        // also what prunes a deleted shell's parked prompt.
+        self.save_drafts();
         Ok(())
     }
 
@@ -1290,6 +1317,90 @@ impl App {
             self.drafts.remove(&pid);
         } else {
             self.drafts.insert(pid, buf);
+        }
+        self.save_drafts();
+    }
+
+    /// Write the parked drafts out. Called on every change rather than on
+    /// quit alone: the file is tiny, and a dashboard killed with its
+    /// terminal would otherwise take the last hour of drafts with it.
+    /// Failures are logged, never toasted — a draft that did not reach the
+    /// disk is still in memory, so there is nothing for the user to do.
+    fn save_drafts(&self) {
+        let mut entries = Vec::new();
+        for repo in &self.state.repositories {
+            for wt in &repo.worktrees {
+                for sh in &wt.shells {
+                    let Some(pid) = sh.pane_id.as_deref() else {
+                        continue;
+                    };
+                    // Walking the tree (not the map) is the prune: a draft
+                    // whose shell or worktree is gone has no row to be
+                    // written under, so it dies with the shell.
+                    let Some(buf) = self.drafts.get(pid) else {
+                        continue;
+                    };
+                    entries.push(crate::drafts::Draft {
+                        repository: repo.name.clone(),
+                        branch: wt.branch.clone(),
+                        shell: sh.index,
+                        text: buf.text(),
+                        cursor_row: buf.cursor_row(),
+                        cursor_col: buf.cursor_col(),
+                    });
+                }
+            }
+        }
+        let drafts = crate::drafts::Drafts {
+            version: crate::drafts::DRAFTS_VERSION,
+            entries,
+        };
+        if let Err(e) = drafts.save() {
+            log::warn!("cannot save drafts: {e}");
+        }
+    }
+
+    /// Restore drafts parked by an earlier run, resolving each entry's
+    /// (repository, branch, shell index) triple to the pane id the shell
+    /// has *now*. Runs after `reconcile`, which is what puts the current
+    /// pane ids in state; an entry that resolves to nothing is dropped.
+    fn load_drafts(&mut self) {
+        let stored = crate::drafts::Drafts::load();
+        let mut restored = 0;
+        for d in stored.entries {
+            if d.text.len() > TEXTBUF_MAX_BYTES {
+                log::warn!(
+                    "draft for {}/{} exceeds the buffer cap — dropped",
+                    d.repository,
+                    d.branch
+                );
+                continue;
+            }
+            let Some(repo) = self
+                .state
+                .repositories
+                .iter()
+                .find(|r| r.name == d.repository)
+            else {
+                continue;
+            };
+            let Some(wt) = repo.worktrees.iter().find(|w| w.branch == d.branch) else {
+                continue;
+            };
+            let Some(sh) = wt.shells.iter().find(|s| s.index == d.shell) else {
+                continue;
+            };
+            let Some(pid) = sh.pane_id.clone() else {
+                continue;
+            };
+            self.drafts.insert(
+                pid,
+                TextBuf::from_parked(&d.text, d.cursor_row, d.cursor_col),
+            );
+            restored += 1;
+        }
+        if restored > 0 {
+            log::info!("restored {restored} parked draft(s)");
         }
     }
 
@@ -2142,6 +2253,7 @@ impl App {
                         && let Some(pid) = self.selected_shell_pane()
                     {
                         self.drafts.remove(&pid);
+                        self.save_drafts();
                     }
                 } else if key.code == KeyCode::Esc {
                     let parked = buf.clone();
@@ -4062,42 +4174,142 @@ mod tests {
     /// quick-send opens on it.
     #[test]
     fn quick_send_drafts_are_kept_per_shell() {
-        let mut app = app_with_shell();
-        app.viewport = (120, 40);
-        app.state.repositories[0].worktrees[0].shells.push(Shell {
-            index: 1,
-            window_name: "lw:wt/1".into(),
-            window_id: Some("@2".into()),
-            pane_id: Some("%2".into()),
-        });
-        app.build_tree_flags();
+        // Parking a draft persists it under XDG_STATE_HOME — keep the
+        // test off the developer's real drafts.json.
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.state.repositories[0].worktrees[0].shells.push(Shell {
+                index: 1,
+                window_name: "lw:wt/1".into(),
+                window_id: Some("@2".into()),
+                pane_id: Some("%2".into()),
+            });
+            app.build_tree_flags();
 
-        let typed = |app: &mut App, text: &str| {
+            let typed = |app: &mut App, text: &str| {
+                app.on_key(key(KeyCode::Char('s'), false));
+                for c in text.chars() {
+                    app.on_key(key(KeyCode::Char(c), false));
+                }
+                app.on_key(key(KeyCode::Esc, false));
+            };
+
+            app.sel = Sel::Shell(0, 0, 0);
+            typed(&mut app, "hello");
+            app.sel = Sel::Shell(0, 0, 1);
             app.on_key(key(KeyCode::Char('s'), false));
-            for c in text.chars() {
+            let Mode::Textarea { buf } = &app.mode else {
+                panic!("quick-send must open");
+            };
+            assert_eq!(buf.text(), "", "another shell starts from a blank draft");
+            app.on_key(key(KeyCode::Esc, false));
+            typed(&mut app, "world");
+
+            app.sel = Sel::Shell(0, 0, 0);
+            app.on_key(key(KeyCode::Char('s'), false));
+            let Mode::Textarea { buf } = &app.mode else {
+                panic!("quick-send must open");
+            };
+            assert_eq!(buf.text(), "hello", "the first shell's draft came back");
+            assert_eq!(buf.cursor_col(), 5, "and the cursor sits where it was left");
+        });
+    }
+
+    /// A hand-edited or truncated drafts file must not place the cursor
+    /// past the line, or inside a multi-byte character — the next edit
+    /// indexes with `col` and would panic on a split char.
+    #[test]
+    fn a_restored_cursor_is_clamped_to_a_char_boundary() {
+        let buf = TextBuf::from_parked("héllo\nworld", 0, 2);
+        assert_eq!(buf.cursor_row(), 0);
+        assert_eq!(buf.cursor_col(), 1, "col 2 splits 'é' — back to its start");
+        let buf = TextBuf::from_parked("hi", 9, 99);
+        assert_eq!(buf.cursor_row(), 0, "row past the end clamps");
+        assert_eq!(buf.cursor_col(), 2, "col past the end clamps");
+        let buf = TextBuf::from_parked("a\nbb", 1, 2);
+        assert_eq!((buf.cursor_row(), buf.cursor_col()), (1, 2));
+        assert_eq!(buf.text(), "a\nbb", "the newlines round-trip");
+    }
+
+    /// A parked draft outlives the process: quitting and starting again
+    /// brings it back. The on-disk key is the (repository, branch, shell
+    /// index) triple, NOT the pane id — tmux hands out new pane ids on the
+    /// next run, so a draft keyed by `%1` would never be found again.
+    #[test]
+    fn drafts_survive_a_restart_under_a_new_pane_id() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.on_key(key(KeyCode::Char('s'), false));
+            for c in "resume me".chars() {
                 app.on_key(key(KeyCode::Char(c), false));
             }
             app.on_key(key(KeyCode::Esc, false));
-        };
 
-        app.sel = Sel::Shell(0, 0, 0);
-        typed(&mut app, "hello");
-        app.sel = Sel::Shell(0, 0, 1);
-        app.on_key(key(KeyCode::Char('s'), false));
-        let Mode::Textarea { buf } = &app.mode else {
-            panic!("quick-send must open");
-        };
-        assert_eq!(buf.text(), "", "another shell starts from a blank draft");
-        app.on_key(key(KeyCode::Esc, false));
-        typed(&mut app, "world");
+            // Next run: same shell, rediscovered by window name, new pane id.
+            let mut next = app_with_shell();
+            next.viewport = (120, 40);
+            next.state.repositories[0].worktrees[0].shells[0].pane_id = Some("%7".into());
+            next.load_drafts();
 
-        app.sel = Sel::Shell(0, 0, 0);
-        app.on_key(key(KeyCode::Char('s'), false));
-        let Mode::Textarea { buf } = &app.mode else {
-            panic!("quick-send must open");
-        };
-        assert_eq!(buf.text(), "hello", "the first shell's draft came back");
-        assert_eq!(buf.cursor_col(), 5, "and the cursor sits where it was left");
+            next.on_key(key(KeyCode::Char('s'), false));
+            let Mode::Textarea { buf } = &next.mode else {
+                panic!("quick-send must open");
+            };
+            assert_eq!(buf.text(), "resume me", "the draft came back from disk");
+            assert_eq!(buf.cursor_col(), 9, "cursor included");
+        });
+    }
+
+    /// A draft lives exactly as long as its shell: once the shell is gone
+    /// the entry resolves to nothing and is not restored — and the rewrite
+    /// drops it from the file too.
+    #[test]
+    fn a_draft_dies_with_its_shell() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.on_key(key(KeyCode::Char('s'), false));
+            app.on_key(key(KeyCode::Char('x'), false));
+            app.on_key(key(KeyCode::Esc, false));
+            assert!(
+                crate::util::drafts_path().exists(),
+                "the draft reached the disk"
+            );
+
+            let mut next = app_with_shell();
+            next.state.repositories[0].worktrees[0].shells.clear();
+            next.build_tree_flags();
+            next.load_drafts();
+            assert!(next.drafts.is_empty(), "no shell to restore it onto");
+            next.save_drafts();
+            assert!(
+                !crate::util::drafts_path().exists(),
+                "and the stale entry is gone from the file"
+            );
+        });
+    }
+
+    /// A delivered message must not come back from the disk on the next
+    /// run — clearing the draft has to reach the file, not just the map.
+    #[test]
+    fn a_delivered_draft_is_cleared_on_disk_too() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.on_key(key(KeyCode::Char('s'), false));
+            app.on_key(key(KeyCode::Char('x'), false));
+            app.on_key(key(KeyCode::Esc, false));
+            // The send fails (no tmux server), so the draft stays — that is
+            // the documented behaviour; force the delivered path instead.
+            app.drafts.clear();
+            app.save_drafts();
+
+            let mut next = app_with_shell();
+            next.load_drafts();
+            assert!(next.drafts.is_empty(), "nothing to resume after delivery");
+        });
     }
 
     /// ctrl-t is a chord: it opens the theme picker over an open
@@ -4105,92 +4317,108 @@ mod tests {
     /// it — the text comes back when quick-send reopens.
     #[test]
     fn the_theme_chord_keeps_an_open_draft() {
-        let mut app = app_with_shell();
-        app.viewport = (120, 40);
-        app.on_key(key(KeyCode::Char('s'), false));
-        for c in "half written".chars() {
-            app.on_key(key(KeyCode::Char(c), false));
-        }
-        app.on_key(key(KeyCode::Char('t'), true));
-        assert!(matches!(app.mode, Mode::ThemePicker { .. }), "picker opens");
-        app.on_key(key(KeyCode::Esc, false));
+        // Parking a draft persists it under XDG_STATE_HOME — keep the
+        // test off the developer's real drafts.json.
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.on_key(key(KeyCode::Char('s'), false));
+            for c in "half written".chars() {
+                app.on_key(key(KeyCode::Char(c), false));
+            }
+            app.on_key(key(KeyCode::Char('t'), true));
+            assert!(matches!(app.mode, Mode::ThemePicker { .. }), "picker opens");
+            app.on_key(key(KeyCode::Esc, false));
 
-        app.on_key(key(KeyCode::Char('s'), false));
-        let Mode::Textarea { buf } = &app.mode else {
-            panic!("quick-send must open");
-        };
-        assert_eq!(buf.text(), "half written", "the draft survived the chord");
+            app.on_key(key(KeyCode::Char('s'), false));
+            let Mode::Textarea { buf } = &app.mode else {
+                panic!("quick-send must open");
+            };
+            assert_eq!(buf.text(), "half written", "the draft survived the chord");
+        });
     }
 
     /// A click outside the editor dismisses it like Esc — and, like Esc,
     /// it keeps the draft.
     #[test]
     fn a_click_outside_keeps_an_open_draft() {
-        let mut app = app_with_shell();
-        app.viewport = (120, 40);
-        app.on_key(key(KeyCode::Char('s'), false));
-        for c in "half written".chars() {
-            app.on_key(key(KeyCode::Char(c), false));
-        }
-        app.on_mouse(click(0, 0));
-        assert!(matches!(app.mode, Mode::Normal), "the click dismissed it");
+        // Parking a draft persists it under XDG_STATE_HOME — keep the
+        // test off the developer's real drafts.json.
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.on_key(key(KeyCode::Char('s'), false));
+            for c in "half written".chars() {
+                app.on_key(key(KeyCode::Char(c), false));
+            }
+            app.on_mouse(click(0, 0));
+            assert!(matches!(app.mode, Mode::Normal), "the click dismissed it");
 
-        app.on_key(key(KeyCode::Char('s'), false));
-        let Mode::Textarea { buf } = &app.mode else {
-            panic!("quick-send must open");
-        };
-        assert_eq!(buf.text(), "half written", "the draft survived the click");
+            app.on_key(key(KeyCode::Char('s'), false));
+            let Mode::Textarea { buf } = &app.mode else {
+                panic!("quick-send must open");
+            };
+            assert_eq!(buf.text(), "half written", "the draft survived the click");
+        });
     }
 
     /// A send that failed (dead pane, no tmux) must not swallow the text —
     /// the draft is what the user would have to retype.
     #[test]
     fn a_failed_send_keeps_the_draft() {
-        // `tmux_standalone("unused")` has no server: `paste_keys` errors.
-        let mut app = app_with_shell();
-        app.viewport = (120, 40);
-        app.on_key(key(KeyCode::Char('s'), false));
-        for c in "retry me".chars() {
-            app.on_key(key(KeyCode::Char(c), false));
-        }
-        app.on_key(key(KeyCode::Char('s'), true));
-        assert!(matches!(app.mode, Mode::Normal), "the editor closes");
-
-        app.on_key(key(KeyCode::Char('s'), false));
-        let Mode::Textarea { buf } = &app.mode else {
-            panic!("quick-send must open");
-        };
-        assert_eq!(buf.text(), "retry me", "a failed send keeps the text");
-    }
-
-    /// A delivered message is not a draft any more.
-    #[test]
-    fn a_delivered_draft_is_cleared() {
-        with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_standalone(sock);
-            let mut app = app_with(tmux.clone());
-            seed_repository_with_shell(&tmux, &mut app);
-            app.build_tree_flags();
+        // Parking a draft persists it under XDG_STATE_HOME — keep the
+        // test off the developer's real drafts.json.
+        crate::util::testutil::with_fresh_xdg(|| {
+            // `tmux_standalone("unused")` has no server: `paste_keys` errors.
+            let mut app = app_with_shell();
             app.viewport = (120, 40);
-            app.sel = Sel::Worktree(0, 0);
-            app.clamp_sel();
-
             app.on_key(key(KeyCode::Char('s'), false));
-            for c in "ship it".chars() {
+            for c in "retry me".chars() {
                 app.on_key(key(KeyCode::Char(c), false));
             }
             app.on_key(key(KeyCode::Char('s'), true));
-            let toast = app.toast().map(|t| t.text.clone()).unwrap_or_default();
-            assert!(
-                !toast.contains("failed"),
-                "the send must succeed: {toast:?}"
-            );
+            assert!(matches!(app.mode, Mode::Normal), "the editor closes");
 
             app.on_key(key(KeyCode::Char('s'), false));
             let Mode::Textarea { buf } = &app.mode else {
                 panic!("quick-send must open");
             };
-            assert_eq!(buf.text(), "", "a sent message leaves no draft");
+            assert_eq!(buf.text(), "retry me", "a failed send keeps the text");
+        });
+    }
+
+    /// A delivered message is not a draft any more.
+    #[test]
+    fn a_delivered_draft_is_cleared() {
+        // Parking a draft persists it under XDG_STATE_HOME — keep the
+        // test off the developer's real drafts.json.
+        crate::util::testutil::with_fresh_xdg(|| {
+            with_tmux_server(|sock, _tmux| {
+                let tmux = tmux_standalone(sock);
+                let mut app = app_with(tmux.clone());
+                seed_repository_with_shell(&tmux, &mut app);
+                app.build_tree_flags();
+                app.viewport = (120, 40);
+                app.sel = Sel::Worktree(0, 0);
+                app.clamp_sel();
+
+                app.on_key(key(KeyCode::Char('s'), false));
+                for c in "ship it".chars() {
+                    app.on_key(key(KeyCode::Char(c), false));
+                }
+                app.on_key(key(KeyCode::Char('s'), true));
+                let toast = app.toast().map(|t| t.text.clone()).unwrap_or_default();
+                assert!(
+                    !toast.contains("failed"),
+                    "the send must succeed: {toast:?}"
+                );
+
+                app.on_key(key(KeyCode::Char('s'), false));
+                let Mode::Textarea { buf } = &app.mode else {
+                    panic!("quick-send must open");
+                };
+                assert_eq!(buf.text(), "", "a sent message leaves no draft");
+            });
         });
     }
 
@@ -4519,24 +4747,28 @@ mod tests {
     /// its shell — the row IS the agent.
     #[test]
     fn quick_send_works_from_a_folded_worktree_row() {
-        let mut app = app_with_shell();
-        app.viewport = (120, 40);
-        assert_eq!(app.sel, Sel::Worktree(0, 0));
-        app.on_key(key(KeyCode::Char('s'), false));
-        assert!(
-            matches!(app.mode, Mode::Textarea { .. }),
-            "s on a folded worktree must open the textarea"
-        );
-        // no tmux here: the send fails at the tmux call, not at the
-        // selection — "select a shell first" would mean the row did not
-        // resolve.
-        app.mode = Mode::Normal;
-        app.submit_input(InputKind::QuickSend, "hi".into());
-        let msg = app.toast().map(|t| t.text.clone()).unwrap_or_default();
-        assert!(
-            !msg.contains("select a shell"),
-            "the folded row must resolve to its shell, got: {msg:?}"
-        );
+        // Parking a draft persists it under XDG_STATE_HOME — keep the
+        // test off the developer's real drafts.json.
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            assert_eq!(app.sel, Sel::Worktree(0, 0));
+            app.on_key(key(KeyCode::Char('s'), false));
+            assert!(
+                matches!(app.mode, Mode::Textarea { .. }),
+                "s on a folded worktree must open the textarea"
+            );
+            // no tmux here: the send fails at the tmux call, not at the
+            // selection — "select a shell first" would mean the row did not
+            // resolve.
+            app.mode = Mode::Normal;
+            app.submit_input(InputKind::QuickSend, "hi".into());
+            let msg = app.toast().map(|t| t.text.clone()).unwrap_or_default();
+            assert!(
+                !msg.contains("select a shell"),
+                "the folded row must resolve to its shell, got: {msg:?}"
+            );
+        });
     }
 
     /// PageDown / PageUp and ctrl-d / ctrl-u move half a page; ctrl-f / b
@@ -4615,17 +4847,21 @@ mod tests {
     /// `g`/`G` are motions in Normal mode but printable keys in a prompt.
     #[test]
     fn g_and_g_respect_text_input() {
-        let mut app = app_with_repositories(5);
-        app.on_key(key(KeyCode::Char('G'), false));
-        assert_eq!(app.sel, Sel::Repository(4));
-        app.mode = Mode::Textarea {
-            buf: TextBuf::new(),
-        };
-        app.on_key(key(KeyCode::Char('g'), false));
-        let Mode::Textarea { buf } = &app.mode else {
-            panic!()
-        };
-        assert_eq!(buf.text(), "g");
+        // Parking a draft persists it under XDG_STATE_HOME — keep the
+        // test off the developer's real drafts.json.
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_repositories(5);
+            app.on_key(key(KeyCode::Char('G'), false));
+            assert_eq!(app.sel, Sel::Repository(4));
+            app.mode = Mode::Textarea {
+                buf: TextBuf::new(),
+            };
+            app.on_key(key(KeyCode::Char('g'), false));
+            let Mode::Textarea { buf } = &app.mode else {
+                panic!()
+            };
+            assert_eq!(buf.text(), "g");
+        });
     }
 
     // ---- M9.2 — multiline textarea (quick-send rework) ----
@@ -4814,50 +5050,58 @@ mod tests {
     /// Esc cancels, Tab inserts a tab, arrows navigate.
     #[test]
     fn textarea_enter_newline_send_chord_cancel() {
-        let mut app = app_with_shell();
-        app.viewport = (120, 40);
+        // Parking a draft persists it under XDG_STATE_HOME — keep the
+        // test off the developer's real drafts.json.
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
 
-        // `s` opens the textarea
-        app.on_key(key(KeyCode::Char('s'), false));
-        assert!(
-            matches!(app.mode, Mode::Textarea { .. }),
-            "s opens textarea"
-        );
+            // `s` opens the textarea
+            app.on_key(key(KeyCode::Char('s'), false));
+            assert!(
+                matches!(app.mode, Mode::Textarea { .. }),
+                "s opens textarea"
+            );
 
-        // type two lines
-        for c in "line one".chars() {
-            app.on_key(key(KeyCode::Char(c), false));
-        }
-        app.on_key(key(KeyCode::Enter, false));
-        for c in "line two".chars() {
-            app.on_key(key(KeyCode::Char(c), false));
-        }
-        let Mode::Textarea { buf } = &app.mode else {
-            panic!("still in textarea");
-        };
-        assert_eq!(buf.text(), "line one\nline two", "Enter inserts newline");
+            // type two lines
+            for c in "line one".chars() {
+                app.on_key(key(KeyCode::Char(c), false));
+            }
+            app.on_key(key(KeyCode::Enter, false));
+            for c in "line two".chars() {
+                app.on_key(key(KeyCode::Char(c), false));
+            }
+            let Mode::Textarea { buf } = &app.mode else {
+                panic!("still in textarea");
+            };
+            assert_eq!(buf.text(), "line one\nline two", "Enter inserts newline");
 
-        // Alt+Enter sends: back to Normal, message + tree unchanged
-        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
-        assert!(matches!(app.mode, Mode::Normal), "Alt+Enter sends");
+            // Alt+Enter sends: back to Normal, message + tree unchanged
+            app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+            assert!(matches!(app.mode, Mode::Normal), "Alt+Enter sends");
+        });
     }
 
     #[test]
     fn textarea_ctrl_enter_sends_and_esc_cancels() {
-        let mut app = app_with_shell();
-        app.viewport = (120, 40);
+        // Parking a draft persists it under XDG_STATE_HOME — keep the
+        // test off the developer's real drafts.json.
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
 
-        app.on_key(key(KeyCode::Char('s'), false));
-        app.on_key(key(KeyCode::Char('x'), false));
-        // Ctrl+Enter sends too
-        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
-        assert!(matches!(app.mode, Mode::Normal), "Ctrl+Enter sends");
+            app.on_key(key(KeyCode::Char('s'), false));
+            app.on_key(key(KeyCode::Char('x'), false));
+            // Ctrl+Enter sends too
+            app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+            assert!(matches!(app.mode, Mode::Normal), "Ctrl+Enter sends");
 
-        // Esc cancels without sending
-        app.on_key(key(KeyCode::Char('s'), false));
-        app.on_key(key(KeyCode::Char('y'), false));
-        app.on_key(key(KeyCode::Esc, false));
-        assert!(matches!(app.mode, Mode::Normal), "Esc cancels");
+            // Esc cancels without sending
+            app.on_key(key(KeyCode::Char('s'), false));
+            app.on_key(key(KeyCode::Char('y'), false));
+            app.on_key(key(KeyCode::Esc, false));
+            assert!(matches!(app.mode, Mode::Normal), "Esc cancels");
+        });
     }
 
     /// Regression: the visible window is the popup's content height, not
@@ -4865,35 +5109,39 @@ mod tests {
     /// the textarea (M9.2 hardcoded `ensure_visible(1)`).
     #[test]
     fn textarea_enter_keeps_earlier_lines_visible() {
-        let mut app = app_with_shell();
-        app.viewport = (120, 40);
-        let visible = textarea_visible_lines(40);
-        assert!(visible >= 3, "the test needs a roomy window, got {visible}");
+        // Parking a draft persists it under XDG_STATE_HOME — keep the
+        // test off the developer's real drafts.json.
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            let visible = textarea_visible_lines(40);
+            assert!(visible >= 3, "the test needs a roomy window, got {visible}");
 
-        app.on_key(key(KeyCode::Char('s'), false));
-        for _ in 0..3 {
-            app.on_key(key(KeyCode::Char('x'), false));
-            app.on_key(key(KeyCode::Enter, false));
-        }
-        let Mode::Textarea { buf } = &app.mode else {
-            panic!("still in textarea");
-        };
-        assert_eq!(buf.cursor_row(), 3);
-        assert_eq!(
-            buf.scroll(),
-            0,
-            "4 lines fit in {visible} rows — nothing scrolls away"
-        );
+            app.on_key(key(KeyCode::Char('s'), false));
+            for _ in 0..3 {
+                app.on_key(key(KeyCode::Char('x'), false));
+                app.on_key(key(KeyCode::Enter, false));
+            }
+            let Mode::Textarea { buf } = &app.mode else {
+                panic!("still in textarea");
+            };
+            assert_eq!(buf.cursor_row(), 3);
+            assert_eq!(
+                buf.scroll(),
+                0,
+                "4 lines fit in {visible} rows — nothing scrolls away"
+            );
 
-        // one line past the window scrolls by exactly one
-        for _ in 0..(visible - 3) {
-            app.on_key(key(KeyCode::Enter, false));
-        }
-        let Mode::Textarea { buf } = &app.mode else {
-            panic!("still in textarea");
-        };
-        assert_eq!(buf.cursor_row(), visible);
-        assert_eq!(buf.scroll(), 1);
+            // one line past the window scrolls by exactly one
+            for _ in 0..(visible - 3) {
+                app.on_key(key(KeyCode::Enter, false));
+            }
+            let Mode::Textarea { buf } = &app.mode else {
+                panic!("still in textarea");
+            };
+            assert_eq!(buf.cursor_row(), visible);
+            assert_eq!(buf.scroll(), 1);
+        });
     }
 
     /// ctrl-s is the send key that survives a legacy terminal: tmux with
@@ -4901,35 +5149,43 @@ mod tests {
     /// often eaten by the outer terminal emulator.
     #[test]
     fn textarea_ctrl_s_sends() {
-        let mut app = app_with_shell();
-        app.viewport = (120, 40);
+        // Parking a draft persists it under XDG_STATE_HOME — keep the
+        // test off the developer's real drafts.json.
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
 
-        app.on_key(key(KeyCode::Char('s'), false));
-        app.on_key(key(KeyCode::Char('x'), false));
-        app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
-        assert!(matches!(app.mode, Mode::Normal), "ctrl-s sends");
+            app.on_key(key(KeyCode::Char('s'), false));
+            app.on_key(key(KeyCode::Char('x'), false));
+            app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+            assert!(matches!(app.mode, Mode::Normal), "ctrl-s sends");
+        });
     }
 
     #[test]
     fn textarea_tab_and_navigation_do_not_leak_to_tree() {
-        let mut app = app_with_shell();
-        app.viewport = (120, 40);
+        // Parking a draft persists it under XDG_STATE_HOME — keep the
+        // test off the developer's real drafts.json.
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
 
-        app.on_key(key(KeyCode::Char('s'), false));
-        let before = app.sel;
-        app.on_key(key(KeyCode::Tab, false));
-        app.on_key(key(KeyCode::Down, false));
-        app.on_key(key(KeyCode::PageDown, false));
-        app.on_key(key(KeyCode::Home, false));
-        let Mode::Textarea { buf } = &app.mode else {
-            panic!("still in textarea");
-        };
-        assert!(buf.text().starts_with('\t'), "Tab inserts a tab");
-        assert_eq!(buf.cursor_row(), 0, "Home did not move the tree");
-        assert_eq!(
-            app.sel, before,
-            "tree selection untouched while textarea open"
-        );
+            app.on_key(key(KeyCode::Char('s'), false));
+            let before = app.sel;
+            app.on_key(key(KeyCode::Tab, false));
+            app.on_key(key(KeyCode::Down, false));
+            app.on_key(key(KeyCode::PageDown, false));
+            app.on_key(key(KeyCode::Home, false));
+            let Mode::Textarea { buf } = &app.mode else {
+                panic!("still in textarea");
+            };
+            assert!(buf.text().starts_with('\t'), "Tab inserts a tab");
+            assert_eq!(buf.cursor_row(), 0, "Home did not move the tree");
+            assert_eq!(
+                app.sel, before,
+                "tree selection untouched while textarea open"
+            );
+        });
     }
 
     // ---- M8.4a — mouse ----
