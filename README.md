@@ -344,10 +344,10 @@ is the fast scan across a full tree, the word is what settles it:
 | State | `nerdfont` | `unicode` | Colour |
 |---|---|---|---|
 | `working` | spinner, `⣾⣷⣯⣟⡿⢿⣻⣽` | same | text |
-| `waiting` | `` | `⏸` | `status_waiting` |
-| `blocked` | `` | `⏹` | `status_waiting` |
-| `failed` | `` | `✖` | `status_failed` |
-| `ended` | `` | `⏸` | text |
+| `waiting` | `` | `⏸` | `status_waiting` |
+| `blocked` | `` | `⏹` | `status_waiting` |
+| `failed` | `` | `✖` | `status_failed` |
+| `ended` | `` | `⏸` | text |
 | `idle` | — | — | dim |
 | `dead` | — | — | dim |
 
@@ -517,7 +517,7 @@ reads as new until it has commits of its own.
 | `worktree_deleted` | `󰗨` | `⊘` | — | the worktree directory is gone |
 | `status_spinner` | `⣾⣷⣯⣟⡿⢿⣻⣽` | same | — | frames cycled while an agent works |
 | `status_waiting` | `` | `⏸` | — | agent parked at its prompt |
-| `status_blocked` | `` | `⏹` | — | agent asking for permission |
+| `status_blocked` | `` | `⏹` | — | agent asking for permission |
 | `status_failed` | `` | `✖` | — | the agent reported a failure |
 | `status_ended` | `` | `⏸` | — | the agent exited, a shell is left |
 | `status_idle` | — | — | — | agent running, state unrecognised |
