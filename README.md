@@ -353,8 +353,8 @@ is the fast scan across a full tree, the word is what settles it:
 | State | `nerdfont` | `unicode` | Colour |
 |---|---|---|---|
 | `working` | spinner, `⣾⣷⣯⣟⡿⢿⣻⣽` | same | text |
-| `waiting` | `󰏨` | `⏸` | `status_waiting` (yellow) |
-| `blocked` | `` | `⏹` | `status_blocked` (orange) |
+| `waiting` | `󰏤` | `⏸` | `status_waiting` (yellow) |
+| `blocked` | `󰓛` | `⏹` | `status_blocked` (orange) |
 | `failed` | `` | `✖` | `status_failed` (red) |
 | `ended` | `` | `⏸` | `status_ended` (purple) |
 | `idle` | — | — | dim |
@@ -528,8 +528,8 @@ reads as new until it has commits of its own.
 | `worktree_merged` | `` | `✓` | — | commits all merged into the base, clean tree |
 | `worktree_deleted` | `󰗨` | `⊘` | — | the worktree directory is gone |
 | `status_spinner` | `⣾⣷⣯⣟⡿⢿⣻⣽` | same | — | frames cycled while an agent works |
-| `status_waiting` | `󰏨` | `⏸` | — | agent parked at its prompt |
-| `status_blocked` | `` | `⏹` | — | agent asking for permission |
+| `status_waiting` | `󰏤` | `⏸` | — | agent parked at its prompt |
+| `status_blocked` | `󰓛` | `⏹` | — | agent asking for permission |
 | `status_failed` | `` | `✖` | — | the agent reported a failure |
 | `status_ended` | `` | `⏸` | — | the agent exited, a shell is left |
 | `status_idle` | — | — | — | agent running, state unrecognised |
