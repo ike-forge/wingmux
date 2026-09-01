@@ -142,9 +142,15 @@ the trailing Enter submits.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `y` / `d` / `Enter` | confirm | confirm, object named in prompt; `d` re-pressed = vim `dd` |
-| `n` / `Esc` / `q` | abort (default) | confirmation defaults to "no" |
+| `y` / `d` | confirm (only when the plain answer can succeed) | confirm, object named in prompt; `d` re-pressed = vim `dd` |
+| `n` / `Esc` / `q` | abort (default) | confirmation defaults to "no"; the footer spells only `n` — `Esc` closes every overlay |
 | `f` | confirm with force (only when offered, e.g. dirty worktree) | destructive variant, offered not assumed |
+
+`Enter` is deliberately **unbound** here. It means "open / drill into"
+everywhere else in the app, so it is the key the fingers press by reflex —
+a delete must not answer to it. On a dirty worktree `y`/`d` are unbound
+too and the footer drops them: `git worktree remove` refuses without
+`--force`, so the plain answer exists only to fail.
 | `ctrl-c` | quit, even here | ctrl layer over overlays |
 
 ## Help overlay (the palette)

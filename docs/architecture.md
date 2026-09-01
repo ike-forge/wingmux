@@ -103,7 +103,17 @@ the same commit as the change.
 - The delete confirm answers to `d` as well as `y`/`Enter`: `d` opened the
   popup, so `dd` completes the delete without a hand move — the vim reflex.
   `f` (force) stays a separate key: discarding uncommitted work must not be
-  reachable by pressing the same key twice.
+  reachable by pressing the same key twice. `Enter` is **not** an alias:
+  everywhere else it means "open / drill into", and the reflex key must not
+  delete anything.
+- **An answer that cannot succeed is not offered.** `Confirm::yes_label` is
+  `None` on a dirty worktree, so `y`/`d` are unbound and absent from the
+  footer — `git worktree remove` refuses without `--force`, and a key whose
+  only outcome is an error toast teaches the user nothing. `f` is then the
+  single way through, which is also what makes the discard deliberate.
+- **The footer names `n`, not `n/esc`.** `Esc` still cancels, as it closes
+  every overlay in the app; spelling it out in one dialog implies it is
+  local to that dialog.
 - **A confirm's caveat is drawn in the failure colour, not as body prose.**
   `Confirm::warning` is a field of its own, rendered bold in
   `status_failed` under the question ("uncommitted changes — force delete

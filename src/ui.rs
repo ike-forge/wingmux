@@ -1744,11 +1744,17 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
         return Rect::default();
     };
     let ic = &app.cfg.icons;
-    let mut hints = vec![hint(ic, "yes", "y/d")];
+    // Only the answers that can actually succeed are offered, and only
+    // their own keys are spelled out: `esc` cancels every overlay in the
+    // app, so listing it beside `n` costs a word and teaches nothing.
+    let mut hints = Vec::new();
+    if let Some(yl) = &confirm.yes_label {
+        hints.push(hint(ic, yl, "y/d"));
+    }
     if let Some(fl) = &confirm.force_label {
         hints.push(hint(ic, fl, "f"));
     }
-    hints.push(hint(ic, "cancel", "n/esc"));
+    hints.push(hint(ic, "cancel", "n"));
     let mut lines: Vec<Line> = confirm
         .body
         .lines()
@@ -1809,6 +1815,7 @@ mod tests {
                 confirm: Confirm {
                     title: "delete worktree".into(),
                     body: "delete 'x'?".into(),
+                    yes_label: None,
                     warning: Some("worktree is dirty — force will discard".into()),
                     force_label: Some("force".into()),
                     action: ConfirmAction::DeleteWorktree {
@@ -2430,6 +2437,7 @@ mod tests {
                 confirm: Confirm {
                     title: "delete worktree".into(),
                     body: "delete 'x'?".into(),
+                    yes_label: Some("yes".into()),
                     warning: None,
                     force_label: None,
                     action: ConfirmAction::DeleteWorktree {
@@ -3420,6 +3428,7 @@ mod tests {
             confirm: Confirm {
                 title: "Delete Worktree".into(),
                 body: "delete 'wt'?".into(),
+                yes_label: None,
                 warning: Some("uncommitted changes".into()),
                 force_label: Some("force".into()),
                 action: ConfirmAction::DeleteWorktree {
@@ -4026,6 +4035,7 @@ mod tests {
                 confirm: Confirm {
                     title: "Delete Worktree".into(),
                     body: "delete 'wt' from repo-a?".into(),
+                    yes_label: Some("yes".into()),
                     warning: None,
                     force_label: Some("force".into()),
                     action: ConfirmAction::DeleteWorktree {
@@ -4122,6 +4132,7 @@ mod tests {
                     confirm: Confirm {
                         title: "Delete Worktree".into(),
                         body: "delete 'wt' from repo-a?".into(),
+                        yes_label: Some("yes".into()),
                         warning: None,
                         force_label: None,
                         action: ConfirmAction::DeleteWorktree {
@@ -4156,8 +4167,11 @@ mod tests {
                 "{name}: padding column on both sides of the first row, got {first:?}"
             );
             let footer = row(area.y + area.height - 2);
+            // A named way out, not necessarily `esc`: the confirm answers
+            // "no" to `n` and spells that instead, since `esc` cancels every
+            // overlay and does not need re-teaching per dialog.
             assert!(
-                footer.contains("esc"),
+                footer.contains("esc") || footer.contains("cancel n"),
                 "{name}: the bottom content row names the way out, got {footer:?}"
             );
             assert!(

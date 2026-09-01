@@ -512,6 +512,11 @@ pub struct ShellChoice {
 pub struct Confirm {
     pub title: String,
     pub body: String,
+    /// The plain answer, `None` when it cannot succeed — a dirty worktree
+    /// only removes with `--force`, so offering `y`/`d` there would be a
+    /// key whose whole job is to fail. An unanswerable question is worse
+    /// than a missing option.
+    pub yes_label: Option<String>,
     /// A caveat the answer depends on ("uncommitted changes will be
     /// discarded"). Kept out of `body` because it is drawn in the failure
     /// colour: the eye must land on it before the fingers reach a key.
@@ -1969,6 +1974,9 @@ impl App {
                         "worktree is clean"
                     }
                 ),
+                // Dirty: `git worktree remove` refuses, so `f` is the only
+                // answer that deletes anything.
+                yes_label: (!dirty).then(|| "yes".into()),
                 warning: dirty.then(|| "uncommitted changes — force delete discards them".into()),
                 force_label: if dirty {
                     Some("force delete (discards changes)".into())
@@ -1997,6 +2005,7 @@ impl App {
                     "Close shell '{}' of worktree '{}'?\nThe tmux window is killed; the worktree, its worktree and its other shells stay.",
                     sh.window_name, wt.name
                 ),
+                yes_label: Some("yes".into()),
                 warning: None,
                 force_label: None,
                 action: ConfirmAction::DeleteShell {
@@ -2413,8 +2422,11 @@ impl App {
             }
             Mode::Confirm { confirm } => match key.code {
                 // `d` opened this popup, so `d` again closes the loop —
-                // the vim `dd` reflex confirms without a hand move.
-                KeyCode::Char('y') | KeyCode::Char('d') | KeyCode::Enter => {
+                // the vim `dd` reflex confirms without a hand move. `Enter`
+                // is deliberately NOT bound: it is the app's "open / drill
+                // in" key everywhere else, and a destructive answer must
+                // not sit under the key the fingers press by reflex.
+                KeyCode::Char('y') | KeyCode::Char('d') if confirm.yes_label.is_some() => {
                     let action = confirm.action.clone();
                     self.mode = Mode::Normal;
                     self.run_confirm(action, false);
@@ -4707,6 +4719,50 @@ mod tests {
             ),
             m => panic!("expected a confirm, got {m:?}"),
         }
+    }
+
+    /// A dirty worktree only removes with `--force`, so the plain answer is
+    /// gone: `y`, `d` and `Enter` must all leave the popup standing rather
+    /// than fire a delete that git will refuse.
+    #[test]
+    fn a_dirty_worktree_offers_no_plain_yes_and_enter_never_confirms() {
+        let mut app = app_with_shell();
+        app.mode = Mode::Confirm {
+            confirm: Confirm {
+                title: "Delete Worktree".into(),
+                body: "delete 'wt'?".into(),
+                yes_label: None,
+                warning: Some("uncommitted changes".into()),
+                force_label: Some("force".into()),
+                action: ConfirmAction::DeleteWorktree {
+                    repository: 0,
+                    worktree: 0,
+                },
+            },
+        };
+
+        for k in [KeyCode::Char('y'), KeyCode::Char('d'), KeyCode::Enter] {
+            app.on_key(key(k, false));
+            assert!(
+                matches!(app.mode, Mode::Confirm { .. }),
+                "{k:?} must not answer a force-only confirm"
+            );
+        }
+    }
+
+    /// `Enter` is the app's "open / drill into" key; it must never double as
+    /// a delete, not even on a confirm that does offer the plain answer.
+    #[test]
+    fn enter_does_not_confirm_a_delete() {
+        let mut app = app_with_shell();
+        app.sel = Sel::Worktree(0, 0);
+        app.on_key(key(KeyCode::Char('d'), false));
+        assert!(matches!(app.mode, Mode::Confirm { .. }));
+        app.on_key(key(KeyCode::Enter, false));
+        assert!(
+            matches!(app.mode, Mode::Confirm { .. }),
+            "Enter is unbound in a confirm"
+        );
     }
 
     /// Two dashboards, one tmux server, one shared key table: the chord a
