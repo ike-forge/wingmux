@@ -620,6 +620,12 @@ pub struct App {
     /// ([`App::ensure_slot`]). Re-derived from `@lw_slot` rather than
     /// trusted: the user may close it by hand.
     pub slot: Option<String>,
+    /// The agent pane currently docked in the slot, if any. Never trusted
+    /// either: the pane may be killed, its agent may exit, or another
+    /// instance may steal it, and each of those is an ordinary event that
+    /// puts the panel back on the preview — checked every poll by
+    /// [`App::reconcile_docked`].
+    pub docked: Option<String>,
     /// Rect of the overlay currently on screen, if any. Mouse clicks
     /// outside it dismiss the overlay (accessibility rule).
     pub popup_area: Option<Rect>,
@@ -712,6 +718,7 @@ impl App {
             viewport: (0, 0),
             dash_window: None,
             slot: None,
+            docked: None,
             popup_area: None,
             help_scroll: 0,
             diag_scroll: 0,
@@ -739,6 +746,12 @@ impl App {
             self.boot_discovery()?;
         }
         if let Some(tmux) = &self.tmux {
+            // Before the first reconcile: a dashboard that died with a pane
+            // docked left that pane in a session that does not own it, and
+            // the tree must never render a shell in the wrong place.
+            if let Err(e) = crate::dock::adopt_orphans(tmux) {
+                log::warn!("cannot adopt stray agent panes: {e}");
+            }
             self.state.reconcile(tmux)?;
             self.state.prune(Some(tmux), &self.worktrees_loaded)?;
             self.announce_scope(tmux);
@@ -907,6 +920,31 @@ impl App {
             .into_iter()
             .find(|p| p.slot && p.window_id == inside.window_id)
             .map(|p| p.pane_id)
+    }
+
+    /// Let go of a docked pane that is no longer ours.
+    ///
+    /// Three ordinary things end a dock without us asking: the pane is
+    /// killed, its agent exits, or another instance steals the shell. None
+    /// of them is an error — the panel simply goes back to the preview,
+    /// which is the browse mode and works for every shell — so this is a
+    /// log line and not a toast. The slot stays: it is furniture, and the
+    /// next dock reuses it.
+    fn reconcile_docked(&mut self, tmux: &Tmux, panes: &[crate::tmux::PaneInfo]) {
+        let Some(docked) = self.docked.clone() else {
+            return;
+        };
+        let own = tmux.inside.as_ref().map(|i| i.pane_id.as_str());
+        let ours = own.is_some()
+            && panes
+                .iter()
+                .find(|p| p.pane_id == docked)
+                .is_some_and(|p| p.docked_by.as_deref() == own);
+        if ours {
+            return;
+        }
+        log::info!("docked pane {docked} is no longer ours — back to the preview");
+        self.docked = None;
     }
 
     /// Take the slot back down. Called on quit: the slot is this
@@ -2362,6 +2400,7 @@ impl App {
             .iter()
             .map(|p| (p.pane_id.clone(), p.clone()))
             .collect();
+        self.reconcile_docked(&tmux, &panes);
         let sel_pane = self.selected_shell_pane();
         // Collect shell metadata first to avoid borrowing self twice.
         let mut shells: Vec<(String, String, String)> = Vec::new();
@@ -5087,6 +5126,46 @@ mod tests {
             // tmux, never its own memory.
             app.slot = Some("%999".into());
             assert_eq!(app.ensure_slot().expect("re-derived"), second);
+        });
+    }
+
+    // ---- M18 Task 13 — recovery ----
+
+    /// A docked pane can end its dock without us: killed, its agent exits,
+    /// or another instance steals the shell. Each is ordinary — the panel
+    /// goes back to the preview, which works for every shell — so the poll
+    /// lets go quietly and raises no error toast.
+    #[test]
+    fn a_docked_pane_that_disappears_falls_back_to_the_preview() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_wid, pane) = seed_repository_with_shell(&tmux, &mut app);
+            let slot = app.ensure_slot().expect("slot");
+            let dash = tmux.inside.as_ref().unwrap().pane_id.clone();
+            crate::dock::dock(&tmux, &slot, &pane, &dash).expect("dock");
+            app.docked = Some(pane.clone());
+
+            app.poll();
+            assert_eq!(
+                app.docked.as_deref(),
+                Some(pane.as_str()),
+                "a live dock survives the poll"
+            );
+
+            // Stolen: the lease now names another instance's pane.
+            tmux.set_pane_option(&pane, crate::dock::DOCKED_KEY, "%999")
+                .expect("steal");
+            app.poll();
+            assert_eq!(app.docked, None, "a stolen shell is let go of");
+            assert!(app.message.is_none(), "and losing it is not an error");
+
+            // Killed: the pane is not on the server at all any more.
+            app.docked = Some(pane.clone());
+            tmux.kill_pane(&pane).expect("kill the agent pane");
+            app.poll();
+            assert_eq!(app.docked, None);
+            assert!(app.message.is_none());
         });
     }
 

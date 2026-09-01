@@ -605,6 +605,23 @@ impl Tmux {
             .collect())
     }
 
+    /// Exchange two panes. This is the whole of docking.
+    ///
+    /// `-d` keeps the active pane where it is: a swap must never move the
+    /// user's cursor, least of all into a sleeping holder. Nothing here is
+    /// created or destroyed — each window keeps its pane count, so no
+    /// window and no session can die of a dock — and when the two panes
+    /// are the same size tmux redraws from its own buffer, so the agent
+    /// sees no `SIGWINCH` and does not repaint.
+    ///
+    /// Both panes must live on the same tmux server; `swap-pane` cannot
+    /// cross servers, which is why the dashboard and its agent sessions
+    /// share one.
+    pub fn swap_panes(&self, a: &str, b: &str) -> Result<()> {
+        self.run(&["swap-pane", "-d", "-s", a, "-t", b])?;
+        Ok(())
+    }
+
     /// Kill one pane. Killing a window's last pane kills the window, so
     /// this is only ever aimed at furniture that has a neighbour.
     pub fn kill_pane(&self, pane_id: &str) -> Result<()> {
@@ -2059,6 +2076,161 @@ mod tests {
                 "user's own root binding must survive: {root}"
             );
             let _ = sock;
+        });
+    }
+
+    // ---- M18 Task 11 — the swap ----
+
+    /// Count the windows of every session, so a dock can be shown to
+    /// create and destroy none: that is the whole reason docking swaps
+    /// against a holder instead of moving panes between windows.
+    fn window_counts(tmux: &Tmux) -> Vec<(String, usize)> {
+        let out = tmux
+            .run_raw(&["list-windows", "-a", "-F", "#{session_name}"])
+            .expect("list-windows");
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for name in out.lines() {
+            match counts.iter_mut().find(|(n, _)| n == name) {
+                Some(e) => e.1 += 1,
+                None => counts.push((name.to_string(), 1)),
+            }
+        }
+        counts.sort();
+        counts
+    }
+
+    /// Docking is one cross-session `swap-pane`, and undocking is the same
+    /// swap run backwards. Both panes move, identity travels with them, the
+    /// lease is written on the way in and released on the way out — and no
+    /// window is created or destroyed by either.
+    #[test]
+    fn a_dock_swaps_both_panes_and_an_undock_swaps_them_back() {
+        with_tmux_server(|_sock, tmux| {
+            let id = ShellId::for_session("wingman-session-d", "feat", 0);
+            let agent = tmux
+                .new_session(
+                    "wingman-session-d",
+                    "lw:feat/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &id,
+                    HOLDER_W,
+                )
+                .expect("agent session");
+            let slot = tmux.split_slot("%0", 40).expect("slot");
+            let before = window_counts(&tmux);
+
+            dock::dock(&tmux, &slot, &agent.pane_id, "%0").expect("dock");
+
+            let panes = tmux.list_furniture().expect("furniture");
+            let at = |pane: &str| {
+                panes
+                    .iter()
+                    .find(|p| p.pane_id == pane)
+                    .map(|p| (p.session_name.clone(), p.window_id.clone()))
+                    .expect("pane still exists")
+            };
+            assert_eq!(
+                at(&agent.pane_id),
+                ("main".to_string(), "@0".to_string()),
+                "the agent pane is in the dashboard's window"
+            );
+            assert_eq!(
+                at(&slot),
+                ("wingman-session-d".to_string(), agent.window_id.clone()),
+                "and the slot has gone to live where it came from"
+            );
+            assert_eq!(
+                window_counts(&tmux),
+                before,
+                "a swap creates and destroys no window"
+            );
+
+            let docked = tmux
+                .list_panes()
+                .expect("panes")
+                .into_iter()
+                .find(|p| p.pane_id == agent.pane_id)
+                .expect("a docked pane is still one of ours");
+            assert_eq!(docked.shell, Some(id.clone()), "identity travels with it");
+            assert_eq!(
+                docked.docked_by.as_deref(),
+                Some("%0"),
+                "the lease names the dashboard holding it"
+            );
+            assert!(
+                tmux.capture_pane(&agent.pane_id, 20).is_ok(),
+                "a docked pane still answers capture-pane"
+            );
+            assert!(
+                tmux.list_furniture()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p.pane_id == slot && p.slot),
+                "the slot keeps its own mark too"
+            );
+
+            dock::undock(&tmux, &agent.pane_id, &agent.window_id).expect("undock");
+
+            assert_eq!(
+                at_now(&tmux, &agent.pane_id),
+                ("wingman-session-d".to_string(), agent.window_id.clone()),
+                "the agent pane is home"
+            );
+            assert_eq!(
+                at_now(&tmux, &slot),
+                ("main".to_string(), "@0".to_string()),
+                "and the slot is back beside the tree"
+            );
+            assert_eq!(window_counts(&tmux), before, "still no window created");
+            let home = tmux
+                .list_panes()
+                .expect("panes")
+                .into_iter()
+                .find(|p| p.pane_id == agent.pane_id)
+                .expect("still ours");
+            assert_eq!(home.shell, Some(id));
+            assert_eq!(home.docked_by, None, "the lease is released");
+        });
+    }
+
+    /// Where a pane sits right now, as (session, window).
+    fn at_now(tmux: &Tmux, pane: &str) -> (String, String) {
+        tmux.list_furniture()
+            .expect("furniture")
+            .into_iter()
+            .find(|p| p.pane_id == pane)
+            .map(|p| (p.session_name, p.window_id))
+            .expect("pane still exists")
+    }
+
+    /// With the slot killed under it — a dashboard that died with a pane
+    /// docked — the pane still has somewhere to go: the holder that never
+    /// left home. This is what keeps the crash path recoverable.
+    #[test]
+    fn undock_falls_back_to_the_holder_when_the_slot_is_gone() {
+        with_tmux_server(|_sock, tmux| {
+            let agent = tmux
+                .new_session(
+                    "wingman-session-f",
+                    "lw:feat/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-f", "feat", 0),
+                    HOLDER_W,
+                )
+                .expect("agent session");
+            let slot = tmux.split_slot("%0", 40).expect("slot");
+            dock::dock(&tmux, &slot, &agent.pane_id, "%0").expect("dock");
+            tmux.kill_pane(&slot).expect("the dashboard's window died");
+
+            dock::undock(&tmux, &agent.pane_id, &agent.window_id).expect("undock");
+
+            assert_eq!(
+                at_now(&tmux, &agent.pane_id).1,
+                agent.window_id,
+                "the agent pane is home, having changed places with its holder"
+            );
         });
     }
 }

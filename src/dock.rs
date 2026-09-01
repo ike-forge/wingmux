@@ -27,6 +27,9 @@
 //!   counts panes. It is marked once ([`HOLDER_KEY`]) and filtered once, in
 //!   `Tmux::list_panes`, which selects on identity — furniture carries none.
 
+use crate::error::{Error, Result};
+use crate::tmux::{SESSION_PREFIX, Tmux};
+
 /// Repository slug, on an agent pane.
 pub const REPO_KEY: &str = "@lw_repo";
 /// Worktree name, on an agent pane.
@@ -200,6 +203,146 @@ pub fn ensure_holders(tmux: &crate::tmux::Tmux, width: u16) -> usize {
     added
 }
 
+// -------------------------------------------------------------- movement
+
+/// Dock `pane` (an agent pane) into `slot` (this dashboard's slot pane).
+///
+/// One `swap-pane`: the agent lands beside the tree and the slot goes to
+/// live in the agent's own window, where it becomes what undocking swaps
+/// back. `dash_pane` — the docking dashboard's own pane — is written onto
+/// the agent pane as [`DOCKED_KEY`], which is the lease: it is how every
+/// other instance sees that this shell is taken, and how a later startup
+/// tells a live dock from one whose dashboard died.
+///
+/// Exactly one pane is docked at a time. Docking a different shell is
+/// undock-then-dock — two swaps — never two occupied slots.
+// Nothing calls it yet: Task 12 binds the key that does, and the swap is
+// exercised by this module's tests meanwhile.
+#[allow(dead_code)]
+pub fn dock(tmux: &Tmux, slot: &str, pane: &str, dash_pane: &str) -> Result<()> {
+    tmux.swap_panes(slot, pane)?;
+    // After the swap, not before: a mark written onto a pane that then
+    // fails to move would advertise a lease over a shell that never left
+    // home.
+    tmux.set_pane_option(pane, DOCKED_KEY, dash_pane)?;
+    log::info!("docked {pane} into slot {slot} (dashboard {dash_pane})");
+    Ok(())
+}
+
+/// Send a docked `pane` back to `home_window`, its own agent window.
+///
+/// The pane it changes places with is the one furniture pane still sitting
+/// at home: the slot, put there by [`dock`], or the holder when the slot
+/// has been killed since (a dashboard that died with a pane docked).
+/// Swapping with the holder leaves the window one pane short of furnished;
+/// `ensure_holders` puts that right on the next reconcile.
+pub fn undock(tmux: &Tmux, pane: &str, home_window: &str) -> Result<()> {
+    let target = home_target(tmux, home_window, pane)?;
+    tmux.swap_panes(pane, &target)?;
+    // The lease is released only once the pane is actually home.
+    if let Err(e) = tmux.clear_pane_option(pane, DOCKED_KEY) {
+        log::warn!("cannot clear the docked mark on {pane}: {e}");
+    }
+    log::info!("undocked {pane} back into {home_window} (swapped with {target})");
+    Ok(())
+}
+
+/// The pane in `home_window` a docked pane changes places with: the slot
+/// first, the holder second. `docked` is excluded — a pane cannot swap
+/// with itself, and a "home window" that already holds it is a no-op we
+/// must not turn into a tmux error.
+fn home_target(tmux: &Tmux, home_window: &str, docked: &str) -> Result<String> {
+    let panes = tmux.list_furniture()?;
+    let here = || {
+        panes
+            .iter()
+            .filter(|p| p.window_id == home_window && p.pane_id != docked)
+    };
+    here()
+        .find(|p| p.slot)
+        .or_else(|| here().find(|p| p.holder))
+        .map(|p| p.pane_id.clone())
+        .ok_or_else(|| {
+            Error::Tmux(format!(
+                "{home_window} has no furniture to swap {docked} for"
+            ))
+        })
+}
+
+/// Put every stray agent pane back in its own session.
+///
+/// This is the crash path. A dashboard that dies mid-dock leaves its agent
+/// pane alive in a session that does not own it — locatable, because
+/// identity travels with the pane, but in the wrong place: the tree would
+/// render it under a window that is not its home. Adoption runs before the
+/// first reconcile, so the tree never draws that.
+///
+/// A pane whose [`DOCKED_KEY`] names a dashboard pane that is still alive
+/// is left alone: that is a live lease held by another instance, not
+/// wreckage. Our own pane id does not count as alive for this purpose — a
+/// dashboard that has just started holds nothing, whatever a pane inherited
+/// from the run before says.
+///
+/// Returns how many panes were brought home.
+///
+/// Deviates from the plan's `adopt_orphans(tmux, state)` in taking no
+/// state: adoption runs *before* the first reconcile, when state knows no
+/// panes yet, and a pane's own [`ShellId`] already names the session that
+/// owns it.
+pub fn adopt_orphans(tmux: &Tmux) -> Result<usize> {
+    let furniture = tmux.list_furniture()?;
+    let own = tmux.inside.as_ref().map(|i| i.pane_id.as_str());
+    let mut adopted = 0;
+    // Home windows already spoken for by an earlier adoption in this pass:
+    // two orphans of one repository must not be sent to the same window.
+    let mut taken: Vec<String> = Vec::new();
+    for pane in tmux.list_panes()? {
+        let Some(id) = &pane.shell else { continue };
+        let home_session = format!("{SESSION_PREFIX}{}", id.repo);
+        if pane.session_name == home_session {
+            continue;
+        }
+        if let Some(holder) = &pane.docked_by
+            && Some(holder.as_str()) != own
+            && furniture.iter().any(|p| &p.pane_id == holder)
+        {
+            log::info!(
+                "{} is docked in {holder}, which is alive — leaving it there",
+                pane.pane_id
+            );
+            continue;
+        }
+        // Its home is a window of its own session that has furniture and
+        // no shell in it: exactly the shape [`dock`] leaves behind.
+        let home = furniture
+            .iter()
+            .filter(|p| p.session_name == home_session && !taken.contains(&p.window_id))
+            .map(|p| p.window_id.clone())
+            .find(|w| {
+                let here = || furniture.iter().filter(|p| &p.window_id == w);
+                here().any(|p| p.slot || p.holder) && !here().any(|p| p.shell)
+            });
+        let Some(home) = home else {
+            log::warn!(
+                "{} belongs to {home_session}, which has no window waiting for it",
+                pane.pane_id
+            );
+            continue;
+        };
+        match undock(tmux, &pane.pane_id, &home) {
+            Ok(()) => {
+                taken.push(home);
+                adopted += 1;
+            }
+            Err(e) => log::warn!("cannot adopt {} into {home}: {e}", pane.pane_id),
+        }
+    }
+    if adopted > 0 {
+        log::info!("adopted {adopted} stray agent pane(s)");
+    }
+    Ok(adopted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +393,115 @@ mod tests {
         let b = ShellId::for_session("wingman-session-app-1a2b3c4d", "feat", 0);
         assert_eq!(b.repo, "app-1a2b3c4d");
         assert_ne!(a.repo, b.repo);
+    }
+
+    // ---- M18 Task 13 — recovery ----
+
+    use crate::tmux::testutil::{HOLDER_W, with_tmux_server};
+    use std::path::Path;
+
+    /// Where a pane sits right now, as (session, window).
+    fn at(tmux: &Tmux, pane: &str) -> (String, String) {
+        tmux.list_furniture()
+            .expect("furniture")
+            .into_iter()
+            .find(|p| p.pane_id == pane)
+            .map(|p| (p.session_name, p.window_id))
+            .expect("pane still exists")
+    }
+
+    /// The crash path. A dashboard that died mid-dock left its agent pane
+    /// alive in a session that does not own it; the next dashboard must put
+    /// it back before anything renders a tree, or the shell shows up under
+    /// a window that is not its home.
+    #[test]
+    fn a_pane_orphaned_by_a_dead_dashboard_is_swapped_home() {
+        with_tmux_server(|_sock, tmux| {
+            let agent = tmux
+                .new_session(
+                    "wingman-session-o",
+                    "lw:feat/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-o", "feat", 0),
+                    HOLDER_W,
+                )
+                .expect("agent session");
+            // A dashboard of its own, in the 'main' session, which docks the
+            // agent pane and then dies.
+            let dash = tmux
+                .run_raw(&[
+                    "split-window",
+                    "-d",
+                    "-t",
+                    "%0",
+                    "-P",
+                    "-F",
+                    "#{pane_id}",
+                    "bash",
+                ])
+                .expect("dashboard pane")
+                .trim()
+                .to_string();
+            let slot = tmux.split_slot(&dash, 40).expect("slot");
+            dock(&tmux, &slot, &agent.pane_id, &dash).expect("dock");
+            tmux.kill_pane(&dash).expect("the dashboard dies");
+
+            // A fresh dashboard, holding nothing of its own.
+            let mut fresh = tmux.clone();
+            fresh.inside = None;
+            assert_eq!(adopt_orphans(&fresh).expect("adopt"), 1);
+
+            assert_eq!(
+                at(&tmux, &agent.pane_id).1,
+                agent.window_id,
+                "the agent pane is home"
+            );
+            assert_eq!(at(&tmux, &slot).0, "main", "and the slot came back with it");
+            let home = tmux
+                .list_panes()
+                .expect("panes")
+                .into_iter()
+                .find(|p| p.pane_id == agent.pane_id)
+                .expect("still ours");
+            assert_eq!(home.docked_by, None, "the dead lease is released");
+            assert_eq!(
+                adopt_orphans(&fresh).expect("again"),
+                0,
+                "nothing left to do"
+            );
+        });
+    }
+
+    /// A pane docked in a dashboard that is still alive is a lease, not
+    /// wreckage: adoption must leave it exactly where it is, or two running
+    /// instances would take the same shell from each other on every start.
+    #[test]
+    fn adoption_leaves_a_pane_docked_in_a_live_dashboard_alone() {
+        with_tmux_server(|_sock, tmux| {
+            let agent = tmux
+                .new_session(
+                    "wingman-session-l",
+                    "lw:feat/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-l", "feat", 0),
+                    HOLDER_W,
+                )
+                .expect("agent session");
+            let slot = tmux.split_slot("%0", 40).expect("slot");
+            // %0 — the docking dashboard — is alive and stays alive.
+            dock(&tmux, &slot, &agent.pane_id, "%0").expect("dock");
+
+            let mut other = tmux.clone();
+            other.inside = None;
+            assert_eq!(adopt_orphans(&other).expect("adopt"), 0);
+            assert_eq!(
+                at(&tmux, &agent.pane_id).0,
+                "main",
+                "the leased pane stays where its dashboard put it"
+            );
+        });
     }
 
     /// Every option key is distinct: a typo that aliased two of them would
