@@ -270,6 +270,28 @@ fn home_target(tmux: &Tmux, home_window: &str, docked: &str) -> Result<String> {
         })
 }
 
+/// The window an agent pane belongs back in: a window of its own agent
+/// session that holds furniture and no shell of ours — exactly the shape
+/// [`dock`] leaves behind when it takes the agent pane away.
+///
+/// `taken` excludes windows already spoken for earlier in the same pass,
+/// so two orphans of one repository are never sent to the same window.
+pub fn home_window(
+    furniture: &[crate::tmux::FurniturePane],
+    id: &ShellId,
+    taken: &[String],
+) -> Option<String> {
+    let home_session = format!("{SESSION_PREFIX}{}", id.repo);
+    furniture
+        .iter()
+        .filter(|p| p.session_name == home_session && !taken.contains(&p.window_id))
+        .map(|p| p.window_id.clone())
+        .find(|w| {
+            let here = || furniture.iter().filter(|p| &p.window_id == w);
+            here().any(|p| p.slot || p.holder) && !here().any(|p| p.shell)
+        })
+}
+
 /// Put every stray agent pane back in its own session.
 ///
 /// This is the crash path. A dashboard that dies mid-dock leaves its agent
@@ -313,17 +335,7 @@ pub fn adopt_orphans(tmux: &Tmux) -> Result<usize> {
             );
             continue;
         }
-        // Its home is a window of its own session that has furniture and
-        // no shell in it: exactly the shape [`dock`] leaves behind.
-        let home = furniture
-            .iter()
-            .filter(|p| p.session_name == home_session && !taken.contains(&p.window_id))
-            .map(|p| p.window_id.clone())
-            .find(|w| {
-                let here = || furniture.iter().filter(|p| &p.window_id == w);
-                here().any(|p| p.slot || p.holder) && !here().any(|p| p.shell)
-            });
-        let Some(home) = home else {
+        let Some(home) = home_window(&furniture, id, &taken) else {
             log::warn!(
                 "{} belongs to {home_session}, which has no window waiting for it",
                 pane.pane_id

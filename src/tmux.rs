@@ -677,6 +677,19 @@ impl Tmux {
         Ok(())
     }
 
+    /// Is `pane_id` the active pane of its window — i.e. does it hold the
+    /// keyboard?
+    ///
+    /// Asked of tmux on demand rather than cached in the poll: the answer
+    /// changes the moment the user moves between panes, and a docking
+    /// decision made against a poll-old answer is exactly the "swap a pane
+    /// out from under someone mid-sentence" bug the guard exists to
+    /// prevent.
+    pub fn pane_active(&self, pane_id: &str) -> Result<bool> {
+        let out = self.run(&["display-message", "-p", "-t", pane_id, "#{pane_active}"])?;
+        Ok(out.trim() == "1")
+    }
+
     /// Take a session's windows off automatic sizing, so their dimensions
     /// are ours to set and a client attaching elsewhere cannot change them
     /// behind our back.

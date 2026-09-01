@@ -254,6 +254,34 @@ the same commit as the change.
   - The one thing not wrapped is a launch with no terminal to hand tmux —
     piped, redirected, cron. Wrapping there would fail where not wrapping
     merely degrades.
+- **The dock follows the selection, and the cursor does not follow the dock**
+  (M18). Landing on a shell row docks its pane; `Enter` is then only needed to
+  *enter* it. An auto-dock that also ran `select-pane` would move the keyboard
+  into the agent and the next `j` would be typed at the agent, so `App::dock_pane`
+  takes a `focus` flag: `Enter` sets it, looking does not.
+  - **No settle timer — the input queue is the debouncer.** The plan called for
+    a ~150 ms settle so held `j` autorepeat could not fire one swap per row.
+    A settle has a cost the plan did not price: for its whole length the panel
+    shows the row the cursor has already left, and a docked dashboard has no
+    preview to fall back to in the meantime (the slot is where the preview
+    used to be). So the burst is *coalesced* instead: `App::auto_dock` takes
+    the event loop's own `event::poll(ZERO)` answer to "are more keys already
+    waiting", which autorepeat keeps true for as long as the key is held. One
+    dock at the end of the run, and zero added latency for a single keypress.
+  - **Three refusals.** It never fires while the docked pane holds the keyboard
+    (`Tmux::pane_active` on our own pane, asked at the moment of the decision,
+    not cached from the last poll — the answer changes the instant the user
+    moves between panes); it yields to a shell another dashboard has docked;
+    and it does nothing until the user's first keypress, so startup does not
+    split furniture into what may well be the user's own window.
+  - **A row with no shell leaves the dock alone.** Undocking on the way past a
+    repository row would make browsing the tree flap the layout.
+  - **The slot exists exactly while something is docked.** `ui::tier` tests
+    `App::docked`, not `App::slot`: when a dock ends without a replacement —
+    the agent exited, the pane was killed, another instance took it —
+    `App::drop_slot` gives the dashboard its whole window back and the preview
+    returns with it. The preview is the browse mode and the only view that
+    works for a shell we do not hold, so it must not be a slot-shaped hole.
 
 ## Status classification
 

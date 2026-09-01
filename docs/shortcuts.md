@@ -209,6 +209,24 @@ and quitting sends it home before the slot is taken down.
 |---|---|---|
 | `Enter` on a shell | dock: `swap-pane` the agent pane into the slot, `select-pane` into it | domain convention (open the thing the row stands for) |
 | `Enter` on the shell that is already docked | just move the focus back into it — no second swap | idempotent action key |
+| moving the cursor onto a shell | docks it too, **without** taking the cursor with it | the selection is the subject; looking at a row shows the row |
+
+**Dock on look.** The docked pane follows the tree cursor: land on a shell
+and its real pane is beside you, with the keyboard still in the tree so the
+next `j` is still a `j`. `Enter` is then only needed to *enter* the pane.
+Three things it will not do — it does not fire while more keys are still
+queued (so held `j` autorepeat costs one swap at the end of the run, not one
+per row); it does not fire at all while the docked pane holds the keyboard,
+because swapping a pane out from under someone mid-sentence is the worst bug
+this design can produce; and it yields to a shell another dashboard has
+docked, which is what keeps two idle instances from trading a pane forever.
+There is **no settle timer**: the queue itself says when the burst is over,
+so the dock lands with no added latency and there is never a window in which
+the panel shows the row the cursor has already left. A row with no shell
+under it (a repository, an empty worktree) leaves whatever is docked where
+it is — browsing is not a reason to tear the layout down. Nothing is docked
+until the user first presses a key: startup must not split furniture into
+what may well be the user's own window.
 
 Once the pane is on screen it is a normal tmux pane, so **everything past
 the dock is tmux's own binding and deliberately unbound here**: moving

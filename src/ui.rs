@@ -76,15 +76,19 @@ pub(crate) fn tree_width(viewport: (u16, u16)) -> Option<u16> {
 
 /// The tier the dashboard's own pane actually draws at.
 ///
-/// A slot beside us means the preview panel has already been replaced —
-/// by a real tmux pane showing the real agent. Drawing a second, narrower,
-/// one-poll-behind copy of that agent next to it is the exact duplication
-/// docking exists to end, so the dashboard keeps the tree and nothing
-/// else, however wide its own strip happens to be.
+/// A docked pane beside us means the preview panel has already been
+/// replaced — by a real tmux pane showing the real agent. Drawing a
+/// second, narrower, one-poll-behind copy of that agent next to it is the
+/// exact duplication docking exists to end, so the dashboard keeps the
+/// tree and nothing else, however wide its own strip happens to be.
+///
+/// The test is what is *docked*, not whether a slot exists: a slot with no
+/// agent in it is torn down again ([`App::drop_slot`]), and the frame in
+/// between must not be a tree-only view of nothing.
 pub(crate) fn tier(app: &App) -> Tier {
     let tier = tier_impl(app.viewport.0, app.viewport.1);
     match tier {
-        Tier::Wide | Tier::Split if app.slot.is_some() => Tier::TreeOnly,
+        Tier::Wide | Tier::Split if app.docked.is_some() => Tier::TreeOnly,
         _ => tier,
     }
 }
