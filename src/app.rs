@@ -66,6 +66,38 @@ pub enum Sel {
     Shell(usize, usize, usize),
 }
 
+/// A shell docked in another LazyWingman instance.
+///
+/// Held only for the length of one poll: `@lw_docked` on the agent pane is
+/// the single source of truth, because it is the only thing two instances
+/// that know nothing of each other can both see.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lease {
+    /// The pane the other dashboard is drawing in — what `@lw_docked` holds,
+    /// and what proves the lease is live rather than crash wreckage.
+    pub dash_pane: String,
+    /// The scope that dashboard announces (`@lw_scope` on its window), when
+    /// it announces one. What lets us say *whose* it is rather than just
+    /// that it is not ours.
+    pub scope: Option<String>,
+}
+
+impl Lease {
+    /// The shortest thing that still names the holder: the last component
+    /// of its scope path, which is the folder the user thinks of it as.
+    pub fn label(&self) -> String {
+        self.scope
+            .as_deref()
+            .map(|s| {
+                std::path::Path::new(s)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| s.to_string())
+            })
+            .unwrap_or_else(|| "another dashboard".to_string())
+    }
+}
+
 /// What the user is doing right now.
 #[derive(Debug)]
 pub enum Mode {
@@ -627,11 +659,11 @@ pub struct App {
     /// puts the panel back on the preview — checked every poll by
     /// [`App::reconcile_docked`].
     pub docked: Option<String>,
-    /// Shells held by *another* dashboard: agent pane id -> the pane id of
-    /// the dashboard holding it. Re-read from `@lw_docked` on every poll
-    /// and never cached across one — anything shared between instances
-    /// lives in tmux, which is the only thing both instances can see.
-    pub leases: HashMap<String, String>,
+    /// Shells held by *another* dashboard, by agent pane id. Re-read from
+    /// `@lw_docked` on every poll and never cached across one — anything
+    /// shared between instances lives in tmux, which is the only thing
+    /// both instances can see.
+    pub leases: HashMap<String, Lease>,
     /// Has the user moved the selection yet? Dock-on-look waits for it.
     /// Startup must not split a slot into what may well be the user's own
     /// window before they have touched anything — the same courtesy
@@ -946,11 +978,11 @@ impl App {
             .map(|p| p.pane_id)
     }
 
-    /// The dashboard pane holding `pane`, when that dashboard is not us.
+    /// The lease on `pane`, when the dashboard holding it is not us.
     ///
-    /// This is the lease: a shell one instance has docked is off limits to
-    /// another's *looking*, though not to its `Enter`.
-    pub fn leased_by(&self, pane: &str) -> Option<&String> {
+    /// A shell one instance has docked is off limits to another's
+    /// *looking*, though not to its `Enter`.
+    pub fn leased_by(&self, pane: &str) -> Option<&Lease> {
         self.leases.get(pane)
     }
 
@@ -985,6 +1017,24 @@ impl App {
         self.leases = claimed
             .into_iter()
             .filter(|(_, by)| alive.iter().any(|p| &p.pane_id == by))
+            .map(|(pane, by)| {
+                // Reuse what the last poll learned: the scope of a window
+                // does not change under a live dashboard, and this saves a
+                // `display-message` per leased shell per poll.
+                let scope = self
+                    .leases
+                    .get(&pane)
+                    .filter(|l| l.dash_pane == by)
+                    .and_then(|l| l.scope.clone())
+                    .or_else(|| tmux.pane_scope(&by));
+                (
+                    pane,
+                    Lease {
+                        dash_pane: by,
+                        scope,
+                    },
+                )
+            })
             .collect();
     }
 
@@ -2034,8 +2084,11 @@ impl App {
         // Recorded before the attempt, not after: a decline must be
         // remembered too, or a leased shell is re-asked on every frame.
         self.auto_dock_seen = Some(pane.clone());
-        if let Some(holder) = self.leased_by(&pane) {
-            log::debug!("not following {pane} into the tree: leased by {holder}");
+        if let Some(lease) = self.leased_by(&pane) {
+            log::debug!(
+                "not following {pane} into the tree: leased by {}",
+                lease.dash_pane
+            );
             return;
         }
         let Ok(tmux) = self.require_tmux() else {
@@ -5617,6 +5670,68 @@ mod tests {
                 Some(pane.as_str()),
                 "the repository row is a place to look, not a place to undock"
             );
+        });
+    }
+
+    // ---- M18 Task 15 — the lease ----
+
+    /// The whole defence against two idle dashboards trading a pane
+    /// forever: looking yields. Without it, two instances with the same
+    /// shell selected take it from each other on every poll with nobody
+    /// pressing a key.
+    #[test]
+    fn following_the_selection_yields_to_another_dashboard() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_w, pane) = seed_repository_with_shell(&tmux, &mut app);
+            look_at(&mut app, Sel::Worktree(0, 0));
+
+            // Another instance holds it. Its dashboard pane is real and
+            // alive — a mark naming a dead pane is wreckage, not a lease.
+            let rival = tmux
+                .split_slot(&tmux.inside.as_ref().unwrap().pane_id, 20)
+                .expect("a pane to stand in for the other dashboard");
+            tmux.set_pane_option(&pane, crate::dock::DOCKED_KEY, &rival)
+                .expect("their lease");
+
+            app.poll();
+            assert_eq!(
+                app.leased_by(&pane).map(|l| l.dash_pane.clone()),
+                Some(rival.clone()),
+                "the poll reads the lease off the pane, not off any state of ours"
+            );
+
+            app.auto_dock(false);
+            assert_eq!(app.docked, None, "looking does not take a held shell");
+
+            // Released: the next poll clears the lease and looking follows.
+            tmux.clear_pane_option(&pane, crate::dock::DOCKED_KEY)
+                .expect("they let go");
+            app.poll();
+            assert!(app.leased_by(&pane).is_none());
+            app.auto_dock(false);
+            assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
+        });
+    }
+
+    /// A `@lw_docked` mark left behind by an instance that crashed names a
+    /// pane that no longer exists. Reading that as a lease would fence the
+    /// shell off from every dashboard for good.
+    #[test]
+    fn a_mark_naming_a_dead_dashboard_is_wreckage_not_a_lease() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_w, pane) = seed_repository_with_shell(&tmux, &mut app);
+            look_at(&mut app, Sel::Worktree(0, 0));
+            tmux.set_pane_option(&pane, crate::dock::DOCKED_KEY, "%999")
+                .expect("a mark from a dashboard that died");
+
+            app.poll();
+            assert!(app.leased_by(&pane).is_none());
+            app.auto_dock(false);
+            assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
         });
     }
 

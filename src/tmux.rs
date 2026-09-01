@@ -690,6 +690,19 @@ impl Tmux {
         Ok(out.trim() == "1")
     }
 
+    /// The scope announced by the window `pane_id` sits in, if it announces
+    /// one. This is how a dashboard can name the *other* dashboard holding
+    /// a shell — `@lw_scope` is a window option, so asking a pane for it
+    /// asks its window.
+    pub fn pane_scope(&self, pane_id: &str) -> Option<String> {
+        let fmt = format!("#{{{}}}", dock::SCOPE_KEY);
+        let out = self
+            .run(&["display-message", "-p", "-t", pane_id, &fmt])
+            .ok()?;
+        let out = out.trim();
+        (!out.is_empty()).then(|| out.to_string())
+    }
+
     /// Take a session's windows off automatic sizing, so their dimensions
     /// are ours to set and a client attaching elsewhere cannot change them
     /// behind our back.

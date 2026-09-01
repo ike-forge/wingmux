@@ -276,6 +276,19 @@ the same commit as the change.
     split furniture into what may well be the user's own window.
   - **A row with no shell leaves the dock alone.** Undocking on the way past a
     repository row would make browsing the tree flap the layout.
+  - **The lease is a pane option, re-read every poll.** `@lw_docked` on the
+    agent pane holds the docking dashboard's own pane id — the only thing two
+    instances that know nothing of each other can both see. `App::refresh_leases`
+    rebuilds `App::leases` from the poll's pane list, keeps only marks whose
+    named dashboard pane is still alive (a mark from an instance that crashed
+    is wreckage, and treating it as a lease would fence the shell off for
+    good), and resolves the holder's `@lw_scope` so the UI can say *whose* it
+    is. A leased shell's row is muted whole and marked `leased`, the way a
+    dead row mutes and for the same reason — it is not a row this instance
+    brings on screen by looking at it. The preview keeps working (`capture-pane`
+    does not care where a pane sits) and its title names the holder, because a
+    panel that silently follows a shell someone else is typing in invites an
+    `Enter` that yanks it away.
   - **The slot exists exactly while something is docked.** `ui::tier` tests
     `App::docked`, not `App::slot`: when a dock ends without a replacement —
     the agent exited, the pane was killed, another instance took it —

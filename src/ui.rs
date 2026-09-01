@@ -245,6 +245,22 @@ fn shell_status(app: &App, sh: &crate::state::Shell) -> Status {
         .unwrap_or(Status::Idle)
 }
 
+/// Is this shell docked in another dashboard right now?
+fn shell_leased<'a>(app: &'a App, sh: &crate::state::Shell) -> Option<&'a crate::app::Lease> {
+    app.leased_by(sh.pane_id.as_deref()?)
+}
+
+/// Mute a row whole and say why: a shell another dashboard holds is not
+/// one this instance can bring on screen by looking at it, so it gets the
+/// same "the eye skips it" treatment a dead row gets — plus the one word
+/// that keeps it from reading as dead.
+fn mark_leased(theme: &ResolvedColors, spans: &mut Vec<Span<'static>>) {
+    for span in spans.iter_mut() {
+        span.style = fg(theme.dim);
+    }
+    spans.push(Span::styled("  leased", fg(theme.dim)));
+}
+
 /// A worktree is dead once every shell under it is — a worktree with no
 /// shells at all is not dead, it was simply never started.
 fn worktree_dead(app: &App, wt: &crate::state::Worktree) -> bool {
@@ -721,7 +737,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 };
                 (guide.clone(), ficon.to_string())
             };
-            items.push(ListItem::new(Line::from(vec![
+            let mut wt_spans = vec![
                 Span::styled(
                     prefix,
                     fg(worktree_color(theme, wt, fdead, theme.tree_worktree)),
@@ -760,7 +776,13 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     // are one row below, each with its own status.
                     None => Span::raw(""),
                 },
-            ])));
+            ];
+            // A folded worktree row IS its shell, so it carries the shell's
+            // lease too.
+            if solo.is_some_and(|si| shell_leased(app, &wt.shells[si]).is_some()) {
+                mark_leased(theme, &mut wt_spans);
+            }
+            items.push(ListItem::new(Line::from(wt_spans)));
             if app.sel == Sel::Worktree(ri, wi) {
                 sel_row = Some(row);
             }
@@ -791,7 +813,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 } else {
                     &grandchild
                 };
-                items.push(ListItem::new(Line::from(vec![
+                let mut sh_spans = vec![
                     Span::styled(
                         format!("{guide}{}#{}", ic.shell, sh.index),
                         fg(row_color(theme, st == Status::Dead, theme.tree_shell)),
@@ -801,7 +823,11 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                         format!("{}{}", status_icon(ic, st, spin), st.label()),
                         fg(status_color(theme, st)),
                     ),
-                ])));
+                ];
+                if shell_leased(app, sh).is_some() {
+                    mark_leased(theme, &mut sh_spans);
+                }
+                items.push(ListItem::new(Line::from(sh_spans)));
                 if app.sel == Sel::Shell(ri, wi, si) {
                     sel_row = Some(row);
                 }
@@ -899,10 +925,20 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     // far back it sits and the border lights up, the same "this panel is
     // where the input is going" signal the rest of the UI uses.
     let off = app.preview_offset();
-    let title = if off > 0 {
-        format!("Preview  {UP_ARROW}{off}")
-    } else {
-        "Preview".to_string()
+    // A shell another dashboard has docked keeps previewing perfectly —
+    // `capture-pane` does not care where a pane sits — and that is the
+    // trap: a panel that follows the agent while `Enter` would yank it out
+    // from under someone else must say so. The parked mark is in the title
+    // for the same reason, and this is the second thing the title can say.
+    let lease = app
+        .selected_shell_pane()
+        .and_then(|p| app.leased_by(&p))
+        .map(|l| l.label());
+    let title = match (off, &lease) {
+        (0, None) => "Preview".to_string(),
+        (0, Some(who)) => format!("Preview  leased by {who}"),
+        (n, None) => format!("Preview  {UP_ARROW}{n}"),
+        (n, Some(who)) => format!("Preview  {UP_ARROW}{n}  leased by {who}"),
     };
     let block = panel_block(theme, &app.cfg.icons, &title, off > 0);
     let off = app.preview_offset();
@@ -2209,6 +2245,96 @@ mod tests {
         (0..buf.area.height)
             .flat_map(|y| (0..buf.area.width).map(move |x| buf[(x, y)].symbol()))
             .collect()
+    }
+
+    // ---- M18 Task 15 — the lease ----
+
+    fn lease_on(app: &mut App, pane: &str, scope: &str) {
+        app.leases.insert(
+            pane.to_string(),
+            crate::app::Lease {
+                dash_pane: "%999".into(),
+                scope: Some(scope.into()),
+            },
+        );
+    }
+
+    /// A shell another dashboard has docked is muted whole — the way a dead
+    /// row mutes, and for the same reason: it is not a row this instance
+    /// brings on screen by looking at it. One word keeps it from reading as
+    /// dead.
+    #[test]
+    fn a_leased_shell_renders_muted_and_says_so() {
+        let mut app = seeded_app_with_shell();
+        app.statuses
+            .insert("%1".into(), crate::status::Status::Working);
+        // Keep the selection highlight off the row being measured.
+        app.sel = crate::app::Sel::Repository(1);
+        let dim = app.theme.colors.dim;
+
+        let render = |app: &mut App| {
+            let backend = ratatui::backend::TestBackend::new(120, 40);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw(f, app)).unwrap();
+            let buf = terminal.backend().buffer();
+            let tree_w = tree_width(app.viewport).unwrap();
+            (0..buf.area.height)
+                .map(|y| {
+                    let mut text = String::new();
+                    let mut colors = Vec::new();
+                    for x in 1..tree_w - 1 {
+                        let cell = &buf[(x, y)];
+                        text.push_str(cell.symbol());
+                        if cell.symbol().trim() != "" {
+                            colors.push(cell.fg);
+                        }
+                    }
+                    (text, colors)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let free = render(&mut app);
+        let (text, colors) = free.iter().find(|(t, _)| t.contains("wt")).unwrap();
+        assert!(!text.contains("leased"), "nothing holds it: {text:?}");
+        assert!(
+            colors.iter().any(|c| *c != dim),
+            "and it draws in its own colours: {text:?} {colors:?}"
+        );
+
+        lease_on(&mut app, "%1", "/home/ike/other");
+        let held = render(&mut app);
+        let (text, colors) = held.iter().find(|(t, _)| t.contains("wt")).unwrap();
+        assert!(text.contains("leased"), "the row says so: {text:?}");
+        assert!(
+            colors.iter().all(|c| *c == dim),
+            "and is muted whole: {text:?} {colors:?}"
+        );
+    }
+
+    /// The instance that lost the race keeps the preview — `capture-pane`
+    /// does not care where a pane sits — and that is exactly why the panel
+    /// must name the holder: a view that silently follows a shell someone
+    /// else is typing in invites an `Enter` that yanks it away.
+    #[test]
+    fn the_preview_keeps_working_and_names_the_dashboard_holding_the_shell() {
+        let mut app = seeded_app_with_shell();
+        app.captures
+            .insert("%1".into(), "the agent is talking".into());
+        lease_on(&mut app, "%1", "/home/ike/other-scope");
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("leased by other-scope"),
+            "the panel names the holder: {text}"
+        );
+        assert!(
+            text.contains("the agent is talking"),
+            "and keeps previewing it: {text}"
+        );
     }
 
     /// Layout tiers degrade gracefully instead of drawing garbage: tree +
