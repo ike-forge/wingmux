@@ -173,10 +173,12 @@ the same commit as the change.
   makes rediscovery after a crash/close possible (`list-sessions` +
   per-session `list-windows`). Killing the worktree's last window
   auto-destroys the session (verified against tmux 3.5a).
-- **Attach/back across sessions**: inside tmux, attach = `switch-client -t
-  <agent-session>` + `select-window -t @<shell-window>` (window IDs are
-  server-global; clientless `select-window -t session:@win` verified to change
-  the session's active window). The back-key is bound in every agent session to
+- **Attach/back across sessions**: attach = `select-window -t @<shell-window>`
+  then `switch-client -t <agent-session>`. Window IDs are server-global, so the
+  selection works clientlessly and is done FIRST: the session is then already
+  showing the right window whether or not the switch lands (it needs a client,
+  which a headless test has not got). The back-key is bound in every agent
+  session to
   `switch-client -t <user-session> \; select-window -t @<dashboard-window>`
   (rebound at startup and at session creation).
 - **The back-key lives behind the prefix.** It was first bound with
@@ -187,19 +189,6 @@ the same commit as the change.
   application ever loses the key. Legacy root bindings are removed on startup,
   but only the exact command we bound — a user's own root binding of the same
   key is untouched. `tmux.back_key` configures the second half of the chord.
-- **The chord is one server-wide slot, and a standalone handoff borrows it.**
-  Key tables belong to the tmux *server*, not to a session, so two dashboards
-  on one server share a single back-key binding — and a dashboard running
-  inside tmux binds it to *its* window. Pressed from a standalone dashboard's
-  `tmux attach` handoff, that binding threw the user into the other dashboard
-  (and quitting that one dropped them back into the first, which is how the
-  two got confused). The handoff therefore reads the slot first
-  (`Tmux::back_key_state` → `Unbound` / `Dashboard` / `Detach` / `Foreign`),
-  rebinds it to `detach-client` — which ends the attach and lands exactly back
-  in the standalone dashboard — and restores what was there when the attach
-  returns. A `Foreign` binding (the user's own, and tmux's own default for the
-  key) is left alone: then there is no back chord outside tmux and the user
-  detaches with the tmux detach key, as before.
 - **`a` is a picker, not a command prompt.** Adding a shell used to open a
   single-line prompt for the command, defaulting to the repository's agent
   command. That made the *frequent* choices — the configured agents, and a
@@ -222,23 +211,35 @@ the same commit as the change.
   `env -i`). Status classification needs no change: a login shell as the
   pane's foreground command is exactly the `ended` heuristic's input, and a
   plain shell reading `ended` — "no agent running here" — is accurate.
-- **Runs inside AND outside tmux** (per user feedback): the dashboard does not
-  require tmux around itself. `Tmux` keeps optional `inside` coordinates
-  (detected via TMUX/TMUX_PANE); all session/window/pane operations work
-  standalone against the (auto-started) tmux server. Attach from outside tmux =
-  temporary terminal handoff: TUI restores the terminal, runs
-  `tmux attach -t <agent-session>` (after clientless select-window to the
-  shell's window), then re-enters the TUI on detach. The back chord works
-  during the handoff too when the slot is ours to borrow (see above);
-  otherwise the user detaches with C-b d. There is no no-tmux mode.
-- **The tmux server is auto-started** for a standalone dashboard: tmux 3.5a
-  exits a server as soon as it has no sessions and no clients, so
-  `Tmux::ensure_server()` runs `start-server \; set -g exit-empty off` in ONE
-  client invocation (two clients would race the server's exit). It only runs
-  when `list-sessions` reports no server, so the user's own server is never
-  modified; the dashboard's server then lingers empty after quit (harmless,
-  standard tmux-with-exit-empty-off behaviour). `list-panes -a` on a
-  zero-session server ("no current target") reads as an empty pane list.
+- **Always inside tmux — it starts one for you** (M18, replacing "runs inside
+  AND outside tmux"). The old answer was that the dashboard did not require
+  tmux around itself: it ran standalone against an auto-started server, and
+  attaching handed the terminal over to `tmux attach` and came back on detach.
+  Docking retires that. The selected shell's *real* pane is swapped in beside
+  the tree, and a `swap-pane` needs a pane of ours to swap into — which a plain
+  terminal has not got. So `main::should_wrap` decides on two facts, not inside
+  tmux and stdin is a tty, and `exec`s into
+  `tmux new-session -A -s lazywingman -- lazywingman <argv>`. `exec`, not
+  spawn: one process, so signals and the exit code stay the shell's own. No
+  recursion guard is needed — the tmux we exec into sets `TMUX`/`TMUX_PANE`,
+  which is exactly what `Tmux::detect` reads.
+  - A second launch in the same folder must not race a rival dashboard beside
+    the first, so the dashboard's window announces its scope (`@lw_scope`,
+    stamped at startup) and the wrapper looks it up with one
+    `list-windows -a`. A live dashboard there → attach it. A window that
+    outlived its dashboard (its slot, and whatever agent pane was docked into
+    it, are still alive) → `split-window` a fresh dashboard back beside them
+    rather than abandon panes that never died. Nothing → our own session.
+  - `Tmux::ensure_server` went with standalone mode: the wrapper session *is*
+    the server, so there is no longer a boot with no server. `list-panes -a` on
+    a zero-session server ("no current target") still reads as an empty pane
+    list, which is what a poll before the first agent session sees.
+  - `Tmux::inside` stays an `Option` even though it is `Some` for the whole
+    life of the TUI: the `hook` subcommand runs on the same type, in panes that
+    are not ours.
+  - The one thing not wrapped is a launch with no terminal to hand tmux —
+    piped, redirected, cron. Wrapping there would fail where not wrapping
+    merely degrades.
 
 ## Status classification
 
@@ -773,8 +774,7 @@ the same commit as the change.
 - **Mouse capture is the app's job, not ratatui's.** `ratatui::init()` enables
   raw mode and the alternate screen only, so the whole mouse layer above it was
   dead until `term_init()`/`term_restore()` added
-  `EnableMouseCapture`/`DisableMouseCapture` around it (also on the attach
-  handoff, and in a panic hook — mouse reporting left on would spray escape
+  `EnableMouseCapture`/`DisableMouseCapture` around it (and in a panic hook — mouse reporting left on would spray escape
   sequences into the shell we hand the terminal back to). Consequence,
   accepted: while the dashboard runs, the terminal's native text selection
   needs the usual Shift override, as in every other mouse-driven TUI. One event
@@ -793,7 +793,8 @@ the same commit as the change.
   terminal supports it, else 24-bit values quantize to xterm-256; `ansi.toml`
   uses only ANSI-16 colours.
 - **Truecolor detection does not stop at `COLORTERM`.** tmux exports it in its
-  own panes, so a standalone dashboard is the case where it is usually absent —
+  own panes, so a terminal that sets it nowhere else is the case where it is
+  usually absent —
   and treating absence as "256 only" put every theme through the quantiser on
   terminals (Windows Terminal, kitty, VTE, …) that had 24-bit colour all along:
   the colours came out approximated, not respected. With `COLORTERM` unset the

@@ -2,9 +2,10 @@
 //!
 //! Agent shells live in dedicated tmux sessions
 //! (`wingman-session-<repository>`) that LazyWingman spawns, polls, and tears
-//! down — never in the user's own session. The dashboard itself runs either
-//! inside tmux (as a pane of the user's session) or standalone in a plain
-//! terminal; both are supported.
+//! down — never in the user's own session. The dashboard itself is always a
+//! tmux pane: launched from a bare shell it execs into a tmux that runs it
+//! again (see `should_wrap`), because docking swaps the agent's real pane in
+//! beside the tree and a swap needs a pane to swap into.
 
 mod ansi;
 mod app;

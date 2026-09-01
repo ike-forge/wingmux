@@ -601,11 +601,11 @@ mod tests {
     #[test]
     fn hook_ignores_unknown_events_without_touching_tmux() {
         // No tmux server needed: an Ignore action must not shell out. Built
-        // via `testutil::tmux_standalone` rather than `Tmux::detect()` so
+        // via `testutil::tmux_inside` rather than `Tmux::detect()` so
         // this test never reads TMUX/TMUX_PANE/LAZYWINGMAN_TMUX_SOCKET —
         // other tests mutate those outside TMUX_TEST_LOCK, and this test
         // was the one place in the suite reading them unguarded.
-        let tmux = crate::tmux::testutil::tmux_standalone("lwtest-hooks-ignore");
+        let tmux = crate::tmux::testutil::tmux_inside("lwtest-hooks-ignore");
         let r = run_hook(
             "PreToolUse",
             "%nonexistent",

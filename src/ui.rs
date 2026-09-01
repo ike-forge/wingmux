@@ -1208,31 +1208,19 @@ fn help_lines(app: &App) -> Vec<Line<'_>> {
         fg(theme.dim),
     )));
     lines.push(Line::from(""));
-    // The way back differs by where the dashboard runs: inside tmux the
-    // back-key jumps to this window; standalone there is no back-key — the
-    // user detaches from `tmux attach` with C-b d and lands back here.
-    if app.tmux.as_ref().and_then(|t| t.inside.as_ref()).is_some() {
-        lines.push(Line::from(Span::styled(
-            "attach: press Enter in the dashboard, then the tmux prefix + back-key",
-            fg(theme.dim),
-        )));
-        lines.push(Line::from(Span::styled(
-            format!(
-                "back chord is <prefix>+'{}' (config tmux.back_key): jump back to this window",
-                app.cfg.tmux.back_key
-            ),
-            fg(theme.dim),
-        )));
-    } else {
-        lines.push(Line::from(Span::styled(
-            "attach: press Enter and the terminal is handed over to tmux attach",
-            fg(theme.dim),
-        )));
-        lines.push(Line::from(Span::styled(
-            "detach with C-b d to return to the dashboard",
-            fg(theme.dim),
-        )));
-    }
+    // The dashboard is always a tmux pane, so there is one way back and it
+    // needs no branch: the back chord.
+    lines.push(Line::from(Span::styled(
+        "attach: press Enter in the dashboard, then the tmux prefix + back-key",
+        fg(theme.dim),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "back chord is <prefix>+'{}' (config tmux.back_key): jump back to this window",
+            app.cfg.tmux.back_key
+        ),
+        fg(theme.dim),
+    )));
     lines
 }
 

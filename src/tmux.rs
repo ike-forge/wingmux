@@ -3,9 +3,10 @@
 //! LazyWingman supervises agent shells that live in DEDICATED tmux sessions
 //! (`wingman-session-<repository>`), never in the user's session — creating a
 //! worktree or shell must not pollute the dashboard's session. The dashboard
-//! itself may run inside tmux (its coordinates are detected) or standalone
-//! in a plain terminal; every session/window/pane operation works in both
-//! cases because it goes through the tmux server.
+//! itself is always a tmux pane (`main::should_wrap` execs into one when it
+//! is not), so `inside` is `Some` for the whole life of the TUI; it stays an
+//! `Option` because the `hook` subcommand runs on the same type from panes
+//! that are not ours.
 //!
 //! All commands go through the `tmux` binary; nothing is shell-interpreted.
 //! A `-L <socket>` override is honoured via `$LAZYWINGMAN_TMUX_SOCKET` (used
@@ -163,27 +164,6 @@ impl Tmux {
 
     fn run(&self, args: &[&str]) -> Result<String> {
         run_tmux(&self.socket, args)
-    }
-
-    /// Make sure a tmux server exists on our socket, starting one if needed.
-    ///
-    /// Standalone boot usually happens before any tmux server exists; tmux
-    /// 3.5a shuts a server down as soon as it has no sessions and no
-    /// clients, so a server we had to start ourselves is told to stay alive
-    /// (`exit-empty off`) — in ONE client invocation, because the server
-    /// can exit between two separate clients. A pre-existing server (e.g.
-    /// the user's own) is never touched: `list-sessions` succeeds and we
-    /// return.
-    pub fn ensure_server(&self) -> Result<()> {
-        match self.list_sessions() {
-            Ok(_) => Ok(()),
-            Err(e) if is_no_server_error(&e) => {
-                self.run(&["start-server", ";", "set", "-g", "exit-empty", "off"])?;
-                log::info!("started tmux server on our socket (exit-empty off)");
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
     }
 
     /// A `tmux` [`Command`] on our socket, for the callers that must run a
@@ -628,22 +608,15 @@ impl Tmux {
 
     // ---------------------------------------------------------- attach / back
 
-    /// Attach the current client to an agent session and its shell window.
-    /// Only valid when the dashboard runs inside tmux (`inside.is_some()`).
+    /// Point this client at an agent session's shell window.
+    ///
+    /// The window is selected FIRST, clientlessly: `select-window` works on
+    /// a detached session, `switch-client` needs a client, and doing it in
+    /// this order means the session is already showing the right window
+    /// whether or not the switch lands.
     pub fn attach_switch(&self, session: &str, window_id: &str) -> Result<()> {
-        self.run(&["switch-client", "-t", session])?;
         self.select_window(window_id)?;
-        Ok(())
-    }
-
-    /// Clientless: make `window_id` the active window of `session` (works on
-    /// detached sessions too — verified). Used before a standalone handoff.
-    pub fn select_window_in_session(&self, session: &str, window_id: &str) -> Result<()> {
-        self.run(&[
-            "select-window",
-            "-t",
-            &format!("{session}:@{}", window_id.trim_start_matches('@')),
-        ])?;
+        self.run(&["switch-client", "-t", session])?;
         Ok(())
     }
 
@@ -655,20 +628,6 @@ impl Tmux {
             "-t",
             &format!("@{}", window_id.trim_start_matches('@')),
         ])?;
-        Ok(())
-    }
-
-    /// Hand the current terminal over to `tmux attach -t <session>`.
-    /// BLOCKS until the user detaches. The caller MUST restore the terminal
-    /// (ratatui::restore) before calling and re-initialise after.
-    pub fn attach_handoff(&self, session: &str) -> Result<()> {
-        let status = base_command(&self.socket)
-            .args(["attach", "-t", session])
-            .status()
-            .map_err(|e| Error::Tmux(format!("cannot run tmux attach: {e}")))?;
-        if !status.success() {
-            return Err(Error::Tmux(format!("tmux attach -t {session} failed")));
-        }
         Ok(())
     }
 
@@ -701,34 +660,6 @@ impl Tmux {
         Ok(())
     }
 
-    /// Bind the back-key to `detach-client`, for the duration of a
-    /// standalone attach handoff: detaching the handed-over client is
-    /// exactly "back to the dashboard" when the dashboard is the process
-    /// that ran `tmux attach`.
-    pub fn bind_detach_back_key(&self, key: &str) -> Result<()> {
-        self.run(&["bind-key", "-T", "prefix", key, "detach-client"])?;
-        Ok(())
-    }
-
-    /// Drop the prefix-table binding for `key`.
-    pub fn unbind_back_key(&self, key: &str) -> Result<()> {
-        self.run(&["unbind-key", "-T", "prefix", key])?;
-        Ok(())
-    }
-
-    /// What the prefix table binds `key` to right now.
-    ///
-    /// Key tables are server-wide, so this is the one shared slot every
-    /// dashboard on the server competes for; reading it first is what keeps
-    /// a standalone handoff from stomping on a binding it cannot restore.
-    pub fn back_key_state(&self, key: &str) -> Result<BackKeyState> {
-        let keys = self.run_raw(&["list-keys", "-T", "prefix"])?;
-        Ok(keys
-            .lines()
-            .find_map(|l| prefix_binding(l, key))
-            .unwrap_or(BackKeyState::Unbound))
-    }
-
     /// Remove a pre-M9 root-table back-key binding if one exists: earlier
     /// versions bound `-n` (root table), hijacking the chord server-wide
     /// and breaking other TUIs. Only unbinds a binding whose command
@@ -752,65 +683,6 @@ impl Tmux {
         }
         Ok(())
     }
-}
-
-/// What `<prefix> + back-key` currently does on this tmux server.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BackKeyState {
-    /// Nothing is bound to the key in the prefix table.
-    Unbound,
-    /// A dashboard back binding — ours — pointing at this session/window.
-    Dashboard { session: String, window: String },
-    /// A standalone handoff's `detach-client` — also ours.
-    Detach,
-    /// Somebody else's binding. Never touched, never restored.
-    Foreign,
-}
-
-/// Read one `list-keys -T prefix` line as the state of `key`, or `None`
-/// when the line binds a different key (or is not a binding at all).
-///
-/// Tokenised, never prefix-matched: `list-keys` is column-aligned and the
-/// padding is version-dependent (see [`legacy_root_back_key`]).
-fn prefix_binding(line: &str, key: &str) -> Option<BackKeyState> {
-    let mut parts = line.split_whitespace();
-    if parts.next()? != "bind-key" {
-        return None;
-    }
-    let table = loop {
-        match parts.next() {
-            Some("-T") => break parts.next()?,
-            Some(_) => continue,
-            None => return None,
-        }
-    };
-    if table != "prefix" || parts.next()? != key {
-        return None;
-    }
-    let command: Vec<&str> = parts.collect();
-    if command == ["detach-client"] {
-        return Some(BackKeyState::Detach);
-    }
-    // `switch-client -t <session> \; select-window -t @<window>` — the
-    // shape `bind_back_key` writes, and the only one we claim as ours.
-    let target = match command.as_slice() {
-        [
-            "switch-client",
-            "-t",
-            session,
-            _,
-            "select-window",
-            "-t",
-            window,
-        ] => window
-            .strip_prefix('@')
-            .map(|w| (session.to_string(), w.to_string())),
-        _ => None,
-    };
-    Some(match target {
-        Some((session, window)) => BackKeyState::Dashboard { session, window },
-        None => BackKeyState::Foreign,
-    })
 }
 
 /// The key a `list-keys` line binds, if that line is *our* legacy root
@@ -883,9 +755,9 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
     })
 }
 
-/// tmux errors that merely mean "no server / no sessions yet" — normal
-/// during a standalone boot before any agent session exists, and the
-/// trigger for [`Tmux::ensure_server`].
+/// tmux errors that merely mean "no server / no sessions yet" — normal on
+/// the read paths (`list-panes -a`, `list-windows -a`) before any session
+/// exists, and never a reason to fail a poll.
 fn is_no_server_error(e: &Error) -> bool {
     let msg = e.to_string();
     msg.contains("no server running")
@@ -928,58 +800,6 @@ mod tests {
                 Some("C-o"),
                 "{label}: {line:?}"
             );
-        }
-    }
-
-    /// Reading the shared back-chord slot: ours (either shape), the user's,
-    /// or empty. The padding varies by tmux version, as everywhere else.
-    #[test]
-    fn the_back_chord_slot_is_read_for_what_it_holds() {
-        let dash = r"switch-client -t main \; select-window -t @0";
-        for (label, line, expected) in [
-            (
-                "our dashboard binding",
-                format!("bind-key  -T prefix C-o     {dash}"),
-                Some(BackKeyState::Dashboard {
-                    session: "main".into(),
-                    window: "0".into(),
-                }),
-            ),
-            (
-                "3.5 spacing, same binding",
-                format!("bind-key -T prefix C-o {dash}"),
-                Some(BackKeyState::Dashboard {
-                    session: "main".into(),
-                    window: "0".into(),
-                }),
-            ),
-            (
-                "a handoff's detach binding",
-                "bind-key  -T prefix C-o     detach-client".to_string(),
-                Some(BackKeyState::Detach),
-            ),
-            (
-                "the user's own binding of our key",
-                "bind-key  -T prefix C-o     choose-tree".to_string(),
-                Some(BackKeyState::Foreign),
-            ),
-            (
-                "another key entirely",
-                format!("bind-key  -T prefix C-y     {dash}"),
-                None,
-            ),
-            (
-                "the root table, not prefix",
-                format!("bind-key  -T root C-o     {dash}"),
-                None,
-            ),
-            (
-                "not a binding at all",
-                "some other output".to_string(),
-                None,
-            ),
-        ] {
-            assert_eq!(prefix_binding(&line, "C-o"), expected, "{label}: {line:?}");
         }
     }
 
@@ -1363,34 +1183,6 @@ mod tests {
     }
 
     #[test]
-    fn ensure_server_starts_a_server_when_none_running() {
-        testutil::with_no_server(|sock| {
-            let tmux = testutil::tmux_standalone(sock);
-            // no server yet: list-sessions fails, panes list is empty
-            assert!(tmux.list_sessions().is_err());
-            assert!(tmux.list_panes().unwrap().is_empty());
-
-            tmux.ensure_server().unwrap();
-
-            // server is now reachable and stays alive with zero sessions
-            assert!(tmux.list_sessions().unwrap().is_empty());
-            assert!(tmux.list_panes().unwrap().is_empty());
-            // and real agent sessions can be created on it
-            let w = tmux
-                .new_session(
-                    "wingman-session-p",
-                    "lw:f/0",
-                    Path::new("/tmp"),
-                    "bash",
-                    &ShellId::for_session("wingman-session-p", "f", 0),
-                )
-                .unwrap();
-            assert!(w.window_id.starts_with('@'));
-            assert!(tmux.session_exists("wingman-session-p"));
-        });
-    }
-
-    #[test]
     fn session_lifecycle_roundtrip() {
         with_tmux_server(|_sock, tmux| {
             // dashboard session "main" exists; no agent sessions yet
@@ -1432,8 +1224,7 @@ mod tests {
             assert!(!panes.iter().any(|p| p.pane_id == "%0")); // main session pane
 
             // select-window works clientless and changes the active window
-            tmux.select_window_in_session("wingman-session-p", &w1.window_id)
-                .unwrap();
+            tmux.select_window(&w1.window_id).unwrap();
             let active = tmux
                 .run_raw(&[
                     "display-message",
@@ -1665,31 +1456,6 @@ mod tests {
         });
     }
 
-    /// Against a real server: what `bind_back_key` writes must read back as
-    /// ours, `bind_detach_back_key` as a handoff's, and an unbind as empty.
-    #[test]
-    fn the_back_chord_round_trips_through_a_real_server() {
-        with_tmux_server(|_sock, tmux| {
-            // A key tmux itself does not bind reads as empty; `C-o` is
-            // tmux's own `rotate-window` on a fresh server, which reads as
-            // Foreign — the standalone handoff leaves that alone.
-            assert_eq!(tmux.back_key_state("F12").unwrap(), BackKeyState::Unbound);
-            assert_eq!(tmux.back_key_state("C-o").unwrap(), BackKeyState::Foreign);
-            tmux.bind_back_key("C-o", "main", "@3").unwrap();
-            assert_eq!(
-                tmux.back_key_state("C-o").unwrap(),
-                BackKeyState::Dashboard {
-                    session: "main".into(),
-                    window: "3".into()
-                }
-            );
-            tmux.bind_detach_back_key("C-o").unwrap();
-            assert_eq!(tmux.back_key_state("C-o").unwrap(), BackKeyState::Detach);
-            tmux.unbind_back_key("C-o").unwrap();
-            assert_eq!(tmux.back_key_state("C-o").unwrap(), BackKeyState::Unbound);
-        });
-    }
-
     #[test]
     fn legacy_root_back_key_is_unbound_but_user_binding_survives() {
         with_tmux_server(|sock, tmux| {
@@ -1825,38 +1591,6 @@ pub(crate) mod testutil {
                 pane_id: "%0".into(),
             }),
             socket: Some(sock.to_string()),
-        }
-    }
-
-    /// A handle for a dashboard running in a plain terminal (no tmux around
-    /// it), still managing the same tmux server.
-    pub fn tmux_standalone(sock: &str) -> Tmux {
-        Tmux {
-            inside: None,
-            socket: Some(sock.to_string()),
-        }
-    }
-
-    /// Run `f` with a unique socket and NO server running on it — the test
-    /// body is expected to start one itself (e.g. via `ensure_server`).
-    /// Serialises on the same lock as `with_tmux_server`.
-    pub fn with_no_server(f: impl FnOnce(&str)) {
-        with_test_lock(|| with_no_server_locked(f));
-    }
-
-    fn with_no_server_locked(f: impl FnOnce(&str)) {
-        let n = SOCK_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let sock = format!("lwtest-{}-{n}", std::process::id());
-        // Clear any leftover server from a previous run on this socket.
-        let _ = Command::new("tmux")
-            .args(["-L", &sock, "kill-server"])
-            .status();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&sock)));
-        let _ = Command::new("tmux")
-            .args(["-L", &sock, "kill-server"])
-            .status();
-        if let Err(e) = result {
-            std::panic::resume_unwind(e);
         }
     }
 }

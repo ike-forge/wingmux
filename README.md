@@ -5,8 +5,9 @@ Vibe, …) across **multiple repositories and multiple worktrees in
 parallel**. See everything at a glance, jump into any agent with one
 keystroke, spin up and tear down worktrees instantly.
 
-LazyWingman runs anywhere — inside tmux (as a pane of your existing session)
-or standalone in a plain terminal. Agent shells never pollute your tmux
+LazyWingman always runs inside tmux, as a pane of your existing session — and
+starts one for you when you launch it from a bare shell. Agent shells never
+pollute your tmux
 session: they live in their own dedicated tmux sessions
 (`wingman-session-<repository>`), invisible until you attach to them.
 
@@ -47,11 +48,10 @@ sessions; the server is started on demand).
 lazywingman
 ```
 
-Run it from a pane of your tmux session, or from any plain terminal — both
-work. Inside tmux you get instant attach/return (`Enter` to attach, the
-back-key `C-o` to return to the dashboard); standalone, attach hands the
-terminal over to `tmux attach` and drops you back into the dashboard when you
-detach (`C-b d`).
+Run it from a pane of your tmux session, or from a bare shell — from a bare
+shell it re-launches itself inside a tmux session of its own, so it is always
+a tmux pane. `Enter` attaches to a shell, the back-key `C-o` returns to the
+dashboard.
 
 First run writes an exhaustive, fully commented config to
 `$XDG_CONFIG_HOME/lazywingman/config.toml` (never overwriting an existing
@@ -379,9 +379,11 @@ without hunting for the status word at the end of the row.
 ## How it works with tmux
 
 - LazyWingman detects its own coordinates (`TMUX` env, `display-message -t
-  pane`) when it runs inside tmux; standalone it still manages the same tmux
-  server via its CLI — the server is started automatically if none is running.
-  Agent shells live in **dedicated sessions**, one per repository, named
+  pane`), and `exec`s into `tmux new-session -A -s lazywingman -- lazywingman`
+  when there are none — a launch from a bare shell ends up a tmux pane like
+  any other. A second launch in the same folder attaches the dashboard already
+  showing it (its window is stamped with the scope) rather than starting a
+  rival one. Agent shells live in **dedicated sessions**, one per repository, named
   deterministically `wingman-session-<repository>` — your own session is never
   touched. Shell windows are named `lw:<worktree>/<n>` inside that session, so
   everything is rediscoverable after a restart (`tmux list-sessions` →
@@ -389,8 +391,8 @@ without hunting for the status word at the end of the row.
 - All interaction goes through the tmux CLI (`new-session`, `new-window`,
   `send-keys`, `capture-pane`, `switch-client`, `select-window`,
   `kill-window`, `list-panes -a`, `bind-key`); nothing is shell-interpreted.
-- **Attach & return (inside tmux)**: `Enter` on a shell = `switch-client` to
-  the agent session + `select-window` to the shell's window. The back chord
+- **Attach & return**: `Enter` on a shell = `select-window` to the shell's
+  window + `switch-client` to the agent session. The back chord
   (prefix + `C-o` by default, configurable via `tmux.back_key`) is bound in
   the PREFIX table to `switch-client` back to the dashboard window, rebound
   on every startup; legacy root-table bindings from earlier versions are
@@ -400,12 +402,6 @@ without hunting for the status word at the end of the row.
   from whatever the repo has checked out. The New Worktree popup names that
   branch under the name field; when the configured base branch does not
   exist in the repo it warns that creation falls back to the current branch.
-- **Attach (standalone)**: the terminal is handed over to `tmux attach -t
-  <agent-session>` (the shell's window is preselected); detaching with `C-b
-  d` returns you to the dashboard. tmux key tables are server-wide, so for the
-  length of the handoff the back chord is rebound to `detach-client` — it
-  brings you back to *this* dashboard instead of to another lazywingman's
-  window — and restored afterwards. A binding that is not ours is left alone.
 - **Quick-send** = an in-TUI multiline editor (Enter = newline, Tab =
   tab, arrows/Home/End move the cursor, **ctrl-s sends** — Alt+Enter too
   where the terminal delivers it)

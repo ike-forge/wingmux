@@ -17,7 +17,7 @@ use crate::git::{Git, WorktreeState};
 use crate::state::{Repository, Shell, State, Worktree};
 use crate::status::{self, Compiled, Status};
 use crate::theme::Theme;
-use crate::tmux::{BackKeyState, PaneInfo, Tmux};
+use crate::tmux::{PaneInfo, Tmux};
 
 /// Lines of the capture used for status classification.
 const RECENT_TAIL_LINES: usize = 10;
@@ -590,9 +590,6 @@ pub struct App {
     /// shortcuts-only, so notices are never allowed to become permanent
     /// furniture. Everything also goes to the log.
     message: Option<Toast>,
-    /// Set by `attach` when the dashboard runs standalone: the event loop
-    /// hands the terminal over to `tmux attach -t <session>` and resumes.
-    pub pending_attach: Option<String>,
     /// Interactive boot: scope discovery runs automatically (no prompt).
     /// Off in tests (and irrelevant for a TUI that already booted);
     /// `run()` turns it on.
@@ -700,7 +697,6 @@ impl App {
             message: None,
             wt_state: HashMap::new(),
             last_wt_state_poll: None,
-            pending_attach: None,
             interactive_boot: false,
             quit: false,
             viewport: (0, 0),
@@ -731,11 +727,6 @@ impl App {
             self.boot_discovery()?;
         }
         if let Some(tmux) = &self.tmux {
-            // Standalone boot usually happens before any tmux server exists;
-            // start one so session/window operations work from the first poll.
-            if tmux.inside.is_none() {
-                tmux.ensure_server()?;
-            }
             self.state.reconcile(tmux)?;
             self.state.prune(Some(tmux), &self.worktrees_loaded)?;
             self.announce_scope(tmux);
@@ -799,9 +790,7 @@ impl App {
         // prefix, where it cannot collide with any application.
         tmux.unbind_legacy_root_back_key(&inside.session_name, &inside.window_id)?;
         // One binding, not one per session: tmux key tables are server-wide,
-        // so this single slot serves every agent session — and is also the
-        // slot a standalone dashboard borrows for an attach handoff (see
-        // `claim_back_key`).
+        // so this single slot serves every agent session.
         let sessions = self
             .state
             .repositories
@@ -826,62 +815,6 @@ impl App {
             inside.window_id
         );
         Ok(())
-    }
-
-    /// Standalone attach: make `<prefix> + back-key` mean "back to THIS
-    /// dashboard" while the terminal is handed over to `tmux attach`.
-    ///
-    /// tmux key tables are server-wide, so the chord is a single slot shared
-    /// by every dashboard on the server. A lazywingman running *inside* tmux
-    /// binds it to a `switch-client` into its own dashboard window — and
-    /// pressed from our handoff client that binding throws the user into the
-    /// other dashboard instead of back here (and quitting that one then
-    /// lands in this one, which is how the two get confused). For the
-    /// duration of the handoff the chord therefore becomes `detach-client`,
-    /// which ends the attach and returns to this dashboard exactly.
-    ///
-    /// Returns the state to put back afterwards, or `None` when the chord
-    /// belongs to the user (a binding of their own is never touched, here as
-    /// everywhere else).
-    fn claim_back_key(&self) -> Option<BackKeyState> {
-        let tmux = self.tmux.as_ref()?;
-        let key = &self.cfg.tmux.back_key;
-        let previous = match tmux.back_key_state(key) {
-            Ok(BackKeyState::Foreign) => {
-                log::info!("back chord {key} is bound by the user — left alone for the handoff");
-                return None;
-            }
-            Ok(state) => state,
-            Err(e) => {
-                log::warn!("cannot read the back chord binding ({e}) — left alone");
-                return None;
-            }
-        };
-        if let Err(e) = tmux.bind_detach_back_key(key) {
-            log::warn!("cannot bind the back chord for the handoff: {e}");
-            return None;
-        }
-        log::info!("back chord <prefix>+{key} → detach-client for this handoff");
-        Some(previous)
-    }
-
-    /// Put back what [`claim_back_key`](Self::claim_back_key) replaced.
-    fn restore_back_key(&self, previous: Option<BackKeyState>) {
-        let (Some(tmux), Some(previous)) = (self.tmux.as_ref(), previous) else {
-            return;
-        };
-        let key = &self.cfg.tmux.back_key;
-        let res = match &previous {
-            BackKeyState::Dashboard { session, window } => tmux.bind_back_key(key, session, window),
-            // Nothing of ours was there before, and a leftover `detach-client`
-            // means an earlier handoff died mid-flight: either way the slot
-            // goes back to empty rather than keeping a stale meaning.
-            BackKeyState::Unbound | BackKeyState::Detach => tmux.unbind_back_key(key),
-            BackKeyState::Foreign => Ok(()),
-        };
-        if let Err(e) = res {
-            log::warn!("cannot restore the back chord after the handoff: {e}");
-        }
     }
 
     fn save_state(&mut self) -> Result<()> {
@@ -1747,20 +1680,13 @@ impl App {
             self.notify("repository has no agent session");
             return;
         };
-        let res = match self.require_tmux() {
-            Ok(t) if t.inside.is_some() => t.attach_switch(&session, wid).map(|_| {
+        // The dashboard is always a tmux pane (see `should_wrap`), so
+        // there is one way in: switch this client to the agent's window.
+        let res = self.require_tmux().and_then(|t| {
+            t.attach_switch(&session, wid).map(|_| {
                 log::info!("attached (switch-client) to {}", sh.window_name);
-            }),
-            Ok(t) => {
-                // standalone dashboard: select the window clientless, then
-                // hand the terminal over; the event loop does the dance
-                t.select_window_in_session(&session, wid).map(|_| {
-                    self.pending_attach = Some(session);
-                    log::info!("handing terminal over to {}", sh.window_name);
-                })
-            }
-            Err(e) => Err(e),
-        };
+            })
+        });
         if let Err(e) = res {
             self.notify_err(format!("attach failed: {e}"));
             log::error!("attach failed: {e}");
@@ -3458,28 +3384,6 @@ fn disable_mouse() {
 
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     loop {
-        // Standalone attach: hand the terminal over to `tmux attach` and
-        // resume the TUI when the user detaches.
-        if let Some(session) = app.pending_attach.take() {
-            // The back chord belongs to this handoff while it lasts (see
-            // `claim_back_key`), and goes back to whatever it meant after.
-            let back_key = app.claim_back_key();
-            let res = (|| -> Result<()> {
-                term_restore();
-                let tmux = app.require_tmux()?;
-                let r = tmux.attach_handoff(&session);
-                term_init();
-                r
-            })();
-            app.restore_back_key(back_key);
-            if let Err(e) = res {
-                app.notify_err(format!("attach handoff failed: {e}"));
-                log::error!("attach handoff failed: {e}");
-            } else {
-                log::info!("returned from tmux attach ({session})");
-            }
-            continue;
-        }
         terminal.draw(|f| crate::ui::draw(f, app))?;
         if app.quit {
             break;
@@ -3523,7 +3427,7 @@ mod tests {
     use super::*;
     use crate::state::{Repository, Shell, Worktree};
     use crate::theme;
-    use crate::tmux::testutil::{tmux_inside, tmux_standalone, with_tmux_server};
+    use crate::tmux::testutil::{tmux_inside, with_tmux_server};
     use std::path::Path;
 
     fn app_with(tmux: Tmux) -> App {
@@ -3605,7 +3509,7 @@ mod tests {
     #[test]
     fn agent_hooks_off_ignores_a_live_overlay_during_poll() {
         with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_standalone(sock);
+            let tmux = tmux_inside(sock);
             let mut app = app_with(tmux.clone());
             app.cfg.defaults.agent_hooks = false;
             let (_wid, pid) = seed_repository_with_shell(&tmux, &mut app);
@@ -3621,83 +3525,6 @@ mod tests {
                 Some(&Status::Idle),
                 "agent_hooks = false must classify from the ladder, ignoring the overlay"
             );
-        });
-    }
-
-    /// M8.2 — the standalone handoff path, verified at the command level:
-    /// attach must preselect the shell's window clientless (so `tmux attach`
-    /// lands on it) and flag the event loop to hand the terminal over.
-    #[test]
-    fn standalone_attach_preselects_shell_window_and_requests_handoff() {
-        with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_standalone(sock);
-            let mut app = app_with(tmux.clone());
-            let (wid, _pid) = seed_repository_with_shell(&tmux, &mut app);
-
-            app.attach(0, 0, 0);
-
-            // the shell's window was preselected clientless...
-            let active = tmux
-                .run_raw(&[
-                    "display-message",
-                    "-p",
-                    "-t",
-                    "wingman-session-p",
-                    "#{window_id}",
-                ])
-                .unwrap();
-            assert_eq!(
-                active.trim(),
-                wid,
-                "standalone attach must preselect the shell's window"
-            );
-            // ...and the event loop is told to run `tmux attach -t <session>`
-            assert_eq!(
-                app.pending_attach.as_deref(),
-                Some("wingman-session-p"),
-                "standalone attach must schedule the terminal handoff"
-            );
-        });
-    }
-
-    /// M8.2 — inside tmux the dashboard switches the client instead; it must
-    /// never schedule a terminal handoff.
-    #[test]
-    fn inside_attach_never_requests_handoff() {
-        with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_inside(sock);
-            let mut app = app_with(tmux.clone());
-            let (_wid, _pid) = seed_repository_with_shell(&tmux, &mut app);
-
-            app.attach(0, 0, 0);
-
-            // switch-client needs a client, which headless tests don't have —
-            // the point here is only that the standalone branch is NOT taken.
-            assert!(
-                app.pending_attach.is_none(),
-                "inside-tmux attach must not hand the terminal over"
-            );
-        });
-    }
-
-    /// M8.2 — a standalone dashboard must boot even when no tmux server
-    /// exists yet: startup auto-starts one instead of failing on
-    /// "no server running".
-    #[test]
-    fn standalone_startup_boots_without_a_server() {
-        // Isolate XDG: this test asserts an empty repository list, and other
-        // tests persist state to the real path when run in parallel.
-        crate::util::testutil::with_fresh_xdg(|| {
-            crate::tmux::testutil::with_no_server(|sock| {
-                let tmux = tmux_standalone(sock);
-                let mut app = app_with(tmux);
-                app.startup().unwrap();
-                assert!(app.state.repositories.is_empty());
-                // the server now exists and is supervised
-                let t = app.tmux.as_ref().unwrap();
-                assert!(!t.session_exists("wingman-session-p"));
-                assert!(t.list_sessions().unwrap().is_empty());
-            });
         });
     }
 
@@ -3776,7 +3603,7 @@ mod tests {
             repo_with_commit(r, "repo-b");
             std::fs::create_dir_all(r.join("node_modules/dep/.git")).unwrap();
 
-            let mut app = app_with(tmux_standalone("unused"));
+            let mut app = app_with(tmux_inside("unused"));
             let n = app.discover_and_import(r).unwrap();
             assert_eq!(n, 2);
             assert_eq!(app.state.repositories.len(), 2);
@@ -3806,7 +3633,7 @@ mod tests {
             repo_with_commit(r, "repo-b");
             std::fs::create_dir_all(r.join("node_modules/dep/.git")).unwrap();
 
-            let mut app = app_with(tmux_standalone("unused"));
+            let mut app = app_with(tmux_inside("unused"));
             app.boot_discovery_from(r).unwrap();
             // No prompt — the scan just ran and imported the scope.
             assert!(matches!(app.mode, Mode::Normal));
@@ -3840,7 +3667,7 @@ mod tests {
                 repos.push(repo_with_commit(r, &format!("repo-{i}")));
             }
 
-            let mut app = app_with(tmux_standalone("unused"));
+            let mut app = app_with(tmux_inside("unused"));
             app.boot_discovery_from(r).unwrap();
             assert!(!app.flatten, "6 repositories → not flattened");
             assert_eq!(
@@ -3879,7 +3706,7 @@ mod tests {
     /// `git worktree list`), ≤30 expand.
     #[test]
     fn many_repositories_collapse_by_default_few_expand() {
-        let mut app = app_with(tmux_standalone("unused"));
+        let mut app = app_with(tmux_inside("unused"));
         app.scope_root = PathBuf::from("/");
         for i in 0..31 {
             app.state.repositories.push(Repository {
@@ -3898,7 +3725,7 @@ mod tests {
         assert!(!app.flatten);
         assert!(app.repo_expanded.iter().all(|e| !*e));
 
-        let mut few = app_with(tmux_standalone("unused"));
+        let mut few = app_with(tmux_inside("unused"));
         few.scope_root = PathBuf::from("/");
         for i in 0..30 {
             few.state.repositories.push(Repository {
@@ -3917,7 +3744,7 @@ mod tests {
         assert!(few.repo_expanded.iter().all(|e| *e));
 
         // 1 repository WITH worktrees → flattened (worktrees are the tree)
-        let mut one = app_with(tmux_standalone("unused"));
+        let mut one = app_with(tmux_inside("unused"));
         one.scope_root = PathBuf::from("/");
         one.state.repositories.push(Repository {
             name: "p".into(),
@@ -3941,7 +3768,7 @@ mod tests {
 
         // 1 repository WITHOUT worktrees → NOT flattened; the row stays so
         // the repository is visible instead of a blank tree.
-        let mut empty = app_with(tmux_standalone("unused"));
+        let mut empty = app_with(tmux_inside("unused"));
         empty.scope_root = PathBuf::from("/");
         empty.state.repositories.push(Repository {
             name: "p".into(),
@@ -3962,7 +3789,7 @@ mod tests {
     /// nothing (its shells are already in state).
     #[test]
     fn worktrees_are_expanded_by_default() {
-        let mut app = app_with(tmux_standalone("unused"));
+        let mut app = app_with(tmux_inside("unused"));
         app.scope_root = PathBuf::from("/");
         for i in 0..2 {
             app.state.repositories.push(Repository {
@@ -4002,7 +3829,7 @@ mod tests {
                 repo_with_commit(r, &format!("repo-{i}"));
             }
 
-            let mut app = app_with(tmux_standalone("unused"));
+            let mut app = app_with(tmux_inside("unused"));
             app.boot_discovery_from(r).unwrap();
             assert!(
                 app.repo_expanded.iter().all(|e| *e),
@@ -4042,7 +3869,7 @@ mod tests {
             git(&repo, &["worktree", "add", "-b", "wt", "../repo-a-wt"]);
             repo_with_commit(r, "repo-b");
 
-            let mut app = app_with(tmux_standalone("unused"));
+            let mut app = app_with(tmux_inside("unused"));
             app.boot_discovery_from(r).unwrap();
             while app.drain_pending_worktrees() {}
 
@@ -4069,7 +3896,7 @@ mod tests {
     /// but never get rows.
     #[test]
     fn scope_filters_repositories_from_other_scopes() {
-        let mut app = app_with(tmux_standalone("unused"));
+        let mut app = app_with(tmux_inside("unused"));
         app.scope_root = PathBuf::from("/work/scope-a");
         app.state.repositories.push(Repository {
             name: "in-a".into(),
@@ -4120,7 +3947,7 @@ mod tests {
                 ],
             );
 
-            let mut app = app_with(tmux_standalone("unused"));
+            let mut app = app_with(tmux_inside("unused"));
             app.boot_discovery_from(&repo).unwrap();
             assert_eq!(app.state.repositories.len(), 1);
             let imported = &app.state.repositories[0];
@@ -4139,7 +3966,7 @@ mod tests {
             assert_eq!(app.state.repositories[0].worktrees.len(), 1);
 
             // booting from INSIDE the worktree resolves to the main repo
-            let mut app2 = app_with(tmux_standalone("unused"));
+            let mut app2 = app_with(tmux_inside("unused"));
             app2.boot_discovery_from(&wt).unwrap();
             assert_eq!(app2.state.repositories.len(), 1);
             assert_eq!(app2.state.repositories[0].path, repo);
@@ -4157,7 +3984,7 @@ mod tests {
             let r = root.path();
             repo_with_commit(r, "repo-a");
 
-            let mut app = app_with(tmux_standalone("unused"));
+            let mut app = app_with(tmux_inside("unused"));
             // A root that HAS a repo to find, so a surviving scan would show.
             app.cfg.discovery.scan_root = r.to_string_lossy().into_owned();
             for k in ['i', 'I'] {
@@ -4175,7 +4002,7 @@ mod tests {
     /// rejected with a clear error instead of failing deep in git/tmux.
     #[test]
     fn actions_reject_missing_repositories() {
-        let mut app = app_with(tmux_standalone("unused"));
+        let mut app = app_with(tmux_inside("unused"));
         app.state.repositories.push(Repository {
             name: "gone".into(),
             path: PathBuf::from("/definitely/not/here"),
@@ -4213,7 +4040,7 @@ mod tests {
             crate::util::testutil::with_fresh_xdg(|| {
                 let root = tempfile::TempDir::new().unwrap();
                 let path = repo_with_commit(root.path(), "p");
-                let mut app = app_with(tmux_standalone(sock));
+                let mut app = app_with(tmux_inside(sock));
                 app.state.repositories.push(Repository {
                     name: "p".into(),
                     path,
@@ -4266,7 +4093,7 @@ mod tests {
             // the repo sits on an unrelated branch — the popup must ignore it
             git(&path, &["checkout", "-b", "some-other-branch"]);
 
-            let mut app = app_with(tmux_standalone("unused"));
+            let mut app = app_with(tmux_inside("unused"));
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path: path.clone(),
@@ -4310,7 +4137,7 @@ mod tests {
             git(&wt, &["add", "."]);
             git(&wt, &["commit", "-m", "work"]);
 
-            let mut app = app_with(tmux_standalone("unused"));
+            let mut app = app_with(tmux_inside("unused"));
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path,
@@ -4384,7 +4211,7 @@ mod tests {
             }
             git(&path, &["merge", "--no-ff", "-m", "merge", "merged"]);
 
-            let mut app = app_with(tmux_standalone("unused"));
+            let mut app = app_with(tmux_inside("unused"));
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path: path.clone(),
@@ -4434,7 +4261,7 @@ mod tests {
             let root = tempfile::TempDir::new().unwrap();
             let path = repo_with_commit(root.path(), "repo");
 
-            let mut app = app_with(tmux_standalone("unused"));
+            let mut app = app_with(tmux_inside("unused"));
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path: path.clone(),
@@ -4460,7 +4287,7 @@ mod tests {
     #[test]
     fn new_worktree_popup_has_no_base_hint_for_a_missing_repository() {
         crate::util::testutil::with_test_lock(|| {
-            let mut app = app_with(tmux_standalone("unused"));
+            let mut app = app_with(tmux_inside("unused"));
             app.state.repositories.push(Repository {
                 name: "gone".into(),
                 path: PathBuf::from("/definitely/not/here"),
@@ -4484,7 +4311,7 @@ mod tests {
     /// Seed a headless app with `n` repositories (no tmux needed: navigation
     /// is pure state).
     fn app_with_repositories(n: usize) -> App {
-        let mut app = app_with(tmux_standalone("unused"));
+        let mut app = app_with(tmux_inside("unused"));
         for i in 0..n {
             app.state.repositories.push(Repository {
                 name: format!("p{i}"),
@@ -4504,7 +4331,7 @@ mod tests {
 
     /// A repository with one worktree holding one shell, for action tests.
     fn app_with_shell() -> App {
-        let mut app = app_with(tmux_standalone("unused"));
+        let mut app = app_with(tmux_inside("unused"));
         app.state.repositories.push(Repository {
             name: "p".into(),
             path: PathBuf::from("/tmp/p"),
@@ -4746,7 +4573,7 @@ mod tests {
         // Parking a draft persists it under XDG_STATE_HOME — keep the
         // test off the developer's real drafts.json.
         crate::util::testutil::with_fresh_xdg(|| {
-            // `tmux_standalone("unused")` has no server: `paste_keys` errors.
+            // `tmux_inside("unused")` has no server: `paste_keys` errors.
             let mut app = app_with_shell();
             app.viewport = (120, 40);
             app.on_key(key(KeyCode::Char('s'), false));
@@ -4771,7 +4598,7 @@ mod tests {
         // test off the developer's real drafts.json.
         crate::util::testutil::with_fresh_xdg(|| {
             with_tmux_server(|sock, _tmux| {
-                let tmux = tmux_standalone(sock);
+                let tmux = tmux_inside(sock);
                 let mut app = app_with(tmux.clone());
                 seed_repository_with_shell(&tmux, &mut app);
                 app.build_tree_flags();
@@ -4970,85 +4797,12 @@ mod tests {
         );
     }
 
-    /// Two dashboards, one tmux server, one shared key table: the chord a
-    /// dashboard running INSIDE tmux bound points at *its* window, so a
-    /// standalone handoff must take the chord over for the duration of the
-    /// attach (detach = back to the standalone dashboard) and hand it back
-    /// untouched afterwards.
-    #[test]
-    fn a_standalone_handoff_borrows_the_back_chord_and_gives_it_back() {
-        with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_standalone(sock);
-            let app = app_with(tmux.clone());
-            // The other lazywingman — the one inside tmux — owns the chord.
-            tmux.bind_back_key(&app.cfg.tmux.back_key, "user-session", "@7")
-                .unwrap();
-
-            let previous = app.claim_back_key();
-            assert_eq!(
-                previous,
-                Some(BackKeyState::Dashboard {
-                    session: "user-session".into(),
-                    window: "7".into()
-                }),
-                "the other dashboard's binding is what we replaced"
-            );
-            assert_eq!(
-                tmux.back_key_state(&app.cfg.tmux.back_key).unwrap(),
-                BackKeyState::Detach,
-                "during the handoff the chord must come back HERE"
-            );
-
-            app.restore_back_key(previous);
-            assert_eq!(
-                tmux.back_key_state(&app.cfg.tmux.back_key).unwrap(),
-                BackKeyState::Dashboard {
-                    session: "user-session".into(),
-                    window: "7".into()
-                },
-                "the other dashboard gets its chord back"
-            );
-        });
-    }
-
-    /// A binding that is not ours is never touched — not even for the
-    /// length of a handoff. (tmux's own default for the key reads the same
-    /// way, so the standalone dashboard simply leaves the chord alone and
-    /// the user detaches with the tmux detach key, as documented.)
-    #[test]
-    fn a_handoff_never_takes_over_someone_elses_binding() {
-        with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_standalone(sock);
-            let app = app_with(tmux.clone());
-            let bound = std::process::Command::new("tmux")
-                .args([
-                    "-L",
-                    sock,
-                    "bind-key",
-                    "-T",
-                    "prefix",
-                    &app.cfg.tmux.back_key,
-                    "choose-tree",
-                ])
-                .status()
-                .unwrap();
-            assert!(bound.success());
-
-            assert_eq!(app.claim_back_key(), None, "nothing of ours to restore");
-            assert_eq!(
-                tmux.back_key_state(&app.cfg.tmux.back_key).unwrap(),
-                BackKeyState::Foreign,
-                "the user's binding survives the handoff untouched"
-            );
-        });
-    }
-
     /// The confirm popup takes `d` as a yes: `dd` deletes the way vim
     /// does, without moving the hand off the key that opened the popup.
     #[test]
     fn d_confirms_the_delete_popup() {
         with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_standalone(sock);
+            let tmux = tmux_inside(sock);
             let mut app = app_with(tmux.clone());
             seed_repository_with_shell(&tmux, &mut app);
             let w2 = tmux
@@ -5096,7 +4850,7 @@ mod tests {
     #[test]
     fn delete_shell_kills_one_window_and_keeps_the_worktree() {
         with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_standalone(sock);
+            let tmux = tmux_inside(sock);
             let mut app = app_with(tmux.clone());
             seed_repository_with_shell(&tmux, &mut app);
             let w2 = tmux
@@ -5151,16 +4905,28 @@ mod tests {
     #[test]
     fn enter_on_a_folded_worktree_attaches_its_shell() {
         with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_standalone(sock);
+            let tmux = tmux_inside(sock);
             let mut app = app_with(tmux.clone());
-            seed_repository_with_shell(&tmux, &mut app);
+            let (wid, _pid) = seed_repository_with_shell(&tmux, &mut app);
             app.build_tree_flags();
             app.sel = Sel::Worktree(0, 0);
 
             app.expand_or_attach();
+            // `switch-client` needs a client, which a headless test has not
+            // got; the window selection is the half that lands either way,
+            // and it is the half that says WHICH shell was attached.
+            let active = tmux
+                .run_raw(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    "wingman-session-p",
+                    "#{window_id}",
+                ])
+                .unwrap();
             assert_eq!(
-                app.pending_attach.as_deref(),
-                Some("wingman-session-p"),
+                active.trim(),
+                wid,
                 "Enter on a folded worktree must attach its shell"
             );
             assert!(
@@ -5168,7 +4934,6 @@ mod tests {
                 "a folded worktree must never grow a child row"
             );
 
-            app.pending_attach = None;
             app.wt_expanded[0][0] = true; // stale flag must not eat the key
             app.flatten = false; // `h` reaches a parent only when one has a row
             app.collapse_or_up();
@@ -6397,7 +6162,7 @@ mod tests {
     #[test]
     fn predefined_modal_enter_sends_the_selected_text() {
         with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_standalone(sock);
+            let tmux = tmux_inside(sock);
             let mut app = app_with(tmux.clone());
             let (_wid, pid) = seed_repository_with_shell(&tmux, &mut app);
             app.build_tree_flags();
@@ -6434,7 +6199,7 @@ mod tests {
     #[test]
     fn predefined_modal_digit_sends_that_entry() {
         with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_standalone(sock);
+            let tmux = tmux_inside(sock);
             let mut app = app_with(tmux.clone());
             let (_wid, pid) = seed_repository_with_shell(&tmux, &mut app);
             app.build_tree_flags();
@@ -6515,7 +6280,7 @@ mod tests {
     #[test]
     fn predefined_send_expands_tokens_before_pasting() {
         with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_standalone(sock);
+            let tmux = tmux_inside(sock);
             let mut app = app_with(tmux.clone());
             let (_wid, pid) = seed_repository_with_shell(&tmux, &mut app);
             app.build_tree_flags();
@@ -6689,7 +6454,7 @@ mod tests {
     fn picker_enter_runs_the_repository_default() {
         crate::util::testutil::with_fresh_xdg(|| {
             with_tmux_server(|sock, _tmux| {
-                let tmux = tmux_standalone(sock);
+                let tmux = tmux_inside(sock);
                 let mut app = app_with(tmux.clone());
                 seed_repository_with_shell(&tmux, &mut app);
                 app.state.repositories[0].agent_command = "echo lw-default-marker".into();
@@ -6720,7 +6485,7 @@ mod tests {
     fn picker_plain_shell_runs_no_agent_command() {
         crate::util::testutil::with_fresh_xdg(|| {
             with_tmux_server(|sock, _tmux| {
-                let tmux = tmux_standalone(sock);
+                let tmux = tmux_inside(sock);
                 let mut app = app_with(tmux.clone());
                 seed_repository_with_shell(&tmux, &mut app);
                 app.state.repositories[0].agent_command = "echo lw-default-marker".into();
