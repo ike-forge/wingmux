@@ -84,7 +84,7 @@ fn overlay_min(kind: OverlayKind) -> (u16, u16) {
         OverlayKind::Help => (48, 14),
         OverlayKind::Diagnostics => (48, 10),
         OverlayKind::ThemePicker => (38, 10),
-        OverlayKind::Messages => (38, 10),
+        OverlayKind::Messages | OverlayKind::AddShell => (38, 10),
         OverlayKind::Input | OverlayKind::Confirm => (38, 10),
         // The textarea is the main interaction — it needs real estate.
         OverlayKind::Textarea => (54, 12),
@@ -94,6 +94,7 @@ fn overlay_min(kind: OverlayKind) -> (u16, u16) {
 #[derive(Clone, Copy)]
 enum OverlayKind {
     Help,
+    AddShell,
     Diagnostics,
     ThemePicker,
     Messages,
@@ -288,6 +289,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let kind = OverlayKind::ThemePicker;
             if fits(area, overlay_min(kind)) {
                 let rect = draw_theme_picker(f, app);
+                app.popup_area = Some(rect);
+            } else {
+                draw_overlay_too_small(f, area, app, kind);
+            }
+        }
+        Mode::AddShell { .. } => {
+            let kind = OverlayKind::AddShell;
+            if fits(area, overlay_min(kind)) {
+                let rect = draw_add_shell(f, app);
                 app.popup_area = Some(rect);
             } else {
                 draw_overlay_too_small(f, area, app, kind);
@@ -1088,7 +1098,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
         "worktrees",
         &[
             (&["n"], &["new worktree"]),
-            (&["a"], &["add shell", "prompts for the command"]),
+            (
+                &["a"],
+                &["add shell", "picks the agent or a plain shell", "1-9 pick"],
+            ),
             (&["Enter"], &["attach", "one-shell worktree"]),
             (
                 &["s", "p"],
@@ -1450,6 +1463,84 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
     area
 }
 
+/// The add-shell picker (`a`): what the new shell runs, as a numbered
+/// list. Same shape as the predefined-message modal — the repository's
+/// agent command sits first (Enter starts it), a plain login shell last.
+fn draw_add_shell(f: &mut Frame, app: &App) -> Rect {
+    let theme = &app.theme.colors;
+    let index = match &app.mode {
+        Mode::AddShell { index } => *index,
+        _ => 0,
+    };
+    let entries: Vec<String> = app
+        .add_shell_choices()
+        .into_iter()
+        .map(|c| c.label)
+        .collect();
+    let ic = &app.cfg.icons;
+    let footer = hint_line(
+        theme,
+        ic,
+        &[
+            hint(ic, "start", "Enter"),
+            hint(ic, "pick", "1-9"),
+            hint(ic, "cancel", "esc"),
+        ],
+    );
+    let w = entries
+        .iter()
+        .map(|l| UnicodeWidthStr::width(l.as_str()) as u16)
+        .max()
+        .unwrap_or(20)
+        .saturating_add(6)
+        .max(footer.width() as u16)
+        .saturating_add(MODAL_CHROME_W)
+        .max(34)
+        .min(f.area().width);
+    let h = (entries.len() as u16 + MODAL_FOOTER_H as u16 + MODAL_CHROME_H).min(f.area().height);
+    let area = Rect::new(
+        f.area().x + (f.area().width.saturating_sub(w)) / 2,
+        f.area().y + (f.area().height.saturating_sub(h)) / 2,
+        w,
+        h,
+    );
+    f.render_widget(Clear, area);
+    let inner = modal_inner(area);
+    let rows = (inner.height as usize).saturating_sub(MODAL_FOOTER_H);
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, entry) in entries.iter().take(rows).enumerate() {
+        let selected = i == index;
+        let marker = &ic.cursor;
+        // The number is the key that starts the entry (up to 9 of them).
+        let num = if i < 9 {
+            format!("{} ", i + 1)
+        } else {
+            "  ".into()
+        };
+        let row = if selected {
+            format!("{marker} {num}{entry} ")
+        } else {
+            format!(
+                "{} {num}{entry} ",
+                " ".repeat(UnicodeWidthStr::width(marker.as_str()))
+            )
+        };
+        lines.push(Line::from(if selected {
+            vec![Span::styled(
+                row,
+                on(theme.selection_fg, theme.selection_bg).add_modifier(Modifier::BOLD),
+            )]
+        } else {
+            vec![Span::styled(row, fg(theme.foreground))]
+        }));
+    }
+    lines.push(Line::from(""));
+    lines.push(footer);
+    let block = popup_block(theme, ic, " Add Shell ");
+    f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    area
+}
+
 /// Upper bound on a content-sized dialog: never wider than 60% of the
 /// frame, so a long typed path (or a long confirm body) still leaves the
 /// dashboard visible around it.
@@ -1462,7 +1553,6 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
     let (title, label) = match &app.mode {
         Mode::Input { kind, .. } => match kind {
             InputKind::NewWorktree => ("New Worktree", "worktree name: "),
-            InputKind::AddShell => ("Add Shell", "command: "),
             InputKind::QuickSend => ("Quick Send", "send to agent: "),
         },
         _ => unreachable!(),
@@ -1478,16 +1568,6 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
         Span::styled(label, fg(theme.accent)),
         Span::raw(text.clone()),
     ])];
-    // add-shell only: an empty submit runs the repository's default command,
-    // so name it right under the field instead of making it folklore.
-    if *kind == InputKind::AddShell
-        && let Some(def) = app.add_shell_default()
-    {
-        lines.push(Line::from(Span::styled(
-            format!("default: {def}"),
-            fg(theme.dim),
-        )));
-    }
     // new-worktree only: the worktree is cut from the repository's base
     // branch, NOT from whatever the repo has checked out. Name the branch
     // so nobody has to guess which one it is.
@@ -1793,7 +1873,6 @@ mod tests {
 
         for (kind, label, text) in [
             (InputKind::NewWorktree, "worktree name: ", "foo"),
-            (InputKind::AddShell, "command: ", "ls -la"),
             (InputKind::QuickSend, "send to agent: ", "busy 2"),
         ] {
             app.mode = Mode::Input {
@@ -2173,13 +2252,7 @@ mod tests {
                 },
                 "New Worktree",
             ),
-            (
-                Mode::Input {
-                    kind: InputKind::AddShell,
-                    text: String::new(),
-                },
-                "Add Shell",
-            ),
+            (Mode::AddShell { index: 0 }, "Add Shell"),
         ] {
             app.mode = mode;
             let text = render_wide(&mut app);
@@ -3713,28 +3786,29 @@ mod tests {
         assert!(rows.contains(&"p"), "help lists the p key: {rows:?}");
     }
 
-    /// The add-shell prompt names the command it will run and shows the
-    /// repository's default underneath — submitting empty runs that default,
-    /// so the user has to be able to see it.
+    /// The add-shell picker lists what a new shell can run: the
+    /// repository's own agent command first, a plain login shell last —
+    /// numbered, because the numbers are the keys that take an entry.
     #[test]
-    fn add_shell_popup_shows_the_default_command_hint() {
+    fn add_shell_picker_lists_the_agent_and_a_plain_shell() {
         let mut app = seeded_app();
         app.state.repositories[0].agent_command = "codex exec --yolo".into();
         app.sel = crate::app::Sel::Repository(0);
-        app.mode = Mode::Input {
-            kind: InputKind::AddShell,
-            text: String::new(),
-        };
+        app.mode = Mode::AddShell { index: 0 };
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
         assert!(text.contains("Add Shell"), "popup title: {text}");
-        assert!(text.contains("command: "), "command field label: {text}");
         assert!(
-            text.contains("default: codex exec --yolo"),
-            "the repository's default command must be shown as a hint: {text}"
+            text.contains("1 codex exec --yolo"),
+            "the repository's agent leads the numbered list: {text}"
         );
+        assert!(
+            text.contains("plain shell"),
+            "a plain login shell is offered: {text}"
+        );
+        assert!(text.contains("start"), "the footer names Enter: {text}");
     }
 
     /// The prompt is sized to its content, so the `cancel esc` footer
@@ -3744,7 +3818,7 @@ mod tests {
     fn input_popup_keeps_its_footer_on_short_frames() {
         let mut app = seeded_app();
         app.sel = crate::app::Sel::Repository(0);
-        for kind in [InputKind::AddShell, InputKind::NewWorktree] {
+        for kind in [InputKind::QuickSend, InputKind::NewWorktree] {
             app.mode = Mode::Input {
                 kind,
                 text: String::new(),
@@ -3915,7 +3989,7 @@ mod tests {
             (
                 "input",
                 Mode::Input {
-                    kind: InputKind::AddShell,
+                    kind: InputKind::NewWorktree,
                     text: "claude".into(),
                 },
             ),
@@ -3993,7 +4067,7 @@ mod tests {
             (
                 "input",
                 Mode::Input {
-                    kind: InputKind::AddShell,
+                    kind: InputKind::NewWorktree,
                     text: "claude".into(),
                 },
             ),

@@ -157,6 +157,28 @@ the same commit as the change.
   returns. A `Foreign` binding (the user's own, and tmux's own default for the
   key) is left alone: then there is no back chord outside tmux and the user
   detaches with the tmux detach key, as before.
+- **`a` is a picker, not a command prompt.** Adding a shell used to open a
+  single-line prompt for the command, defaulting to the repository's agent
+  command. That made the *frequent* choices — the configured agents, and a
+  plain interactive shell — cost as much typing as the rare one, and starting
+  a normal `zsh` in a worktree meant typing over a prompt pre-explained as an
+  agent command. `Mode::AddShell` lists them instead: the repository's agent
+  command first (so the old path is still `a` then `Enter`), the other
+  `[[agents]]` presets after it (deduplicated against the default), and a
+  plain shell last. The free-text prompt is not replaced by anything, on
+  purpose: a one-off command is a command you type in the plain shell, and a
+  recurring one belongs in `[[agents]]`, where it also gets status patterns.
+- **A plain shell is `$SHELL`, and nothing is sent to it.** `ShellSpawn`
+  distinguishes the two spawn paths. `Agent(cmd)` opens the window under
+  `[defaults].agent_shell` and sends the (hook-instrumented) command;
+  `Plain` opens it under the user's own `$SHELL` — the point of the entry is
+  landing in the shell you actually use, which `agent_shell` (`bash`, chosen
+  for agents) is not — and sends nothing at all. Sending even an empty line
+  would be wrong: the window already *is* the shell. `util::login_shell`
+  falls back to `bash` when `$SHELL` is unset or empty (a bare container,
+  `env -i`). Status classification needs no change: a login shell as the
+  pane's foreground command is exactly the `ended` heuristic's input, and a
+  plain shell reading `ended` — "no agent running here" — is accurate.
 - **Runs inside AND outside tmux** (per user feedback): the dashboard does not
   require tmux around itself. `Tmux` keeps optional `inside` coordinates
   (detected via TMUX/TMUX_PANE); all session/window/pane operations work
@@ -492,9 +514,9 @@ the same commit as the change.
   uses tmux **paste-buffer with bracketed paste** (`paste_keys`) rather than
   `send-keys -l`: `send-keys -l "a\nb"` would translate the newline into an
   Enter press and submit the first line early; bracketed paste delivers
-  multi-line text as one paste, then a trailing Enter submits. New-worktree
-  and add-shell inputs stay single-line (`Enter` submits) — they are names,
-  not prompts.
+  multi-line text as one paste, then a trailing Enter submits. The
+  new-worktree input stays single-line (`Enter` submits) — it is a name, not
+  a prompt.
 - **Why the send key is ctrl-s, and why the scroll window is the popup's.**
   Two bugs made quick-send unusable in a real tmux. (1) *Nothing could be
   submitted*: both original send chords are undeliverable in a default setup —
@@ -643,8 +665,8 @@ the same commit as the change.
   fixed thresholds; overlays that don't fit are refused with a "frame too
   small" box instead of drawing garbage; the input cursor is only set when
   on-buffer.
-- **Dialog geometry**: the input prompt (new worktree, add shell, quick
-  send) and the confirm dialog (delete worktree/repository) are sized to
+- **Dialog geometry**: the input prompt (new worktree, quick send) and the
+  confirm dialog (delete worktree/repository) are sized to
   their content by `dialog_rect` — widest line and line count, plus one
   column/row of `DIALOG_PADDING` inside the border on every side — clamped
   to a 34-column floor and 60%-of-frame ceiling. They used to take a fixed

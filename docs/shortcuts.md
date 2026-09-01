@@ -55,6 +55,25 @@ Built-in themes (the four Catppuccin flavours first, then dracula/gruvbox/ansi)
 list before user themes from the themes dir — the first rows are the same in
 every project. The picked theme survives restarts via `state.json`.
 
+### Add-shell picker (opened with `a` on a worktree)
+
+| Key | Meaning | Rule satisfied |
+|---|---|---|
+| `j` / `k` (or `↓` / `↑`) | move the cursor one entry | same motions as the tree/help |
+| `PgDn` / `PgUp`, `ctrl-d`/`ctrl-u` | move 5 entries | accessibility, same code path |
+| `Home` / `End`, `g` / `G` | first / last entry | vim + accessibility spellings |
+| `Enter` / `l` | start the selected entry | confirm |
+| `1`-`9` | start that entry directly | the list numbers itself, so the numbers are keys |
+| `Esc` / `q` | close, creating nothing | cancel |
+| mouse | click a row selects; double-click starts it; click outside = Esc | clickable rows; click outside dismisses |
+
+The entries are, in order: the repository's own agent command (so the
+pre-picker path is still `a` then `Enter`), the other configured `[[agents]]`
+presets, and last a **plain shell** — the user's `$SHELL`, started in the
+worktree with nothing sent to it. There is deliberately no free-text command
+prompt: a command you want to run once is a command you type in that plain
+shell, and a command you want to run often belongs in `[[agents]]`.
+
 ## Actions — by selection
 
 The statusbar shows only the entries that do something right now; the help
@@ -71,7 +90,7 @@ overlay lists all of them grouped by context. Same words in both.
 | Key | Meaning | Rule satisfied |
 |---|---|---|
 | `n` | new worktree (sibling; branched from the base branch, not the checkout) | create action |
-| `a` | add a shell to the worktree (prompts for the command; empty = the repository default) | add action |
+| `a` | add a shell to the worktree (picker: the repository's agent command, the other configured agents, or a plain `$SHELL`) | add action |
 | `d` | delete worktree (kills windows, removes worktree; `f` = force when dirty) | vim `d` destructive, confirms; `f` differs by position (confirm mode, not navigation) |
 
 ### Shell selected
@@ -82,7 +101,7 @@ overlay lists all of them grouped by context. Same words in both.
 | `s` | quick-send a prompt to the agent (multiline editor, Alt+Enter sends) | send action |
 | `d` | close this shell (kills its window; the worktree and its other shells stay) | vim `d` destructive, confirms; the object is the selected row |
 
-## Text input (new worktree / add shell — single line)
+## Text input (new worktree — single line)
 
 The New Worktree prompt names the branch it will cut from under the name
 field (`branches from: <base> (base branch)`), and warns when the configured

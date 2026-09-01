@@ -79,7 +79,7 @@ the help overlay (`?`).
 | `h` | collapse / jump to parent |
 | `l` / `Enter` | expand, or **attach** to the selected shell (a one-shell worktree attaches straight away — see the folded row below) |
 | `n` | new worktree (git worktree + branch + agent shell) — a prompt asks for the name and names the branch it will be cut from: the repository's **base branch** (`worktrees.base_branch`, per-repository override), never the branch the repo has checked out |
-| `a` | add a shell to the selected worktree — a prompt asks which command it runs (empty = the repository's default agent command, shown as a hint) |
+| `a` | add a shell to the selected worktree — a picker asks what it runs: the repository's default agent command first (`Enter` takes it), then the other configured `[[agents]]` presets, then a **plain shell** that just drops you at your own `$SHELL` prompt with nothing sent to it (`j`/`k` moves, `1`-`9` pick directly, `Esc` closes). Anything else you want to run, you type in that plain shell |
 | `s` | **quick-send** a line to the selected shell (or to a one-shell worktree's row). Any way out of the editor that is not a send (`Esc`, a click outside the popup, the `ctrl-t` theme chord) keeps the unsent text as that shell's draft; `s` on it again picks up where you left off, cursor included. A draft is dropped once the message is actually delivered. It otherwise survives quitting — parked in `$XDG_STATE_HOME/lazywingman/drafts.json` and kept until its shell is gone |
 | `p` | **predefined messages** for the selected shell (or a one-shell worktree's row) — a modal of configured presets, each listed in full with its `<base_branch>`-style tokens already resolved (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
 | `d` | on a worktree: delete it (kills windows, removes worktree; `f` = force when dirty). On a shell row: close that shell (kills its window only — the worktree and its other shells stay) |
@@ -132,7 +132,7 @@ skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
 
 [defaults]
 agent_command = "claude"     # spawned in every new worktree shell by default
-agent_shell = "bash"
+agent_shell = "bash"       # shell agent windows run under; a plain shell uses your $SHELL instead
 agent_hooks = true           # instrument recognised `claude` commands for accurate status
 
 [icons]                      # full key reference under "Layout" below
