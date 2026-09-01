@@ -172,6 +172,10 @@ impl State {
     /// (including docked in the dashboard's own session) and a window
     /// renamed by hand costs nothing.
     pub fn reconcile(&mut self, tmux: &Tmux) -> Result<()> {
+        // Before the backfill, and before anything reads a pane as a
+        // shell: a server poisoned by an earlier run of that backfill has
+        // holders claiming to be the agents they stand in for.
+        crate::dock::unstamp_furniture(tmux);
         backfill_identities(tmux);
         for pane in tmux.list_panes()? {
             let Some(id) = pane.shell.clone() else {
@@ -876,6 +880,88 @@ mod tests {
             assert_eq!(shells.len(), 1, "the legacy shell is adopted: {shells:?}");
             assert_eq!(shells[0].index, 2, "the index comes from the window name");
             assert_eq!(shells[0].pane_id.as_deref(), Some(pane.as_str()));
+        });
+    }
+
+    /// The bug the pre-v4 backfill caused, in one test. A **holder** sits
+    /// in a window named `lw:<worktree>/<n>` and carries no identity of its
+    /// own — exactly the shape that backfill looks for. Stamping it made
+    /// two panes claim one shell; `reconcile` kept whichever `list-panes -a`
+    /// listed last, and a dashboard that got the holder docked a sleeping
+    /// placeholder and read the shell as `ended`.
+    #[test]
+    fn a_holder_is_never_mistaken_for_the_shell_it_stands_in_for() {
+        crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
+            let id = crate::dock::ShellId::for_session("wingman-session-p", "feat", 0);
+            let w = tmux
+                .new_session(
+                    "wingman-session-p",
+                    "lw:feat/0",
+                    std::path::Path::new("/tmp"),
+                    "bash",
+                    &id,
+                    crate::tmux::testutil::HOLDER_W,
+                )
+                .expect("agent window with its holder");
+            let holder = tmux
+                .list_furniture()
+                .expect("furniture")
+                .into_iter()
+                .find(|p| p.holder)
+                .expect("the window has a holder");
+
+            let mut s = State::default();
+            s.repositories.push(Repository {
+                name: "p".into(),
+                path: PathBuf::from("/tmp/p"),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: Some("wingman-session-p".into()),
+                missing: false,
+                worktrees: vec![Worktree {
+                    name: "feat".into(),
+                    branch: "feat".into(),
+                    path: PathBuf::from("/tmp/p-feat"),
+                    created_at: String::new(),
+                    base_commit: None,
+                    shells: vec![],
+                }],
+            });
+
+            // A server already poisoned by an earlier run of the backfill:
+            // the holder claims to be the agent.
+            tmux.stamp_shell(&holder.pane_id, &id).expect("poison it");
+            s.reconcile(&tmux).expect("reconcile");
+
+            let shells = &s.repositories[0].worktrees[0].shells;
+            assert_eq!(shells.len(), 1, "still exactly one shell: {shells:?}");
+            assert_eq!(
+                shells[0].pane_id.as_deref(),
+                Some(w.pane_id.as_str()),
+                "and it is the agent, not the placeholder standing in for it"
+            );
+            assert!(
+                tmux.list_panes()
+                    .expect("panes")
+                    .iter()
+                    .all(|p| p.pane_id != holder.pane_id),
+                "the holder is not reported as a shell at all"
+            );
+
+            // And the stray options are gone, not merely ignored.
+            assert!(
+                !tmux
+                    .list_furniture()
+                    .expect("furniture")
+                    .iter()
+                    .any(|p| p.pane_id == holder.pane_id && p.shell),
+                "the identity was cleaned off the holder"
+            );
+
+            // A second reconcile must not put it back.
+            s.reconcile(&tmux).expect("reconcile again");
+            assert_eq!(s.repositories[0].worktrees[0].shells.len(), 1);
         });
     }
 

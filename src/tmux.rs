@@ -451,6 +451,15 @@ impl Tmux {
     /// session — the user's own split, a holder — carries no `@lw_repo` and
     /// is none of our business.
     ///
+    /// **Furniture is never a shell**, whatever options it carries. The
+    /// rule used to be implicit — furniture carries no identity, so it
+    /// could not parse as one — and that assumption was wrong: anything
+    /// that stamps a pane by where it *sits* rather than by what it *is*
+    /// can put a shell's identity on a holder, and then a dashboard docks
+    /// the sleeping placeholder instead of the agent. So the exclusion is
+    /// structural now: a `@lw_holder` or `@lw_slot` mark outranks any
+    /// identity on the same pane.
+    ///
     /// A server with no sessions yet yields an empty list, not an error.
     pub fn list_panes(&self) -> Result<Vec<PaneInfo>> {
         // Built from the option constants rather than spelled out, so the
@@ -458,11 +467,13 @@ impl Tmux {
         let fmt = format!(
             "#{{pane_id}}|#{{window_id}}|#{{pane_current_command}}|#{{pane_dead}}|#{{session_name}}\
              |#{{{repo}}}|#{{{worktree}}}|#{{{index}}}|#{{pane_active}}|#{{{docked}}}\
-             |#{{{overlay}}}",
+             |#{{{holder}}}#{{{slot}}}|#{{{overlay}}}",
             repo = dock::REPO_KEY,
             worktree = dock::WORKTREE_KEY,
             index = dock::INDEX_KEY,
             docked = dock::DOCKED_KEY,
+            holder = dock::HOLDER_KEY,
+            slot = dock::SLOT_KEY,
             overlay = crate::hooks::OVERLAY_KEY,
         );
         let out = match self.run(&["list-panes", "-a", "-F", &fmt]) {
@@ -484,8 +495,10 @@ impl Tmux {
     /// window name). One call, like the poll's.
     pub fn list_unstamped_panes(&self) -> Result<Vec<(String, String, String)>> {
         let fmt = format!(
-            "#{{pane_id}}|#{{session_name}}|#{{window_name}}|#{{{repo}}}",
-            repo = dock::REPO_KEY
+            "#{{pane_id}}|#{{session_name}}|#{{window_name}}|#{{{holder}}}#{{{slot}}}#{{{repo}}}",
+            holder = dock::HOLDER_KEY,
+            slot = dock::SLOT_KEY,
+            repo = dock::REPO_KEY,
         );
         let out = match self.run(&["list-panes", "-a", "-F", &fmt]) {
             Ok(o) => o,
@@ -496,9 +509,16 @@ impl Tmux {
             .lines()
             .filter_map(|line| {
                 // The window name is a user-chosen string and may contain
-                // '|', so the identity field is read from the END.
-                let (head, repo) = line.rsplit_once('|')?;
-                if !repo.trim().is_empty() {
+                // '|', so the identity field is read from the END. It is
+                // the holder and slot marks concatenated with the identity:
+                // any of the three set means this pane is not raw material
+                // for the backfill. **Furniture especially** — a holder
+                // sits in a window still named `lw:<worktree>/<n>` and
+                // carries no identity of its own, which is exactly the
+                // shape the backfill looks for, and stamping it makes a
+                // sleeping placeholder claim to be the agent.
+                let (head, marks) = line.rsplit_once('|')?;
+                if !marks.trim().is_empty() {
                     return None;
                 }
                 let mut it = head.splitn(3, '|');
@@ -1036,10 +1056,13 @@ fn legacy_root_back_key(line: &str, dash_session: &str, win: &str) -> Option<Str
 
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
     // Field order: pane | window | command | dead | session | repo |
-    // worktree | index | active | docked | overlay. Every new field goes BEFORE the overlay:
-    // the overlay is taken verbatim as the remainder, so a '|' inside it
-    // cannot desync parsing, and only a last field can afford that.
-    let mut it = line.splitn(11, '|');
+    // worktree | index | active | docked | furniture | overlay. Every new
+    // field goes BEFORE the overlay: the overlay is taken verbatim as the
+    // remainder, so a '|' inside it cannot desync parsing, and only a last
+    // field can afford that. `furniture` is the holder and slot marks
+    // concatenated — neither has a value worth telling apart here, only
+    // whether either is set.
+    let mut it = line.splitn(12, '|');
     let pane_id = it.next()?.to_string();
     let window_id = it.next()?.to_string();
     let current_command = it.next()?.to_string();
@@ -1050,13 +1073,20 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
     let index = it.next().unwrap_or("");
     let active = it.next().unwrap_or("") == "1";
     let docked_by = it.next().unwrap_or("").trim().to_string();
+    let furniture = !it.next().unwrap_or("").trim().is_empty();
     Some(PaneInfo {
         pane_id,
         window_id,
         current_command,
         dead,
         session_name,
-        shell: ShellId::from_fields(repo, worktree, index),
+        // A holder or a slot is furniture even if something has written
+        // an identity onto it: the placeholder is not the agent.
+        shell: if furniture {
+            None
+        } else {
+            ShellId::from_fields(repo, worktree, index)
+        },
         active,
         docked_by: (!docked_by.is_empty()).then_some(docked_by),
         overlay_raw: it.next().unwrap_or("").to_string(),
@@ -1180,7 +1210,7 @@ mod tests {
 
     #[test]
     fn pane_line_parsing() {
-        let p = parse_pane_line("%3|@1|claude|0|wingman-session-p|p|feat|2|1|").unwrap();
+        let p = parse_pane_line("%3|@1|claude|0|wingman-session-p|p|feat|2|1||").unwrap();
         assert_eq!(p.pane_id, "%3");
         assert_eq!(p.current_command, "claude");
         assert!(!p.dead);
@@ -1192,7 +1222,7 @@ mod tests {
         );
         assert!(p.active);
         assert_eq!(p.docked_by, None);
-        let dead = parse_pane_line("%9|@1|sh|1|wingman-session-p|p|feat|2|0|").unwrap();
+        let dead = parse_pane_line("%9|@1|sh|1|wingman-session-p|p|feat|2|0||").unwrap();
         assert!(dead.dead);
         assert!(!dead.active);
     }
@@ -1202,7 +1232,7 @@ mod tests {
     /// shell named the empty string.
     #[test]
     fn a_pane_without_the_options_carries_no_identity() {
-        let p = parse_pane_line("%0|@1|bash|0|work||||1|").expect("parses");
+        let p = parse_pane_line("%0|@1|bash|0|work||||1||").expect("parses");
         assert_eq!(p.shell, None);
         assert_eq!(p.session_name, "work");
     }
@@ -1210,13 +1240,13 @@ mod tests {
     /// The docking dashboard's pane id, when there is one.
     #[test]
     fn docked_by_is_read_back_when_set() {
-        let p = parse_pane_line("%3|@1|claude|0|main|p|feat|0|1|%7|").expect("parses");
+        let p = parse_pane_line("%3|@1|claude|0|main|p|feat|0|1|%7||").expect("parses");
         assert_eq!(p.docked_by.as_deref(), Some("%7"));
     }
 
     #[test]
     fn pane_line_parsing_keeps_the_overlay_verbatim() {
-        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1||blocked:1755600000")
+        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||blocked:1755600000")
             .expect("parses");
         assert_eq!(p.pane_id, "%3");
         assert_eq!(p.current_command, "claude");
@@ -1228,7 +1258,7 @@ mod tests {
     /// can never desync the parser.
     #[test]
     fn overlay_may_contain_the_field_separator() {
-        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1||a|b").expect("parses");
+        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||a|b").expect("parses");
         assert_eq!(p.overlay_raw, "a|b");
         assert_eq!(
             p.shell,
@@ -1236,9 +1266,28 @@ mod tests {
         );
     }
 
+    /// Furniture is never a shell, whatever identity has been written onto
+    /// it. The exclusion used to rest on furniture carrying no identity at
+    /// all; a holder stamped by the pre-v4 backfill (it sits in a window
+    /// named `lw:<worktree>/<n>`, which is exactly what that backfill looks
+    /// for) broke the assumption and made a sleeping placeholder claim to
+    /// be the agent — so a dashboard docked the placeholder.
+    #[test]
+    fn a_holder_or_slot_is_never_a_shell_however_it_was_stamped() {
+        let holder =
+            parse_pane_line("%4|@1|sh|0|wingman-session-p|p|feat|0|0||1|").expect("parses");
+        assert_eq!(holder.shell, None, "a stamped holder is still furniture");
+        assert_eq!(holder.pane_id, "%4", "and is still reported as a pane");
+        let slot = parse_pane_line("%5|@0|sh|0|main|p|feat|0|0||1|").expect("parses");
+        assert_eq!(slot.shell, None);
+        let agent =
+            parse_pane_line("%6|@1|claude|0|wingman-session-p|p|feat|0|1|||").expect("parses");
+        assert!(agent.shell.is_some(), "an unmarked pane is unaffected");
+    }
+
     #[test]
     fn missing_overlay_field_is_empty_not_an_error() {
-        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|").expect("parses");
+        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1||").expect("parses");
         assert_eq!(p.overlay_raw, "");
     }
 

@@ -158,6 +158,52 @@ pub fn park_command(note: &str) -> String {
     )
 }
 
+/// Strip a shell identity off any pane that is furniture.
+///
+/// The repair for a server poisoned by the pre-v4 identity backfill. That
+/// backfill stamps every unstamped pane sitting in a window still named
+/// `lw:<worktree>/<n>` — and a **holder** is exactly that: it lives in one
+/// of those windows and carries no identity of its own. Once stamped, two
+/// panes claimed the same shell, `reconcile` kept whichever came last in
+/// `list-panes -a` order, and a dashboard that picked the holder docked a
+/// sleeping placeholder and read the shell as `ended`. Which pane won
+/// depended on session ordering, so a docked shell — whose agent pane has
+/// moved to another session — was the one that broke.
+///
+/// [`crate::tmux::Tmux::list_panes`] now refuses identity on furniture, so
+/// this is hygiene rather than the fix: it stops the stray options being
+/// read back by anything else, and stops them outliving the bug. Returns
+/// how many panes were cleaned.
+pub fn unstamp_furniture(tmux: &crate::tmux::Tmux) -> usize {
+    let panes = match tmux.list_furniture() {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("furniture cleanup: {e}");
+            return 0;
+        }
+    };
+    let mut cleaned = 0;
+    for pane in panes.iter().filter(|p| (p.holder || p.slot) && p.shell) {
+        let ok = [REPO_KEY, WORKTREE_KEY, INDEX_KEY].iter().all(|k| {
+            match tmux.clear_pane_option(&pane.pane_id, k) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!("cannot unstamp {} ({k}): {e}", pane.pane_id);
+                    false
+                }
+            }
+        });
+        if ok {
+            log::info!(
+                "unstamped furniture {} — a holder is not the agent it stands in for",
+                pane.pane_id
+            );
+            cleaned += 1;
+        }
+    }
+    cleaned
+}
+
 /// Give every agent window a holder it is missing — the backfill for
 /// windows spawned before holders existed, and the repair for a holder the
 /// user closed by hand.

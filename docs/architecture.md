@@ -254,6 +254,22 @@ the same commit as the change.
   - The one thing not wrapped is a launch with no terminal to hand tmux —
     piped, redirected, cron. Wrapping there would fail where not wrapping
     merely degrades.
+- **Furniture is never a shell, whatever identity is written on it** (M18).
+  `Tmux::list_panes` selects panes by identity, and the exclusion of holders
+  and slots used to rest on an assumption — furniture carries no `@lw_repo`,
+  so it cannot parse as a shell. The pre-v4 identity backfill broke it: that
+  backfill stamps every unstamped pane sitting in a window still named
+  `lw:<worktree>/<n>`, and a holder is exactly that. Two panes then claimed
+  one shell, `reconcile` kept whichever `list-panes -a` listed last, and a
+  dashboard that picked the holder docked a sleeping placeholder and read the
+  shell as `ended`. Which one won depended on session ordering, so the shell
+  that broke was a *docked* one — its agent pane had moved to another session.
+  Three changes, in order of who they protect: `list_panes` now treats a
+  `@lw_holder`/`@lw_slot` mark as outranking any identity on the same pane
+  (structural, so no future stamping path can reintroduce this);
+  `list_unstamped_panes` skips furniture, so the backfill cannot stamp one
+  again; and `dock::unstamp_furniture` clears the stray options at the top of
+  every reconcile, so servers already poisoned repair themselves in place.
 - **The dock follows the selection, and the cursor does not follow the dock**
   (M18). Landing on a shell row docks its pane; `Enter` is then only needed to
   *enter* it. An auto-dock that also ran `select-pane` would move the keyboard
