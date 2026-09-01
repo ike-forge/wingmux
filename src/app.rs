@@ -90,6 +90,15 @@ pub enum Mode {
     ThemePicker {
         index: usize,
     },
+    /// Add-shell picker (`a`): what the new shell should run — the
+    /// repository's agent command, any other configured agent preset, or
+    /// a plain login shell. j/k move, digits `1`..`9` pick an entry
+    /// directly, Enter takes the selected one, Esc closes. A picker, not
+    /// a prompt: "start a normal shell" is one keystroke, and anything
+    /// else you want to run you type in that shell.
+    AddShell {
+        index: usize,
+    },
     /// Predefined-message modal (`p`): the configured quick-send presets
     /// as a list. j/k move, digits `1`..`9` pick an entry directly, Enter
     /// sends the selected one, Esc closes. Sending uses the same paste
@@ -477,10 +486,26 @@ pub enum BarAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputKind {
     NewWorktree,
-    /// The command the new shell should run. Empty means "the repository's
-    /// default agent command" — the prompt shows it as a hint.
-    AddShell,
     QuickSend,
+}
+
+/// What a new shell runs. The add-shell picker (`a`) offers one of these
+/// per row; there is no free-text command prompt, because a plain shell
+/// *is* the free-text path — you type the command in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellSpawn {
+    /// An agent command, sent to the window's agent shell once it is up.
+    Agent(String),
+    /// Nothing is sent: the window runs the user's own login shell
+    /// (`$SHELL`) and is left at its prompt.
+    Plain,
+}
+
+/// One row of the add-shell picker: the text it shows and what it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellChoice {
+    pub label: String,
+    pub spawn: ShellSpawn,
 }
 
 #[derive(Debug, Clone)]
@@ -1592,7 +1617,7 @@ impl App {
     /// Spawn one more shell under a worktree, running `command`. An empty
     /// (or whitespace-only) `command` means "whatever this repository
     /// normally runs" — the repository's default agent command.
-    pub fn add_shell(&mut self, ri: usize, wi: usize, command: &str) -> Result<()> {
+    pub fn add_shell(&mut self, ri: usize, wi: usize, spawn: &ShellSpawn) -> Result<()> {
         let tmux = self.require_tmux()?;
         let repo = self
             .state
@@ -1614,21 +1639,38 @@ impl App {
             .ok_or_else(|| Error::State(format!("worktree index {wi} out of range")))?;
         let idx = wt.next_shell_index();
         let wname = Tmux::window_name(&wt.branch, idx);
+        // A plain shell runs the user's own login shell; an agent runs
+        // under the repository's configured agent shell, whatever the
+        // user's interactive shell happens to be.
+        let shell = match spawn {
+            ShellSpawn::Plain => crate::util::login_shell(),
+            ShellSpawn::Agent(_) => repo.agent_shell.clone(),
+        };
         let (session_name, window) =
-            self.ensure_agent_session(&tmux, &repo, &wname, &wt.path, &repo.agent_shell)?;
+            self.ensure_agent_session(&tmux, &repo, &wname, &wt.path, &shell)?;
         let w = match window {
             Some(w) => w,
-            None => tmux.new_window(&session_name, &wname, &wt.path, &repo.agent_shell)?,
+            None => tmux.new_window(&session_name, &wname, &wt.path, &shell)?,
         };
-        let command = match command.trim() {
-            "" => repo.agent_command.as_str(),
-            c => c,
+        let what = match spawn {
+            // An empty command falls back to the repository's default, so
+            // a repository whose agent_command is set is honoured even
+            // when the choice carried nothing.
+            ShellSpawn::Agent(c) => {
+                let command = match c.trim() {
+                    "" => repo.agent_command.clone(),
+                    c => c.to_string(),
+                };
+                // The command the user chose (or the repository default) is
+                // what gets instrumented — M17 injects --settings only when
+                // it is a recognised `claude`.
+                let spawn_cmd = self.agent_command_for_spawn(&command);
+                tmux.send_keys(&w.pane_id, &spawn_cmd, true)?;
+                command
+            }
+            // Nothing is sent: the window already *is* the shell.
+            ShellSpawn::Plain => crate::util::shell_name(&shell),
         };
-        // The command the user chose (or the repository default) is what
-        // gets instrumented — M17 injects --settings only when it is a
-        // recognised `claude`.
-        let spawn_cmd = self.agent_command_for_spawn(command);
-        tmux.send_keys(&w.pane_id, &spawn_cmd, true)?;
         self.state.repositories[ri].session_name = Some(session_name.clone());
         self.state.repositories[ri].worktrees[wi]
             .shells
@@ -1639,7 +1681,7 @@ impl App {
                 pane_id: Some(w.pane_id),
             });
         self.save_state()?;
-        self.notify(format!("shell #{} added ({})", idx, command));
+        self.notify(format!("shell #{idx} added ({what})"));
         Ok(())
     }
 
@@ -1963,17 +2005,83 @@ impl App {
         };
     }
 
-    /// Open the add-shell prompt (`a`). The field starts empty; the popup
-    /// shows the repository's default command as a hint and an empty submit
-    /// falls back to it.
+    /// Open the add-shell picker (`a`) on the selected worktree. The
+    /// cursor starts on the first entry — the repository's own agent
+    /// command — so the common case is still `a` then Enter.
     fn open_add_shell(&mut self) {
         if self.selected_worktree_ctx().is_some() {
-            self.mode = Mode::Input {
-                kind: InputKind::AddShell,
-                text: String::new(),
-            };
+            self.mode = Mode::AddShell { index: 0 };
         } else {
             self.notify("select a worktree to add a shell");
+        }
+    }
+
+    /// The rows of the add-shell picker, in order: the selected
+    /// repository's agent command first (the default, and what Enter
+    /// takes), then every other configured agent preset, then a plain
+    /// login shell. The plain entry is why the picker exists: starting a
+    /// normal `zsh`/`bash` in a worktree used to mean typing over an
+    /// agent-command prompt.
+    pub fn add_shell_choices(&self) -> Vec<ShellChoice> {
+        let ri = match self.sel {
+            Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, _, _) => ri,
+        };
+        let default = self
+            .state
+            .repositories
+            .get(ri)
+            .map(|p| p.agent_command.trim().to_string())
+            .unwrap_or_default();
+        let mut out: Vec<ShellChoice> = Vec::new();
+        let push = |cmd: &str, out: &mut Vec<ShellChoice>| {
+            if cmd.is_empty() || out.iter().any(|c| c.label == cmd) {
+                return;
+            }
+            out.push(ShellChoice {
+                label: cmd.to_string(),
+                spawn: ShellSpawn::Agent(cmd.to_string()),
+            });
+        };
+        push(&default, &mut out);
+        for agent in &self.cfg.agents {
+            push(agent.command.trim(), &mut out);
+        }
+        let shell = crate::util::login_shell();
+        out.push(ShellChoice {
+            label: format!("{} (plain shell)", crate::util::shell_name(&shell)),
+            spawn: ShellSpawn::Plain,
+        });
+        out
+    }
+
+    /// The cursor of the open add-shell picker (0 when it is not open).
+    fn add_shell_index(&self) -> usize {
+        match self.mode {
+            Mode::AddShell { index } => index,
+            _ => 0,
+        }
+    }
+
+    /// Move the picker cursor to `n`, clamped to the offered entries.
+    fn add_shell_to(&mut self, n: usize) {
+        let last = self.add_shell_choices().len().saturating_sub(1);
+        if let Mode::AddShell { index } = &mut self.mode {
+            *index = n.min(last);
+        }
+    }
+
+    /// Close the picker and create the shell entry `i` describes.
+    fn take_shell_choice(&mut self, i: usize) {
+        let Some(choice) = self.add_shell_choices().into_iter().nth(i) else {
+            return;
+        };
+        self.mode = Mode::Normal;
+        let res = match self.selected_worktree_ctx() {
+            Some((ri, wi, _)) => self.add_shell(ri, wi, &choice.spawn),
+            None => Err(Error::State("select a worktree first".into())),
+        };
+        if let Err(e) = res {
+            self.fail(&e);
         }
     }
 
@@ -2015,18 +2123,6 @@ impl App {
     /// What the New Worktree popup should say the branch is cut from.
     pub fn new_worktree_base(&self) -> Option<&BaseHint> {
         self.new_worktree_base.as_ref()
-    }
-
-    /// The command an empty add-shell submit would run: the selected
-    /// repository's default agent command. Drives the popup's hint line.
-    pub fn add_shell_default(&self) -> Option<&str> {
-        let ri = match self.sel {
-            Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, _, _) => ri,
-        };
-        self.state
-            .repositories
-            .get(ri)
-            .map(|p| p.agent_command.as_str())
     }
 
     fn selected_worktree_ctx(&self) -> Option<(usize, usize, Option<usize>)> {
@@ -2212,6 +2308,12 @@ impl App {
         // soft-wrap width decides how many visual rows those hold.
         let visible_lines = textarea_visible_lines(self.viewport.1);
         let wrap_width = textarea_wrap_width(self.viewport.0);
+        // The add-shell picker's row count, resolved before the borrow of
+        // `mode` below (its arm cannot call back into `self`).
+        let shell_choices = match self.mode {
+            Mode::AddShell { .. } => self.add_shell_choices().len(),
+            _ => 0,
+        };
         match &mut self.mode {
             Mode::Input { kind, text } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
@@ -2378,6 +2480,29 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') => self.cancel_theme_picker(),
                 _ => {}
             },
+            Mode::AddShell { index } => {
+                let last = shell_choices.saturating_sub(1);
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => *index = (*index + 1).min(last),
+                    KeyCode::Char('k') | KeyCode::Up => *index = index.saturating_sub(1),
+                    KeyCode::Char('g') => *index = 0,
+                    KeyCode::Char('G') => *index = last,
+                    KeyCode::Enter | KeyCode::Char('l') => {
+                        let i = *index;
+                        self.take_shell_choice(i);
+                    }
+                    // The list numbers itself, so the numbers are keys:
+                    // `2` starts the second entry without moving there.
+                    KeyCode::Char(c @ '1'..='9') => {
+                        let i = c as usize - '1' as usize;
+                        if i <= last {
+                            self.take_shell_choice(i);
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
+                    _ => {}
+                }
+            }
             Mode::Messages { index } => {
                 let last = self.cfg.messages.len().saturating_sub(1);
                 match key.code {
@@ -2752,6 +2877,8 @@ impl App {
                     self.diag_scroll_to(self.diag_scroll + 3);
                 } else if matches!(self.mode, Mode::Messages { .. }) {
                     self.messages_to(self.messages_index().saturating_add(3));
+                } else if matches!(self.mode, Mode::AddShell { .. }) {
+                    self.add_shell_to(self.add_shell_index().saturating_add(3));
                 } else if matches!(self.mode, Mode::ThemePicker { .. }) {
                     self.picker_to(self.picker_index().saturating_add(3));
                 } else if self.preview_on_screen() {
@@ -2767,6 +2894,8 @@ impl App {
                     self.diag_scroll_to(self.diag_scroll.saturating_sub(3));
                 } else if matches!(self.mode, Mode::Messages { .. }) {
                     self.messages_to(self.messages_index().saturating_sub(3));
+                } else if matches!(self.mode, Mode::AddShell { .. }) {
+                    self.add_shell_to(self.add_shell_index().saturating_sub(3));
                 } else if matches!(self.mode, Mode::ThemePicker { .. }) {
                     self.picker_to(self.picker_index().saturating_sub(3));
                 } else if self.preview_on_screen() {
@@ -2801,6 +2930,28 @@ impl App {
         // a click inside keeps keyboard as the way in. The theme picker is
         // the exception: clicking a theme row selects + previews it, and a
         // double-click keeps it (Enter).
+        if matches!(self.mode, Mode::AddShell { .. }) {
+            let inside = self
+                .popup_area
+                .map(|r| x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height)
+                .unwrap_or(false);
+            if !inside {
+                self.mode = Mode::Normal; // click outside = Esc
+                return;
+            }
+            // Rows start one line below the popup border; a click on one
+            // selects it, a double-click starts it (Enter).
+            if let Some(r) = self.popup_area {
+                let row = y.saturating_sub(r.y + 1) as usize;
+                if row < self.add_shell_choices().len() {
+                    self.add_shell_to(row);
+                    if dbl {
+                        self.take_shell_choice(row);
+                    }
+                }
+            }
+            return;
+        }
         if let Mode::Messages { index } = &mut self.mode {
             let inside = self
                 .popup_area
@@ -2931,6 +3082,9 @@ impl App {
         if matches!(self.mode, Mode::Messages { .. }) {
             let step = 5 * half_pages;
             self.messages_to(self.messages_index().saturating_add_signed(step as isize));
+        } else if matches!(self.mode, Mode::AddShell { .. }) {
+            let step = 5 * half_pages;
+            self.add_shell_to(self.add_shell_index().saturating_add_signed(step as isize));
         } else if let Mode::ThemePicker { index } = &mut self.mode {
             let step = 5 * half_pages;
             *index = (index.saturating_add_signed(step as isize))
@@ -2964,6 +3118,8 @@ impl App {
     fn move_view_first(&mut self) {
         if matches!(self.mode, Mode::Messages { .. }) {
             self.messages_to(0);
+        } else if matches!(self.mode, Mode::AddShell { .. }) {
+            self.add_shell_to(0);
         } else if let Mode::ThemePicker { index } = &mut self.mode {
             *index = 0;
             self.preview_picker_theme();
@@ -2979,6 +3135,8 @@ impl App {
     fn move_view_last(&mut self) {
         if matches!(self.mode, Mode::Messages { .. }) {
             self.messages_to(usize::MAX);
+        } else if matches!(self.mode, Mode::AddShell { .. }) {
+            self.add_shell_to(usize::MAX);
         } else if let Mode::ThemePicker { index } = &mut self.mode {
             *index = self.theme_names.len().saturating_sub(1);
             self.preview_picker_theme();
@@ -3061,10 +3219,6 @@ impl App {
                 Sel::Repository(ri) => self.create_worktree(ri, &text),
                 Sel::Worktree(ri, _) => self.create_worktree(ri, &text),
                 _ => Err(Error::State("select a repository first".into())),
-            },
-            InputKind::AddShell => match self.selected_worktree_ctx() {
-                Some((ri, wi, _)) => self.add_shell(ri, wi, &text),
-                None => Err(Error::State("select a worktree first".into())),
             },
             InputKind::QuickSend => match self.selected_shell() {
                 Some((ri, wi, si)) => self.quick_send(ri, wi, si, &text),
@@ -3881,7 +4035,9 @@ mod tests {
         });
         let err = app.create_worktree(0, "new-wt").unwrap_err();
         assert!(err.to_string().contains("missing"), "err: {err}");
-        let err = app.add_shell(0, 0, "").unwrap_err();
+        let err = app
+            .add_shell(0, 0, &ShellSpawn::Agent(String::new()))
+            .unwrap_err();
         assert!(err.to_string().contains("missing"), "err: {err}");
     }
 
@@ -3928,7 +4084,8 @@ mod tests {
                 );
                 // …and it unfolds like every other row: a second shell shows
                 // up instead of hiding under a folded worktree.
-                app.add_shell(0, 0, "true").unwrap();
+                app.add_shell(0, 0, &ShellSpawn::Agent("true".into()))
+                    .unwrap();
                 assert!(
                     app.visible_nodes().contains(&Sel::Shell(0, 0, 1)),
                     "a created worktree unfolds like a discovered one"
@@ -6157,35 +6314,28 @@ mod tests {
         assert_eq!(app.sel, before, "the tree never moved");
     }
 
-    // ---- M16 — add-shell command prompt ----
+    // ---- M16 — add-shell picker ----
 
-    /// Type a whole string into the open input popup, key by key.
-    fn type_str(app: &mut App, s: &str) {
-        for c in s.chars() {
-            app.on_key(key(KeyCode::Char(c), false));
-        }
-    }
-
-    /// `a` no longer spawns a shell on the spot: it opens a prompt asking
-    /// which command the new shell should run, starting empty. Esc backs
-    /// out without creating anything.
+    /// `a` no longer spawns a shell on the spot, and no longer asks for a
+    /// command: it opens a picker of what the shell should run, cursor on
+    /// the repository's own agent command. Esc backs out without creating
+    /// anything.
     #[test]
-    fn a_opens_the_add_shell_prompt_instead_of_spawning() {
+    fn a_opens_the_add_shell_picker_instead_of_spawning() {
         let mut app = app_with_shell();
         app.on_key(key(KeyCode::Char('a'), false));
-        let Mode::Input { kind, text } = &app.mode else {
-            panic!("`a` must open the command prompt, got {:?}", app.mode);
-        };
-        assert_eq!(*kind, InputKind::AddShell);
-        assert!(text.is_empty(), "the command field starts empty: {text:?}");
+        assert!(
+            matches!(app.mode, Mode::AddShell { index: 0 }),
+            "`a` must open the picker at its first entry, got {:?}",
+            app.mode
+        );
         assert_eq!(
             app.state.repositories[0].worktrees[0].shells.len(),
             1,
-            "nothing is spawned before the prompt is submitted"
+            "nothing is spawned before an entry is taken"
         );
-
         app.on_key(key(KeyCode::Esc, false));
-        assert!(matches!(app.mode, Mode::Normal), "Esc closes the prompt");
+        assert!(matches!(app.mode, Mode::Normal), "Esc closes the picker");
         assert_eq!(
             app.state.repositories[0].worktrees[0].shells.len(),
             1,
@@ -6193,46 +6343,69 @@ mod tests {
         );
     }
 
-    /// The command typed into the prompt is what runs in the new shell —
-    /// not the repository's default agent command.
+    /// The picker's first entry is the repository's agent command (Enter
+    /// keeps the old one-keystroke path) and its last is a plain login
+    /// shell — the entry that exists so starting a normal shell needs no
+    /// typing at all.
     #[test]
-    fn add_shell_prompt_runs_the_typed_command() {
-        crate::util::testutil::with_fresh_xdg(|| {
-            with_tmux_server(|sock, _tmux| {
-                let tmux = tmux_standalone(sock);
-                let mut app = app_with(tmux.clone());
-                seed_repository_with_shell(&tmux, &mut app);
-                app.state.repositories[0].agent_command = "echo lw-default-marker".into();
-                app.state.repositories[0].worktrees[0].path = PathBuf::from("/tmp");
-                app.build_tree_flags();
-                app.sel = Sel::Worktree(0, 0);
-
-                app.on_key(key(KeyCode::Char('a'), false));
-                type_str(&mut app, "echo lw-typed-marker");
-                app.on_key(key(KeyCode::Enter, false));
-                assert!(matches!(app.mode, Mode::Normal), "Enter closes the prompt");
-
-                let shells = &app.state.repositories[0].worktrees[0].shells;
-                assert_eq!(shells.len(), 2, "the shell was created");
-                let pid = shells[1].pane_id.clone().unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(300));
-                let capture = tmux.capture_pane(&pid, 50).unwrap();
-                assert!(
-                    capture.contains("lw-typed-marker"),
-                    "the typed command must run, capture: {capture}"
-                );
-                assert!(
-                    !capture.contains("lw-default-marker"),
-                    "the repository default must not run too, capture: {capture}"
-                );
-            });
-        });
+    fn picker_offers_the_repository_agent_first_and_a_plain_shell_last() {
+        let mut app = app_with_shell();
+        app.state.repositories[0].agent_command = "my-agent".into();
+        let choices = app.add_shell_choices();
+        assert_eq!(
+            choices.first().map(|c| &c.spawn),
+            Some(&ShellSpawn::Agent("my-agent".into())),
+            "the repository default leads: {choices:?}"
+        );
+        assert_eq!(
+            choices.last().map(|c| &c.spawn),
+            Some(&ShellSpawn::Plain),
+            "a plain shell is always offered: {choices:?}"
+        );
+        assert!(
+            choices.last().unwrap().label.contains("plain shell"),
+            "the plain entry says so: {choices:?}"
+        );
     }
 
-    /// Submitting the prompt empty means "whatever the repository normally
-    /// runs" — the default agent command.
+    /// Configured agent presets join the list, and a preset that repeats
+    /// the repository default does not show up twice.
     #[test]
-    fn add_shell_prompt_empty_falls_back_to_the_repository_default() {
+    fn picker_lists_configured_agents_without_duplicating_the_default() {
+        let mut app = app_with_shell();
+        app.state.repositories[0].agent_command = "claude".into();
+        app.cfg.agents = vec![
+            crate::config::AgentConfig {
+                name: "claude".into(),
+                command: "claude".into(),
+                ..Default::default()
+            },
+            crate::config::AgentConfig {
+                name: "codex".into(),
+                command: "codex".into(),
+                ..Default::default()
+            },
+        ];
+        let labels: Vec<String> = app
+            .add_shell_choices()
+            .into_iter()
+            .map(|c| c.label)
+            .collect();
+        assert_eq!(
+            labels.iter().filter(|l| *l == "claude").count(),
+            1,
+            "the default is not repeated: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l == "codex"),
+            "presets join: {labels:?}"
+        );
+    }
+
+    /// Enter on the first entry runs the repository's agent command — the
+    /// pre-picker default behaviour, one keystroke longer.
+    #[test]
+    fn picker_enter_runs_the_repository_default() {
         crate::util::testutil::with_fresh_xdg(|| {
             with_tmux_server(|sock, _tmux| {
                 let tmux = tmux_standalone(sock);
@@ -6245,6 +6418,7 @@ mod tests {
 
                 app.on_key(key(KeyCode::Char('a'), false));
                 app.on_key(key(KeyCode::Enter, false));
+                assert!(matches!(app.mode, Mode::Normal), "Enter closes the picker");
 
                 let shells = &app.state.repositories[0].worktrees[0].shells;
                 assert_eq!(shells.len(), 2, "the shell was created");
@@ -6253,9 +6427,72 @@ mod tests {
                 let capture = tmux.capture_pane(&pid, 50).unwrap();
                 assert!(
                     capture.contains("lw-default-marker"),
-                    "an empty command falls back to the default, capture: {capture}"
+                    "the first entry runs the repository default, capture: {capture}"
                 );
             });
         });
+    }
+
+    /// The plain-shell entry starts a shell and sends it nothing: the
+    /// repository's agent command must not sneak in behind it.
+    #[test]
+    fn picker_plain_shell_runs_no_agent_command() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            with_tmux_server(|sock, _tmux| {
+                let tmux = tmux_standalone(sock);
+                let mut app = app_with(tmux.clone());
+                seed_repository_with_shell(&tmux, &mut app);
+                app.state.repositories[0].agent_command = "echo lw-default-marker".into();
+                app.state.repositories[0].worktrees[0].path = PathBuf::from("/tmp");
+                app.build_tree_flags();
+                app.sel = Sel::Worktree(0, 0);
+
+                let last = app.add_shell_choices().len();
+                app.on_key(key(KeyCode::Char('a'), false));
+                // The rows are numbered from 1, so the last row's digit is
+                // its count — the plain shell always sits at the end.
+                app.on_key(key(
+                    KeyCode::Char(char::from_digit(last as u32, 10).unwrap()),
+                    false,
+                ));
+                assert!(
+                    matches!(app.mode, Mode::Normal),
+                    "the digit takes the entry"
+                );
+
+                let shells = &app.state.repositories[0].worktrees[0].shells;
+                assert_eq!(shells.len(), 2, "the shell was created");
+                let pid = shells[1].pane_id.clone().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let capture = tmux.capture_pane(&pid, 50).unwrap();
+                assert!(
+                    !capture.contains("lw-default-marker"),
+                    "a plain shell runs no agent, capture: {capture}"
+                );
+            });
+        });
+    }
+
+    /// j/k move the picker cursor, clamped at both ends like every other
+    /// modal list.
+    #[test]
+    fn picker_cursor_moves_and_clamps() {
+        let mut app = app_with_shell();
+        let last = app.add_shell_choices().len() - 1;
+        app.on_key(key(KeyCode::Char('a'), false));
+        app.on_key(key(KeyCode::Char('k'), false));
+        assert!(
+            matches!(app.mode, Mode::AddShell { index: 0 }),
+            "k at the top stays put"
+        );
+        app.on_key(key(KeyCode::Char('G'), false));
+        assert!(matches!(app.mode, Mode::AddShell { index } if index == last));
+        app.on_key(key(KeyCode::Char('j'), false));
+        assert!(
+            matches!(app.mode, Mode::AddShell { index } if index == last),
+            "j at the bottom stays put"
+        );
+        app.on_key(key(KeyCode::Char('g'), false));
+        assert!(matches!(app.mode, Mode::AddShell { index: 0 }));
     }
 }

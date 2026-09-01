@@ -69,6 +69,27 @@ pub fn log_path() -> PathBuf {
     state_dir().join("lazywingman.log")
 }
 
+/// The user's own login shell — `$SHELL`, falling back to `bash` when the
+/// variable is unset or empty (a bare `login` container, `env -i`). This is
+/// what a *plain* shell runs: the point of that choice is to land in the
+/// shell you actually use, not in the `[defaults].agent_shell` an agent is
+/// spawned under.
+pub fn login_shell() -> String {
+    match env::var("SHELL") {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => "bash".to_string(),
+    }
+}
+
+/// The last component of a shell path (`/usr/bin/zsh` → `zsh`) — what the
+/// picker labels the plain-shell entry with.
+pub fn shell_name(shell: &str) -> String {
+    Path::new(shell)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| shell.to_string())
+}
+
 /// Lexically resolve `.` and `..` in a path without touching the filesystem.
 /// `/a/b/../c` → `/a/c`; relative `../wt` stays relative.
 pub fn normalize_path(path: &Path) -> PathBuf {
