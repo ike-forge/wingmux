@@ -42,7 +42,7 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 # .lazywingman.toml (searched upward from the working directory, stopping at
 # the repository root) and a gitignored .lazywingman.local.toml next to it;
 # those layers override keys here. Some keys are user-only and are ignored
-# in repository files with a diagnostic: tmux.back_key, worktrees.root,
+# in repository files with a diagnostic: worktrees.root and
 # discovery.scan_root. Inspect the effective config with `lazywingman
 # --config-dump`; use --config <path> or LW_CONFIG to point at a different
 # user file. A malformed config never prevents startup — the smallest bad
@@ -72,11 +72,12 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #colors = "full"
 
 [tmux]
-# Keybinding (tmux syntax) pressed AFTER the tmux prefix (e.g. `C-b C-o`)
-# inside an agent window to jump straight back to the LazyWingman
-# dashboard. Bound in the PREFIX table, never the root table — a root
-# binding would hijack the key for every session and other TUIs.
-#back_key = "C-o"
+# Nothing to set here any more. `back_key` was retired: it bound a chord
+# that jumped from an agent window back to the dashboard window, and with
+# docking the agent's pane sits beside the tree, so "back to the dashboard"
+# is a move between two panes of one window — `<prefix> + ←` by default,
+# and the user's own binding rather than one LazyWingman sets behind their
+# back. A config still carrying it is told so and otherwise ignored.
 
 [worktrees]
 # Root directory for the worktrees. Absolute path, or relative to the
@@ -223,7 +224,6 @@ pub struct Config {
     pub poll_interval_ms: u64,
     pub confirm_on_delete: bool,
     pub preview: PreviewConfig,
-    pub tmux: TmuxConfig,
     pub worktrees: WorktreeConfig,
     pub discovery: DiscoveryConfig,
     pub defaults: DefaultsConfig,
@@ -278,12 +278,6 @@ impl PreviewColors {
             PreviewColors::None => "none",
         }
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct TmuxConfig {
-    pub back_key: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -675,9 +669,6 @@ impl Default for Config {
             poll_interval_ms: 500,
             confirm_on_delete: true,
             preview: PreviewConfig::default(),
-            tmux: TmuxConfig {
-                back_key: "C-o".into(),
-            },
             worktrees: WorktreeConfig {
                 root: String::new(),
                 base_branch: "master".into(),
@@ -717,14 +708,6 @@ impl Default for Config {
             messages: default_messages(),
             diagnostics: Vec::new(),
             sources: Vec::new(),
-        }
-    }
-}
-
-impl Default for TmuxConfig {
-    fn default() -> Self {
-        TmuxConfig {
-            back_key: "C-o".into(),
         }
     }
 }
@@ -888,7 +871,6 @@ pub struct EffectiveAgent {
 /// \"not every setting is local-able\"). A repository-local file setting one of
 /// these gets a diagnostic and the key is ignored — never silently applied.
 const USER_ONLY_KEYS: &[(&str, &str)] = &[
-    ("tmux", "back_key"),       // a global tmux binding is the user's choice
     ("worktrees", "root"),      // machine-specific path
     ("discovery", "scan_root"), // machine-specific path
 ];
@@ -909,7 +891,13 @@ const TOP_KEYS: &[&str] = &[
     "messages",
 ];
 const PREVIEW_KEYS: &[&str] = &["colors"];
-const TMUX_KEYS: &[&str] = &["back_key"];
+/// `[tmux]` has no keys left: `back_key` was retired when docking made
+/// "get back to the dashboard" a movement between two panes of one window
+/// (`<prefix> + ←`), which is the user's own binding and not ours to set.
+/// The section stays *known* so a config still carrying the key is told
+/// which key is stray — `unknown key 'tmux.back_key'` — instead of being
+/// told the whole section is.
+const TMUX_KEYS: &[&str] = &[];
 const WORKTREES_KEYS: &[&str] = &["root", "base_branch", "delete_branch"];
 const DISCOVERY_KEYS: &[&str] = &["scan_root", "max_depth", "skip_dirs"];
 const DEFAULTS_KEYS: &[&str] = &["agent_command", "agent_shell", "agent_hooks"];
@@ -1119,7 +1107,6 @@ impl Config {
             "preview.colors",
             format!("\"{}\"", self.preview.colors.as_str()),
         );
-        line("tmux.back_key", format!("\"{}\"", self.tmux.back_key));
         line("worktrees.root", format!("\"{}\"", self.worktrees.root));
         line(
             "worktrees.base_branch",
@@ -1406,7 +1393,7 @@ fn find_repository_dir(cwd: &Path) -> Option<PathBuf> {
 /// Merge `layer` into `merged` key by key: maps merge deeply (per subkey),
 /// lists and scalars replace (the higher layer wins). Records the winning
 /// layer per dotted key for `--config-dump`. User-only keys
-/// (`tmux.back_key`, `worktrees.root`, `discovery.scan_root`) are rejected
+/// (`worktrees.root`, `discovery.scan_root`) are rejected
 /// outside the user layer with a diagnostic — never silently applied.
 fn merge_layer(
     merged: &mut toml::Table,
@@ -1594,14 +1581,6 @@ fn deserialize_lenient(
         sources,
         diags,
     );
-    cfg.tmux = take_section(
-        merged,
-        "tmux",
-        TmuxConfig::default(),
-        layer_paths,
-        sources,
-        diags,
-    );
     cfg.worktrees = take_section(
         merged,
         "worktrees",
@@ -1755,14 +1734,6 @@ impl SectionSalvage for PreviewConfig {
     fn salvage(t: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self {
         PreviewConfig {
             colors: salvage_field(t, "colors", PreviewColors::default(), file, diags),
-        }
-    }
-}
-
-impl SectionSalvage for TmuxConfig {
-    fn salvage(t: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self {
-        TmuxConfig {
-            back_key: salvage_field(t, "back_key", "C-o".to_string(), file, diags),
         }
     }
 }
@@ -2379,7 +2350,6 @@ mod tests {
             assert_eq!(cfg.theme, crate::theme::DEFAULT_THEME);
             assert_eq!(cfg.poll_interval_ms, 500);
             assert!(cfg.confirm_on_delete);
-            assert_eq!(cfg.tmux.back_key, "C-o");
             assert_eq!(cfg.defaults.agent_command, "claude");
             assert_eq!(cfg.worktrees.base_branch, "master");
             assert!(
@@ -2804,15 +2774,15 @@ mod tests {
             let cwd = tempfile::TempDir::new().unwrap();
             let cfg = load_user(
                 cwd.path(),
-                "[tmux]\nback_key = 12\n\n[worktrees]\nbase_branch = 5\nroot = \"/wt\"\n",
+                "[preview]\ncolors = 12\n\n[worktrees]\nbase_branch = 5\nroot = \"/wt\"\n",
             );
-            // one bad binding → that field defaults, the section survives
-            assert_eq!(cfg.tmux.back_key, "C-o");
+            // one bad field → that field defaults, the section survives
+            assert_eq!(cfg.preview.colors, PreviewColors::default());
             assert_eq!(cfg.worktrees.root, "/wt");
             assert_eq!(cfg.worktrees.base_branch, "master");
             // per-field salvage: the bad fields are reported, the good one
             // (root) is NOT (it never fails)
-            assert!(cfg.diagnostics.iter().any(|d| d.contains("'back_key'")));
+            assert!(cfg.diagnostics.iter().any(|d| d.contains("'colors'")));
             assert!(cfg.diagnostics.iter().any(|d| d.contains("'base_branch'")));
             assert!(!cfg.diagnostics.iter().any(|d| d.contains("'root'")));
         });
@@ -2826,7 +2796,6 @@ mod tests {
                 cwd.path(),
                 "frobnicate = true\n[tmux]\nnot_a_key = 1\n[[agents]]\nname=\"a\"\ncommand=\"b\"\nwrong = 3\n",
             );
-            assert_eq!(cfg.tmux.back_key, "C-o");
             assert_eq!(cfg.agents.len(), 1);
             assert!(cfg.diagnostics.iter().any(|d| d.contains("'frobnicate'")));
             assert!(
@@ -2878,7 +2847,6 @@ mod tests {
             let cfg = Config::load_from(&cwd, None).unwrap();
             assert_eq!(cfg.theme, "ansi"); // repository wins for theme
             assert_eq!(cfg.poll_interval_ms, 250); // user keeps poll
-            assert_eq!(cfg.tmux.back_key, "C-x"); // user keeps tmux
             // provenance: theme came from the repository layer
             assert!(
                 cfg.sources
@@ -2967,20 +2935,20 @@ mod tests {
     fn user_only_keys_rejected_in_repository_files() {
         with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
-            load_user(root.path(), "[tmux]\nback_key = \"C-x\"\n");
+            load_user(root.path(), "[discovery]\nscan_root = \"/mine\"\n");
             std::fs::write(
                 root.path().join(".lazywingman.toml"),
-                "[tmux]\nback_key = \"C-b\"\n[worktrees]\nroot = \"/machine/path\"\n",
+                "[discovery]\nscan_root = \"/theirs\"\n[worktrees]\nroot = \"/machine/path\"\n",
             )
             .unwrap();
             let cfg = Config::load_from(root.path(), None).unwrap();
-            // user's binding wins; the repository file's attempt is reported
-            assert_eq!(cfg.tmux.back_key, "C-x");
+            // the user's value wins; the repository file's attempt is reported
+            assert_eq!(cfg.discovery.scan_root, "/mine");
             assert_eq!(cfg.worktrees.root, "");
             assert!(
                 cfg.diagnostics
                     .iter()
-                    .any(|d| d.contains("'tmux.back_key'"))
+                    .any(|d| d.contains("'discovery.scan_root'"))
             );
             assert!(
                 cfg.diagnostics
@@ -3069,7 +3037,6 @@ mod tests {
             assert!(dump.contains("poll_interval_ms = 250  # from user"));
             assert!(dump.contains("preview.colors = \"full\"  # from defaults"));
             assert!(dump.contains("worktrees.base_branch = \"develop\"  # from repository"));
-            assert!(dump.contains("tmux.back_key = \"C-o\"  # from defaults"));
             // [icons] must appear too: a per-key override shows its own
             // layer, and an untouched key still shows the resolved default.
             assert!(
@@ -3116,6 +3083,34 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.messages.len(), 1);
         assert_eq!(cfg.messages[0].text, "run the gate and push");
+    }
+
+    /// `back_key` was retired when docking made "back to the dashboard" a
+    /// move between two panes of one window — the user's own binding, not
+    /// one LazyWingman sets behind their back. A config still carrying it
+    /// is reported like any other stray key rather than failing, the
+    /// treatment [`retired_label_key_is_reported`] established.
+    #[test]
+    fn retired_back_key_is_reported() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            let cfg = load_user(cwd.path(), "theme = \"ansi\"\n[tmux]\nback_key = \"C-o\"\n");
+            assert_eq!(cfg.theme, "ansi", "the rest of the file still loads");
+            assert!(
+                cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("unknown key 'tmux.back_key'")),
+                "the retired key must name itself: {:?}",
+                cfg.diagnostics
+            );
+            assert!(
+                !cfg.diagnostics
+                    .iter()
+                    .any(|d| d.contains("unknown key 'tmux'")),
+                "the section stays known, so the diagnostic can be precise: {:?}",
+                cfg.diagnostics
+            );
+        });
     }
 
     /// `label` was retired when the modal started listing the message

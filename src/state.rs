@@ -151,14 +151,35 @@ impl State {
         }
     }
 
-    /// Persist to disk (pretty-printed).
+    /// Persist to disk (pretty-printed), **atomically**.
+    ///
+    /// Two dashboards share this file and both write it, so last-writer-wins
+    /// is the rule. That is survivable: everything live is re-derived from
+    /// tmux on the next reconcile, so the loser loses nothing a poll does
+    /// not put back. A **half-written** file is not survivable — `load`
+    /// treats unparseable JSON as a hard error, so one badly-timed write
+    /// would take the tree down for every instance and stay broken across
+    /// restarts.
+    ///
+    /// So: write a temporary file beside the target, then `rename` over it.
+    /// Same directory, because a rename is only atomic within a filesystem;
+    /// the pid in the name, because two instances must not share the
+    /// temporary either. A failed write leaves the previous state intact
+    /// and the temporary behind, which is the right way round.
     pub fn save(&self) -> Result<()> {
         let path = crate::util::state_path();
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let text = serde_json::to_string_pretty(self).map_err(|e| Error::State(e.to_string()))?;
-        std::fs::write(&path, text)?;
+        let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+        std::fs::write(&tmp, text)?;
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            // Do not leave the temporary lying around when the swap is the
+            // thing that failed.
+            let _ = std::fs::remove_file(&tmp);
+            return Err(Error::Io(e));
+        }
         log::info!("state saved: {} repositories", self.repositories.len());
         Ok(())
     }
@@ -847,6 +868,50 @@ mod tests {
             // A second reconcile does not change its mind.
             s.reconcile(&tmux).expect("reconcile again");
             assert_eq!(s.repositories[0].worktrees[0].shells.len(), 1);
+        });
+    }
+
+    /// Two dashboards share this file and both write it. Last-writer-wins
+    /// is survivable — reconcile re-derives everything live from tmux — but
+    /// a half-written file is not: `load` treats unparseable JSON as a hard
+    /// error, so one badly-timed write would take the tree down for every
+    /// instance and stay broken across restarts. The write goes to a
+    /// temporary beside the target and is renamed over it.
+    #[test]
+    fn save_is_atomic_so_a_torn_file_is_impossible() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut s = State::default();
+            s.repositories.push(Repository {
+                name: "p".into(),
+                path: PathBuf::from("/tmp/p"),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: false,
+                worktrees: vec![],
+            });
+            s.save().expect("save");
+
+            let path = crate::util::state_path();
+            assert!(path.exists());
+            State::load().expect("what was written parses");
+
+            // The temporary is not left behind, and nothing else is: the
+            // rename IS the write, so the directory holds one state file.
+            let strays: Vec<String> = std::fs::read_dir(crate::util::state_dir())
+                .expect("state dir")
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with("state.") && n != "state.json")
+                .collect();
+            assert!(strays.is_empty(), "temporaries left behind: {strays:?}");
+
+            // Saving again over a live file replaces it whole.
+            s.repositories[0].name = "renamed".into();
+            s.save().expect("save again");
+            let back = State::load().expect("still parses");
+            assert_eq!(back.repositories[0].name, "renamed");
         });
     }
 

@@ -814,7 +814,6 @@ impl App {
                 tmux,
                 crate::dock::dash_width(self.dash_window_size(tmux).0),
             );
-            self.bind_back_keys(tmux)?;
         }
         self.build_tree_flags();
         self.clamp_sel();
@@ -1105,47 +1104,6 @@ impl App {
             Ok(()) => log::info!("slot {pane} removed"),
             Err(e) => log::warn!("cannot remove slot {pane}: {e}"),
         }
-    }
-
-    /// Bind the back-key in every live agent session so the user can jump
-    /// back to the dashboard from any agent window. Only meaningful when
-    /// the dashboard itself runs inside tmux.
-    fn bind_back_keys(&self, tmux: &Tmux) -> Result<()> {
-        let Some(inside) = &tmux.inside else {
-            return Ok(());
-        };
-        // Pre-M9 versions bound the key in the root table (`-n`), which
-        // hijacked the chord for every session and TUI on the server.
-        // Remove that legacy binding first (only ours — a user's own root
-        // binding of the same key is untouched), then bind behind the
-        // prefix, where it cannot collide with any application.
-        tmux.unbind_legacy_root_back_key(&inside.session_name, &inside.window_id)?;
-        // One binding, not one per session: tmux key tables are server-wide,
-        // so this single slot serves every agent session.
-        let sessions = self
-            .state
-            .repositories
-            .iter()
-            .filter(|r| {
-                r.session_name
-                    .as_deref()
-                    .is_some_and(|s| tmux.session_exists(s))
-            })
-            .count();
-        if sessions == 0 {
-            return Ok(());
-        }
-        tmux.bind_back_key(
-            &self.cfg.tmux.back_key,
-            &inside.session_name,
-            &inside.window_id,
-        )?;
-        log::info!(
-            "back chord <prefix>+{} → dashboard {} (serving {sessions} agent session(s))",
-            self.cfg.tmux.back_key,
-            inside.window_id
-        );
-        Ok(())
     }
 
     fn save_state(&mut self) -> Result<()> {
@@ -1839,13 +1797,6 @@ impl App {
             &id,
             self.holder_width(tmux),
         )?;
-        if let Some(inside) = &tmux.inside {
-            let _ = tmux.bind_back_key(
-                &self.cfg.tmux.back_key,
-                &inside.session_name,
-                &inside.window_id,
-            );
-        }
         log::info!(
             "created agent session {name} (first window {})",
             w.window_id
