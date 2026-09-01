@@ -6189,6 +6189,7 @@ mod tests {
             current_command: "node".into(),
             dead: false,
             overlay_raw: String::new(),
+            ..Default::default()
         };
         assert_eq!(
             crate::status::classify(&pat, &recent_tail(coloured), Some(&pane)),

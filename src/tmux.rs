@@ -20,6 +20,7 @@ use crate::error::{Error, Result};
 /// Dashboard coordinates when LazyWingman itself runs inside tmux.
 #[derive(Debug, Clone)]
 pub struct Inside {
+    #[allow(dead_code)] // read once reconcile groups panes by session (Task 4)
     pub session_name: String,
     pub window_id: String,
     pub pane_id: String,
@@ -34,11 +35,24 @@ pub struct Tmux {
 }
 
 /// One pane, as reported by `list-panes -F`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PaneInfo {
     pub pane_id: String,
     pub current_command: String,
     pub dead: bool,
+    /// The session the pane is in *right now*. A docked pane sits in the
+    /// dashboard's session, so this is where it happens to live, never who
+    /// it belongs to — [`Self::shell`] is the identity.
+    #[allow(dead_code)] // reconcile groups panes by it (Task 4)
+    pub session_name: String,
+    /// The shell this pane is, read back from its `@lw_*` options.
+    pub shell: Option<ShellId>,
+    /// Is this the active pane of its window?
+    #[allow(dead_code)] // the focus guard reads it (Phase 4)
+    pub active: bool,
+    /// While docked: the pane id of the dashboard holding it (`@lw_docked`).
+    #[allow(dead_code)] // the lease reads it (Phase 5)
+    pub docked_by: Option<String>,
     /// Raw `@lw_agent` value, empty when the pane carries none. Parsed by
     /// `hooks::Overlay::parse`; kept as a string here so tmux stays
     /// ignorant of what the value means.
@@ -404,13 +418,30 @@ impl Tmux {
 
     // ---------------------------------------------------------- panes
 
-    /// All panes of our agent sessions (one tmux call per poll). The
-    /// dashboard's own session is excluded — we only supervise agent shells.
-    /// A server with no sessions yet (fresh standalone boot) yields an empty
-    /// list, not an error.
+    /// Every LazyWingman shell on the server (one tmux call per poll).
+    ///
+    /// A pane qualifies by **carrying an identity**, not by living in an
+    /// agent session: a docked pane sits in the dashboard's own session, and
+    /// a session-name filter would drop it from the poll, lose its status
+    /// and prune it as dead. Conversely a pane that merely shares an agent
+    /// session — the user's own split, a holder — carries no `@lw_repo` and
+    /// is none of our business.
+    ///
+    /// A server with no sessions yet yields an empty list, not an error.
     pub fn list_panes(&self) -> Result<Vec<PaneInfo>> {
-        let fmt = "#{pane_id}|#{pane_current_command}|#{pane_dead}|#{session_name}|#{@lw_agent}";
-        let out = match self.run(&["list-panes", "-a", "-F", fmt]) {
+        // Built from the option constants rather than spelled out, so the
+        // read path cannot drift from what `stamp_shell` writes.
+        let fmt = format!(
+            "#{{pane_id}}|#{{pane_current_command}}|#{{pane_dead}}|#{{session_name}}\
+             |#{{{repo}}}|#{{{worktree}}}|#{{{index}}}|#{{pane_active}}|#{{{docked}}}\
+             |#{{{overlay}}}",
+            repo = dock::REPO_KEY,
+            worktree = dock::WORKTREE_KEY,
+            index = dock::INDEX_KEY,
+            docked = dock::DOCKED_KEY,
+            overlay = crate::hooks::OVERLAY_KEY,
+        );
+        let out = match self.run(&["list-panes", "-a", "-F", &fmt]) {
             Ok(o) => o,
             // list-panes -a has no target when the server has zero sessions.
             Err(e) if is_no_server_error(&e) => return Ok(Vec::new()),
@@ -418,17 +449,8 @@ impl Tmux {
         };
         Ok(out
             .lines()
-            .filter(|line| {
-                // The session name is field 3 now, not the last one: the
-                // overlay trails it and may itself contain '|'. A plain
-                // split is fine here — nth(3) lands on the session field
-                // regardless of how many pipes follow it in the overlay.
-                line.split('|')
-                    .nth(3)
-                    .map(|s| s.starts_with(SESSION_PREFIX))
-                    .unwrap_or(false)
-            })
             .filter_map(parse_pane_line)
+            .filter(|p| p.shell.is_some())
             .collect())
     }
 
@@ -743,17 +765,28 @@ fn legacy_root_back_key(line: &str, dash_session: &str, win: &str) -> Option<Str
 }
 
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
-    // Field order: id | command | dead | session | overlay. The overlay is
-    // last and taken verbatim so a '|' inside it cannot desync parsing.
-    let mut it = line.splitn(5, '|');
+    // Field order: id | command | dead | session | repo | worktree | index |
+    // active | docked | overlay. Every new field goes BEFORE the overlay:
+    // the overlay is taken verbatim as the remainder, so a '|' inside it
+    // cannot desync parsing, and only a last field can afford that.
+    let mut it = line.splitn(10, '|');
     let pane_id = it.next()?.to_string();
     let current_command = it.next()?.to_string();
     let dead = it.next()? == "1";
-    let _session = it.next()?;
+    let session_name = it.next()?.to_string();
+    let repo = it.next().unwrap_or("");
+    let worktree = it.next().unwrap_or("");
+    let index = it.next().unwrap_or("");
+    let active = it.next().unwrap_or("") == "1";
+    let docked_by = it.next().unwrap_or("").trim().to_string();
     Some(PaneInfo {
         pane_id,
         current_command,
         dead,
+        session_name,
+        shell: ShellId::from_fields(repo, worktree, index),
+        active,
+        docked_by: (!docked_by.is_empty()).then_some(docked_by),
         overlay_raw: it.next().unwrap_or("").to_string(),
     })
 }
@@ -934,19 +967,43 @@ mod tests {
 
     #[test]
     fn pane_line_parsing() {
-        let line = "%3|claude|0|wingman-session-p";
-        let p = parse_pane_line(line).unwrap();
+        let p = parse_pane_line("%3|claude|0|wingman-session-p|p|feat|2|1|").unwrap();
         assert_eq!(p.pane_id, "%3");
         assert_eq!(p.current_command, "claude");
         assert!(!p.dead);
-        let dead = parse_pane_line("%9|sh|1|wingman-session-p").unwrap();
+        assert_eq!(p.session_name, "wingman-session-p");
+        assert_eq!(
+            p.shell,
+            Some(ShellId::for_session("wingman-session-p", "feat", 2))
+        );
+        assert!(p.active);
+        assert_eq!(p.docked_by, None);
+        let dead = parse_pane_line("%9|sh|1|wingman-session-p|p|feat|2|0|").unwrap();
         assert!(dead.dead);
+        assert!(!dead.active);
+    }
+
+    /// An unstamped pane parses but carries no identity — that is what
+    /// `list_panes` filters on, so "unset" must read as `None`, not as a
+    /// shell named the empty string.
+    #[test]
+    fn a_pane_without_the_options_carries_no_identity() {
+        let p = parse_pane_line("%0|bash|0|work||||1|").expect("parses");
+        assert_eq!(p.shell, None);
+        assert_eq!(p.session_name, "work");
+    }
+
+    /// The docking dashboard's pane id, when there is one.
+    #[test]
+    fn docked_by_is_read_back_when_set() {
+        let p = parse_pane_line("%3|claude|0|main|p|feat|0|1|%7|").expect("parses");
+        assert_eq!(p.docked_by.as_deref(), Some("%7"));
     }
 
     #[test]
     fn pane_line_parsing_keeps_the_overlay_verbatim() {
-        let p =
-            parse_pane_line("%3|claude|0|wingman-session-x|blocked:1755600000").expect("parses");
+        let p = parse_pane_line("%3|claude|0|wingman-session-x|x|f|0|1||blocked:1755600000")
+            .expect("parses");
         assert_eq!(p.pane_id, "%3");
         assert_eq!(p.current_command, "claude");
         assert!(!p.dead);
@@ -957,14 +1014,83 @@ mod tests {
     /// can never desync the parser.
     #[test]
     fn overlay_may_contain_the_field_separator() {
-        let p = parse_pane_line("%3|claude|0|wingman-session-x|a|b").expect("parses");
+        let p = parse_pane_line("%3|claude|0|wingman-session-x|x|f|0|1||a|b").expect("parses");
         assert_eq!(p.overlay_raw, "a|b");
+        assert_eq!(
+            p.shell,
+            Some(ShellId::for_session("wingman-session-x", "f", 0))
+        );
     }
 
     #[test]
     fn missing_overlay_field_is_empty_not_an_error() {
-        let p = parse_pane_line("%3|claude|0|wingman-session-x").expect("parses");
+        let p = parse_pane_line("%3|claude|0|wingman-session-x|x|f|0|1|").expect("parses");
         assert_eq!(p.overlay_raw, "");
+    }
+
+    /// Identity, not location, is what makes a pane ours. A docked pane
+    /// lives in the dashboard's session: a session-name filter would drop it
+    /// from the poll, lose its status and prune it as dead. Equally, a pane
+    /// that merely shares an agent session is not a shell.
+    #[test]
+    fn list_panes_selects_on_identity_not_on_the_session_name() {
+        with_tmux_server(|_sock, tmux| {
+            // A stamped pane, then moved to a session that is not ours —
+            // this is what a docked pane looks like from the poll's side.
+            let agent = tmux
+                .new_session(
+                    "wingman-session-id",
+                    "lw:feat/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-id", "feat", 0),
+                )
+                .expect("agent session");
+            // An unstamped pane inside that same agent session.
+            let plain = tmux
+                .run_raw(&[
+                    "split-window",
+                    "-d",
+                    "-t",
+                    &agent.pane_id,
+                    "-P",
+                    "-F",
+                    "#{pane_id}",
+                    "bash",
+                ])
+                .expect("split")
+                .trim()
+                .to_string();
+
+            let panes = tmux.list_panes().expect("panes");
+            let ours: Vec<&str> = panes.iter().map(|p| p.pane_id.as_str()).collect();
+            assert_eq!(
+                ours,
+                vec![agent.pane_id.as_str()],
+                "only the stamped pane is a shell (unstamped: {plain})"
+            );
+            let got = &panes[0];
+            assert_eq!(
+                got.shell,
+                Some(ShellId::for_session("wingman-session-id", "feat", 0))
+            );
+
+            // Now move it into 'main' — a session that is not an agent
+            // session at all. It must still come back.
+            tmux.run_raw(&["swap-pane", "-d", "-s", &agent.pane_id, "-t", "%0"])
+                .expect("swap into the dashboard session");
+            let panes = tmux.list_panes().expect("panes after the swap");
+            let got = panes
+                .iter()
+                .find(|p| p.pane_id == agent.pane_id)
+                .expect("a docked pane is still one of ours");
+            assert_eq!(got.session_name, "main");
+            assert_eq!(
+                got.shell,
+                Some(ShellId::for_session("wingman-session-id", "feat", 0)),
+                "identity travels with the pane"
+            );
+        });
     }
 
     /// Both spawn paths stamp the pane before returning. `new_session`

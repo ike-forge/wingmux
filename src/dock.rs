@@ -9,11 +9,6 @@
 //! reports an **unset** option as the empty string, so parsing must treat
 //! "unset" and "junk" the same way and simply decline.
 
-// The docking layer lands in phases: the option keys are fixed here, in one
-// place, so no later task can invent a second spelling for the same key.
-// Narrowed to the still-unconsumed keys once the read path lands.
-#![allow(dead_code)]
-
 /// Repository slug, on an agent pane.
 pub const REPO_KEY: &str = "@lw_repo";
 /// Worktree name, on an agent pane.
@@ -22,12 +17,15 @@ pub const WORKTREE_KEY: &str = "@lw_worktree";
 pub const INDEX_KEY: &str = "@lw_index";
 /// `1` on a holder pane — the placeholder that keeps an agent window alive
 /// while its agent pane is docked elsewhere.
+#[allow(dead_code)] // the holder pane arrives in Phase 3
 pub const HOLDER_KEY: &str = "@lw_holder";
 /// `1` on the dashboard's slot pane — the pane an agent is swapped into.
+#[allow(dead_code)] // the slot arrives in Phase 3
 pub const SLOT_KEY: &str = "@lw_slot";
 /// While docked: the docking dashboard's own pane id, on the agent pane.
 pub const DOCKED_KEY: &str = "@lw_docked";
 /// Absolute scope path, on the dashboard *window*.
+#[allow(dead_code)] // the dashboard window announces its scope in Phase 2
 pub const SCOPE_KEY: &str = "@lw_scope";
 
 /// The identity of one agent shell, as carried by its pane.

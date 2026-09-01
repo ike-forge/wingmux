@@ -180,6 +180,7 @@ mod tests {
             current_command: current_command.to_string(),
             dead,
             overlay_raw: String::new(),
+            ..Default::default()
         }
     }
 
@@ -189,6 +190,7 @@ mod tests {
             current_command: current_command.to_string(),
             dead,
             overlay_raw: overlay.to_string(),
+            ..Default::default()
         }
     }
 
