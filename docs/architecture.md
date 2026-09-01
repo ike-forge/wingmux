@@ -23,15 +23,28 @@ the same commit as the change.
 - Drafts file: JSON at `$XDG_STATE_HOME/lazywingman/drafts.json` — unsent
   quick-send prompts (`src/drafts.rs`). State, not cache: a half-written
   prompt cannot be regenerated.
-- **State schema v3**: `State.version = 3`. v3 renamed the on-disk keys
-  (`repositories`/`worktrees` → `repositories`/`worktrees`) with no migration
-  path, so `load` reads `version` first and discards a well-formed file of
-  any other version, starting empty and letting `reconcile` rediscover the
-  repositories and reconstruct their worktrees. Malformed JSON is still an
-  error — the user is told rather than silently losing the tree.
+- **State schema v4**: `State.version = 4`. `load` reads `version` first and
+  discards a well-formed file of any other version, starting empty and
+  letting `reconcile` rediscover the repositories and reconstruct their
+  worktrees. Malformed JSON is still an error — the user is told rather than
+  silently losing the tree. (v3 introduced that rule, renaming the on-disk
+  keys with no migration path; v4 keeps it.)
+- **No live tmux coordinates in `state.json`.** v4 drops the persisted
+  `window_id` / `pane_id`: they are `#[serde(skip)]` runtime fields that
+  `reconcile` fills in from one `list-panes`. A coordinate that survived a
+  restart names a window that no longer holds the shell — or holds someone
+  else's — and the file is a recipe for the tree, never a restore of tmux.
+- **A pane carries its own identity.** `dock::ShellId` (repository slug,
+  worktree, shell index) is written onto the pane's `@lw_repo` /
+  `@lw_worktree` / `@lw_index` options at spawn, and pane options travel with
+  the pane across windows and sessions. So `reconcile` groups panes by
+  identity rather than walking window names, and a window renamed by hand —
+  or a pane sitting in a session that is not its own — costs the tree
+  nothing. `Tmux::window_name` stays as the human-facing label, and as what
+  a pre-v4 server is backfilled from on its first reconcile.
 - Shell indices are never reused: `Worktree::next_shell_index` counts past
-  the highest index in use, because the index names the tmux window and is
-  what `reconcile` matches a live window back to.
+  the highest index in use, because the index is part of a shell's identity
+  and is what `reconcile` matches a live pane back to.
 
 ## Discovery
 
@@ -491,8 +504,9 @@ the same commit as the change.
   common case.
 - **The tmux window id left the tree**: `@5` next to every shell was the only
   thing on that row the user cannot act on — a handle for our own
-  `select-window` calls. It is still in `state.json`, which is where a
-  debugging session should look for it.
+  `select-window` calls. It is no longer in `state.json` either (v4 keeps no
+  live tmux coordinates); the log is where a debugging session should look
+  for it.
 
 ## Preview panel
 
@@ -592,9 +606,9 @@ the same commit as the change.
   worse than a buffer that stops growing.
 - **A draft's on-disk key is the shell, not the pane.** Drafts persist across
   runs, so the key has to survive one: pane ids do not (tmux hands out new
-  ones, and `reconcile` rediscovers shells by window name), so `drafts.json`
-  is keyed by the triple that window name encodes — repository, worktree
-  branch, shell index — and `App::load_drafts` resolves it back to the
+  ones, and `reconcile` rediscovers shells from the panes' own identity), so
+  `drafts.json` is keyed by that identity — repository, worktree branch,
+  shell index — and `App::load_drafts` resolves it back to the
   current pane id AFTER `reconcile` has filled them in. Lifetime follows
   from the same choice: `save_drafts` writes by walking the tree, so a draft
   whose shell or worktree is gone has no row to be written under and simply

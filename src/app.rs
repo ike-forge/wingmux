@@ -1835,15 +1835,20 @@ impl App {
     }
 
     /// Killing a session's last window destroys the session; if it
-    /// survives with no LazyWingman windows left, kill it too.
+    /// survives with no shells left, kill it too.
+    ///
+    /// "No shells left" is asked of the identities, not of the session's
+    /// windows: a shell belongs to its session wherever its pane currently
+    /// sits, and a window that merely looks like ours is not one.
     fn kill_session_if_empty(tmux: &Tmux, repo: &crate::state::Repository) {
         if let Some(sess) = &repo.session_name
             && tmux.session_exists(sess)
+            && let Some(slug) = sess.strip_prefix(crate::tmux::SESSION_PREFIX)
             && tmux
-                .list_windows(sess)
-                .map(|ws| {
-                    ws.iter()
-                        .all(|w| !crate::tmux::is_lazywingman_window(&w.window_name))
+                .list_panes()
+                .map(|ps| {
+                    !ps.iter()
+                        .any(|p| p.shell.as_ref().is_some_and(|id| id.repo == slug))
                 })
                 .unwrap_or(false)
         {
@@ -5037,14 +5042,18 @@ mod tests {
             let wt = &app.state.repositories[0].worktrees[0];
             assert_eq!(wt.shells.len(), 1, "only the closed shell is dropped");
             assert_eq!(wt.shells[0].index, 0);
-            let windows = tmux.list_windows("wingman-session-p").unwrap();
-            assert!(
-                windows.iter().any(|w| w.window_name == "lw:wt/0"),
-                "the sibling shell's window stays: {windows:?}"
-            );
-            assert!(
-                !windows.iter().any(|w| w.window_name == "lw:wt/1"),
-                "the closed shell's window is killed: {windows:?}"
+            let live: Vec<usize> = tmux
+                .list_panes()
+                .unwrap()
+                .into_iter()
+                .filter_map(|p| p.shell)
+                .filter(|id| id.worktree == "wt")
+                .map(|id| id.index)
+                .collect();
+            assert_eq!(
+                live,
+                vec![0],
+                "the sibling shell stays and the closed one is gone"
             );
         });
     }

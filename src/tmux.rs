@@ -38,6 +38,9 @@ pub struct Tmux {
 #[derive(Debug, Clone, Default)]
 pub struct PaneInfo {
     pub pane_id: String,
+    /// The window the pane is in right now. Like [`Self::session_name`]
+    /// this is a location, not an identity: it changes when the pane moves.
+    pub window_id: String,
     pub current_command: String,
     pub dead: bool,
     /// The session the pane is in *right now*. A docked pane sits in the
@@ -69,8 +72,7 @@ pub struct SessionInfo {
 #[derive(Debug, Clone)]
 pub struct WindowRef {
     pub window_id: String,
-    pub window_name: String,
-    /// Active pane id (set by `new_window` / `new_session` / `list_windows`).
+    /// Active pane id (set by `new_window` / `new_session`).
     pub pane_id: String,
 }
 
@@ -310,11 +312,7 @@ impl Tmux {
                 "new-session returned no window id: {out}"
             )));
         }
-        Ok(WindowRef {
-            window_id,
-            window_name: win_name.to_string(),
-            pane_id,
-        })
+        Ok(WindowRef { window_id, pane_id })
     }
 
     /// Kill a session by name (errors when it no longer exists).
@@ -324,26 +322,6 @@ impl Tmux {
     }
 
     // ---------------------------------------------------------- windows
-
-    /// All windows of a session.
-    pub fn list_windows(&self, session: &str) -> Result<Vec<WindowRef>> {
-        let fmt = "#{window_id}|#{window_name}|#{pane_id}";
-        let out = self.run(&["list-windows", "-t", session, "-F", fmt])?;
-        Ok(out
-            .lines()
-            .filter_map(|line| {
-                let mut it = line.splitn(3, '|');
-                let window_id = it.next()?.to_string();
-                let window_name = it.next().unwrap_or("").to_string();
-                let pane_id = it.next().unwrap_or("").to_string();
-                Some(WindowRef {
-                    window_id,
-                    window_name,
-                    pane_id,
-                })
-            })
-            .collect())
-    }
 
     /// Spawn a window running an interactive `shell` in `cwd` inside an
     /// existing agent session (not selected). Retries on the fresh-server
@@ -402,11 +380,7 @@ impl Tmux {
                 "new-window returned no window id: {out}"
             )));
         }
-        Ok(WindowRef {
-            window_id,
-            window_name: String::new(),
-            pane_id,
-        })
+        Ok(WindowRef { window_id, pane_id })
     }
 
     /// Kill a window by id (used on worktree deletion; killing a session's
@@ -432,7 +406,7 @@ impl Tmux {
         // Built from the option constants rather than spelled out, so the
         // read path cannot drift from what `stamp_shell` writes.
         let fmt = format!(
-            "#{{pane_id}}|#{{pane_current_command}}|#{{pane_dead}}|#{{session_name}}\
+            "#{{pane_id}}|#{{window_id}}|#{{pane_current_command}}|#{{pane_dead}}|#{{session_name}}\
              |#{{{repo}}}|#{{{worktree}}}|#{{{index}}}|#{{pane_active}}|#{{{docked}}}\
              |#{{{overlay}}}",
             repo = dock::REPO_KEY,
@@ -451,6 +425,38 @@ impl Tmux {
             .lines()
             .filter_map(parse_pane_line)
             .filter(|p| p.shell.is_some())
+            .collect())
+    }
+
+    /// Panes that carry no identity, with the window and session they sit
+    /// in — the raw material for the one-off backfill that upgrades a
+    /// server started by an older build (identity used to live in the
+    /// window name). One call, like the poll's.
+    pub fn list_unstamped_panes(&self) -> Result<Vec<(String, String, String)>> {
+        let fmt = format!(
+            "#{{pane_id}}|#{{session_name}}|#{{window_name}}|#{{{repo}}}",
+            repo = dock::REPO_KEY
+        );
+        let out = match self.run(&["list-panes", "-a", "-F", &fmt]) {
+            Ok(o) => o,
+            Err(e) if is_no_server_error(&e) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        Ok(out
+            .lines()
+            .filter_map(|line| {
+                // The window name is a user-chosen string and may contain
+                // '|', so the identity field is read from the END.
+                let (head, repo) = line.rsplit_once('|')?;
+                if !repo.trim().is_empty() {
+                    return None;
+                }
+                let mut it = head.splitn(3, '|');
+                let pane_id = it.next()?.to_string();
+                let session = it.next()?.to_string();
+                let window_name = it.next()?.to_string();
+                Some((pane_id, session, window_name))
+            })
             .collect())
     }
 
@@ -765,12 +771,13 @@ fn legacy_root_back_key(line: &str, dash_session: &str, win: &str) -> Option<Str
 }
 
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
-    // Field order: id | command | dead | session | repo | worktree | index |
-    // active | docked | overlay. Every new field goes BEFORE the overlay:
+    // Field order: pane | window | command | dead | session | repo |
+    // worktree | index | active | docked | overlay. Every new field goes BEFORE the overlay:
     // the overlay is taken verbatim as the remainder, so a '|' inside it
     // cannot desync parsing, and only a last field can afford that.
-    let mut it = line.splitn(10, '|');
+    let mut it = line.splitn(11, '|');
     let pane_id = it.next()?.to_string();
+    let window_id = it.next()?.to_string();
     let current_command = it.next()?.to_string();
     let dead = it.next()? == "1";
     let session_name = it.next()?.to_string();
@@ -781,6 +788,7 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
     let docked_by = it.next().unwrap_or("").trim().to_string();
     Some(PaneInfo {
         pane_id,
+        window_id,
         current_command,
         dead,
         session_name,
@@ -810,11 +818,6 @@ pub fn is_shell_command(cmd: &str) -> bool {
 /// Is `name` one of our agent session names?
 pub fn is_lazywingman_session(name: &str) -> bool {
     name.starts_with(SESSION_PREFIX)
-}
-
-/// Is `name` one of our agent window names?
-pub fn is_lazywingman_window(name: &str) -> bool {
-    name.starts_with(WINDOW_PREFIX)
 }
 
 #[cfg(test)]
@@ -948,11 +951,9 @@ mod tests {
     }
 
     #[test]
-    fn session_and_window_prefix_detection() {
+    fn session_prefix_detection() {
         assert!(is_lazywingman_session("wingman-session-foo"));
         assert!(!is_lazywingman_session("work"));
-        assert!(is_lazywingman_window("lw:p/f/0"));
-        assert!(!is_lazywingman_window("0:bash"));
     }
 
     #[test]
@@ -967,10 +968,11 @@ mod tests {
 
     #[test]
     fn pane_line_parsing() {
-        let p = parse_pane_line("%3|claude|0|wingman-session-p|p|feat|2|1|").unwrap();
+        let p = parse_pane_line("%3|@1|claude|0|wingman-session-p|p|feat|2|1|").unwrap();
         assert_eq!(p.pane_id, "%3");
         assert_eq!(p.current_command, "claude");
         assert!(!p.dead);
+        assert_eq!(p.window_id, "@1");
         assert_eq!(p.session_name, "wingman-session-p");
         assert_eq!(
             p.shell,
@@ -978,7 +980,7 @@ mod tests {
         );
         assert!(p.active);
         assert_eq!(p.docked_by, None);
-        let dead = parse_pane_line("%9|sh|1|wingman-session-p|p|feat|2|0|").unwrap();
+        let dead = parse_pane_line("%9|@1|sh|1|wingman-session-p|p|feat|2|0|").unwrap();
         assert!(dead.dead);
         assert!(!dead.active);
     }
@@ -988,7 +990,7 @@ mod tests {
     /// shell named the empty string.
     #[test]
     fn a_pane_without_the_options_carries_no_identity() {
-        let p = parse_pane_line("%0|bash|0|work||||1|").expect("parses");
+        let p = parse_pane_line("%0|@1|bash|0|work||||1|").expect("parses");
         assert_eq!(p.shell, None);
         assert_eq!(p.session_name, "work");
     }
@@ -996,13 +998,13 @@ mod tests {
     /// The docking dashboard's pane id, when there is one.
     #[test]
     fn docked_by_is_read_back_when_set() {
-        let p = parse_pane_line("%3|claude|0|main|p|feat|0|1|%7|").expect("parses");
+        let p = parse_pane_line("%3|@1|claude|0|main|p|feat|0|1|%7|").expect("parses");
         assert_eq!(p.docked_by.as_deref(), Some("%7"));
     }
 
     #[test]
     fn pane_line_parsing_keeps_the_overlay_verbatim() {
-        let p = parse_pane_line("%3|claude|0|wingman-session-x|x|f|0|1||blocked:1755600000")
+        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1||blocked:1755600000")
             .expect("parses");
         assert_eq!(p.pane_id, "%3");
         assert_eq!(p.current_command, "claude");
@@ -1014,7 +1016,7 @@ mod tests {
     /// can never desync the parser.
     #[test]
     fn overlay_may_contain_the_field_separator() {
-        let p = parse_pane_line("%3|claude|0|wingman-session-x|x|f|0|1||a|b").expect("parses");
+        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1||a|b").expect("parses");
         assert_eq!(p.overlay_raw, "a|b");
         assert_eq!(
             p.shell,
@@ -1024,7 +1026,7 @@ mod tests {
 
     #[test]
     fn missing_overlay_field_is_empty_not_an_error() {
-        let p = parse_pane_line("%3|claude|0|wingman-session-x|x|f|0|1|").expect("parses");
+        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|").expect("parses");
         assert_eq!(p.overlay_raw, "");
     }
 
@@ -1336,13 +1338,11 @@ mod tests {
                     &ShellId::for_session("wingman-session-p", "feat", 1),
                 )
                 .unwrap();
-            let windows = tmux.list_windows("wingman-session-p").unwrap();
-            assert_eq!(windows.len(), 2);
-            assert!(windows.iter().any(|w| w.window_id == w0.window_id));
-            assert!(windows.iter().any(|w| w.window_id == w1.window_id));
-
             // panes across agent sessions are visible; dashboard panes are NOT
             let panes = tmux.list_panes().unwrap();
+            assert_eq!(panes.len(), 2, "one shell per window: {panes:?}");
+            assert!(panes.iter().any(|p| p.window_id == w0.window_id));
+            assert!(panes.iter().any(|p| p.window_id == w1.window_id));
             assert!(panes.iter().any(|p| p.pane_id == w0.pane_id));
             assert!(panes.iter().any(|p| p.pane_id == w1.pane_id));
             assert!(!panes.iter().any(|p| p.pane_id == "%0")); // main session pane
