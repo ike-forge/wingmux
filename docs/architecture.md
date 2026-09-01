@@ -323,6 +323,15 @@ the same commit as the change.
   shipped theme keeps distinct from the other three (`dead` and `idle`
   both fall back to `dim`, which is `new`), and the row *is* broken: it
   cannot be attached to, sent to or previewed, only removed.
+- **A settled worktree is muted whole.** Once a worktree is merged or its
+  directory is gone, the only decision left is whether to remove it — what
+  the agent inside was doing is history. So those two states dim the
+  worktree name *and* the solo shell's status label, and the state glyph is
+  the single span that keeps a colour (it also keeps it when the row would
+  otherwise mute for having no shells or only dead ones — muting it too
+  would leave nothing saying why the row is quiet). The rule this fixes:
+  colour is for what needs the user, and a merged worktree parked on
+  `waiting` was pulling attention with the brightest role in the palette.
   - **Uncommitted changes ARE folded in** (user's call, reversing the
     earlier rule): an agent that has edited a worktree but not committed
     has plainly done something there, and drawing it with the "nothing

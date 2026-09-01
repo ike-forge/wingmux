@@ -193,6 +193,17 @@ fn worktree_state_color(theme: &ResolvedColors, st: WorktreeState) -> Color {
     }
 }
 
+/// Whether the worktree's own state is the whole story of the row. Once
+/// the work is merged, or the directory is gone, what the agent inside is
+/// doing no longer matters — the only thing left to decide is whether to
+/// remove the worktree. Such a row is muted whole (name and status label
+/// dim) so the one glyph that carries the state is the only thing that
+/// reads, instead of a yellow `waiting` pulling the eye to a shell nobody
+/// needs to answer.
+fn worktree_state_settles_row(st: WorktreeState) -> bool {
+    matches!(st, WorktreeState::Merged | WorktreeState::Deleted)
+}
+
 /// The polled status of a shell, keyed by its live pane; a shell with no
 /// pane (or none polled yet) reads as idle.
 fn shell_status(app: &App, sh: &crate::state::Shell) -> Status {
@@ -657,6 +668,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             let n = wt.shells.len();
             let wstate = app.worktree_state_cached(ri, wi);
             let ficon = worktree_icon(ic, wstate);
+            let settled = worktree_state_settles_row(wstate);
             // In flatten mode the worktrees are the top level (no guide);
             // otherwise they hang off the repository with a tree branch.
             let (prefix, icon_span) = if app.flatten {
@@ -676,23 +688,32 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 ),
                 Span::styled(
                     icon_span,
-                    fg(worktree_color(
-                        theme,
-                        wt,
-                        fdead,
-                        worktree_state_color(theme, wstate),
-                    )),
+                    fg(if settled {
+                        // The one span a settled row keeps: muting it too
+                        // would leave nothing saying why the row is quiet.
+                        worktree_state_color(theme, wstate)
+                    } else {
+                        worktree_color(theme, wt, fdead, worktree_state_color(theme, wstate))
+                    }),
                 ),
                 Span::styled(
                     wt.name.clone(),
-                    fg(worktree_color(theme, wt, fdead, theme.tree_worktree)),
+                    fg(if settled {
+                        theme.dim
+                    } else {
+                        worktree_color(theme, wt, fdead, theme.tree_worktree)
+                    }),
                 ),
                 match solo {
                     Some(si) => {
                         let st = shell_status(app, &wt.shells[si]);
                         Span::styled(
                             format!("  {}{}", status_icon(ic, st, spin), st.label()),
-                            fg(status_color(theme, st)),
+                            fg(if settled {
+                                theme.dim
+                            } else {
+                                status_color(theme, st)
+                            }),
                         )
                     }
                     // A multi-shell worktree says nothing extra: its shells
@@ -3345,6 +3366,44 @@ mod tests {
     /// The screen column `needle` starts at in a rendered row. Every glyph
     /// the tree draws is one cell wide, so a char offset is a column — a
     /// byte offset is not, and the box-drawing guides make the two differ.
+    /// A settled worktree — merged, or its directory gone — mutes its name
+    /// and its shell's status: nothing there needs answering any more, so
+    /// only the state glyph keeps a colour, and a leftover `waiting` no
+    /// longer competes with the rows that do want the user.
+    #[test]
+    fn a_settled_worktree_dims_everything_but_its_state_glyph() {
+        for state in [WorktreeState::Merged, WorktreeState::Deleted] {
+            let mut app = seeded_app_with_shell();
+            app.statuses.insert("%1".into(), Status::Waiting);
+            app.wt_state
+                .insert(std::path::PathBuf::from("/tmp/repo-a-wt"), state);
+
+            let backend = ratatui::backend::TestBackend::new(120, 40);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let rows = buffer_rows(&terminal);
+            let y = rows
+                .iter()
+                .position(|r| r.contains(Status::Waiting.label()))
+                .unwrap_or_else(|| panic!("no worktree row: {rows:?}"));
+            let buf = terminal.backend().buffer();
+            let c = &app.theme.colors;
+            let fg_at = |needle: &str| buf[(col_of(&rows[y], needle) as u16, y as u16)].fg;
+
+            assert_eq!(fg_at("wt"), c.dim, "{state:?}: the name is dimmed");
+            assert_eq!(
+                fg_at(Status::Waiting.label()),
+                c.dim,
+                "{state:?}: the leftover status is dimmed"
+            );
+            assert!(
+                (0..buf.area.width)
+                    .any(|x| buf[(x, y as u16)].fg == worktree_state_color(c, state)),
+                "{state:?}: the state glyph keeps its own colour"
+            );
+        }
+    }
+
     fn col_of(row: &str, needle: &str) -> usize {
         let b = row
             .find(needle)

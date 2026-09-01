@@ -488,7 +488,10 @@ something is written into it. The four share one padded column, so names
 stay aligned whichever one a row draws. The state is also colour-coded:
 new is dim, ahead is the `waiting` colour, merged is `worktree_merged`
 (green), and a deleted worktree is the `failed` colour — that row is broken, not
-finished. No patched font? Set
+finished. Merged and deleted rows are *settled*: the state glyph keeps its
+colour and the rest of the row — the worktree name and its shell's status —
+is dimmed. Nothing there needs answering any more, so a leftover yellow
+`waiting` must not compete with the rows that do want you. No patched font? Set
 `preset = "unicode"` for `▣`/`▤`/`▢` and `○`/`◆`/`✓`/`⊘`. Rows carry
 meaning in symbols, labels and position as well as colour.
 
