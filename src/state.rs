@@ -19,10 +19,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dock::ShellId;
 use crate::error::{Error, Result};
 use crate::git::Git;
-use crate::tmux::{SESSION_PREFIX, Tmux, is_lazywingman_session};
+use crate::tmux::{SESSION_PREFIX, Tmux};
 
 pub const STATE_VERSION: u32 = 4;
 
@@ -104,9 +103,9 @@ impl Worktree {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Shell {
     pub index: usize,
-    /// Human-facing label (`lw:<worktree>/<index>`), also what the one-off
-    /// backfill reads a pre-v4 window's identity out of. Not an identity in
-    /// its own right: the pane's options are.
+    /// Human-facing label (`lw:<worktree>/<index>`). A label, not an
+    /// identity: the pane's options are the identity, and the window may be
+    /// renamed by hand without costing the shell anything.
     pub window_name: String,
     /// Where the pane is right now — filled in by [`State::reconcile`] from
     /// `list-panes`, never read back off disk. A docked pane's window is the
@@ -172,11 +171,6 @@ impl State {
     /// (including docked in the dashboard's own session) and a window
     /// renamed by hand costs nothing.
     pub fn reconcile(&mut self, tmux: &Tmux) -> Result<()> {
-        // Before the backfill, and before anything reads a pane as a
-        // shell: a server poisoned by an earlier run of that backfill has
-        // holders claiming to be the agents they stand in for.
-        crate::dock::unstamp_furniture(tmux);
-        backfill_identities(tmux);
         for pane in tmux.list_panes()? {
             let Some(id) = pane.shell.clone() else {
                 continue;
@@ -414,38 +408,6 @@ impl State {
     }
 }
 
-/// One-off upgrade for a tmux server started by a pre-v4 build: identity
-/// used to live in the window name, so any unstamped pane sitting in an
-/// agent window still named `lw:<worktree>/<n>` gets its options written
-/// from that name. A running server upgrades in place instead of losing its
-/// tree.
-///
-/// Best-effort by construction: a server we cannot talk to, or a pane we
-/// cannot stamp, simply stays unstamped and is reported by the next poll as
-/// a shell that is gone — which is what it looks like either way.
-fn backfill_identities(tmux: &Tmux) {
-    let unstamped = match tmux.list_unstamped_panes() {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!("identity backfill: {e}");
-            return;
-        }
-    };
-    for (pane_id, session, window_name) in unstamped {
-        if !is_lazywingman_session(&session) {
-            continue;
-        }
-        let Some((worktree, index)) = parse_window_name(&window_name) else {
-            continue;
-        };
-        let id = ShellId::for_session(&session, &worktree, index);
-        match tmux.stamp_shell(&pane_id, &id) {
-            Ok(()) => log::info!("backfilled identity {worktree}/{index} onto {pane_id}"),
-            Err(e) => log::warn!("backfilling {pane_id} from '{window_name}': {e}"),
-        }
-    }
-}
-
 /// Does the repository's name match the session slug (for hash-suffixed
 /// session names)?
 fn n_contains_slug(p: &Repository, slug: &str) -> bool {
@@ -464,13 +426,6 @@ pub fn sanitize_name(s: &str) -> String {
         }
     }
     out
-}
-
-/// Parse `lw:<worktree>/<index>` (repository is implied by the session).
-pub fn parse_window_name(name: &str) -> Option<(String, usize)> {
-    let rest = name.strip_prefix(crate::tmux::WINDOW_PREFIX)?;
-    let (f, idx) = rest.rsplit_once('/')?;
-    Some((f.to_string(), idx.parse().ok()?))
 }
 
 fn pane_cwd(tmux: &Tmux, pane_id: &str) -> Option<PathBuf> {
@@ -497,6 +452,7 @@ fn pane_cwd(tmux: &Tmux, pane_id: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dock::ShellId;
 
     /// A closed shell's index is never handed out again: `next_shell_index`
     /// counts past the highest in use, so the freed number cannot collide
@@ -530,14 +486,8 @@ mod tests {
     }
 
     #[test]
-    fn window_name_roundtrip() {
-        let name = crate::tmux::Tmux::window_name("wt-one", 2);
-        assert_eq!(name, "lw:wt-one/2");
-        let (f, i) = parse_window_name(&name).unwrap();
-        assert_eq!(f, "wt-one");
-        assert_eq!(i, 2);
-        assert!(parse_window_name("0:bash").is_none());
-        assert!(parse_window_name("lw:a/b/x").is_none());
+    fn window_name_is_the_human_facing_label() {
+        assert_eq!(crate::tmux::Tmux::window_name("wt-one", 2), "lw:wt-one/2");
     }
 
     #[test]
@@ -826,69 +776,15 @@ mod tests {
         });
     }
 
-    /// A server started by a pre-v4 build carries its identity in the window
-    /// name only. The first reconcile stamps those panes, so the tree
-    /// survives the upgrade in place instead of reading as empty.
-    #[test]
-    fn a_pre_v4_server_is_backfilled_on_the_first_reconcile() {
-        crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
-            // Spawned WITHOUT stamping: what an older build left behind.
-            let pane = tmux
-                .run_raw(&[
-                    "new-session",
-                    "-d",
-                    "-s",
-                    "wingman-session-old",
-                    "-n",
-                    "lw:legacy/2",
-                    "-c",
-                    "/tmp",
-                    "-P",
-                    "-F",
-                    "#{pane_id}",
-                    "bash",
-                ])
-                .expect("legacy session")
-                .trim()
-                .to_string();
-            assert!(
-                tmux.list_panes().expect("panes").is_empty(),
-                "an unstamped pane is invisible until it is backfilled"
-            );
-
-            let mut s = State::default();
-            s.repositories.push(Repository {
-                name: "old".into(),
-                path: PathBuf::from("/tmp/old"),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
-                session_name: Some("wingman-session-old".into()),
-                missing: false,
-                worktrees: vec![Worktree {
-                    name: "legacy".into(),
-                    branch: "legacy".into(),
-                    path: PathBuf::from("/tmp/old-legacy"),
-                    created_at: String::new(),
-                    base_commit: None,
-                    shells: vec![],
-                }],
-            });
-            s.reconcile(&tmux).expect("reconcile");
-
-            let shells = &s.repositories[0].worktrees[0].shells;
-            assert_eq!(shells.len(), 1, "the legacy shell is adopted: {shells:?}");
-            assert_eq!(shells[0].index, 2, "the index comes from the window name");
-            assert_eq!(shells[0].pane_id.as_deref(), Some(pane.as_str()));
-        });
-    }
-
-    /// The bug the pre-v4 backfill caused, in one test. A **holder** sits
-    /// in a window named `lw:<worktree>/<n>` and carries no identity of its
-    /// own — exactly the shape that backfill looks for. Stamping it made
-    /// two panes claim one shell; `reconcile` kept whichever `list-panes -a`
+    /// Furniture is never a shell, whatever identity is written onto it.
+    ///
+    /// The rule used to rest on an assumption — furniture carries no
+    /// `@lw_repo`, so it cannot parse as one — and a stamping path that
+    /// went by where a pane *sat* rather than what it *was* broke it: two
+    /// panes claimed one shell, `reconcile` kept whichever `list-panes -a`
     /// listed last, and a dashboard that got the holder docked a sleeping
-    /// placeholder and read the shell as `ended`.
+    /// placeholder and read the shell as `ended`. The exclusion is
+    /// structural now, and this is the test that keeps it that way.
     #[test]
     fn a_holder_is_never_mistaken_for_the_shell_it_stands_in_for() {
         crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
@@ -929,9 +825,8 @@ mod tests {
                 }],
             });
 
-            // A server already poisoned by an earlier run of the backfill:
-            // the holder claims to be the agent.
-            tmux.stamp_shell(&holder.pane_id, &id).expect("poison it");
+            // The holder claims to be the agent.
+            tmux.stamp_shell(&holder.pane_id, &id).expect("stamp it");
             s.reconcile(&tmux).expect("reconcile");
 
             let shells = &s.repositories[0].worktrees[0].shells;
@@ -949,17 +844,7 @@ mod tests {
                 "the holder is not reported as a shell at all"
             );
 
-            // And the stray options are gone, not merely ignored.
-            assert!(
-                !tmux
-                    .list_furniture()
-                    .expect("furniture")
-                    .iter()
-                    .any(|p| p.pane_id == holder.pane_id && p.shell),
-                "the identity was cleaned off the holder"
-            );
-
-            // A second reconcile must not put it back.
+            // A second reconcile does not change its mind.
             s.reconcile(&tmux).expect("reconcile again");
             assert_eq!(s.repositories[0].worktrees[0].shells.len(), 1);
         });

@@ -489,47 +489,6 @@ impl Tmux {
             .collect())
     }
 
-    /// Panes that carry no identity, with the window and session they sit
-    /// in — the raw material for the one-off backfill that upgrades a
-    /// server started by an older build (identity used to live in the
-    /// window name). One call, like the poll's.
-    pub fn list_unstamped_panes(&self) -> Result<Vec<(String, String, String)>> {
-        let fmt = format!(
-            "#{{pane_id}}|#{{session_name}}|#{{window_name}}|#{{{holder}}}#{{{slot}}}#{{{repo}}}",
-            holder = dock::HOLDER_KEY,
-            slot = dock::SLOT_KEY,
-            repo = dock::REPO_KEY,
-        );
-        let out = match self.run(&["list-panes", "-a", "-F", &fmt]) {
-            Ok(o) => o,
-            Err(e) if is_no_server_error(&e) => return Ok(Vec::new()),
-            Err(e) => return Err(e),
-        };
-        Ok(out
-            .lines()
-            .filter_map(|line| {
-                // The window name is a user-chosen string and may contain
-                // '|', so the identity field is read from the END. It is
-                // the holder and slot marks concatenated with the identity:
-                // any of the three set means this pane is not raw material
-                // for the backfill. **Furniture especially** — a holder
-                // sits in a window still named `lw:<worktree>/<n>` and
-                // carries no identity of its own, which is exactly the
-                // shape the backfill looks for, and stamping it makes a
-                // sleeping placeholder claim to be the agent.
-                let (head, marks) = line.rsplit_once('|')?;
-                if !marks.trim().is_empty() {
-                    return None;
-                }
-                let mut it = head.splitn(3, '|');
-                let pane_id = it.next()?.to_string();
-                let session = it.next()?.to_string();
-                let window_name = it.next()?.to_string();
-                Some((pane_id, session, window_name))
-            })
-            .collect())
-    }
-
     // ---------------------------------------------------- pane options
 
     /// Set a pane user option (`@key`). Used by the hook subcommand to
@@ -1268,10 +1227,9 @@ mod tests {
 
     /// Furniture is never a shell, whatever identity has been written onto
     /// it. The exclusion used to rest on furniture carrying no identity at
-    /// all; a holder stamped by the pre-v4 backfill (it sits in a window
-    /// named `lw:<worktree>/<n>`, which is exactly what that backfill looks
-    /// for) broke the assumption and made a sleeping placeholder claim to
-    /// be the agent — so a dashboard docked the placeholder.
+    /// all, which any path that stamps a pane by where it *sits* rather
+    /// than by what it *is* can falsify — and then a sleeping placeholder
+    /// claims to be the agent, and a dashboard docks the placeholder.
     #[test]
     fn a_holder_or_slot_is_never_a_shell_however_it_was_stamped() {
         let holder =

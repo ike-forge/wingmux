@@ -40,8 +40,7 @@ the same commit as the change.
   the pane across windows and sessions. So `reconcile` groups panes by
   identity rather than walking window names, and a window renamed by hand —
   or a pane sitting in a session that is not its own — costs the tree
-  nothing. `Tmux::window_name` stays as the human-facing label, and as what
-  a pre-v4 server is backfilled from on its first reconcile.
+  nothing. `Tmux::window_name` stays, purely as the human-facing label.
 - Shell indices are never reused: `Worktree::next_shell_index` counts past
   the highest index in use, because the index is part of a shell's identity
   and is what `reconcile` matches a live pane back to.
@@ -256,20 +255,26 @@ the same commit as the change.
     merely degrades.
 - **Furniture is never a shell, whatever identity is written on it** (M18).
   `Tmux::list_panes` selects panes by identity, and the exclusion of holders
-  and slots used to rest on an assumption — furniture carries no `@lw_repo`,
-  so it cannot parse as a shell. The pre-v4 identity backfill broke it: that
-  backfill stamps every unstamped pane sitting in a window still named
+  and slots used to rest on an assumption: furniture carries no `@lw_repo`,
+  so it cannot parse as a shell. A pre-v4 identity backfill falsified it —
+  it stamped every unstamped pane sitting in a window still named
   `lw:<worktree>/<n>`, and a holder is exactly that. Two panes then claimed
   one shell, `reconcile` kept whichever `list-panes -a` listed last, and a
   dashboard that picked the holder docked a sleeping placeholder and read the
   shell as `ended`. Which one won depended on session ordering, so the shell
   that broke was a *docked* one — its agent pane had moved to another session.
-  Three changes, in order of who they protect: `list_panes` now treats a
-  `@lw_holder`/`@lw_slot` mark as outranking any identity on the same pane
-  (structural, so no future stamping path can reintroduce this);
-  `list_unstamped_panes` skips furniture, so the backfill cannot stamp one
-  again; and `dock::unstamp_furniture` clears the stray options at the top of
-  every reconcile, so servers already poisoned repair themselves in place.
+  That backfill is gone (see below), but the assumption it broke is not worth
+  re-betting on: `list_panes` now treats a `@lw_holder`/`@lw_slot` mark as
+  outranking any identity on the same pane, so the exclusion is structural and
+  no future stamping path can reintroduce the bug.
+- **No migration path, by decision** (M18). There was a one-off upgrade —
+  `state::backfill_identities` — that read identity out of a pre-v4 window
+  name for a tmux server started by an older build. It is deleted, along with
+  `parse_window_name` and `Tmux::list_unstamped_panes`. Agent panes die with
+  their tmux server anyway (see "Reboot restores nothing"), so the cost of
+  not migrating is restarting the shells once, and the cost of migrating was
+  a stamping path that judged panes by where they sat — which is what wrote a
+  shell's identity onto a holder.
 - **The dock follows the selection, and the cursor does not follow the dock**
   (M18). Landing on a shell row docks its pane; `Enter` is then only needed to
   *enter* it. An auto-dock that also ran `select-pane` would move the keyboard
