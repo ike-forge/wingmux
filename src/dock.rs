@@ -25,7 +25,6 @@ pub const SLOT_KEY: &str = "@lw_slot";
 /// While docked: the docking dashboard's own pane id, on the agent pane.
 pub const DOCKED_KEY: &str = "@lw_docked";
 /// Absolute scope path, on the dashboard *window*.
-#[allow(dead_code)] // the dashboard window announces its scope in Phase 2
 pub const SCOPE_KEY: &str = "@lw_scope";
 
 /// The identity of one agent shell, as carried by its pane.

@@ -738,6 +738,7 @@ impl App {
             }
             self.state.reconcile(tmux)?;
             self.state.prune(Some(tmux), &self.worktrees_loaded)?;
+            self.announce_scope(tmux);
             self.bind_back_keys(tmux)?;
         }
         self.build_tree_flags();
@@ -747,6 +748,41 @@ impl App {
         self.load_drafts();
         self.save_state()?;
         Ok(())
+    }
+
+    /// The absolute scope this dashboard is showing — what its window
+    /// announces as `@lw_scope`, and what a second launch in the same folder
+    /// looks itself up by. Absolute because a relative path means nothing to
+    /// a process started in another directory.
+    pub fn scope_path(&self) -> PathBuf {
+        if self.scope_root.is_absolute() {
+            return self.scope_root.clone();
+        }
+        let cwd = std::env::current_dir().unwrap_or_default();
+        crate::util::normalize_path(&cwd.join(&self.scope_root))
+    }
+
+    /// Stamp the scope onto the dashboard's own tmux window, so the
+    /// self-wrap can find this dashboard rather than starting a rival one
+    /// beside it. Never fatal: an unstamped window costs a duplicate
+    /// dashboard, not a broken one.
+    fn announce_scope(&self, tmux: &Tmux) {
+        let Some(inside) = &tmux.inside else {
+            return;
+        };
+        let scope = self.scope_path();
+        match tmux.set_window_option(
+            &inside.window_id,
+            crate::dock::SCOPE_KEY,
+            &scope.to_string_lossy(),
+        ) {
+            Ok(()) => log::info!(
+                "window {} announces scope {}",
+                inside.window_id,
+                scope.display()
+            ),
+            Err(e) => log::warn!("cannot announce the scope on our window: {e}"),
+        }
     }
 
     /// Bind the back-key in every live agent session so the user can jump
@@ -3649,6 +3685,45 @@ mod tests {
                 let t = app.tmux.as_ref().unwrap();
                 assert!(!t.session_exists("wingman-session-p"));
                 assert!(t.list_sessions().unwrap().is_empty());
+            });
+        });
+    }
+
+    /// M18 Task 5 — the dashboard's window announces the scope it shows, so
+    /// a second launch in the same folder finds this dashboard instead of
+    /// racing a rival one beside it.
+    #[test]
+    fn startup_announces_the_scope_on_the_dashboard_window() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            with_tmux_server(|_sock, tmux| {
+                let mut app = app_with(tmux);
+                app.scope_root = PathBuf::from("/work/scope-a");
+                app.startup().unwrap();
+                let t = app.tmux.as_ref().unwrap();
+                let read = t
+                    .run_raw(&[
+                        "display-message",
+                        "-p",
+                        "-t",
+                        "@0",
+                        &format!("#{{{}}}", crate::dock::SCOPE_KEY),
+                    ])
+                    .unwrap();
+                assert_eq!(read.trim(), "/work/scope-a");
+
+                let found = t
+                    .find_scope_window(Path::new("/work/scope-a"))
+                    .unwrap()
+                    .expect("the announced scope is findable");
+                assert_eq!(found.window_id, "@0");
+                assert_eq!(found.session_name, "main");
+                assert_eq!(found.pane_id, "%0");
+                assert!(
+                    t.find_scope_window(Path::new("/work/scope-b"))
+                        .unwrap()
+                        .is_none(),
+                    "another scope must not match this window"
+                );
             });
         });
     }

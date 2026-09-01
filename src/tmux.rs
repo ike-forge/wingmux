@@ -74,6 +74,11 @@ pub struct WindowRef {
     pub window_id: String,
     /// Active pane id (set by `new_window` / `new_session`).
     pub pane_id: String,
+    /// The session the window is in. A window id is server-global, so this
+    /// is only needed by the callers that must ATTACH to it — the self-wrap
+    /// looking up an existing dashboard.
+    #[allow(dead_code)] // the self-wrap attaches by it (Task 6)
+    pub session_name: String,
 }
 
 /// Login shells whose presence as the foreground command means the agent
@@ -312,7 +317,11 @@ impl Tmux {
                 "new-session returned no window id: {out}"
             )));
         }
-        Ok(WindowRef { window_id, pane_id })
+        Ok(WindowRef {
+            window_id,
+            pane_id,
+            session_name: session.to_string(),
+        })
     }
 
     /// Kill a session by name (errors when it no longer exists).
@@ -380,7 +389,11 @@ impl Tmux {
                 "new-window returned no window id: {out}"
             )));
         }
-        Ok(WindowRef { window_id, pane_id })
+        Ok(WindowRef {
+            window_id,
+            pane_id,
+            session_name: session.to_string(),
+        })
     }
 
     /// Kill a window by id (used on worktree deletion; killing a session's
@@ -478,6 +491,52 @@ impl Tmux {
         self.set_pane_option(pane_id, dock::WORKTREE_KEY, &id.worktree)?;
         self.set_pane_option(pane_id, dock::INDEX_KEY, &id.index_value())?;
         Ok(())
+    }
+
+    // -------------------------------------------------- window options
+
+    /// Set a window user option (`@key`). Used to stamp the dashboard's own
+    /// window with the scope it is showing, so a second launch in the same
+    /// folder finds the running dashboard instead of starting a rival one.
+    pub fn set_window_option(&self, window_id: &str, key: &str, value: &str) -> Result<()> {
+        self.run(&["set-option", "-w", "-t", window_id, key, value])?;
+        Ok(())
+    }
+
+    /// The window announcing `scope`, if one exists on this server.
+    ///
+    /// One `list-windows -a`, the same discipline as the pane poll: the
+    /// scope is a user-chosen path and may itself contain `|`, so it goes
+    /// LAST and the parse keeps the remainder whole.
+    #[allow(dead_code)] // the self-wrap looks a running dashboard up (Task 6)
+    pub fn find_scope_window(&self, scope: &Path) -> Result<Option<WindowRef>> {
+        let want = scope.to_string_lossy();
+        let fmt = format!(
+            "#{{window_id}}|#{{session_name}}|#{{pane_id}}|#{{{scope}}}",
+            scope = dock::SCOPE_KEY
+        );
+        let out = match self.run(&["list-windows", "-a", "-F", &fmt]) {
+            Ok(o) => o,
+            // No server, hence no dashboard: not an error, just no match.
+            Err(e) if is_no_server_error(&e) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        Ok(out.lines().find_map(|line| {
+            let mut it = line.splitn(4, '|');
+            let window_id = it.next()?.to_string();
+            let session_name = it.next()?.to_string();
+            // In `list-windows`, `#{pane_id}` is the window's ACTIVE pane.
+            let pane_id = it.next()?.to_string();
+            let announced = it.next()?;
+            if announced.is_empty() || announced != want {
+                return None;
+            }
+            Some(WindowRef {
+                window_id,
+                pane_id,
+                session_name,
+            })
+        }))
     }
 
     /// Unset a pane user option, handing the shell back to the heuristics.
