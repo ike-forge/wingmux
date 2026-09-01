@@ -877,6 +877,15 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     let block = panel_block(theme, &app.cfg.icons, &title, off > 0);
     let off = app.preview_offset();
     let text = match app.selected_shell() {
+        // The docked shell is on screen already, in a real tmux pane beside
+        // this one. A second, redrawn copy of it here would be a view that
+        // silently lags the thing next to it — say where it went instead.
+        Some(_) if app.selected_is_docked() => Text::from(
+            "docked\n\n\
+             this shell's real tmux pane is beside the tree.\n\
+             type in it directly; scrolling, searching and copying are tmux's own.\n\n\
+             the way back to the tree is your own pane binding (<prefix>+left by default).",
+        ),
         Some(_) => {
             if app.selected_shell_pane().is_some() {
                 if let Some(cap) = app.preview_source() {
@@ -930,7 +939,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         // on top of the worktree ones (`a` gives it a second shell, which
         // unfolds the subtree).
         Sel::Worktree(ri, wi) if app.solo_shell(ri, wi).is_some() => vec![
-            (h("attach", "Enter"), Attach),
+            (h("dock", "Enter"), Dock),
             (h("send", "s"), QuickSend),
             (h("predefined", "p"), PredefinedSend),
             (h("shell", "a"), AddShell),
@@ -944,7 +953,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             (h("help", "?"), Help),
         ],
         Sel::Shell(..) => vec![
-            (h("attach", "Enter"), Attach),
+            (h("dock", "Enter"), Dock),
             (h("send", "s"), QuickSend),
             (h("predefined", "p"), PredefinedSend),
             (h("close", "d"), DeleteShell),
@@ -1105,7 +1114,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
         &[
             (&["j/k", "arrows"], &["move selection"]),
             (&["h"], &["collapse", "jump to parent"]),
-            (&["l", "Enter"], &["expand", "attach"]),
+            (&["l", "Enter"], &["expand", "dock the shell"]),
             (&["g/G", "Home/End"], &["first / last item"]),
             (&["PgUp/PgDn", "ctrl-u/d"], &["half page"]),
             (&["ctrl-f/b"], &["full page"]),
@@ -1123,7 +1132,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                 &["a"],
                 &["add shell", "picks the agent or a plain shell", "1-9 pick"],
             ),
-            (&["Enter"], &["attach", "one-shell worktree"]),
+            (&["Enter"], &["dock", "one-shell worktree"]),
             (
                 &["s", "p"],
                 &["quick-send / predefined", "one-shell worktree"],
@@ -1137,7 +1146,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
     (
         "shells",
         &[
-            (&["Enter"], &["attach to shell"]),
+            (
+                &["Enter"],
+                &["dock the shell", "its real pane, beside the tree"],
+            ),
             (&["s"], &["quick-send", "ctrl-s sends"]),
             (&["p"], &["predefined message", "Enter sends", "1-9 pick"]),
             (
@@ -1208,16 +1220,16 @@ fn help_lines(app: &App) -> Vec<Line<'_>> {
         fg(theme.dim),
     )));
     lines.push(Line::from(""));
-    // The dashboard is always a tmux pane, so there is one way back and it
-    // needs no branch: the back chord.
+    // Once a pane is docked there are two focusable things on screen, and
+    // the second one is tmux's, not ours: say whose keys move between them.
     lines.push(Line::from(Span::styled(
-        "attach: press Enter in the dashboard, then the tmux prefix + back-key",
+        "Enter docks the shell's real pane beside the tree and puts the cursor in it",
         fg(theme.dim),
     )));
     lines.push(Line::from(Span::styled(
         format!(
-            "back chord is <prefix>+'{}' (config tmux.back_key): jump back to this window",
-            app.cfg.tmux.back_key
+            "moving between the panes, scrolling, searching and zooming are tmux's own bindings{s}\
+             back to the tree is <prefix>+left by default",
         ),
         fg(theme.dim),
     )));
@@ -2549,7 +2561,7 @@ mod tests {
             "move selection",
             "collapse",
             "expand",
-            "attach",
+            "dock",
             "new worktree",
             "add shell",
             "delete worktree",
@@ -2608,7 +2620,7 @@ mod tests {
                 "worktree" => assert!(text.contains("new worktree"), "bar 'worktree n' ↔ help"),
                 "shell" => assert!(text.contains("add shell"), "bar 'shell a' ↔ help"),
                 "delete" => assert!(text.contains("delete worktree"), "bar 'delete d' ↔ help"),
-                "attach" => assert!(text.contains("attach"), "bar 'attach ↵' ↔ help"),
+                "dock" => assert!(text.contains("dock the shell"), "bar 'dock ↵' ↔ help"),
                 "close" => assert!(text.contains("close shell"), "bar 'close d' ↔ help"),
                 "live" => assert!(text.contains("live tail"), "bar 'live Esc' ↔ help"),
                 other => panic!("unmapped bar entry: {other:?}"),

@@ -891,15 +891,14 @@ impl Tmux {
 
     // ---------------------------------------------------------- attach / back
 
-    /// Point this client at an agent session's shell window.
+    /// Put the cursor in `pane_id`.
     ///
-    /// The window is selected FIRST, clientlessly: `select-window` works on
-    /// a detached session, `switch-client` needs a client, and doing it in
-    /// this order means the session is already showing the right window
-    /// whether or not the switch lands.
-    pub fn attach_switch(&self, session: &str, window_id: &str) -> Result<()> {
-        self.select_window(window_id)?;
-        self.run(&["switch-client", "-t", session])?;
+    /// This is the second half of docking: the pane is beside the tree, and
+    /// one key should leave the user typing in it. No `switch-client` and no
+    /// `select-window` — a docked pane is in the dashboard's own window, so
+    /// nothing but the focus has to move.
+    pub fn select_pane(&self, pane_id: &str) -> Result<()> {
+        self.run(&["select-pane", "-t", pane_id])?;
         Ok(())
     }
 

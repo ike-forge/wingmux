@@ -478,7 +478,8 @@ pub enum BarAction {
     PredefinedSend,
     DeleteWorktree,
     DeleteShell,
-    Attach,
+    /// Bring the selected shell's real pane beside the tree.
+    Dock,
     /// Back to the live tail from a preview parked in the scrollback.
     PreviewLive,
 }
@@ -626,6 +627,11 @@ pub struct App {
     /// puts the panel back on the preview — checked every poll by
     /// [`App::reconcile_docked`].
     pub docked: Option<String>,
+    /// The window the docked pane came from — where [`crate::dock::undock`]
+    /// sends it back to. Learned at dock time, because once a pane is
+    /// docked its own window id is the dashboard's and no longer says
+    /// where home was. Set and cleared with [`App::docked`].
+    pub docked_home: Option<String>,
     /// Rect of the overlay currently on screen, if any. Mouse clicks
     /// outside it dismiss the overlay (accessibility rule).
     pub popup_area: Option<Rect>,
@@ -719,6 +725,7 @@ impl App {
             dash_window: None,
             slot: None,
             docked: None,
+            docked_home: None,
             popup_area: None,
             help_scroll: 0,
             diag_scroll: 0,
@@ -891,7 +898,6 @@ impl App {
     /// because the user asked to dock is not. The slot is always located by
     /// [`crate::dock::SLOT_KEY`], never by pane index — the user is free to
     /// rearrange the window around us.
-    #[allow(dead_code)] // nothing docks yet — Phase 4 calls it; tests do now
     pub fn ensure_slot(&mut self) -> Result<String> {
         let tmux = self.require_tmux()?;
         let inside = tmux
@@ -945,12 +951,18 @@ impl App {
         }
         log::info!("docked pane {docked} is no longer ours — back to the preview");
         self.docked = None;
+        self.docked_home = None;
     }
 
     /// Take the slot back down. Called on quit: the slot is this
     /// dashboard's furniture, and leaving a sleeping pane behind in the
     /// user's own window is litter.
     pub fn drop_slot(&mut self) {
+        // The docked agent pane is in the window we are about to tidy, and
+        // the slot is sitting in *its* window — send them back to each
+        // other before anything is killed, or quitting would take the
+        // agent down with the dashboard.
+        self.undock_current();
         let Some(pane) = self.slot.take() else {
             return;
         };
@@ -1430,12 +1442,22 @@ impl App {
                 // Folded worktree: there is nothing to expand into, so the
                 // row acts as its shell and opens the agent.
                 if let Some(si) = self.solo_shell(ri, wi) {
-                    self.attach(ri, wi, si);
+                    self.dock_shell(ri, wi, si);
+                } else if self
+                    .state
+                    .repositories
+                    .get(ri)
+                    .and_then(|p| p.worktrees.get(wi))
+                    .is_some_and(|f| f.shells.is_empty())
+                {
+                    // Nothing to expand into and nothing to dock: toggling
+                    // an expand flag here would look like a dead key.
+                    self.notify("no agent shell here — press `a` to start one");
                 } else if let Some(e) = self.wt_expanded.get_mut(ri).and_then(|v| v.get_mut(wi)) {
                     *e = !*e;
                 }
             }
-            Sel::Shell(ri, wi, si) => self.attach(ri, wi, si),
+            Sel::Shell(ri, wi, si) => self.dock_shell(ri, wi, si),
         }
     }
 
@@ -1596,6 +1618,16 @@ impl App {
             let parked = buf.clone();
             self.mode = Mode::Normal;
             self.park_draft(parked);
+        }
+    }
+
+    /// Is the selected shell the one whose real pane is docked beside the
+    /// tree? The preview panel asks: a docked shell is already on screen,
+    /// so redrawing a capture of it there would be a lagging copy.
+    pub fn selected_is_docked(&self) -> bool {
+        match (&self.docked, self.selected_shell_pane()) {
+            (Some(d), Some(p)) => *d == p,
+            _ => false,
         }
     }
 
@@ -1870,7 +1902,19 @@ impl App {
         Ok(())
     }
 
-    pub fn attach(&mut self, ri: usize, wi: usize, si: usize) {
+    /// Bring a shell's real pane beside the tree and put the cursor in it.
+    ///
+    /// This is what `Enter` does. One `swap-pane` puts the agent's own
+    /// tmux pane in the slot, and one `select-pane` leaves the user typing
+    /// in it — direct keys, copy-mode, search, selection and resize are
+    /// tmux's own from there, confined to that pane. Moving back out is
+    /// the user's own pane binding (`prefix + <-` by default); LazyWingman
+    /// binds no navigation key.
+    ///
+    /// Exactly one pane is docked at a time, so docking a different shell
+    /// sends the current one home first — two swaps, never two occupied
+    /// slots.
+    pub fn dock_shell(&mut self, ri: usize, wi: usize, si: usize) {
         let Some(sh) = self
             .state
             .repositories
@@ -1880,24 +1924,65 @@ impl App {
         else {
             return;
         };
-        let Some(wid) = &sh.window_id else {
-            self.notify("shell has no live window");
+        let Some(pane) = sh.pane_id.clone() else {
+            self.notify("shell has no live pane");
             return;
         };
-        let Some(session) = self.state.repositories[ri].session_name.clone() else {
-            self.notify("repository has no agent session");
+        let name = sh.window_name.clone();
+        if let Err(e) = self.dock_pane(&pane) {
+            self.notify_err(format!("dock failed: {e}"));
+            log::error!("dock {name} ({pane}): {e}");
+        }
+    }
+
+    /// The tmux half of [`App::dock_shell`], so the error path has one
+    /// place to land.
+    fn dock_pane(&mut self, pane: &str) -> Result<()> {
+        let tmux = self.require_tmux()?;
+        // Already ours: `Enter` on the docked shell is "put me back in it",
+        // not a second swap.
+        if self.docked.as_deref() == Some(pane) {
+            tmux.select_pane(pane)?;
+            return Ok(());
+        }
+        // Where it lives now, asked of tmux rather than of state: this is
+        // the window it must be sent back to, and it is read before the
+        // swap because afterwards it says the dashboard's.
+        let home = tmux
+            .list_panes()?
+            .into_iter()
+            .find(|p| p.pane_id == pane)
+            .map(|p| p.window_id)
+            .ok_or_else(|| Error::Tmux(format!("{pane} is not on the server")))?;
+        self.undock_current();
+        let slot = self.ensure_slot()?;
+        let dash = tmux
+            .inside
+            .as_ref()
+            .map(|i| i.pane_id.clone())
+            .ok_or_else(|| Error::Tmux("the dashboard is not in a tmux pane".into()))?;
+        crate::dock::dock(&tmux, &slot, pane, &dash)?;
+        self.docked = Some(pane.to_string());
+        self.docked_home = Some(home);
+        // `self.slot` is left alone: a swap moves panes, so the slot keeps
+        // its id while it sits in the agent's window, and undocking brings
+        // that same pane back.
+        tmux.select_pane(pane)?;
+        Ok(())
+    }
+
+    /// Send the docked pane home, if there is one. Never fatal: a pane
+    /// that cannot be sent back is left where it is and picked up by
+    /// [`crate::dock::adopt_orphans`] at the next startup.
+    pub fn undock_current(&mut self) {
+        let (Some(pane), Some(home)) = (self.docked.take(), self.docked_home.take()) else {
             return;
         };
-        // The dashboard is always a tmux pane (see `should_wrap`), so
-        // there is one way in: switch this client to the agent's window.
-        let res = self.require_tmux().and_then(|t| {
-            t.attach_switch(&session, wid).map(|_| {
-                log::info!("attached (switch-client) to {}", sh.window_name);
-            })
-        });
-        if let Err(e) = res {
-            self.notify_err(format!("attach failed: {e}"));
-            log::error!("attach failed: {e}");
+        let Ok(tmux) = self.require_tmux() else {
+            return;
+        };
+        if let Err(e) = crate::dock::undock(&tmux, &pane, &home) {
+            log::warn!("cannot undock {pane} into {home}: {e}");
         }
     }
 
@@ -3292,9 +3377,9 @@ impl App {
             BarAction::PredefinedSend => self.open_messages(),
             BarAction::DeleteWorktree => self.confirm_delete_worktree(),
             BarAction::DeleteShell => self.confirm_delete_shell(),
-            BarAction::Attach => {
+            BarAction::Dock => {
                 if let Some((ri, wi, si)) = self.selected_shell() {
-                    self.attach(ri, wi, si);
+                    self.dock_shell(ri, wi, si);
                 }
             }
         }
@@ -5245,6 +5330,208 @@ mod tests {
                 );
             }
         });
+    }
+
+    // ---- M18 Task 12 — wiring the key ----
+
+    /// Give the seeded worktree a second, real shell, so its row stops
+    /// being folded onto one and the tree shows shell rows of its own.
+    fn add_second_shell(tmux: &Tmux, app: &mut App) -> String {
+        let w = tmux
+            .new_window(
+                "wingman-session-p",
+                "lw:wt/1",
+                Path::new("/tmp"),
+                "bash",
+                &crate::dock::ShellId::for_session("wingman-session-p", "wt", 1),
+                crate::tmux::testutil::HOLDER_W,
+            )
+            .expect("second shell");
+        app.state.repositories[0].worktrees[0].shells.push(Shell {
+            index: 1,
+            window_name: "lw:wt/1".into(),
+            window_id: Some(w.window_id.clone()),
+            pane_id: Some(w.pane_id.clone()),
+        });
+        app.build_tree_flags();
+        w.pane_id
+    }
+
+    /// Where a pane sits now, and who claims it.
+    fn docked_state(tmux: &Tmux, pane: &str) -> (String, Option<String>, bool) {
+        let p = tmux
+            .list_panes()
+            .expect("panes")
+            .into_iter()
+            .find(|p| p.pane_id == pane)
+            .expect("pane is still one of ours");
+        (p.window_id, p.docked_by, p.active)
+    }
+
+    /// `Enter` on a shell row is the whole gesture: the shell's own tmux
+    /// pane lands beside the tree and the cursor is already in it.
+    #[test]
+    fn enter_on_a_shell_row_docks_and_focuses() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (home, first) = seed_repository_with_shell(&tmux, &mut app);
+            add_second_shell(&tmux, &mut app);
+            // Two shells, so the worktree row is not folded onto one and
+            // the shell rows are what the tree actually offers.
+            app.wt_expanded[0][0] = true;
+            app.sel = Sel::Shell(0, 0, 0);
+            assert!(app.visible_nodes().contains(&Sel::Shell(0, 0, 0)));
+
+            app.on_key(key(KeyCode::Enter, false));
+
+            let dash = tmux.inside.clone().expect("inside");
+            assert_eq!(app.docked.as_deref(), Some(first.as_str()));
+            assert_eq!(
+                app.docked_home.as_deref(),
+                Some(home.as_str()),
+                "and remembers where to send it back"
+            );
+            let (window, by, active) = docked_state(&tmux, &first);
+            assert_eq!(window, dash.window_id, "the pane is beside the tree");
+            assert_eq!(
+                by.as_deref(),
+                Some(dash.pane_id.as_str()),
+                "the lease says whose"
+            );
+            assert!(active, "and the cursor is in it");
+            assert!(app.message.is_none(), "docking is not news");
+        });
+    }
+
+    /// The folded worktree row *is* its shell, and `Enter` must agree with
+    /// what the tree draws: no shell row exists to press instead.
+    #[test]
+    fn enter_on_a_solo_worktree_row_docks_its_shell() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_home, pane) = seed_repository_with_shell(&tmux, &mut app);
+            app.build_tree_flags();
+            app.sel = Sel::Worktree(0, 0);
+            assert_eq!(app.solo_shell(0, 0), Some(0));
+            assert!(
+                !app.visible_nodes()
+                    .iter()
+                    .any(|n| matches!(n, Sel::Shell(..))),
+                "the solo rule folds the shell away, so the worktree row must act for it"
+            );
+
+            app.on_key(key(KeyCode::Enter, false));
+
+            assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
+            let dash = tmux.inside.clone().expect("inside");
+            assert_eq!(docked_state(&tmux, &pane).0, dash.window_id);
+        });
+    }
+
+    /// One docked pane at a time: docking a second shell sends the first
+    /// one home, so no window is ever left short of its agent.
+    #[test]
+    fn docking_a_second_shell_sends_the_first_one_home() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (first_home, first) = seed_repository_with_shell(&tmux, &mut app);
+            let second = add_second_shell(&tmux, &mut app);
+            app.wt_expanded[0][0] = true;
+
+            app.sel = Sel::Shell(0, 0, 0);
+            app.on_key(key(KeyCode::Enter, false));
+            app.sel = Sel::Shell(0, 0, 1);
+            app.on_key(key(KeyCode::Enter, false));
+
+            let dash = tmux.inside.clone().expect("inside");
+            assert_eq!(app.docked.as_deref(), Some(second.as_str()));
+            assert_eq!(docked_state(&tmux, &second).0, dash.window_id);
+            let (window, by, _) = docked_state(&tmux, &first);
+            assert_eq!(window, first_home, "the first shell went home");
+            assert_eq!(by, None, "and released its lease");
+        });
+    }
+
+    /// `Enter` on the shell that is already docked is "put me back in it",
+    /// not a second swap that would bounce the pane out and in again.
+    #[test]
+    fn enter_on_the_docked_shell_only_moves_the_focus() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_home, pane) = seed_repository_with_shell(&tmux, &mut app);
+            app.build_tree_flags();
+            app.sel = Sel::Worktree(0, 0);
+            app.on_key(key(KeyCode::Enter, false));
+            let dash = tmux.inside.clone().expect("inside");
+            tmux.select_pane(&dash.pane_id).expect("focus the tree");
+
+            app.on_key(key(KeyCode::Enter, false));
+
+            assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
+            let (window, by, active) = docked_state(&tmux, &pane);
+            assert_eq!(window, dash.window_id, "it never left");
+            assert_eq!(by.as_deref(), Some(dash.pane_id.as_str()));
+            assert!(active, "the focus came back to it");
+        });
+    }
+
+    /// Quitting with a pane docked must send it home first: the slot is
+    /// killed on the way out, and an agent left in a window we are tidying
+    /// would go with it.
+    #[test]
+    fn quitting_sends_a_docked_pane_home_before_the_slot_goes() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (home, pane) = seed_repository_with_shell(&tmux, &mut app);
+            app.build_tree_flags();
+            app.sel = Sel::Worktree(0, 0);
+            app.on_key(key(KeyCode::Enter, false));
+            assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
+
+            app.drop_slot();
+
+            assert_eq!(app.docked, None);
+            assert_eq!(app.slot, None);
+            let (window, by, _) = docked_state(&tmux, &pane);
+            assert_eq!(window, home, "the agent is back in its own window");
+            assert_eq!(by, None);
+            let dash = tmux.inside.clone().expect("inside");
+            assert_eq!(
+                tmux.list_furniture()
+                    .unwrap()
+                    .iter()
+                    .filter(|p| p.window_id == dash.window_id)
+                    .count(),
+                1,
+                "and the dashboard window is its own again"
+            );
+        });
+    }
+
+    /// A worktree with no shell has nothing to expand into and nothing to
+    /// dock. `Enter` there must say so — silently toggling an invisible
+    /// expand flag is a dead key.
+    #[test]
+    fn enter_on_a_worktree_with_no_shell_explains_itself() {
+        let mut app = app_with_shell();
+        app.state.repositories[0].worktrees[0].shells.clear();
+        app.build_tree_flags();
+        app.sel = Sel::Worktree(0, 0);
+
+        app.on_key(key(KeyCode::Enter, false));
+
+        assert_eq!(app.docked, None, "nothing was docked");
+        let toast = app.toast().expect("it explains itself");
+        assert!(
+            toast.text.contains("no agent shell") && toast.text.contains('a'),
+            "and names the key that fixes it: {}",
+            toast.text
+        );
     }
 
     /// A resized dashboard takes every agent window with it, so the next

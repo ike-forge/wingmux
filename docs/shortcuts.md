@@ -18,8 +18,8 @@ overlays) → active overlay → text input → focused panel → global binding
 |---|---|---|
 | `j` / `k` (or `↓` / `↑`) | move selection down / up | vim motion; arrows = same code path |
 | `h` (or `←`) | collapse; jump to parent | vim motion (`h` = left/up a level) |
-| `l` (or `→`) | expand; attach to shell | vim motion; `Enter` alias |
-| `Enter` | expand / attach | "open / drill into" action key |
+| `l` (or `→`) | expand; dock the shell | vim motion; `Enter` alias |
+| `Enter` | expand / dock | "open / drill into" action key |
 | `g` / `G` | first / last item | vim motion; `Home`/`End` alias |
 | `PgDn` / `PgUp` | half page down / up | accessibility: same as `ctrl-d`/`ctrl-u` |
 | `ctrl-d` / `ctrl-u` | half page down / up | vim motion |
@@ -92,12 +92,13 @@ overlay lists all of them grouped by context. Same words in both.
 | `n` | new worktree (sibling; branched from the base branch, not the checkout) | create action |
 | `a` | add a shell to the worktree (picker: the repository's agent command, the other configured agents, or a plain `$SHELL`) | add action |
 | `d` | delete worktree (kills windows, removes worktree; `f` = force when dirty) | vim `d` destructive, confirms; `f` differs by position (confirm mode, not navigation) |
+| `Enter` | on a one-shell worktree: dock that shell (the folded row *is* the shell). With no shell at all it says so and points at `a` — never a silent no-op | no dead keys |
 
 ### Shell selected
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `Enter` / `l` | attach to the shell | domain convention (attach) |
+| `Enter` / `l` | dock the shell: its real tmux pane swaps in beside the tree and takes the cursor | domain convention (open the thing the row stands for) |
 | `s` | quick-send a prompt to the agent (multiline editor, Alt+Enter sends) | send action |
 | `d` | close this shell (kills its window; the worktree and its other shells stay) | vim `d` destructive, confirms; the object is the selected row |
 
@@ -196,19 +197,43 @@ The tree selection never moves while the overlay is open (the
 accessibility layer routes motions to the overlay, same code path as
 help/picker).
 
-## Tmux back-key (attach & return)
+## Docking — and everything tmux owns once a pane is docked
+
+`Enter` on a shell is one gesture with two halves: a single `swap-pane`
+brings the agent's **real** tmux pane into the dashboard's window beside the
+tree, and a `select-pane` leaves the cursor in it. Exactly one pane is
+docked at a time — docking another shell sends the current one home first —
+and quitting sends it home before the slot is taken down.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `Enter` on a shell | `select-window` to the shell's window + `switch-client` to the agent session | domain convention |
-| `<prefix> + back-key` (default `C-b C-o`, config `tmux.back_key`) | jump back to the dashboard window from any agent window | the one configurable binding (avoids clashing with the user's tmux); bound in the PREFIX table — never the root table, so no other TUI ever loses the key |
+| `Enter` on a shell | dock: `swap-pane` the agent pane into the slot, `select-pane` into it | domain convention (open the thing the row stands for) |
+| `Enter` on the shell that is already docked | just move the focus back into it — no second swap | idempotent action key |
 
-Why the prefix: tmux key tables are server-wide, so a root-table binding
-(`bind-key -n`) hijacks the chord in every session — vim's `C-o`, readline,
-and other TUIs running inside tmux would all lose the key. Behind the
-prefix, the chord only fires when the user explicitly asks for a tmux
-command. Legacy root bindings from pre-M9 versions are removed on startup
-(only the exact command we bound — user bindings of the same key survive).
+Once the pane is on screen it is a normal tmux pane, so **everything past
+the dock is tmux's own binding and deliberately unbound here**: moving
+between the tree and the agent (`<prefix> + ←` / `→` / `o` / `;` by
+default), scrolling and searching the scrollback (copy mode), selecting and
+copying, zooming (`<prefix> + z`) and resizing. LazyWingman binds no
+navigation key of its own — the keys the user already knows keep working,
+and none of the agent's own keys (`1`/`2`/`3`, typing, image paste) is
+intercepted on the way in.
+
+The **back-key** (`tmux.back_key`, default `<prefix> + C-o`) still jumps
+from an agent *window* to the dashboard window, and is still bound in the
+PREFIX table rather than the root table — tmux key tables are server-wide,
+so a root-table binding (`bind-key -n`) would hijack the chord in every
+session and break vim's `C-o`, readline and other TUIs. Legacy root
+bindings from pre-M9 versions are removed on startup (only the exact
+command we bound — user bindings of the same key survive). It is on its way
+out: with docking, "back to the dashboard" is `<prefix> + ←` between two
+panes of one window.
+
+While a shell is docked its row's **preview panel says so** instead of
+drawing a capture: the real pane is already on screen next to it, and a
+redrawn copy would be a view that silently lags the thing beside it. Every
+other shell previews as before — the preview is the browse mode, and the
+fallback for any shell that is not the docked one.
 
 ## Deliberately unbound — and why
 
@@ -219,6 +244,11 @@ An inert key is a decision, not an omission.
 - `Tab` / `Shift-Tab` — no panel cycling: there is exactly one focusable
   panel (the tree); the detail/preview panes are display-only. In the
   quick-send textarea, `Tab` inserts a tab (see above).
+- pane navigation, scrolling, search, selection, copy, zoom and resize —
+  all deliberately unbound. Once a pane is docked they are tmux's own
+  bindings, whatever the user has them set to; re-implementing any of them
+  would mean emulating the agent's terminal, which is the exact thing
+  docking exists to stop doing.
 - `y` / `v` — no yank or row selection yet (no multi-select model).
 - `:` — no command language; every action already has a key.
 - `e`, `c`, `w`, `b`, `t`, `E`, `C`, ... — reserved for future actions
