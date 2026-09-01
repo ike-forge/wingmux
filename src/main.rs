@@ -222,57 +222,87 @@ fn should_wrap(inside: bool, is_tty: bool) -> bool {
 /// swallow a layer deep.
 fn wrap_into_tmux(tmux: &tmux::Tmux, cfg: &config::Config, cwd: &std::path::Path) -> Result<()> {
     use std::os::unix::process::CommandExt;
+    use tmux::ScopeWindow;
 
     let scope = app::scope_for(cfg, cwd);
     let exe = std::env::current_exe()
         .map_err(|e| error::Error::Config(format!("cannot locate my own binary: {e}")))?;
+    // What `#{pane_current_command}` will read while a dashboard runs.
+    let exe_name = exe
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "lazywingman".into());
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let mut cmd = tmux.client_command();
 
-    match tmux.find_scope_window(&scope)? {
-        // A dashboard is already showing this scope: attach to it instead of
-        // racing a second one beside it. Selected clientlessly first, then
-        // attached, so the two never have to be chained into one client.
-        Some(w) if tmux.has_dashboard_pane(&w.window_id)? => {
-            log::info!(
-                "a dashboard already shows {} ({} in {}) — attaching",
-                scope.display(),
-                w.window_id,
-                w.session_name
-            );
-            tmux.select_window(&w.window_id)?;
-            cmd.args(["attach-session", "-t", &w.session_name]);
-        }
-        // The window outlived its dashboard: its slot, and whatever agent
-        // pane was docked into it, are still there. Split a fresh dashboard
-        // back beside them rather than abandoning panes that never died.
-        Some(w) => {
-            log::info!(
-                "the dashboard of {} is gone — splitting a fresh one back into {}",
-                scope.display(),
-                w.window_id
-            );
-            let mut split = tmux.client_command();
-            split.args(["split-window", "-t", &w.window_id, "-c"]);
-            split.arg(cwd);
-            split.arg("--").arg(&exe).args(&argv);
-            let out = split
-                .output()
-                .map_err(|e| error::Error::Tmux(format!("cannot run tmux split-window: {e}")))?;
-            if !out.status.success() {
-                return Err(error::Error::Tmux(format!(
-                    "tmux split-window failed: {}",
-                    String::from_utf8_lossy(&out.stderr).trim()
-                )));
+    // Where to attach, once there is something to attach to.
+    let session = match tmux.find_scope_window(&scope)? {
+        Some(w) => match tmux.scope_window_state(&w.window_id, &exe_name)? {
+            // A dashboard is running there. Attach to it instead of racing a
+            // second one beside it.
+            ScopeWindow::Live => {
+                log::info!(
+                    "a dashboard already shows {} ({} in {}) — attaching",
+                    scope.display(),
+                    w.window_id,
+                    w.session_name
+                );
+                tmux.select_window(&w.window_id)?;
+                Some(w.session_name)
             }
-            tmux.select_window(&w.window_id)?;
-            cmd.args(["attach-session", "-t", &w.session_name]);
+            // The window outlived its dashboard, but our furniture is still
+            // in it: its slot, and whatever agent pane was docked in when the
+            // dashboard died. Split a fresh dashboard back beside panes that
+            // never died rather than abandon them.
+            ScopeWindow::Furniture => {
+                log::info!(
+                    "the dashboard of {} is gone — splitting a fresh one back into {}",
+                    scope.display(),
+                    w.window_id
+                );
+                tmux.spawn_dashboard_pane(&w.window_id, cwd, &exe, &argv)?;
+                tmux.select_window(&w.window_id)?;
+                Some(w.session_name)
+            }
+            // Only the mark is left. Nothing wrote it off when the dashboard
+            // exited — a TUI quitting in a shell pane hands the pane back to
+            // the shell, and the window, the pane and the option all survive.
+            // Retract it and start somewhere of our own.
+            ScopeWindow::Stale => {
+                log::info!(
+                    "{} carries a stale scope mark for {} — retracting it",
+                    w.window_id,
+                    scope.display()
+                );
+                if let Err(e) = tmux.clear_window_option(&w.window_id, dock::SCOPE_KEY) {
+                    log::warn!("cannot retract the stale scope mark: {e}");
+                }
+                None
+            }
+        },
+        None => None,
+    };
+
+    let mut cmd = tmux.client_command();
+    match session {
+        Some(s) => {
+            cmd.args(["attach-session", "-t", &s]);
         }
-        // Nothing showing this scope anywhere: our own session, created or
-        // re-attached by the same `-A` call.
+        // Nothing is showing this scope. Our own session — but a session that
+        // already exists needs a WINDOW of its own: `new-session -A` attaches
+        // to an existing session and silently drops the command, which is a
+        // tmux with no dashboard in it.
+        None if tmux.session_exists(WRAPPER_SESSION) => {
+            log::info!(
+                "no dashboard for {} — opening a window in {WRAPPER_SESSION}",
+                scope.display()
+            );
+            let win = tmux.spawn_dashboard_window(WRAPPER_SESSION, cwd, &exe, &argv)?;
+            tmux.select_window(&win)?;
+            cmd.args(["attach-session", "-t", WRAPPER_SESSION]);
+        }
         None => {
             log::info!("no dashboard for {} — starting one", scope.display());
-            cmd.args(["new-session", "-A", "-s", WRAPPER_SESSION, "-c"]);
+            cmd.args(["new-session", "-s", WRAPPER_SESSION, "-c"]);
             cmd.arg(cwd);
             cmd.arg("--").arg(&exe).args(&argv);
         }
@@ -283,9 +313,9 @@ fn wrap_into_tmux(tmux: &tmux::Tmux, cfg: &config::Config, cwd: &std::path::Path
 }
 
 /// The session the self-wrap creates when nothing is showing this scope yet.
-/// `new-session -A` makes it a re-attach when it already exists, so a second
-/// launch in an unrelated folder shares it rather than starting a rival
-/// server — `swap-pane` cannot cross tmux servers.
+/// One session for every scope that has no home of its own, because
+/// `swap-pane` cannot cross tmux servers and a second server would put the
+/// dashboard out of reach of its own agent panes.
 const WRAPPER_SESSION: &str = "lazywingman";
 
 /// `lazywingman hook <Event>`: called by Claude Code, once per lifecycle

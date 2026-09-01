@@ -226,10 +226,24 @@ the same commit as the change.
   - A second launch in the same folder must not race a rival dashboard beside
     the first, so the dashboard's window announces its scope (`@lw_scope`,
     stamped at startup) and the wrapper looks it up with one
-    `list-windows -a`. A live dashboard there → attach it. A window that
-    outlived its dashboard (its slot, and whatever agent pane was docked into
-    it, are still alive) → `split-window` a fresh dashboard back beside them
-    rather than abandon panes that never died. Nothing → our own session.
+    `list-windows -a`.
+  - **The mark is not evidence that a dashboard is alive**, and reading it as
+    if it were was a real bug: nothing unwrites `@lw_scope`, and a TUI that
+    quits in a shell pane hands that pane back to the shell — the window, the
+    pane and the option all survive. Launching from a bare shell then attached
+    the user to a tmux with no dashboard in it. `Tmux::scope_window_state`
+    therefore judges the window by what it HOLDS: a pane whose
+    `#{pane_current_command}` is our binary → `Live`, attach it (tmux
+    recomputes that field from the foreground process every time, so it cannot
+    go stale); no dashboard but panes of ours still there — a slot, a holder,
+    an agent pane docked in when the dashboard died → `Furniture`,
+    `split-window` one back beside panes that never died; neither → `Stale`,
+    retract the mark and start somewhere of our own.
+  - **`new-session -A` was the same bug by another door.** Given an existing
+    session `-A` attaches to it and silently drops the command, so a wrapper
+    session that outlived its dashboard would be attached to empty-handed. An
+    existing `lazywingman` session gets `new-window` instead; only a session
+    that does not exist yet is created with the command inline.
   - `Tmux::ensure_server` went with standalone mode: the wrapper session *is*
     the server, so there is no longer a boot with no server. `list-panes -a` on
     a zero-session server ("no current target") still reads as an empty pane

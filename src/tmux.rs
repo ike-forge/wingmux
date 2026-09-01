@@ -81,6 +81,20 @@ pub struct WindowRef {
     pub session_name: String,
 }
 
+/// What a window still carrying `@lw_scope` actually holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeWindow {
+    /// A dashboard is running in it. Attach; never start a second one.
+    Live,
+    /// No dashboard, but panes of ours are still there — a slot, a holder,
+    /// or an agent pane that was docked in when the dashboard died. Split a
+    /// fresh dashboard back beside panes that never died.
+    Furniture,
+    /// Neither. The mark outlived the dashboard that wrote it: usually the
+    /// user's own shell pane, which survives the TUI quitting inside it.
+    Stale,
+}
+
 /// Login shells whose presence as the foreground command means the agent
 /// process inside has exited.
 const SHELL_COMMANDS: &[&str] = &[
@@ -524,24 +538,101 @@ impl Tmux {
         }))
     }
 
-    /// Does `window_id` still hold a pane that is none of ours?
+    /// What a window carrying `@lw_scope` actually holds *right now*.
     ///
-    /// The dashboard is such a pane: it carries no `@lw_*` option of its
-    /// own. A window that announced a scope but keeps only its slot and
-    /// whatever agent pane was docked into it has therefore lost its
-    /// dashboard — the process died, tmux closed its pane, and the window
-    /// survived only because the furniture is still in it.
-    pub fn has_dashboard_pane(&self, window_id: &str) -> Result<bool> {
+    /// The mark is written at startup and nothing unwrites it, so its
+    /// presence proves only that a dashboard was once here. The pane it was
+    /// running in usually outlives it — quitting a TUI started from a shell
+    /// pane hands that pane back to the shell — and a window is not
+    /// evidence of a live dashboard. `#{pane_current_command}` is, because
+    /// tmux recomputes it from the pane's foreground process every time it
+    /// is asked.
+    pub fn scope_window_state(&self, window_id: &str, exe: &str) -> Result<ScopeWindow> {
         let fmt = format!(
-            "#{{{repo}}}|#{{{holder}}}|#{{{slot}}}",
+            "#{{pane_current_command}}|#{{{repo}}}|#{{{holder}}}|#{{{slot}}}",
             repo = dock::REPO_KEY,
             holder = dock::HOLDER_KEY,
             slot = dock::SLOT_KEY,
         );
         let out = self.run(&["list-panes", "-t", window_id, "-F", &fmt])?;
-        Ok(out
-            .lines()
-            .any(|l| l.split('|').all(|field| field.trim().is_empty())))
+        let mut furniture = false;
+        for line in out.lines() {
+            let mut it = line.split('|');
+            if it.next().unwrap_or("").trim() == exe {
+                return Ok(ScopeWindow::Live);
+            }
+            if it.any(|f| !f.trim().is_empty()) {
+                furniture = true;
+            }
+        }
+        Ok(if furniture {
+            ScopeWindow::Furniture
+        } else {
+            ScopeWindow::Stale
+        })
+    }
+
+    /// Unset a window user option. Used to retract a stale `@lw_scope`, so
+    /// the next launch does not have to rediscover the same lie.
+    pub fn clear_window_option(&self, window_id: &str, key: &str) -> Result<()> {
+        self.run(&["set-option", "-w", "-u", "-t", window_id, key])?;
+        Ok(())
+    }
+
+    /// Split a dashboard into `window_id`, beside whatever is already there.
+    pub fn spawn_dashboard_pane(
+        &self,
+        window_id: &str,
+        cwd: &Path,
+        exe: &Path,
+        argv: &[String],
+    ) -> Result<()> {
+        let mut args: Vec<String> = vec![
+            "split-window".into(),
+            "-t".into(),
+            window_id.into(),
+            "-c".into(),
+            cwd.to_string_lossy().into_owned(),
+            "--".into(),
+            exe.to_string_lossy().into_owned(),
+        ];
+        args.extend(argv.iter().cloned());
+        self.run(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+        Ok(())
+    }
+
+    /// Open a new window running a dashboard in an existing session, and
+    /// return its id.
+    ///
+    /// This is what `new-session -A` cannot do: given an existing session
+    /// `-A` attaches to it and silently DROPS the command, so a wrapper
+    /// session that outlived its dashboard would be attached to empty-handed.
+    pub fn spawn_dashboard_window(
+        &self,
+        session: &str,
+        cwd: &Path,
+        exe: &Path,
+        argv: &[String],
+    ) -> Result<String> {
+        let mut args: Vec<String> = vec![
+            "new-window".into(),
+            "-t".into(),
+            session.into(),
+            "-c".into(),
+            cwd.to_string_lossy().into_owned(),
+            "-P".into(),
+            "-F".into(),
+            "#{window_id}".into(),
+            "--".into(),
+            exe.to_string_lossy().into_owned(),
+        ];
+        args.extend(argv.iter().cloned());
+        let out = self.run(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+        let id = out.trim().to_string();
+        if id.is_empty() {
+            return Err(Error::Tmux("new-window returned no window id".into()));
+        }
+        Ok(id)
     }
 
     /// Unset a pane user option, handing the shell back to the heuristics.
@@ -995,6 +1086,124 @@ mod tests {
                 got.shell,
                 Some(ShellId::for_session("wingman-session-id", "feat", 0)),
                 "identity travels with the pane"
+            );
+        });
+    }
+
+    /// A scope mark is not evidence of a live dashboard. Nothing unwrites
+    /// it: a TUI quitting in a shell pane hands that pane back to the shell,
+    /// and the window, the pane and the option all survive. Attaching to
+    /// such a window was the bug — it landed the user in a tmux with no
+    /// dashboard in it — so the three cases are told apart by what the
+    /// window HOLDS, not by what it once announced.
+    #[test]
+    fn a_scope_window_is_judged_by_what_is_running_in_it() {
+        with_tmux_server(|_sock, tmux| {
+            // The user's own shell pane, still carrying the mark of a
+            // dashboard that has already quit.
+            let stale = tmux
+                .run(&[
+                    "new-window",
+                    "-P",
+                    "-F",
+                    "#{window_id}",
+                    "-d",
+                    "--",
+                    "sh",
+                    "-c",
+                    "sleep 600",
+                ])
+                .unwrap()
+                .trim()
+                .to_string();
+            tmux.set_window_option(&stale, dock::SCOPE_KEY, "/work/scope")
+                .unwrap();
+            assert_eq!(
+                tmux.scope_window_state(&stale, "lazywingman").unwrap(),
+                ScopeWindow::Stale,
+                "a shell that once hosted a dashboard is not a dashboard"
+            );
+
+            // The same window once a pane of ours is in it: the dashboard is
+            // gone but its furniture is not, so it is worth splitting into.
+            let slot = tmux
+                .run(&[
+                    "split-window",
+                    "-t",
+                    &stale,
+                    "-P",
+                    "-F",
+                    "#{pane_id}",
+                    "-d",
+                    "--",
+                    "sh",
+                    "-c",
+                    "sleep 600",
+                ])
+                .unwrap()
+                .trim()
+                .to_string();
+            tmux.set_pane_option(&slot, dock::SLOT_KEY, "1").unwrap();
+            assert_eq!(
+                tmux.scope_window_state(&stale, "lazywingman").unwrap(),
+                ScopeWindow::Furniture,
+                "a slot left behind is worth splitting a dashboard back into"
+            );
+
+            // And a window actually running the binary reads as live —
+            // `sleep` stands in for it, since the test cannot run itself.
+            let live = tmux
+                .run(&[
+                    "new-window",
+                    "-P",
+                    "-F",
+                    "#{window_id}",
+                    "-d",
+                    "--",
+                    "sleep",
+                    "600",
+                ])
+                .unwrap()
+                .trim()
+                .to_string();
+            assert_eq!(
+                tmux.scope_window_state(&live, "sleep").unwrap(),
+                ScopeWindow::Live,
+                "the foreground command is the only live proof there is"
+            );
+
+            // Retracting the mark is what keeps the next launch from
+            // rediscovering the same lie.
+            tmux.clear_window_option(&stale, dock::SCOPE_KEY).unwrap();
+            assert!(
+                tmux.find_scope_window(Path::new("/work/scope"))
+                    .unwrap()
+                    .is_none(),
+                "a retracted mark must stop matching"
+            );
+        });
+    }
+
+    /// `new-session -A` against an EXISTING session attaches and silently
+    /// drops the command — a tmux with no dashboard in it, which is the
+    /// second door to the same bug. An existing wrapper session therefore
+    /// gets a window of its own.
+    #[test]
+    fn an_existing_wrapper_session_gets_a_window_not_a_bare_attach() {
+        with_tmux_server(|_sock, tmux| {
+            let win = tmux
+                .spawn_dashboard_window(
+                    "main",
+                    Path::new("/tmp"),
+                    Path::new("/bin/sleep"),
+                    &["600".to_string()],
+                )
+                .unwrap();
+            assert!(win.starts_with('@'));
+            assert_eq!(
+                tmux.scope_window_state(&win, "sleep").unwrap(),
+                ScopeWindow::Live,
+                "the window must be running what it was asked to run"
             );
         });
     }
