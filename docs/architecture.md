@@ -120,6 +120,20 @@ the same commit as the change.
   discards them"). It is the one line that changes which key the user
   should press, so it may not read like the rest of the sentence: the
   colour is what makes the eye stop before the fingers do.
+- **"clean" means no work at all, committed or not.** The delete confirm
+  used to read the working tree alone (`git status --porcelain`), so a
+  worktree with a clean tree and a branch full of unmerged commits was
+  announced as "worktree is clean" — the one lie the dialog must not tell,
+  since `worktrees.delete_branch` (on by default) then deletes that branch
+  with `branch -D`. `App::worktree_has_unmerged_commits` asks the commit
+  half separately (`Git::worktree_committed_ahead`, the `fork..HEAD` count
+  plus the ancestor test out of `Git::worktree_state`), because `Ahead`
+  merges "dirty" and "committed" into one verdict and the dialog has to
+  name which. It is asked fresh rather than read off the `wt_state` cache,
+  which is polled on an interval and would answer for a worktree as it was
+  minutes ago. Unmerged commits do NOT remove the plain `y`: `git worktree
+  remove` succeeds on them, so the answer can succeed — it is the warning
+  line, not the offered keys, that carries the risk.
 - **The New Worktree popup names the base branch it cuts from.** A worktree's
   branch has always been cut from the repository's base branch
   (`worktrees.base_branch`, or the repository's override), never from the

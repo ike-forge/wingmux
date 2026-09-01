@@ -301,6 +301,25 @@ impl Git {
         Ok(!out.stdout.trim().is_empty())
     }
 
+    /// Does the worktree carry commits of its own that `base` does not have?
+    ///
+    /// The commit half of [`Git::worktree_state`], asked on its own: the
+    /// delete confirm has to tell "clean tree, nothing committed" apart
+    /// from "clean tree, work committed and not merged", and `Ahead`
+    /// merges those with the dirty case. `fork` is the commit the worktree
+    /// was cut from, as in [`Git::worktree_state`].
+    pub fn worktree_committed_ahead(&self, wt_path: &Path, fork: &str, base: &str) -> Result<bool> {
+        let range = format!("{fork}..HEAD");
+        let out = Self::run_ok(wt_path, &["rev-list", "--count", &range])?;
+        if out.stdout.trim().parse::<u64>().unwrap_or(0) == 0 {
+            return Ok(false);
+        }
+        Ok(!Self::run_status(
+            wt_path,
+            &["merge-base", "--is-ancestor", "HEAD", base],
+        ))
+    }
+
     /// How much work the worktree is carrying, relative to `base`.
     ///
     /// `fork` is the commit the worktree was cut from (`Worktree::
@@ -508,6 +527,37 @@ mod tests {
             git.worktree_state(&wt, &fork, "main").unwrap(),
             WorktreeState::Ahead
         );
+    }
+
+    /// The delete confirm's question — "is there committed work here?" —
+    /// answered independently of the working tree: a clean tree on a
+    /// branch that is ahead must still say yes, which is exactly the case
+    /// [`WorktreeState::Ahead`] could not distinguish.
+    #[test]
+    fn committed_ahead_ignores_the_working_tree() {
+        let (_guard, repo) = temp_repo("proj");
+        let git = Git;
+        let wt = repo.parent().unwrap().join("wt-committed-ahead");
+        let fork = git.rev_parse(&repo, "main").unwrap();
+        git.worktree_add(&repo, &wt, "ahead-branch", "main")
+            .unwrap();
+
+        // freshly cut
+        assert!(!git.worktree_committed_ahead(&wt, &fork, "main").unwrap());
+
+        // uncommitted work only: nothing is committed yet
+        fs::write(wt.join("scratch.txt"), "wip\n").unwrap();
+        assert!(!git.worktree_committed_ahead(&wt, &fork, "main").unwrap());
+
+        // committed, not merged — and the tree is clean again
+        run(&wt, &["add", "."]);
+        run(&wt, &["commit", "-m", "work"]);
+        assert!(!git.worktree_dirty(&wt).unwrap());
+        assert!(git.worktree_committed_ahead(&wt, &fork, "main").unwrap());
+
+        // merged into the base: the commits are no longer its own
+        run(&repo, &["merge", "--no-ff", "-m", "merge", "ahead-branch"]);
+        assert!(!git.worktree_committed_ahead(&wt, &fork, "main").unwrap());
     }
 
     /// A worktree whose directory is gone — removed from the dashboard
