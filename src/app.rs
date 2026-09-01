@@ -664,16 +664,13 @@ pub struct App {
     /// shared between instances lives in tmux, which is the only thing
     /// both instances can see.
     pub leases: HashMap<String, Lease>,
-    /// Has the user moved the selection yet? Dock-on-look waits for it.
-    /// Startup must not split a slot into what may well be the user's own
-    /// window before they have touched anything — the same courtesy
-    /// [`App::ensure_slot`]'s laziness exists for.
-    pub auto_dock_armed: bool,
-    /// The pane dock-on-look last acted on — docked, or declined because
-    /// another instance holds it. It keeps a yielded lease from being
-    /// re-attempted on every frame; cleared by every poll, so a lease that
-    /// has since been released is picked up at the poll cadence.
-    pub auto_dock_seen: Option<String>,
+    /// What dock-on-look last acted on: `Some(Some(pane))` for a dock it
+    /// attempted, `Some(None)` for a "nothing here to dock" it acted on,
+    /// and `None` for "nothing tried since the last poll". It keeps a
+    /// yielded lease, a failed dock and a focus-guarded frame from being
+    /// re-attempted on every frame; every poll clears it, so anything that
+    /// has changed since is picked up at the poll cadence.
+    pub auto_dock_seen: Option<Option<String>>,
     /// The window the docked pane came from — where [`crate::dock::undock`]
     /// sends it back to. Learned at dock time, because once a pane is
     /// docked its own window id is the dashboard's and no longer says
@@ -772,7 +769,6 @@ impl App {
             dash_window: None,
             slot: None,
             leases: HashMap::new(),
-            auto_dock_armed: false,
             auto_dock_seen: None,
             docked: None,
             docked_home: None,
@@ -2093,57 +2089,53 @@ impl App {
             .map(|s| s.window_name.clone())
     }
 
-    /// Follow the selection: bring whatever shell the cursor is on beside
-    /// the tree, without taking the cursor with it.
+    /// Follow the selection: what the panel shows is what the cursor is on.
     ///
     /// **No timer.** The plan called for a ~150 ms settle so that held `j`
     /// autorepeat could not fire one swap per frame; a settle, though,
     /// leaves the pane of the row you have already left sitting on screen
-    /// for the length of it, and the docked dashboard has no preview to
-    /// fall back to in the meantime. So the burst is *coalesced* rather
-    /// than delayed: `input_pending` is the event queue's own answer to
-    /// "are more keys already waiting", and autorepeat keeps it true for
-    /// as long as the key is held. The dock fires on the first frame after
-    /// the keys stop — no added latency at all, and never mid-burst.
+    /// for the length of it. So the burst is *coalesced* rather than
+    /// delayed: `input_pending` is the event queue's own answer to "are
+    /// more keys already waiting", and autorepeat keeps it true for as long
+    /// as the key is held. The dock fires on the first frame after the keys
+    /// stop — no added latency at all, and never mid-burst.
     ///
-    /// Three things it will not do:
+    /// What the panel owes the selection is one of two things, and never a
+    /// third shell's pane left over from a row the cursor has left:
+    ///
+    /// - the selected shell's **real pane**, docked; or
+    /// - the **preview**, when there is no pane to dock — no shell under
+    ///   the cursor, or a shell another dashboard holds. A leased shell is
+    ///   shown as a preview (whose title names the holder), never as
+    ///   someone else's live pane, and yielding is also what keeps two idle
+    ///   dashboards from trading a pane forever with nobody pressing a key.
+    ///
+    /// Two things it will not do:
     ///
     /// - **Steal focus.** A dock that also ran `select-pane` would take the
     ///   cursor out of the tree, and the next `j` would go to the agent.
     ///   `Enter` focuses; looking does not.
-    /// - **Fire while the docked pane holds the keyboard.** Keyboard
-    ///   selection cannot move while the TUI is unfocused, but a
+    /// - **Move anything while the docked pane holds the keyboard.**
+    ///   Keyboard selection cannot move while the TUI is unfocused, but a
     ///   poll-driven reconcile can, and swapping a pane out from under
     ///   someone mid-sentence is the worst bug this design can produce.
-    /// - **Take a shell another instance holds.** Two idle dashboards with
-    ///   the same shell selected would trade it forever with nobody
-    ///   pressing a key. Looking yields; `Enter` steals.
-    ///
-    /// A selection with no shell under it (a repository row, an empty
-    /// worktree) leaves the current dock alone rather than undocking:
-    /// browsing the tree is not a reason to tear the layout down.
     pub fn auto_dock(&mut self, input_pending: bool) {
-        if input_pending || !self.auto_dock_armed || !matches!(self.mode, Mode::Normal) {
+        if input_pending || !matches!(self.mode, Mode::Normal) {
             return;
         }
-        let Some(pane) = self.selected_shell_pane() else {
-            return;
-        };
-        if self.docked.as_deref() == Some(pane.as_str())
-            || self.auto_dock_seen.as_deref() == Some(pane.as_str())
-        {
+        let want = self
+            .selected_shell_pane()
+            .filter(|p| self.leased_by(p).is_none());
+        if want == self.docked {
             return;
         }
         // Recorded before the attempt, not after: a decline must be
-        // remembered too, or a leased shell is re-asked on every frame.
-        self.auto_dock_seen = Some(pane.clone());
-        if let Some(lease) = self.leased_by(&pane) {
-            log::debug!(
-                "not following {pane} into the tree: leased by {}",
-                lease.dash_pane
-            );
+        // remembered too, or a leased shell — or a pane that is simply
+        // gone — is re-asked on every frame.
+        if self.auto_dock_seen.as_ref() == Some(&want) {
             return;
         }
+        self.auto_dock_seen = Some(want.clone());
         let Ok(tmux) = self.require_tmux() else {
             return;
         };
@@ -2151,12 +2143,20 @@ impl App {
             return;
         };
         if !tmux.pane_active(&own).unwrap_or(false) {
-            log::debug!("not following {pane}: the docked pane holds the keyboard");
+            log::debug!("not following the selection: the docked pane holds the keyboard");
             return;
         }
-        if let Err(e) = self.dock_pane(&pane, false) {
-            // Nobody asked for this one, so it does not earn a toast.
-            log::warn!("cannot follow the selection into {pane}: {e}");
+        match want {
+            Some(pane) => {
+                if let Err(e) = self.dock_pane(&pane, false) {
+                    // Nobody asked for this one, so it does not earn a toast.
+                    log::warn!("cannot follow the selection into {pane}: {e}");
+                }
+            }
+            // Nothing here to put on screen: give the space back to the
+            // preview, which can show a leased shell — and can say when
+            // there is no shell at all.
+            None => self.drop_slot(),
         }
     }
 
@@ -2727,6 +2727,13 @@ impl App {
 
     /// Poll tmux: pane metadata + capture tail → statuses, preview.
     pub fn poll(&mut self) {
+        // Stamped FIRST, and unconditionally: every early return below is
+        // a reason to wait for the next tick, not to poll again straight
+        // away. Without this the event loop's "is a poll due" test stayed
+        // true for ever, its input timeout collapsed to zero, and the
+        // dashboard span-polled — spawning a `capture-pane` per shell per
+        // frame, and retrying a failing dock ~90 times a second.
+        self.last_poll = Instant::now();
         // Independent of tmux (and of its own cadence) — the tree draws
         // the dirty flag whether or not a session exists.
         self.poll_worktree_state(false);
@@ -2812,10 +2819,6 @@ impl App {
     // ---------------------------------------------------------- keys
 
     pub fn on_key(&mut self, key: KeyEvent) {
-        // The user is driving: dock-on-look may start following the
-        // selection. Startup itself must not — see `auto_dock_armed`.
-        self.auto_dock_armed = true;
-
         // Accessibility layer, dispatched above everything (the ctrl layer
         // works over text input and overlays too): PageUp/PageDown and
         // ctrl-u/ctrl-d half-page, ctrl-f/ctrl-b full-page, Home/End
@@ -3627,7 +3630,6 @@ impl App {
         let nodes = self.visible_nodes();
         if let Some(sel) = nodes.get(row) {
             self.sel = *sel;
-            self.auto_dock_armed = true;
             if dbl {
                 self.expand_or_attach();
             }
@@ -5607,19 +5609,18 @@ mod tests {
         w.pane_id
     }
 
-    /// Put the cursor on the worktree's first shell, with dock-on-look armed.
+    /// Put the cursor on a row, the way a keypress would.
     fn look_at(app: &mut App, sel: Sel) {
         app.build_tree_flags();
         app.sel = sel;
         app.clamp_sel();
-        app.auto_dock_armed = true;
+        app.auto_dock_seen = None;
     }
 
     /// Dock-on-look **coalesces** a burst rather than delaying it. The plan
     /// asked for a ~150 ms settle so held `j` autorepeat could not fire one
     /// swap per row; a settle, though, leaves the pane of the row you have
-    /// already left on screen for its whole length, and a docked dashboard
-    /// has no preview to fall back to meanwhile. So the queue answers
+    /// already left on screen for its whole length. So the queue answers
     /// instead: while more input is waiting nothing moves, and the dock
     /// fires on the first frame after the keys stop — no timer, and so no
     /// added latency.
@@ -5710,11 +5711,33 @@ mod tests {
         });
     }
 
-    /// An explicit dock is subject to neither rule: `Enter` works from a
-    /// dashboard that has never been navigated, and it is what the user
-    /// pressed, so it takes the pane it names.
+    /// The poll must stamp its own clock. It did not, so the event loop's
+    /// "is a poll due" test stayed true for ever once the first interval had
+    /// passed: the input timeout collapsed to zero and the dashboard
+    /// span-polled — a `capture-pane` per shell per frame, and a failing
+    /// dock retried about ninety times a second in the log.
     #[test]
-    fn an_explicit_dock_obeys_neither_the_burst_nor_the_focus_rule() {
+    fn a_poll_stamps_its_own_clock_so_the_loop_can_wait() {
+        let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
+        app.last_poll = Instant::now() - Duration::from_secs(5);
+        assert!(app.last_poll.elapsed() >= Duration::from_millis(app.cfg.poll_interval_ms));
+        // No tmux: `poll` returns early, which is precisely the path that
+        // must still count as "polled" — every early return is a reason to
+        // wait for the next tick, not to try again on the next frame.
+        app.poll();
+        assert!(
+            app.last_poll.elapsed() < Duration::from_millis(app.cfg.poll_interval_ms),
+            "the next poll is not due yet"
+        );
+    }
+
+    /// There is no undocked mode to be in. The dashboard docks the selected
+    /// shell from the first frame, without waiting to be armed by a
+    /// keypress: an "undocked" startup state offers nothing the docked one
+    /// does not, and there is no key that returns to it — so it was only
+    /// ever a state you left once and could not explain.
+    #[test]
+    fn the_selected_shell_is_docked_from_the_first_frame() {
         with_tmux_server(|sock, _tmux| {
             let tmux = tmux_inside(sock);
             let mut app = app_with(tmux.clone());
@@ -5722,38 +5745,109 @@ mod tests {
             app.build_tree_flags();
             app.sel = Sel::Worktree(0, 0);
             app.clamp_sel();
-            assert!(!app.auto_dock_armed, "nothing has been pressed yet");
 
-            app.auto_dock(false);
-            assert_eq!(
-                app.docked, None,
-                "startup does not split furniture into the user's own window"
-            );
-
-            app.dock_shell(0, 0, 0);
-            assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
-        });
-    }
-
-    /// Browsing is not a reason to tear the layout down: a row with no
-    /// shell under it leaves whatever is docked where it is.
-    #[test]
-    fn a_row_with_no_shell_leaves_the_dock_alone() {
-        with_tmux_server(|sock, _tmux| {
-            let tmux = tmux_inside(sock);
-            let mut app = app_with(tmux.clone());
-            let (_w, pane) = seed_repository_with_shell(&tmux, &mut app);
-            look_at(&mut app, Sel::Worktree(0, 0));
-            app.auto_dock(false);
-            assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
-
-            app.flatten = false;
-            look_at(&mut app, Sel::Repository(0));
             app.auto_dock(false);
             assert_eq!(
                 app.docked.as_deref(),
                 Some(pane.as_str()),
-                "the repository row is a place to look, not a place to undock"
+                "nothing had to be pressed first"
+            );
+        });
+    }
+
+    /// What the panel shows is what the cursor is on, or the preview —
+    /// never a third shell's pane left over from a row the cursor has
+    /// left. A leftover reads as the selected agent, which is the one
+    /// thing a live pane must never be mistaken for.
+    #[test]
+    fn a_row_with_nothing_to_dock_gives_the_space_back_to_the_preview() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_w, pane) = seed_repository_with_shell(&tmux, &mut app);
+            app.viewport = (120, 40);
+            look_at(&mut app, Sel::Worktree(0, 0));
+            app.auto_dock(false);
+            assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
+            let slot = app.slot.clone().expect("a slot while something is docked");
+
+            // A second repository, so the tree has a repository row at all
+            // (a lone repository is flattened away).
+            app.state.repositories.push(Repository {
+                name: "q".into(),
+                path: PathBuf::from("/tmp/q"),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: false,
+                worktrees: vec![],
+            });
+            look_at(&mut app, Sel::Repository(0));
+            assert!(matches!(app.sel, Sel::Repository(0)), "on a repository row");
+            app.auto_dock(false);
+            assert_eq!(app.docked, None, "the previous shell does not linger");
+            assert_eq!(app.slot, None, "and the slot goes with it");
+            assert!(
+                tmux.list_furniture()
+                    .unwrap()
+                    .iter()
+                    .all(|p| p.pane_id != slot),
+                "really gone, not just forgotten"
+            );
+            assert!(
+                matches!(crate::ui::tier(&app), crate::ui::Tier::Wide),
+                "the preview has the space back"
+            );
+            assert_eq!(
+                tmux.list_panes()
+                    .unwrap()
+                    .iter()
+                    .find(|p| p.pane_id == pane)
+                    .map(|p| p.session_name.clone()),
+                Some("wingman-session-p".into()),
+                "and the agent pane went home rather than being killed with it"
+            );
+        });
+    }
+
+    /// The same rule with a lease as the reason: a shell another dashboard
+    /// holds is shown as a preview — whose title names the holder — never
+    /// as the pane of whatever row the cursor was on before.
+    #[test]
+    fn looking_at_a_leased_shell_falls_back_to_the_preview() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_w, first) = seed_repository_with_shell(&tmux, &mut app);
+            let second = seed_second_shell(&tmux, &mut app);
+            app.viewport = (120, 40);
+
+            look_at(&mut app, Sel::Shell(0, 0, 0));
+            app.auto_dock(false);
+            assert_eq!(app.docked.as_deref(), Some(first.as_str()));
+
+            // Another dashboard takes the second shell.
+            let (rival, rival_slot) = rival_dashboard(sock, &tmux, "/home/ike/other");
+            crate::dock::dock(&tmux, &rival_slot, &second, &rival).expect("they dock it");
+            app.poll();
+            assert!(app.leased_by(&second).is_some());
+
+            look_at(&mut app, Sel::Shell(0, 0, 1));
+            app.auto_dock(false);
+            assert_eq!(app.docked, None, "we do not show them the first shell");
+            assert!(
+                matches!(crate::ui::tier(&app), crate::ui::Tier::Wide),
+                "the preview says what is going on instead"
+            );
+            assert_eq!(
+                tmux.list_panes()
+                    .unwrap()
+                    .iter()
+                    .find(|p| p.pane_id == second)
+                    .and_then(|p| p.docked_by.clone()),
+                Some(rival),
+                "and their dock is untouched"
             );
         });
     }

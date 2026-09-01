@@ -289,14 +289,24 @@ the same commit as the change.
     the event loop's own `event::poll(ZERO)` answer to "are more keys already
     waiting", which autorepeat keeps true for as long as the key is held. One
     dock at the end of the run, and zero added latency for a single keypress.
-  - **Three refusals.** It never fires while the docked pane holds the keyboard
-    (`Tmux::pane_active` on our own pane, asked at the moment of the decision,
-    not cached from the last poll — the answer changes the instant the user
-    moves between panes); it yields to a shell another dashboard has docked;
-    and it does nothing until the user's first keypress, so startup does not
-    split furniture into what may well be the user's own window.
-  - **A row with no shell leaves the dock alone.** Undocking on the way past a
-    repository row would make browsing the tree flap the layout.
+  - **The panel owes the selection one of two things** — the selected shell's
+    real pane, or the preview — and never a third shell's pane left over from
+    a row the cursor has left. A leftover reads as the selected agent, which
+    is the one thing a live pane must never be mistaken for. So a row with
+    nothing to dock (no shell, or a shell another dashboard holds) drops the
+    slot and gives the space back to the preview, whose title names the
+    holder when there is one.
+  - **No undocked mode.** Dock-on-look used to wait to be armed by the first
+    keypress, so that startup did not split furniture into what may well be
+    the user's own window. That bought an "undocked" state that offers
+    nothing the docked one does not, that no key returns to, and that hid a
+    second dashboard's lease from the first until someone pressed `j`. The
+    selected shell is docked from the first frame.
+  - **One refusal.** Nothing moves — neither a dock nor the undock above —
+    while the docked pane holds the keyboard: `Tmux::pane_active` on our own
+    pane, asked at the moment of the decision rather than cached from the
+    last poll, because the answer changes the instant the user moves between
+    panes.
   - **The lease is a pane option, re-read every poll.** `@lw_docked` on the
     agent pane holds the docking dashboard's own pane id — the only thing two
     instances that know nothing of each other can both see. `App::refresh_leases`
@@ -327,6 +337,15 @@ the same commit as the change.
     `App::drop_slot` gives the dashboard its whole window back and the preview
     returns with it. The preview is the browse mode and the only view that
     works for a shell we do not hold, so it must not be a slot-shaped hole.
+
+- **A poll stamps its own clock** (M18 follow-up). `App::poll` did not touch
+  `App::last_poll`, so the event loop's "is a poll due" test stayed true for
+  ever once the first interval had passed: `until_poll` saturated to zero, the
+  input timeout with it, and the dashboard span-polled — a `capture-pane` per
+  shell per frame, and a failing dock retried about ninety times a second (the
+  log is how this was found). The stamp is the first statement in `poll`, and
+  unconditional: every early return below it is a reason to wait for the next
+  tick, not to try again on the next frame.
 
 ## Status classification
 

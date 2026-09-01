@@ -214,24 +214,28 @@ and quitting sends it home before the slot is taken down.
 
 **Dock on look.** The docked pane follows the tree cursor: land on a shell
 and its real pane is beside you, with the keyboard still in the tree so the
-next `j` is still a `j`. `Enter` is then only needed to *enter* the pane.
-Three things it will not do — it does not fire while more keys are still
-queued (so held `j` autorepeat costs one swap at the end of the run, not one
-per row); it does not fire at all while the docked pane holds the keyboard,
-because swapping a pane out from under someone mid-sentence is the worst bug
-this design can produce; and it yields to a shell another dashboard has
-docked, which is what keeps two idle instances from trading a pane forever.
-A row a second dashboard holds is muted whole and marked `leased`, and the
-preview panel — which keeps working, since `capture-pane` does not care where
-a pane sits — names the scope holding it. `Enter` still takes it: looking
-yields, pressing steals, and both dashboards are toasted when it happens.
-There is **no settle timer**: the queue itself says when the burst is over,
-so the dock lands with no added latency and there is never a window in which
-the panel shows the row the cursor has already left. A row with no shell
-under it (a repository, an empty worktree) leaves whatever is docked where
-it is — browsing is not a reason to tear the layout down. Nothing is docked
-until the user first presses a key: startup must not split furniture into
-what may well be the user's own window.
+next `j` is still a `j`. `Enter` is then only needed to *enter* the pane, and
+the selected shell is docked from the first frame — there is no undocked mode
+to be in, and no key that would return to one.
+
+What the panel shows is always what the cursor is on: the selected shell's
+real pane, or the preview. Never a third shell's pane left over from a row
+you have left — so a row with nothing to dock (a repository, an empty
+worktree, or a shell another dashboard holds) gives the space back to the
+preview. A row a second dashboard holds is muted whole and marked `leased`,
+and the preview — which keeps working, since `capture-pane` does not care
+where a pane sits — names the scope holding it. `Enter` still takes it:
+looking yields, pressing steals, and both dashboards are toasted when it
+happens.
+
+Two things dock-on-look will not do. It does not fire while more keys are
+still queued, so held `j` autorepeat costs one swap at the end of the run
+rather than one per row — there is **no settle timer**, the queue itself says
+when the burst is over, so the dock lands with no added latency and there is
+never a window in which the panel shows the row the cursor has already left.
+And nothing moves at all while the docked pane holds the keyboard, because
+swapping a pane out from under someone mid-sentence is the worst bug this
+design can produce.
 
 Once the pane is on screen it is a normal tmux pane, so **everything past
 the dock is tmux's own binding and deliberately unbound here**: moving
