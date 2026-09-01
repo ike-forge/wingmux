@@ -104,6 +104,12 @@ the same commit as the change.
   popup, so `dd` completes the delete without a hand move — the vim reflex.
   `f` (force) stays a separate key: discarding uncommitted work must not be
   reachable by pressing the same key twice.
+- **A confirm's caveat is drawn in the failure colour, not as body prose.**
+  `Confirm::warning` is a field of its own, rendered bold in
+  `status_failed` under the question ("uncommitted changes — force delete
+  discards them"). It is the one line that changes which key the user
+  should press, so it may not read like the rest of the sentence: the
+  colour is what makes the eye stop before the fingers do.
 - **The New Worktree popup names the base branch it cuts from.** A worktree's
   branch has always been cut from the repository's base branch
   (`worktrees.base_branch`, or the repository's override), never from the

@@ -1754,6 +1754,15 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
         .lines()
         .map(|l| Line::from(Span::raw(l.to_string())))
         .collect();
+    // The caveat is an error, not prose: mark and text both in the failure
+    // colour, bold, so it reads before the shortcuts do.
+    if let Some(warning) = &confirm.warning {
+        let style = fg(theme.status_failed).add_modifier(Modifier::BOLD);
+        lines.push(Line::from(vec![
+            Span::styled(format!("{} ", warn_mark(ic)), style),
+            Span::styled(warning.clone(), style),
+        ]));
+    }
     lines.push(Line::from(""));
     lines.push(hint_line(theme, ic, &hints));
     let title_text = format!(" {} ", confirm.title);
@@ -1799,7 +1808,8 @@ mod tests {
             Mode::Confirm {
                 confirm: Confirm {
                     title: "delete worktree".into(),
-                    body: "delete 'x'?\nworktree is dirty — force will discard".into(),
+                    body: "delete 'x'?".into(),
+                    warning: Some("worktree is dirty — force will discard".into()),
                     force_label: Some("force".into()),
                     action: ConfirmAction::DeleteWorktree {
                         repository: 0,
@@ -2420,6 +2430,7 @@ mod tests {
                 confirm: Confirm {
                     title: "delete worktree".into(),
                     body: "delete 'x'?".into(),
+                    warning: None,
                     force_label: None,
                     action: ConfirmAction::DeleteWorktree {
                         repository: 0,
@@ -3400,6 +3411,46 @@ mod tests {
         );
     }
 
+    /// A confirm's caveat is the one line that changes the answer, so it
+    /// is drawn in the failure colour rather than as more body prose.
+    #[test]
+    fn a_confirm_warning_is_drawn_in_the_failure_colour() {
+        let mut app = seeded_app_with_shell();
+        app.mode = Mode::Confirm {
+            confirm: Confirm {
+                title: "Delete Worktree".into(),
+                body: "delete 'wt'?".into(),
+                warning: Some("uncommitted changes".into()),
+                force_label: Some("force".into()),
+                action: ConfirmAction::DeleteWorktree {
+                    repository: 0,
+                    worktree: 0,
+                },
+            },
+        };
+
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let rows = buffer_rows(&terminal);
+        let y = rows
+            .iter()
+            .position(|r| r.contains("uncommitted changes"))
+            .unwrap_or_else(|| panic!("no warning row: {rows:?}"));
+        let x = col_of(&rows[y], "uncommitted changes") as u16;
+
+        let cell = &terminal.backend().buffer()[(x, y as u16)];
+        assert_eq!(
+            cell.fg, app.theme.colors.status_failed,
+            "the warning reads as an error"
+        );
+        assert!(
+            cell.modifier.contains(Modifier::BOLD),
+            "and is emphasised: {:?}",
+            cell.modifier
+        );
+    }
+
     /// The cursor row tints its background and nothing else. Repainting the
     /// foreground would erase the status colour — the one thing the user
     /// moved the cursor there to read.
@@ -3975,6 +4026,7 @@ mod tests {
                 confirm: Confirm {
                     title: "Delete Worktree".into(),
                     body: "delete 'wt' from repo-a?".into(),
+                    warning: None,
                     force_label: Some("force".into()),
                     action: ConfirmAction::DeleteWorktree {
                         repository: 0,
@@ -4070,6 +4122,7 @@ mod tests {
                     confirm: Confirm {
                         title: "Delete Worktree".into(),
                         body: "delete 'wt' from repo-a?".into(),
+                        warning: None,
                         force_label: None,
                         action: ConfirmAction::DeleteWorktree {
                             repository: 0,

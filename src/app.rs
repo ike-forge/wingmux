@@ -512,6 +512,10 @@ pub struct ShellChoice {
 pub struct Confirm {
     pub title: String,
     pub body: String,
+    /// A caveat the answer depends on ("uncommitted changes will be
+    /// discarded"). Kept out of `body` because it is drawn in the failure
+    /// colour: the eye must land on it before the fingers reach a key.
+    pub warning: Option<String>,
     /// When `Some`, the `f` key is offered (e.g. `--force` on a dirty
     /// worktree) and this labels it.
     pub force_label: Option<String>,
@@ -1960,14 +1964,12 @@ impl App {
                     wt.name,
                     wt.path.display(),
                     if dirty {
-                        format!(
-                            "{} worktree has uncommitted changes — force delete will discard them",
-                            crate::ui::warn_mark(&self.cfg.icons)
-                        )
+                        "worktree is NOT clean"
                     } else {
-                        "worktree is clean".into()
+                        "worktree is clean"
                     }
                 ),
+                warning: dirty.then(|| "uncommitted changes — force delete discards them".into()),
                 force_label: if dirty {
                     Some("force delete (discards changes)".into())
                 } else {
@@ -1995,6 +1997,7 @@ impl App {
                     "Close shell '{}' of worktree '{}'?\nThe tmux window is killed; the worktree, its worktree and its other shells stay.",
                     sh.window_name, wt.name
                 ),
+                warning: None,
                 force_label: None,
                 action: ConfirmAction::DeleteShell {
                     repository: ri,
