@@ -1621,16 +1621,6 @@ impl App {
         }
     }
 
-    /// Is the selected shell the one whose real pane is docked beside the
-    /// tree? The preview panel asks: a docked shell is already on screen,
-    /// so redrawing a capture of it there would be a lagging copy.
-    pub fn selected_is_docked(&self) -> bool {
-        match (&self.docked, self.selected_shell_pane()) {
-            (Some(d), Some(p)) => *d == p,
-            _ => false,
-        }
-    }
-
     /// Pane id of the selected shell, if any.
     pub fn selected_shell_pane(&self) -> Option<String> {
         self.selected_shell().and_then(|(ri, wi, si)| {
@@ -3093,7 +3083,7 @@ impl App {
     /// wheel goes back to the tree rather than becoming dead.
     fn preview_on_screen(&self) -> bool {
         matches!(
-            crate::ui::tier_impl(self.viewport.0, self.viewport.1),
+            crate::ui::tier(self),
             crate::ui::Tier::Wide | crate::ui::Tier::Split
         )
     }
@@ -3347,7 +3337,7 @@ impl App {
             return;
         }
         // Tree rows: click selects, double-click opens (Enter).
-        let Some(tree_w) = crate::ui::tree_width(self.viewport) else {
+        let Some(tree_w) = crate::ui::tree_width_for(self) else {
             return; // terminal too small for the tree
         };
         if x >= tree_w {
@@ -5262,17 +5252,60 @@ mod tests {
         assert_eq!(app.slot, None);
         app.viewport = (120, 40);
         assert_eq!(
-            crate::ui::tree_width(app.viewport),
+            crate::ui::tree_width_for(&app),
             Some(38),
             "the tree keeps its share of an undocked dashboard"
         );
         assert!(
-            matches!(
-                crate::ui::tier_impl(app.viewport.0, app.viewport.1),
-                crate::ui::Tier::Wide
-            ),
+            matches!(crate::ui::tier(&app), crate::ui::Tier::Wide),
             "and the preview keeps the rest"
         );
+    }
+
+    /// The moment a slot exists, the preview panel has been replaced by a
+    /// real tmux pane on the other side of a divider. The dashboard's own
+    /// strip must then be tree and nothing else: a second, narrower,
+    /// one-poll-behind copy of the agent beside the agent is the exact
+    /// duplication docking exists to end.
+    #[test]
+    fn a_slot_takes_the_preview_panel_off_the_dashboard() {
+        let mut app = app_with_shell();
+        // The strip a docked dashboard keeps for itself, not the window.
+        app.viewport = (crate::dock::dash_width(120), 40);
+        app.slot = Some("%7".into());
+        assert!(
+            matches!(crate::ui::tier(&app), crate::ui::Tier::TreeOnly),
+            "no preview panel while a pane is docked beside us"
+        );
+        assert_eq!(
+            crate::ui::tree_width_for(&app),
+            Some(app.viewport.0),
+            "the tree gets the whole strip"
+        );
+
+        // Even a strip wide enough for two panels keeps only the tree:
+        // width is not the reason the preview is gone.
+        app.viewport = (120, 40);
+        assert!(matches!(crate::ui::tier(&app), crate::ui::Tier::TreeOnly));
+        app.slot = None;
+        assert!(matches!(crate::ui::tier(&app), crate::ui::Tier::Wide));
+    }
+
+    /// The dashboard never cuts itself down to the "terminal too small"
+    /// tier: the narrowest strip docking will leave it is still a strip the
+    /// tree renders in.
+    #[test]
+    fn the_narrowest_docked_dashboard_still_draws_its_tree() {
+        let mut app = app_with_shell();
+        app.slot = Some("%7".into());
+        for window in [40u16, 60, 120, 400] {
+            app.viewport = (crate::dock::dash_width(window), 40);
+            assert!(
+                matches!(crate::ui::tier(&app), crate::ui::Tier::TreeOnly),
+                "a {window}-column window leaves a {}-column strip that cannot draw the tree",
+                app.viewport.0
+            );
+        }
     }
 
     /// A same-size swap is what spares the agent a repaint, and equal sizes

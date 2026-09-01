@@ -229,11 +229,13 @@ command we bound — user bindings of the same key survive). It is on its way
 out: with docking, "back to the dashboard" is `<prefix> + ←` between two
 panes of one window.
 
-While a shell is docked its row's **preview panel says so** instead of
-drawing a capture: the real pane is already on screen next to it, and a
-redrawn copy would be a view that silently lags the thing beside it. Every
-other shell previews as before — the preview is the browse mode, and the
-fallback for any shell that is not the docked one.
+While a pane is docked the dashboard's own strip shows **the tree and
+nothing else**. The preview panel is not narrowed, it is gone: the thing it
+existed to show is on screen already, in a real pane on the other side of
+the divider, and a second one-poll-behind copy of the agent beside the
+agent is the duplication docking exists to end. The preview comes back the
+moment nothing is docked — it is still the browse mode, and still the only
+view below the split tier.
 
 ## Deliberately unbound — and why
 

@@ -74,6 +74,32 @@ pub(crate) fn tree_width(viewport: (u16, u16)) -> Option<u16> {
     }
 }
 
+/// The tier the dashboard's own pane actually draws at.
+///
+/// A slot beside us means the preview panel has already been replaced —
+/// by a real tmux pane showing the real agent. Drawing a second, narrower,
+/// one-poll-behind copy of that agent next to it is the exact duplication
+/// docking exists to end, so the dashboard keeps the tree and nothing
+/// else, however wide its own strip happens to be.
+pub(crate) fn tier(app: &App) -> Tier {
+    let tier = tier_impl(app.viewport.0, app.viewport.1);
+    match tier {
+        Tier::Wide | Tier::Split if app.slot.is_some() => Tier::TreeOnly,
+        _ => tier,
+    }
+}
+
+/// [`tree_width`] for the tier the dashboard is really drawing at — the
+/// same math the renderer and the mouse hit-testing must share.
+pub(crate) fn tree_width_for(app: &App) -> Option<u16> {
+    match tier(app) {
+        // The whole strip: the preview it would otherwise share with is a
+        // real pane now, on the other side of a tmux divider.
+        Tier::TreeOnly => Some(app.viewport.0),
+        _ => tree_width(app.viewport),
+    }
+}
+
 /// Minimum popup size per overlay kind; below it the overlay is refused
 /// with a message ("frame too small for this dialog") instead of drawing
 /// garbage — never a crash.
@@ -262,13 +288,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Block::default().style(Style::default().bg(app.theme.colors.background)),
         area,
     );
-    match tier_impl(area.width, area.height) {
+    match tier(app) {
         Tier::Message => {
             draw_too_small(f, area, app);
             return;
         }
         Tier::Wide | Tier::Split => {
-            let tree_w = tree_width((area.width, area.height)).unwrap_or(area.width);
+            let tree_w = tree_width_for(app).unwrap_or(area.width);
             draw_split(f, area, app, tree_w);
         }
         Tier::TreeOnly => draw_tree_only(f, area, app),
@@ -877,15 +903,6 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     let block = panel_block(theme, &app.cfg.icons, &title, off > 0);
     let off = app.preview_offset();
     let text = match app.selected_shell() {
-        // The docked shell is on screen already, in a real tmux pane beside
-        // this one. A second, redrawn copy of it here would be a view that
-        // silently lags the thing next to it — say where it went instead.
-        Some(_) if app.selected_is_docked() => Text::from(
-            "docked\n\n\
-             this shell's real tmux pane is beside the tree.\n\
-             type in it directly; scrolling, searching and copying are tmux's own.\n\n\
-             the way back to the tree is your own pane binding (<prefix>+left by default).",
-        ),
         Some(_) => {
             if app.selected_shell_pane().is_some() {
                 if let Some(cap) = app.preview_source() {

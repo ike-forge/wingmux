@@ -112,8 +112,9 @@ pub const SLOT_NOTE: &str = "[LazyWingman] slot — the selected agent's pane do
 
 /// Narrowest useful dashboard pane: below this the tree stops being
 /// readable, and a docked layout that cannot show the tree has no reason to
-/// exist.
-pub const DASH_MIN_WIDTH: u16 = 24;
+/// exist. Matches `ui::TREE_MIN`'s width, so a docked dashboard never cuts
+/// itself down to the "terminal too small" tier.
+pub const DASH_MIN_WIDTH: u16 = 26;
 /// Widest: the tree never earns more, and every extra column is one the
 /// agent does not get. Matches `ui::TREE_MAX`.
 pub const DASH_MAX_WIDTH: u16 = 48;
