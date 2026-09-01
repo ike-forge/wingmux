@@ -773,6 +773,7 @@ mod tests {
                     std::path::Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-p", "wt", 0),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .expect("session");
             let b = tmux
@@ -782,6 +783,7 @@ mod tests {
                     std::path::Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-p", "wt", 1),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .expect("window");
             for w in [&a, &b] {

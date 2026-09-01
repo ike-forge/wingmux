@@ -610,6 +610,16 @@ pub struct App {
     pub worktrees_loaded: Vec<bool>,
     /// Last frame size — drives page-sized motions and mouse hit-testing.
     pub viewport: (u16, u16),
+    /// Size of the dashboard's own tmux WINDOW, not of its pane: the
+    /// furniture is laid out against the window, so that a holder and the
+    /// dashboard pane — and therefore an agent pane and the slot — come out
+    /// the same size. Refreshed by [`App::refresh_dash_window`]; `None`
+    /// until tmux has been asked once.
+    pub dash_window: Option<(u16, u16)>,
+    /// The dashboard's slot pane, once one has been split off
+    /// ([`App::ensure_slot`]). Re-derived from `@lw_slot` rather than
+    /// trusted: the user may close it by hand.
+    pub slot: Option<String>,
     /// Rect of the overlay currently on screen, if any. Mouse clicks
     /// outside it dismiss the overlay (accessibility rule).
     pub popup_area: Option<Rect>,
@@ -700,6 +710,8 @@ impl App {
             interactive_boot: false,
             quit: false,
             viewport: (0, 0),
+            dash_window: None,
+            slot: None,
             popup_area: None,
             help_scroll: 0,
             diag_scroll: 0,
@@ -730,6 +742,12 @@ impl App {
             self.state.reconcile(tmux)?;
             self.state.prune(Some(tmux), &self.worktrees_loaded)?;
             self.announce_scope(tmux);
+            // A server started by an older build has agent windows with no
+            // holder in them; so has one whose holder the user closed.
+            crate::dock::ensure_holders(
+                tmux,
+                crate::dock::dash_width(self.dash_window_size(tmux).0),
+            );
             self.bind_back_keys(tmux)?;
         }
         self.build_tree_flags();
@@ -773,6 +791,137 @@ impl App {
                 scope.display()
             ),
             Err(e) => log::warn!("cannot announce the scope on our window: {e}"),
+        }
+    }
+
+    // ---------------------------------------------------- furniture
+
+    /// The dashboard's own tmux window size, cached. Falls back to the
+    /// viewport — the dashboard's *pane* — which is the same thing until a
+    /// slot sits beside it, and never worse than nothing.
+    fn dash_window_size(&self, tmux: &Tmux) -> (u16, u16) {
+        if let Some(inside) = &tmux.inside
+            && let Ok(size) = tmux.window_size(&inside.window_id)
+        {
+            return size;
+        }
+        self.dash_window.unwrap_or(self.viewport)
+    }
+
+    /// Width every holder — and the dashboard's own pane, once a slot
+    /// exists — is cut to.
+    fn holder_width(&self, tmux: &Tmux) -> u16 {
+        crate::dock::dash_width(self.dash_window_size(tmux).0)
+    }
+
+    /// Re-read the dashboard's window size and, when it has changed, put
+    /// every agent window back in step with it.
+    ///
+    /// Agent sessions carry `window-size manual`, so nothing else moves
+    /// them: their windows keep whatever size we last gave them. Keeping
+    /// them equal to the dashboard's window is what makes a dock a
+    /// same-size swap, and a same-size swap is what spares the agent a
+    /// repaint.
+    fn refresh_dash_window(&mut self, tmux: &Tmux) {
+        let size = self.dash_window_size(tmux);
+        if size == (0, 0) || self.dash_window == Some(size) {
+            return;
+        }
+        log::info!("dashboard window is now {}x{}", size.0, size.1);
+        self.dash_window = Some(size);
+        self.resize_agent_windows(tmux, size);
+        // The dashboard's own pane owes the slot the rest of the row.
+        if self.slot.is_some()
+            && let Some(inside) = &tmux.inside
+            && let Err(e) = tmux.resize_pane_width(&inside.pane_id, crate::dock::dash_width(size.0))
+        {
+            log::warn!("cannot re-cut the dashboard pane: {e}");
+        }
+    }
+
+    /// Resize every agent window to `size`, and re-cut its holder to the
+    /// dashboard pane's width.
+    ///
+    /// Accepted degradation: a user who attaches an agent session directly
+    /// gets its windows resized to their own terminal, and the next poll
+    /// puts them back — so that dock costs one repaint. Correctness is
+    /// unaffected; only the flicker is.
+    fn resize_agent_windows(&self, tmux: &Tmux, size: (u16, u16)) {
+        let (x, y) = size;
+        let holder_w = crate::dock::dash_width(x);
+        let Ok(panes) = tmux.list_furniture() else {
+            return;
+        };
+        let mut done: Vec<&str> = Vec::new();
+        for p in &panes {
+            if !crate::tmux::is_lazywingman_session(&p.session_name)
+                || done.contains(&p.window_id.as_str())
+            {
+                continue;
+            }
+            done.push(&p.window_id);
+            if let Err(e) = tmux.resize_window(&p.window_id, x, y) {
+                log::warn!("resize-window {}: {e}", p.window_id);
+            }
+        }
+        for p in panes.iter().filter(|p| p.holder) {
+            if let Err(e) = tmux.resize_pane_width(&p.pane_id, holder_w) {
+                log::warn!("resize holder {}: {e}", p.pane_id);
+            }
+        }
+    }
+
+    /// The dashboard's slot pane, created if it is not there.
+    ///
+    /// Lazy on purpose: the dashboard often runs in the user's own window,
+    /// and splitting it uninvited at startup would be rude. Splitting it
+    /// because the user asked to dock is not. The slot is always located by
+    /// [`crate::dock::SLOT_KEY`], never by pane index — the user is free to
+    /// rearrange the window around us.
+    #[allow(dead_code)] // nothing docks yet — Phase 4 calls it; tests do now
+    pub fn ensure_slot(&mut self) -> Result<String> {
+        let tmux = self.require_tmux()?;
+        let inside = tmux
+            .inside
+            .clone()
+            .ok_or_else(|| Error::Tmux("the dashboard is not in a tmux pane".into()))?;
+        if let Some(pane) = self.find_slot(&tmux) {
+            self.slot = Some(pane.clone());
+            return Ok(pane);
+        }
+        let (x, y) = self.dash_window_size(&tmux);
+        self.dash_window = Some((x, y));
+        let pane = tmux.split_slot(&inside.pane_id, crate::dock::agent_width(x))?;
+        log::info!("slot {pane} split into window {}", inside.window_id);
+        // The agent windows must match the window the slot now lives in.
+        self.resize_agent_windows(&tmux, (x, y));
+        self.slot = Some(pane.clone());
+        Ok(pane)
+    }
+
+    /// The slot pane in the dashboard's own window, if one is still there.
+    fn find_slot(&self, tmux: &Tmux) -> Option<String> {
+        let inside = tmux.inside.as_ref()?;
+        tmux.list_furniture()
+            .ok()?
+            .into_iter()
+            .find(|p| p.slot && p.window_id == inside.window_id)
+            .map(|p| p.pane_id)
+    }
+
+    /// Take the slot back down. Called on quit: the slot is this
+    /// dashboard's furniture, and leaving a sleeping pane behind in the
+    /// user's own window is litter.
+    pub fn drop_slot(&mut self) {
+        let Some(pane) = self.slot.take() else {
+            return;
+        };
+        let Ok(tmux) = self.require_tmux() else {
+            return;
+        };
+        match tmux.kill_pane(&pane) {
+            Ok(()) => log::info!("slot {pane} removed"),
+            Err(e) => log::warn!("cannot remove slot {pane}: {e}"),
         }
     }
 
@@ -1480,7 +1629,14 @@ impl App {
         if tmux.session_exists(&name) {
             return Ok((name, id, None));
         }
-        let w = tmux.new_session(&name, &Tmux::window_name(worktree, index), cwd, shell, &id)?;
+        let w = tmux.new_session(
+            &name,
+            &Tmux::window_name(worktree, index),
+            cwd,
+            shell,
+            &id,
+            self.holder_width(tmux),
+        )?;
         if let Some(inside) = &tmux.inside {
             let _ = tmux.bind_back_key(
                 &self.cfg.tmux.back_key,
@@ -1553,7 +1709,14 @@ impl App {
             self.ensure_agent_session(&tmux, &repo, &slug, 0, &root, &repo.agent_shell)?;
         let w = match window {
             Some(w) => w,
-            None => tmux.new_window(&session_name, &wname, &root, &repo.agent_shell, &id)?,
+            None => tmux.new_window(
+                &session_name,
+                &wname,
+                &root,
+                &repo.agent_shell,
+                &id,
+                self.holder_width(&tmux),
+            )?,
         };
         let spawn_cmd = self.agent_command_for_spawn(&repo.agent_command);
         tmux.send_keys(&w.pane_id, &spawn_cmd, true)?;
@@ -1627,7 +1790,14 @@ impl App {
             self.ensure_agent_session(&tmux, &repo, &wt.branch, idx, &wt.path, &shell)?;
         let w = match window {
             Some(w) => w,
-            None => tmux.new_window(&session_name, &wname, &wt.path, &shell, &id)?,
+            None => tmux.new_window(
+                &session_name,
+                &wname,
+                &wt.path,
+                &shell,
+                &id,
+                self.holder_width(&tmux),
+            )?,
         };
         let what = match spawn {
             // An empty command falls back to the repository's default, so
@@ -2178,6 +2348,9 @@ impl App {
         let Ok(tmux) = self.require_tmux() else {
             return;
         };
+        // Before anything reads a pane size: a dashboard window that has
+        // been resized takes every agent window with it.
+        self.refresh_dash_window(&tmux);
         let panes = match tmux.list_panes() {
             Ok(p) => p,
             Err(e) => {
@@ -3213,6 +3386,8 @@ impl App {
                 ok = false;
             }
             if ok {
+                let width = crate::dock::dash_width(self.dash_window_size(tmux).0);
+                crate::dock::ensure_holders(tmux, width);
                 self.build_tree_flags();
                 self.clamp_sel();
                 self.poll();
@@ -3386,6 +3561,8 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
     loop {
         terminal.draw(|f| crate::ui::draw(f, app))?;
         if app.quit {
+            // Furniture of ours, in what may well be the user's own window.
+            app.drop_slot();
             break;
         }
         // Background worktree discovery: one repository per iteration, so a
@@ -3472,6 +3649,7 @@ mod tests {
                 Path::new("/tmp"),
                 "bash",
                 &crate::dock::ShellId::for_session("wingman-session-p", "wt", 0),
+                crate::tmux::testutil::HOLDER_W,
             )
             .unwrap();
         app.state.repositories.push(Repository {
@@ -4797,6 +4975,251 @@ mod tests {
         );
     }
 
+    // ---- M18 Task 8-10 — the furniture ----
+
+    /// A holder is a sleeping `sh` beside every agent pane, and a sleeping
+    /// shell is exactly what the classifier is built to notice. It must
+    /// therefore never reach the tree or the classifier: the poll selects
+    /// on identity, and furniture carries none.
+    #[test]
+    fn the_tree_and_the_poll_see_shells_but_never_holders() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_wid, pane) = seed_repository_with_shell(&tmux, &mut app);
+            app.build_tree_flags();
+            app.poll();
+
+            let holder = tmux
+                .list_furniture()
+                .unwrap()
+                .into_iter()
+                .find(|p| p.holder)
+                .expect("the spawn furnished the window");
+            assert!(
+                !app.panes.contains_key(&holder.pane_id),
+                "the poll must not carry the holder"
+            );
+            assert!(
+                !app.statuses.contains_key(&holder.pane_id),
+                "and must not classify it"
+            );
+            assert!(
+                app.statuses.contains_key(&pane),
+                "the shell itself is polled"
+            );
+            assert_eq!(
+                app.state.repositories[0].worktrees[0].shells.len(),
+                1,
+                "one row, not two"
+            );
+        });
+    }
+
+    /// The slot is furniture in what may well be the user's own window, so
+    /// it is split when docking asks for it and taken down on the way out —
+    /// never at startup, and never left behind.
+    #[test]
+    fn the_slot_is_split_on_demand_and_removed_on_quit() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            crate::util::testutil::with_fresh_xdg(|| app.startup().expect("startup"));
+            assert_eq!(app.slot, None, "startup splits nothing");
+            let dash_window = tmux.inside.as_ref().unwrap().window_id.clone();
+            let panes_in_dash = |t: &Tmux| {
+                t.list_furniture()
+                    .unwrap()
+                    .into_iter()
+                    .filter(|p| p.window_id == dash_window)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                panes_in_dash(&tmux).len(),
+                1,
+                "the dashboard window is untouched"
+            );
+
+            let slot = app.ensure_slot().expect("slot");
+            assert_eq!(app.slot.as_deref(), Some(slot.as_str()));
+            let panes = panes_in_dash(&tmux);
+            assert_eq!(panes.len(), 2, "the slot joined the dashboard window");
+            assert_eq!(panes.iter().filter(|p| p.slot).count(), 1);
+
+            // Idempotent: asking again returns the same pane, not a third one.
+            assert_eq!(app.ensure_slot().expect("again"), slot);
+            assert_eq!(panes_in_dash(&tmux).len(), 2);
+
+            app.drop_slot();
+            assert_eq!(app.slot, None);
+            assert_eq!(
+                panes_in_dash(&tmux).len(),
+                1,
+                "quitting leaves no furniture behind"
+            );
+        });
+    }
+
+    /// The slot is located by its `@lw_slot` mark, never by index — the
+    /// user may close it, or rearrange the window around it. A slot closed
+    /// by hand is simply split again.
+    #[test]
+    fn ensure_slot_recreates_a_slot_the_user_closed() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let first = app.ensure_slot().expect("slot");
+            tmux.kill_pane(&first).expect("the user closes it by hand");
+
+            let second = app.ensure_slot().expect("slot again");
+            assert_ne!(second, first, "a new pane, since the old one is gone");
+            assert_eq!(
+                tmux.list_furniture()
+                    .unwrap()
+                    .iter()
+                    .filter(|p| p.slot)
+                    .count(),
+                1,
+                "and exactly one slot, not two"
+            );
+
+            // Stale bookkeeping is no obstacle either: `ensure_slot` asks
+            // tmux, never its own memory.
+            app.slot = Some("%999".into());
+            assert_eq!(app.ensure_slot().expect("re-derived"), second);
+        });
+    }
+
+    /// While no slot exists the dashboard owns its whole pane, and the
+    /// layout is the one it has always drawn: tree plus preview.
+    #[test]
+    fn the_preview_keeps_the_full_layout_while_no_slot_exists() {
+        let mut app = app_with_shell();
+        assert_eq!(app.slot, None);
+        app.viewport = (120, 40);
+        assert_eq!(
+            crate::ui::tree_width(app.viewport),
+            Some(38),
+            "the tree keeps its share of an undocked dashboard"
+        );
+        assert!(
+            matches!(
+                crate::ui::tier_impl(app.viewport.0, app.viewport.1),
+                crate::ui::Tier::Wide
+            ),
+            "and the preview keeps the rest"
+        );
+    }
+
+    /// A same-size swap is what spares the agent a repaint, and equal sizes
+    /// are what `window-size manual` plus one `resize-window` per agent
+    /// window buy. With the agent window matching the dashboard's, the
+    /// agent pane and the slot are the same size and the swap moves them
+    /// without touching either one's dimensions.
+    #[test]
+    fn a_size_matched_swap_costs_neither_pane_a_resize() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_wid, agent) = seed_repository_with_shell(&tmux, &mut app);
+            let slot = app.ensure_slot().expect("slot");
+
+            let size = |pane: &str| {
+                tmux.run_raw(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    pane,
+                    "#{pane_width}x#{pane_height}",
+                ])
+                .unwrap()
+                .trim()
+                .to_string()
+            };
+            let (before_slot, before_agent) = (size(&slot), size(&agent));
+            assert_eq!(
+                before_slot, before_agent,
+                "the agent pane and the slot must start out identical"
+            );
+
+            tmux.run_raw(&["swap-pane", "-d", "-s", &slot, "-t", &agent])
+                .expect("dock");
+            assert_eq!(size(&slot), before_slot, "the slot pane kept its size");
+            assert_eq!(size(&agent), before_agent, "and so did the agent");
+
+            // Neither window gained or lost a pane — the whole reason a
+            // swap beat join-pane/break-pane.
+            let furniture = tmux.list_furniture().unwrap();
+            for window in [
+                tmux.inside.as_ref().unwrap().window_id.clone(),
+                furniture
+                    .iter()
+                    .find(|p| p.holder)
+                    .expect("holder")
+                    .window_id
+                    .clone(),
+            ] {
+                assert_eq!(
+                    furniture.iter().filter(|p| p.window_id == window).count(),
+                    2,
+                    "window {window} still holds two panes"
+                );
+            }
+        });
+    }
+
+    /// A resized dashboard takes every agent window with it, so the next
+    /// dock is still a same-size swap.
+    #[test]
+    fn resizing_the_dashboard_window_resizes_the_agent_windows() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (agent_window, _pane) = seed_repository_with_shell(&tmux, &mut app);
+            app.poll();
+            assert_eq!(app.dash_window, Some((200, 50)));
+            assert_eq!(tmux.window_size(&agent_window).unwrap(), (200, 50));
+
+            // The user drags their terminal narrower; tmux resizes the
+            // dashboard's window, and the next poll passes it on.
+            tmux.run_raw(&["set-option", "-t", "main", "window-size", "manual"])
+                .unwrap();
+            tmux.resize_window(&tmux.inside.as_ref().unwrap().window_id, 140, 40)
+                .unwrap();
+            app.poll();
+
+            assert_eq!(app.dash_window, Some((140, 40)));
+            assert_eq!(
+                tmux.window_size(&agent_window).unwrap(),
+                (140, 40),
+                "the agent window followed the dashboard's"
+            );
+            let holder = tmux
+                .list_furniture()
+                .unwrap()
+                .into_iter()
+                .find(|p| p.holder)
+                .expect("holder");
+            let width = tmux
+                .run_raw(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    &holder.pane_id,
+                    "#{pane_width}",
+                ])
+                .unwrap()
+                .trim()
+                .parse::<u16>()
+                .unwrap();
+            assert_eq!(
+                width,
+                crate::dock::dash_width(140),
+                "and its holder was re-cut to the dashboard pane's width"
+            );
+        });
+    }
+
     /// The confirm popup takes `d` as a yes: `dd` deletes the way vim
     /// does, without moving the hand off the key that opened the popup.
     #[test]
@@ -4812,6 +5235,7 @@ mod tests {
                     Path::new("/tmp"),
                     "bash",
                     &crate::dock::ShellId::for_session("wingman-session-p", "wt", 1),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
             app.state.repositories[0].worktrees[0].shells.push(Shell {
@@ -4860,6 +5284,7 @@ mod tests {
                     Path::new("/tmp"),
                     "bash",
                     &crate::dock::ShellId::for_session("wingman-session-p", "wt", 1),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
             app.state.repositories[0].worktrees[0].shells.push(Shell {

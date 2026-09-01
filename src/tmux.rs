@@ -63,6 +63,23 @@ pub struct PaneInfo {
     pub overlay_raw: String,
 }
 
+/// One pane, seen only as furniture: where it sits and what kind of
+/// LazyWingman fixture (if any) it is. The holder backfill and the slot
+/// lookup both need exactly this and nothing else, so they share one call.
+#[derive(Debug, Clone)]
+pub struct FurniturePane {
+    pub pane_id: String,
+    pub window_id: String,
+    pub session_name: String,
+    /// Carries `@lw_holder`.
+    pub holder: bool,
+    /// Carries `@lw_slot`.
+    pub slot: bool,
+    /// Carries a shell identity (`@lw_repo`) — an agent pane, wherever it
+    /// currently sits.
+    pub shell: bool,
+}
+
 /// One tmux session (agent sessions only, filtered by the caller).
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
@@ -270,12 +287,20 @@ impl Tmux {
         cwd: &Path,
         shell: &str,
         id: &ShellId,
+        holder_width: u16,
     ) -> Result<WindowRef> {
         let mut last = None;
         for attempt in 0..3 {
             match self.try_new_session(session, win_name, cwd, shell) {
                 Ok(w) => {
                     self.stamp_shell(&w.pane_id, id)?;
+                    // Before the holder: the session's windows must be off
+                    // automatic sizing while we are still the only ones
+                    // arranging them.
+                    if let Err(e) = self.set_manual_window_size(session) {
+                        log::warn!("cannot pin the size of session {session}: {e}");
+                    }
+                    self.furnish(&w.window_id, holder_width);
                     return Ok(w);
                 }
                 Err(e) => {
@@ -286,6 +311,16 @@ impl Tmux {
             }
         }
         Err(last.unwrap())
+    }
+
+    /// Give a freshly spawned agent window its holder. Never fatal: a
+    /// window without one still runs its agent, it merely cannot be docked
+    /// from — and the next reconcile backfills it ([`dock::ensure_holders`]).
+    fn furnish(&self, window_id: &str, holder_width: u16) {
+        match self.split_holder(window_id, holder_width) {
+            Ok(p) => log::info!("holder {p} for window {window_id}"),
+            Err(e) => log::warn!("cannot split a holder into {window_id}: {e}"),
+        }
     }
 
     fn try_new_session(
@@ -342,12 +377,14 @@ impl Tmux {
         cwd: &Path,
         shell: &str,
         id: &ShellId,
+        holder_width: u16,
     ) -> Result<WindowRef> {
         let mut last = None;
         for attempt in 0..3 {
             match self.try_new_window(session, name, cwd, shell) {
                 Ok(w) => {
                     self.stamp_shell(&w.pane_id, id)?;
+                    self.furnish(&w.window_id, holder_width);
                     return Ok(w);
                 }
                 Err(e) => {
@@ -490,6 +527,144 @@ impl Tmux {
         self.set_pane_option(pane_id, dock::REPO_KEY, &id.repo)?;
         self.set_pane_option(pane_id, dock::WORKTREE_KEY, &id.worktree)?;
         self.set_pane_option(pane_id, dock::INDEX_KEY, &id.index_value())?;
+        Ok(())
+    }
+
+    // ----------------------------------------------------- furniture
+
+    /// Split a **holder** into an agent window, `width` columns wide, on
+    /// the left — the side the dashboard occupies in its own window.
+    ///
+    /// The holder is what makes docking a plain `swap-pane`: the agent
+    /// window never drops to zero panes, so no window and no session is
+    /// ever destroyed by a dock. `-d` keeps the agent pane active, so
+    /// someone attaching the session directly still lands in their agent.
+    pub fn split_holder(&self, window_id: &str, width: u16) -> Result<String> {
+        let pane = self.split_furniture(window_id, width, true, dock::HOLDER_NOTE)?;
+        self.set_pane_option(&pane, dock::HOLDER_KEY, "1")?;
+        Ok(pane)
+    }
+
+    /// Split the dashboard's **slot** off `pane_id` (the dashboard's own
+    /// pane), `width` columns wide, on the right.
+    pub fn split_slot(&self, pane_id: &str, width: u16) -> Result<String> {
+        let pane = self.split_furniture(pane_id, width, false, dock::SLOT_NOTE)?;
+        self.set_pane_option(&pane, dock::SLOT_KEY, "1")?;
+        Ok(pane)
+    }
+
+    fn split_furniture(
+        &self,
+        target: &str,
+        width: u16,
+        before: bool,
+        note: &str,
+    ) -> Result<String> {
+        let width = width.max(1).to_string();
+        let cmd = dock::park_command(note);
+        let mut args: Vec<&str> = vec!["split-window", "-h", "-d", "-l", &width, "-t", target];
+        if before {
+            args.push("-b");
+        }
+        args.extend(["-P", "-F", "#{pane_id}", &cmd]);
+        let out = self.run(&args)?;
+        let pane = out.trim().to_string();
+        if pane.is_empty() {
+            return Err(Error::Tmux("split-window returned no pane id".into()));
+        }
+        Ok(pane)
+    }
+
+    /// Every pane on the server, as furniture: one call serving both the
+    /// holder backfill and the slot lookup.
+    pub fn list_furniture(&self) -> Result<Vec<FurniturePane>> {
+        let fmt = format!(
+            "#{{pane_id}}|#{{window_id}}|#{{session_name}}|#{{{holder}}}|#{{{slot}}}|#{{{repo}}}",
+            holder = dock::HOLDER_KEY,
+            slot = dock::SLOT_KEY,
+            repo = dock::REPO_KEY,
+        );
+        let out = match self.run(&["list-panes", "-a", "-F", &fmt]) {
+            Ok(o) => o,
+            Err(e) if is_no_server_error(&e) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        Ok(out
+            .lines()
+            .filter_map(|line| {
+                let mut it = line.splitn(6, '|');
+                Some(FurniturePane {
+                    pane_id: it.next()?.to_string(),
+                    window_id: it.next()?.to_string(),
+                    session_name: it.next()?.to_string(),
+                    holder: !it.next()?.trim().is_empty(),
+                    slot: !it.next()?.trim().is_empty(),
+                    shell: !it.next().unwrap_or("").trim().is_empty(),
+                })
+            })
+            .collect())
+    }
+
+    /// Kill one pane. Killing a window's last pane kills the window, so
+    /// this is only ever aimed at furniture that has a neighbour.
+    pub fn kill_pane(&self, pane_id: &str) -> Result<()> {
+        self.run(&["kill-pane", "-t", pane_id])?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------- geometry
+
+    /// A window's size, in cells.
+    pub fn window_size(&self, window_id: &str) -> Result<(u16, u16)> {
+        let out = self.run(&[
+            "display-message",
+            "-p",
+            "-t",
+            window_id,
+            "#{window_width}|#{window_height}",
+        ])?;
+        let mut it = out.trim().splitn(2, '|');
+        let x = it.next().unwrap_or("").parse::<u16>().ok();
+        let y = it.next().unwrap_or("").parse::<u16>().ok();
+        match (x, y) {
+            (Some(x), Some(y)) => Ok((x, y)),
+            _ => Err(Error::Tmux(format!("cannot read the size of {window_id}"))),
+        }
+    }
+
+    /// Force a window to a size. Only meaningful once its session carries
+    /// `window-size manual` ([`Self::set_manual_window_size`]); otherwise
+    /// tmux recomputes the size from the attached clients and undoes this.
+    pub fn resize_window(&self, window_id: &str, x: u16, y: u16) -> Result<()> {
+        self.run(&[
+            "resize-window",
+            "-t",
+            window_id,
+            "-x",
+            &x.to_string(),
+            "-y",
+            &y.to_string(),
+        ])?;
+        Ok(())
+    }
+
+    /// Set one pane's width, leaving its neighbour the rest.
+    pub fn resize_pane_width(&self, pane_id: &str, width: u16) -> Result<()> {
+        self.run(&[
+            "resize-pane",
+            "-t",
+            pane_id,
+            "-x",
+            &width.max(1).to_string(),
+        ])?;
+        Ok(())
+    }
+
+    /// Take a session's windows off automatic sizing, so their dimensions
+    /// are ours to set and a client attaching elsewhere cannot change them
+    /// behind our back.
+    pub fn set_manual_window_size(&self, session: &str) -> Result<()> {
+        self.run(&["set-option", "-t", session, "window-size", "manual"])?;
         Ok(())
     }
 
@@ -1041,6 +1216,7 @@ mod tests {
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-id", "feat", 0),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .expect("agent session");
             // An unstamped pane inside that same agent session.
@@ -1086,6 +1262,167 @@ mod tests {
                 got.shell,
                 Some(ShellId::for_session("wingman-session-id", "feat", 0)),
                 "identity travels with the pane"
+            );
+        });
+    }
+
+    /// Every agent window is born with a holder beside its agent pane.
+    ///
+    /// The holder is what makes docking a plain `swap-pane`: with two panes
+    /// in the window, moving the agent out never drops the window — and so
+    /// never drops the session, which would take rediscovery and undock's
+    /// target with it. It sits on the LEFT, the side the dashboard occupies
+    /// in its own window, so the agent pane and the slot are the two panes
+    /// that face each other across a swap.
+    #[test]
+    fn every_agent_window_is_born_with_a_holder() {
+        with_tmux_server(|_sock, tmux| {
+            let id = ShellId::for_session("wingman-session-h", "feat", 0);
+            let first = tmux
+                .new_session(
+                    "wingman-session-h",
+                    "lw:feat/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &id,
+                    HOLDER_W,
+                )
+                .expect("session");
+            let second = tmux
+                .new_window(
+                    "wingman-session-h",
+                    "lw:feat/1",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-h", "feat", 1),
+                    HOLDER_W,
+                )
+                .expect("window");
+
+            for (label, w) in [("new_session", &first), ("new_window", &second)] {
+                let panes: Vec<_> = tmux
+                    .list_furniture()
+                    .expect("furniture")
+                    .into_iter()
+                    .filter(|p| p.window_id == w.window_id)
+                    .collect();
+                assert_eq!(panes.len(), 2, "{label}: exactly two panes, got {panes:?}");
+                let holders: Vec<_> = panes.iter().filter(|p| p.holder).collect();
+                assert_eq!(holders.len(), 1, "{label}: exactly one holder");
+                assert_ne!(
+                    holders[0].pane_id, w.pane_id,
+                    "{label}: the agent pane is not the holder"
+                );
+                // Left of the agent pane, and exactly as wide as the
+                // dashboard's own pane will be.
+                let geom = tmux
+                    .run_raw(&[
+                        "list-panes",
+                        "-t",
+                        &w.window_id,
+                        "-F",
+                        "#{pane_id} #{pane_left} #{pane_width}",
+                    ])
+                    .expect("geometry");
+                let holder_line = geom
+                    .lines()
+                    .find(|l| l.starts_with(&holders[0].pane_id))
+                    .expect("holder geometry");
+                assert_eq!(
+                    holder_line.split_whitespace().nth(1),
+                    Some("0"),
+                    "{label}: the holder is the leftmost pane: {geom}"
+                );
+                assert_eq!(
+                    holder_line.split_whitespace().nth(2),
+                    Some(HOLDER_W.to_string().as_str()),
+                    "{label}: the holder is the dashboard pane's width: {geom}"
+                );
+            }
+
+            // And the poll sees shells, not furniture: a holder runs a
+            // sleeping `sh`, which is exactly what the classifier reads as
+            // an ended agent — so it must never reach it.
+            let shells = tmux.list_panes().expect("panes");
+            assert_eq!(
+                shells.len(),
+                2,
+                "one shell per window, no holders: {shells:?}"
+            );
+            assert!(
+                shells.iter().all(|p| p.shell.is_some()),
+                "every polled pane carries an identity: {shells:?}"
+            );
+            assert!(
+                shells
+                    .iter()
+                    .all(|p| p.pane_id == first.pane_id || p.pane_id == second.pane_id),
+                "only the agent panes are shells: {shells:?}"
+            );
+        });
+    }
+
+    /// A server started by a build that predates holders keeps its windows;
+    /// the backfill gives them the holder they were never born with, once,
+    /// and leaves the ones that already have one alone.
+    #[test]
+    fn holders_are_backfilled_into_windows_that_predate_them() {
+        with_tmux_server(|_sock, tmux| {
+            let w = tmux
+                .new_session(
+                    "wingman-session-b",
+                    "lw:feat/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-b", "feat", 0),
+                    HOLDER_W,
+                )
+                .expect("session");
+            // Simulate the old world: the user (or an older build) leaves
+            // the window with nothing but its agent pane.
+            let holder = tmux
+                .list_furniture()
+                .expect("furniture")
+                .into_iter()
+                .find(|p| p.holder)
+                .expect("a holder to remove");
+            tmux.kill_pane(&holder.pane_id).expect("kill the holder");
+            assert_eq!(
+                tmux.list_furniture()
+                    .unwrap()
+                    .iter()
+                    .filter(|p| p.window_id == w.window_id)
+                    .count(),
+                1
+            );
+
+            assert_eq!(
+                dock::ensure_holders(&tmux, HOLDER_W),
+                1,
+                "one window repaired"
+            );
+            let panes: Vec<_> = tmux
+                .list_furniture()
+                .unwrap()
+                .into_iter()
+                .filter(|p| p.window_id == w.window_id)
+                .collect();
+            assert_eq!(panes.len(), 2, "the window is furnished again: {panes:?}");
+            assert_eq!(panes.iter().filter(|p| p.holder).count(), 1);
+
+            // Idempotent: a second pass adds nothing, and the user's own
+            // session is never furnished at all.
+            assert_eq!(
+                dock::ensure_holders(&tmux, HOLDER_W),
+                0,
+                "nothing left to do"
+            );
+            assert!(
+                tmux.list_furniture()
+                    .unwrap()
+                    .iter()
+                    .all(|p| !(p.session_name == "main" && p.holder)),
+                "the user's own session is not ours to furnish"
             );
         });
     }
@@ -1234,6 +1571,7 @@ mod tests {
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-stamp", "feat", 0),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .expect("session");
             assert_stamped(&first.pane_id, "feat", "0");
@@ -1245,6 +1583,7 @@ mod tests {
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-stamp", "feat", 1),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .expect("window");
             assert_stamped(&second.pane_id, "feat", "1");
@@ -1260,6 +1599,7 @@ mod tests {
                 std::path::Path::new("/tmp"),
                 "bash",
                 &ShellId::for_session("wingman-session-opt", "feat", 0),
+                crate::tmux::testutil::HOLDER_W,
             )
             .expect("session");
             let pane = tmux
@@ -1300,6 +1640,7 @@ mod tests {
                 std::path::Path::new("/tmp"),
                 "bash",
                 &ShellId::for_session("wingman-session-hook", "feat", 0),
+                crate::tmux::testutil::HOLDER_W,
             )
             .expect("session");
             let pane = tmux
@@ -1407,6 +1748,7 @@ mod tests {
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-p", "feat", 0),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
             assert!(w0.window_id.starts_with('@'));
@@ -1421,6 +1763,7 @@ mod tests {
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-p", "feat", 1),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
             // panes across agent sessions are visible; dashboard panes are NOT
@@ -1463,6 +1806,7 @@ mod tests {
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-p", "f", 0),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
             assert!(w.window_id.starts_with('@'));
@@ -1501,6 +1845,7 @@ mod tests {
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-s", "s", 0),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
             tmux.send_keys(
@@ -1546,6 +1891,7 @@ mod tests {
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-p", "f", 0),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
             tmux.send_keys(&w.pane_id, r#"printf '\033[31mlw-red\033[0m\n'"#, true)
@@ -1586,6 +1932,7 @@ mod tests {
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-p", "f", 0),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
             // Paste a multi-line prompt WITHOUT a trailing Enter: bracketed
@@ -1619,6 +1966,7 @@ mod tests {
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-p", "f", 1),
+                    crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
             tmux.send_keys(&w.pane_id, "exit", true).unwrap();
@@ -1644,6 +1992,7 @@ mod tests {
                 Path::new("/tmp"),
                 "bash",
                 &ShellId::for_session("wingman-session-p", "f", 0),
+                crate::tmux::testutil::HOLDER_W,
             )
             .unwrap();
             tmux.bind_back_key("C-o", "main", "@0").unwrap();
@@ -1688,6 +2037,7 @@ mod tests {
                 Path::new("/tmp"),
                 "bash",
                 &ShellId::for_session("wingman-session-p", "f", 0),
+                crate::tmux::testutil::HOLDER_W,
             )
             .unwrap();
             // A user's own root binding on a DIFFERENT key must survive:
@@ -1729,6 +2079,11 @@ pub(crate) mod testutil {
     use crate::util::testutil::with_test_lock;
 
     static SOCK_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// Holder width the fixtures spawn agent windows with. The test server
+    /// is 200x50, so this is what `dock::dash_width` would hand a real one
+    /// — spelled once here rather than at every spawn site.
+    pub const HOLDER_W: u16 = crate::dock::DASH_MAX_WIDTH;
 
     /// Run `f` against a throwaway tmux server on a unique socket.
     ///

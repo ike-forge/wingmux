@@ -8,6 +8,24 @@
 //! Options are read back through `list-panes -F '#{@lw_repo}…'`; tmux
 //! reports an **unset** option as the empty string, so parsing must treat
 //! "unset" and "junk" the same way and simply decline.
+//!
+//! # The furniture, and what it costs
+//!
+//! Every agent window carries a **holder** and the dashboard window carries
+//! a **slot**: two sleeping panes of matching size, so that docking is one
+//! `swap-pane` that changes no window's pane count and no pane's dimensions.
+//! Agent sessions are set to `window-size manual` and their windows are held
+//! at the dashboard window's size, which is what keeps the two sides equal.
+//!
+//! Two degradations are accepted rather than fixed:
+//!
+//! - **Someone attaching an agent session directly resizes its windows** to
+//!   their own terminal. The next poll puts them back, so that one dock
+//!   costs a single repaint. Correctness is unaffected; only the flicker is.
+//! - **A holder is one sleeping process per shell.** It shows up in
+//!   `list-panes`, in the user's own pane navigation and in anything that
+//!   counts panes. It is marked once ([`HOLDER_KEY`]) and filtered once, in
+//!   `Tmux::list_panes`, which selects on identity — furniture carries none.
 
 /// Repository slug, on an agent pane.
 pub const REPO_KEY: &str = "@lw_repo";
@@ -17,10 +35,8 @@ pub const WORKTREE_KEY: &str = "@lw_worktree";
 pub const INDEX_KEY: &str = "@lw_index";
 /// `1` on a holder pane — the placeholder that keeps an agent window alive
 /// while its agent pane is docked elsewhere.
-#[allow(dead_code)] // the holder pane arrives in Phase 3
 pub const HOLDER_KEY: &str = "@lw_holder";
 /// `1` on the dashboard's slot pane — the pane an agent is swapped into.
-#[allow(dead_code)] // the slot arrives in Phase 3
 pub const SLOT_KEY: &str = "@lw_slot";
 /// While docked: the docking dashboard's own pane id, on the agent pane.
 pub const DOCKED_KEY: &str = "@lw_docked";
@@ -79,6 +95,109 @@ impl ShellId {
     pub fn index_value(&self) -> String {
         self.index.to_string()
     }
+}
+
+// ------------------------------------------------------------- furniture
+
+/// What a holder pane says to whoever attaches to an agent session directly
+/// and finds a sleeping pane where their agent used to be.
+pub const HOLDER_NOTE: &str = "[LazyWingman] holder — this window's agent pane is docked in a dashboard. \
+It comes back here when it is undocked.";
+
+/// What the dashboard's slot says while nothing is docked in it.
+pub const SLOT_NOTE: &str = "[LazyWingman] slot — the selected agent's pane docks here.";
+
+/// Narrowest useful dashboard pane: below this the tree stops being
+/// readable, and a docked layout that cannot show the tree has no reason to
+/// exist.
+pub const DASH_MIN_WIDTH: u16 = 24;
+/// Widest: the tree never earns more, and every extra column is one the
+/// agent does not get. Matches `ui::TREE_MAX`.
+pub const DASH_MAX_WIDTH: u16 = 48;
+
+/// Width of the dashboard's own pane once a slot sits beside it — and so,
+/// by construction, the width of every holder.
+///
+/// Holder and dashboard pane face each other across a swap: while they are
+/// the same width, the agent pane and the slot are too, and the swap costs
+/// no resize and no repaint. The proportion is the Wide tier's 32%, so the
+/// docked layout looks like the split layout it replaces.
+pub fn dash_width(window_width: u16) -> u16 {
+    let want = (window_width as u32 * 32 / 100) as u16;
+    want.clamp(DASH_MIN_WIDTH, DASH_MAX_WIDTH)
+        // Never wider than the window can hold: one column for the divider,
+        // one for whatever sits beside it.
+        .min(window_width.saturating_sub(2))
+}
+
+/// Width left for the agent, opposite a [`dash_width`] pane (the divider
+/// costs one column).
+pub fn agent_width(window_width: u16) -> u16 {
+    window_width.saturating_sub(dash_width(window_width) + 1)
+}
+
+/// Wrap `s` in single quotes for `/bin/sh`.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// The command a furniture pane runs: say what it is, then sleep.
+///
+/// The sleep is a loop rather than one enormous interval — `sleep` with a
+/// ten-year argument is a GNU nicety, and this has to survive busybox. The
+/// pane is furniture, so it is never reaped on a timer: it dies with its
+/// window, or when [`SLOT_KEY`]'s owner quits.
+pub fn park_command(note: &str) -> String {
+    format!(
+        "printf '%s\\n' {}; while :; do sleep 3600; done",
+        sh_quote(note)
+    )
+}
+
+/// Give every agent window a holder it is missing — the backfill for
+/// windows spawned before holders existed, and the repair for a holder the
+/// user closed by hand.
+///
+/// A window is judged by what is in it *now*: a window whose only pane is a
+/// holder is a docked shell's home and is already furnished, and a window
+/// with no pane of ours in it at all is none of our business. Returns how
+/// many holders were added.
+pub fn ensure_holders(tmux: &crate::tmux::Tmux, width: u16) -> usize {
+    let panes = match tmux.list_furniture() {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("holder backfill: {e}");
+            return 0;
+        }
+    };
+    // window id -> (has a holder, holds something of ours)
+    let mut windows: Vec<(String, bool, bool)> = Vec::new();
+    for p in &panes {
+        if !crate::tmux::is_lazywingman_session(&p.session_name) {
+            continue;
+        }
+        match windows.iter_mut().find(|(w, _, _)| *w == p.window_id) {
+            Some(entry) => {
+                entry.1 |= p.holder;
+                entry.2 |= p.holder || p.shell;
+            }
+            None => windows.push((p.window_id.clone(), p.holder, p.holder || p.shell)),
+        }
+    }
+    let mut added = 0;
+    for (window_id, has_holder, ours) in windows {
+        if has_holder || !ours {
+            continue;
+        }
+        match tmux.split_holder(&window_id, width) {
+            Ok(pane) => {
+                log::info!("backfilled holder {pane} into {window_id}");
+                added += 1;
+            }
+            Err(e) => log::warn!("cannot backfill a holder into {window_id}: {e}"),
+        }
+    }
+    added
 }
 
 #[cfg(test)]
