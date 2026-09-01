@@ -595,6 +595,15 @@ the same commit as the change.
   time), so it is safe to call every frame. Unknown tokens pass through as
   written, and so does everything when no shell is selected: there is no
   context to resolve against, and blanks would be worse than the template.
+- **The merge preset names the LOCAL base**: `merge to LOCAL <base_branch>`.
+  A bare "merge to main" reads as satisfied by fast-forwarding the remote
+  (`git push origin <branch>:main`), which is a real temptation for an agent
+  working in a worktree — the base branch is usually checked out in another
+  worktree, so git refuses to move it from here. The result looks merged on
+  the forge and is not merged for the dashboard: `worktree_state` asks
+  `merge-base --is-ancestor HEAD <base>` against the LOCAL branch, so the row
+  keeps reading `Ahead` until someone pulls. The preset asks for the thing
+  the tree can actually see, and shouts the word the agent has to notice.
 
 ## Layout, wording and rendering
 
