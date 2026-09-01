@@ -1017,6 +1017,15 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             (h("help", "?"), Help),
         ],
     };
+    // `Enter` on a shell another dashboard holds does something different
+    // enough to deserve a different word: it takes the pane off them.
+    if app
+        .selected_shell_pane()
+        .is_some_and(|p| app.leased_by(&p).is_some())
+        && let Some(slot) = entries.iter().position(|(_, a)| matches!(a, Dock))
+    {
+        entries[slot] = (h("take", "Enter"), Dock);
+    }
     // A parked preview is a state you can be stuck in — the way out leads
     // the bar, where the eye lands first.
     if app.preview_offset() > 0 {

@@ -209,6 +209,7 @@ and quitting sends it home before the slot is taken down.
 |---|---|---|
 | `Enter` on a shell | dock: `swap-pane` the agent pane into the slot, `select-pane` into it | domain convention (open the thing the row stands for) |
 | `Enter` on the shell that is already docked | just move the focus back into it — no second swap | idempotent action key |
+| `Enter` on a shell another dashboard holds | takes it, with no confirm — the bar reads `take` rather than `dock` | rare case, and the answer is always yes |
 | moving the cursor onto a shell | docks it too, **without** taking the cursor with it | the selection is the subject; looking at a row shows the row |
 
 **Dock on look.** The docked pane follows the tree cursor: land on a shell
@@ -220,6 +221,10 @@ per row); it does not fire at all while the docked pane holds the keyboard,
 because swapping a pane out from under someone mid-sentence is the worst bug
 this design can produce; and it yields to a shell another dashboard has
 docked, which is what keeps two idle instances from trading a pane forever.
+A row a second dashboard holds is muted whole and marked `leased`, and the
+preview panel — which keeps working, since `capture-pane` does not care where
+a pane sits — names the scope holding it. `Enter` still takes it: looking
+yields, pressing steals, and both dashboards are toasted when it happens.
 There is **no settle timer**: the queue itself says when the burst is over,
 so the dock lands with no added latency and there is never a window in which
 the panel shows the row the cursor has already left. A row with no shell

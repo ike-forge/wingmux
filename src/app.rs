@@ -1060,6 +1060,27 @@ impl App {
             return;
         }
         log::info!("docked pane {docked} is no longer ours — back to the preview");
+        // Losing a shell to another dashboard is the one of the three that
+        // needs saying: the pane is still alive and still in the tree, so
+        // a panel that silently reverted to the preview would read as an
+        // agent that stalled. A pane that was killed or whose agent exited
+        // says so in its own row, and stays a log line.
+        let taken_by = panes
+            .iter()
+            .find(|p| p.pane_id == docked)
+            .and_then(|p| p.docked_by.as_deref())
+            .and_then(|by| tmux.pane_scope(by));
+        if let Some(scope) = taken_by {
+            let who = Lease {
+                dash_pane: String::new(),
+                scope: Some(scope),
+            }
+            .label();
+            let name = self
+                .shell_name_for_pane(&docked)
+                .unwrap_or_else(|| docked.clone());
+            self.notify(format!("{name} taken by {who}"));
+        }
         self.docked = None;
         self.docked_home = None;
         // The slot exists exactly while something is docked in it: with
@@ -1737,12 +1758,22 @@ impl App {
     }
 
     /// Pane id of the selected shell, if any.
+    ///
+    /// Indexed with `get`, not `[]`: `Sel` carries indices that a tree
+    /// mutation can outdate for the frame between the change and the next
+    /// `clamp_sel`, and a renderer asking what is selected must get `None`
+    /// there rather than panic.
     pub fn selected_shell_pane(&self) -> Option<String> {
-        self.selected_shell().and_then(|(ri, wi, si)| {
-            self.state.repositories[ri].worktrees[wi].shells[si]
-                .pane_id
-                .clone()
-        })
+        let (ri, wi, si) = self.selected_shell()?;
+        self.state
+            .repositories
+            .get(ri)?
+            .worktrees
+            .get(wi)?
+            .shells
+            .get(si)?
+            .pane_id
+            .clone()
     }
 
     // ---------------------------------------------------------- actions
@@ -2034,10 +2065,32 @@ impl App {
             return;
         };
         let name = sh.window_name.clone();
+        // Taken from another dashboard, unconfirmed: the case is rare and
+        // the answer is always yes — someone pressed `Enter` on the row.
+        // A dialog here would cost every ordinary dock a habit of dismissing
+        // one. Both sides are told instead: this toast, and the loser's in
+        // `reconcile_docked`.
+        let taken_from = self.leased_by(&pane).map(|l| l.label());
         if let Err(e) = self.dock_pane(&pane, true) {
             self.notify_err(format!("dock failed: {e}"));
             log::error!("dock {name} ({pane}): {e}");
+            return;
         }
+        if let Some(who) = taken_from {
+            self.notify(format!("{name} taken from {who}"));
+        }
+    }
+
+    /// The window name of the shell living in `pane`, for a message about
+    /// a pane the tree still knows even though tmux has moved it.
+    fn shell_name_for_pane(&self, pane: &str) -> Option<String> {
+        self.state
+            .repositories
+            .iter()
+            .flat_map(|r| r.worktrees.iter())
+            .flat_map(|w| w.shells.iter())
+            .find(|s| s.pane_id.as_deref() == Some(pane))
+            .map(|s| s.window_name.clone())
     }
 
     /// Follow the selection: bring whatever shell the cursor is on beside
@@ -2120,6 +2173,18 @@ impl App {
             }
             return Ok(());
         }
+        // A shell another dashboard holds is sent home BEFORE it is taken,
+        // rather than swapped straight out of their window into ours. A
+        // direct swap would work, but it would leave their slot sitting in
+        // our window and ours in the agent's — furniture crossed over, and
+        // one instance able to kill a pane in another's window on quit.
+        // Undock-then-dock keeps the invariant that a slot is only ever in
+        // its own dashboard's window or in the home window of the pane that
+        // dashboard has docked.
+        if self.leases.contains_key(pane) {
+            self.send_home(&tmux, pane)?;
+            self.leases.remove(pane);
+        }
         // Where it lives now, asked of tmux rather than of state: this is
         // the window it must be sent back to, and it is read before the
         // swap because afterwards it says the dashboard's.
@@ -2146,6 +2211,26 @@ impl App {
             tmux.select_pane(pane)?;
         }
         Ok(())
+    }
+
+    /// Put an agent pane back in its own window, wherever it currently
+    /// sits and whoever put it there.
+    ///
+    /// Its home is derived from the pane's own identity, not from any
+    /// bookkeeping: the instance stealing a shell was never told where the
+    /// instance holding it found the pane.
+    fn send_home(&self, tmux: &Tmux, pane: &str) -> Result<()> {
+        let id = tmux
+            .list_panes()?
+            .into_iter()
+            .find(|p| p.pane_id == pane)
+            .and_then(|p| p.shell)
+            .ok_or_else(|| Error::Tmux(format!("{pane} is not one of our shells")))?;
+        let furniture = tmux.list_furniture()?;
+        let home = crate::dock::home_window(&furniture, &id, &[]).ok_or_else(|| {
+            Error::Tmux(format!("{pane} has no window of its own waiting for it"))
+        })?;
+        crate::dock::undock(tmux, pane, &home)
     }
 
     /// Send the docked pane home, if there is one. Never fatal: a pane
@@ -5732,6 +5817,149 @@ mod tests {
             assert!(app.leased_by(&pane).is_none());
             app.auto_dock(false);
             assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
+        });
+    }
+
+    // ---- M18 Task 16 — eager steal ----
+
+    /// Stand up a second dashboard: its own window, announcing its own
+    /// scope, with a slot of its own. Returns (its pane, its slot).
+    fn rival_dashboard(sock: &str, tmux: &Tmux, scope: &str) -> (String, String) {
+        use crate::tmux::testutil::tmux_raw;
+        let pane = tmux_raw(
+            sock,
+            &["new-window", "-P", "-F", "#{pane_id}", "-t", "main", "-d"],
+        );
+        let window = tmux_raw(
+            sock,
+            &["display-message", "-p", "-t", &pane, "#{window_id}"],
+        );
+        tmux.set_window_option(&window, crate::dock::SCOPE_KEY, scope)
+            .expect("the rival announces its scope");
+        let slot = tmux.split_slot(&pane, 40).expect("their slot");
+        (pane, slot)
+    }
+
+    /// Which window a pane is in right now.
+    fn window_of(tmux: &Tmux, pane: &str) -> String {
+        tmux.list_furniture()
+            .expect("furniture")
+            .into_iter()
+            .find(|p| p.pane_id == pane)
+            .map(|p| p.window_id)
+            .expect("the pane still exists")
+    }
+
+    /// `Enter` on a shell another dashboard holds takes it, with no dialog
+    /// in the way: the case is rare and the answer is always yes — someone
+    /// pressed the key on the row. Both sides are told instead.
+    #[test]
+    fn enter_takes_a_leased_shell_with_no_confirm_and_says_so() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (home, pane) = seed_repository_with_shell(&tmux, &mut app);
+            look_at(&mut app, Sel::Worktree(0, 0));
+
+            let (rival, rival_slot) = rival_dashboard(sock, &tmux, "/home/ike/other-scope");
+            crate::dock::dock(&tmux, &rival_slot, &pane, &rival).expect("they dock it first");
+            let rival_window = window_of(&tmux, &rival);
+            app.poll();
+            assert!(app.leased_by(&pane).is_some(), "they hold it");
+
+            app.dock_shell(0, 0, 0);
+            assert!(
+                matches!(app.mode, Mode::Normal),
+                "no dialog stands between the key and the pane"
+            );
+            assert_eq!(app.docked.as_deref(), Some(pane.as_str()), "we hold it now");
+            assert_eq!(
+                window_of(&tmux, &pane),
+                tmux.inside.as_ref().unwrap().window_id,
+                "and it is really in our window"
+            );
+            let toast = app
+                .message
+                .as_ref()
+                .expect("the taker is told")
+                .text
+                .clone();
+            assert!(
+                toast.contains("other-scope"),
+                "the toast names who lost it: {toast}"
+            );
+
+            // Their furniture is their own again: a steal that swapped
+            // straight out of their window would have left our slot in the
+            // agent's window and theirs in ours.
+            assert_eq!(
+                window_of(&tmux, &rival_slot),
+                rival_window,
+                "their slot went back to them"
+            );
+            assert_eq!(
+                window_of(&tmux, app.slot.as_deref().expect("our slot")),
+                home,
+                "and ours is where the agent came from"
+            );
+        });
+    }
+
+    /// The other half of the same event. The loser's next poll finds the
+    /// shell gone, falls back to the preview — the pane is still alive and
+    /// still in the tree, so a panel that silently reverted would read as a
+    /// stalled agent — and says which scope took it.
+    #[test]
+    fn the_instance_that_lost_a_shell_falls_back_to_the_preview_and_is_told_who_took_it() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_home, pane) = seed_repository_with_shell(&tmux, &mut app);
+            look_at(&mut app, Sel::Worktree(0, 0));
+            app.viewport = (120, 40);
+
+            app.dock_shell(0, 0, 0);
+            assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
+            let ours = app.slot.clone().expect("our slot");
+            assert!(
+                matches!(crate::ui::tier(&app), crate::ui::Tier::TreeOnly),
+                "a docked dashboard is tree-only"
+            );
+
+            // They take it: home first, then into their own slot — the same
+            // two steps our own steal takes.
+            let (rival, rival_slot) = rival_dashboard(sock, &tmux, "/home/ike/thief");
+            let id = crate::dock::ShellId::for_session("wingman-session-p", "wt", 0);
+            let home = crate::dock::home_window(&tmux.list_furniture().unwrap(), &id, &[])
+                .expect("its own window is waiting");
+            crate::dock::undock(&tmux, &pane, &home).expect("they send it home");
+            crate::dock::dock(&tmux, &rival_slot, &pane, &rival).expect("they take it");
+
+            app.poll();
+            assert_eq!(app.docked, None, "we let go");
+            let toast = app
+                .message
+                .as_ref()
+                .expect("the loser is told")
+                .text
+                .clone();
+            assert!(
+                toast.contains("thief"),
+                "the toast names the taker: {toast}"
+            );
+            assert_eq!(app.slot, None, "our slot came down with the dock");
+            assert!(
+                tmux.list_furniture()
+                    .unwrap()
+                    .iter()
+                    .all(|p| p.pane_id != ours),
+                "and the pane really went"
+            );
+            assert!(
+                matches!(crate::ui::tier(&app), crate::ui::Tier::Wide),
+                "the preview is back — it is the only view that works for a \
+                 shell we do not hold"
+            );
         });
     }
 

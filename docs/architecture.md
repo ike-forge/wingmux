@@ -289,6 +289,17 @@ the same commit as the change.
     does not care where a pane sits) and its title names the holder, because a
     panel that silently follows a shell someone else is typing in invites an
     `Enter` that yanks it away.
+  - **`Enter` steals, unconfirmed — and the steal is undock-then-dock.** The
+    case is rare and the answer is always yes: someone pressed the key on the
+    row. A dialog would cost every ordinary dock the habit of dismissing one,
+    so both sides are toasted instead — the taker names the scope it took the
+    shell from, the loser's next poll names the scope that took it. The pane
+    is sent *home* before it is taken rather than swapped straight out of the
+    other dashboard's window: a direct swap would leave their slot in our
+    window and ours in the agent's, crossing the furniture over and letting
+    one instance kill a pane in another's window on quit. Undock-then-dock
+    keeps the invariant that a slot is only ever in its own dashboard's window
+    or in the home window of the pane that dashboard has docked.
   - **The slot exists exactly while something is docked.** `ui::tier` tests
     `App::docked`, not `App::slot`: when a dock ends without a replacement —
     the agent exited, the pane was killed, another instance took it —

@@ -2343,6 +2343,25 @@ pub(crate) mod testutil {
         }
     }
 
+    /// Raw tmux, for fixtures a `Tmux` method would have no business
+    /// offering — standing up a *second* dashboard's window, say. Returns
+    /// trimmed stdout and panics on failure: a broken fixture is a broken
+    /// test, not a case to handle.
+    pub fn tmux_raw(sock: &str, args: &[&str]) -> String {
+        let out = Command::new("tmux")
+            .arg("-L")
+            .arg(sock)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("tmux {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "tmux {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
     /// A handle pretending the dashboard runs inside the `main` session.
     pub fn tmux_inside(sock: &str) -> Tmux {
         Tmux {
