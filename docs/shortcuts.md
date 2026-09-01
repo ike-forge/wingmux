@@ -246,15 +246,16 @@ navigation key of its own — the keys the user already knows keep working,
 and none of the agent's own keys (`1`/`2`/`3`, typing, image paste) is
 intercepted on the way in.
 
-The **back-key** (`tmux.back_key`, default `<prefix> + C-o`) still jumps
-from an agent *window* to the dashboard window, and is still bound in the
-PREFIX table rather than the root table — tmux key tables are server-wide,
-so a root-table binding (`bind-key -n`) would hijack the chord in every
-session and break vim's `C-o`, readline and other TUIs. Legacy root
-bindings from pre-M9 versions are removed on startup (only the exact
-command we bound — user bindings of the same key survive). It is on its way
-out: with docking, "back to the dashboard" is `<prefix> + ←` between two
-panes of one window.
+The **back-key is retired** (`tmux.back_key` no longer exists; a config
+still carrying it says so and is otherwise ignored). It bound a chord that
+jumped from an agent *window* to the dashboard window. There is no such trip
+any more: the agent's pane is beside the tree, so "back to the dashboard" is
+`<prefix> + ←` between two panes of one window — the user's own binding,
+whatever they have it set to, rather than one LazyWingman writes into their
+tmux behind their back. Nothing is lost and one bug goes with it: tmux key
+tables are server-wide, so the single binding served every dashboard on the
+server and the newest one to start silently retargeted the chord for all the
+others.
 
 While a pane is docked the dashboard's own strip shows **the tree and
 nothing else**. The preview panel is not narrowed, it is gone: the thing it
@@ -292,7 +293,7 @@ same strings (see `HELP_GROUPS` in `src/ui.rs` and `bar_entries` in
 users click the same words.
 
 Every hint is written in one shape — `<action> <key>`, e.g. `cancel esc`,
-`attach ↵` — and only the key carries the accent colour, so the eye finds it
+`dock ↵` — and only the key carries the accent colour, so the eye finds it
 without reading the sentence (`ui::Hint`, `ui::hint_line`). Keys with a glyph
 form take it from `[icons]` (`enter`, `arrows`), so the `ascii` preset spells
 them out instead. Every modal ends with such a hint row, one blank row above

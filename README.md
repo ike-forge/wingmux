@@ -9,7 +9,7 @@ LazyWingman always runs inside tmux, as a pane of your existing session — and
 starts one for you when you launch it from a bare shell. Agent shells never
 pollute your tmux
 session: they live in their own dedicated tmux sessions
-(`wingman-session-<repository>`), invisible until you attach to them.
+(`wingman-session-<repository>`), invisible until you dock one beside the tree.
 
 ```
 RepositoryA  (a git repo found by discovery)
@@ -41,8 +41,9 @@ cargo build --release
 # binary at target/release/lazywingman
 ```
 
-Requirements: Rust ≥ 1.85, `git`, `tmux` (≥ 3.0 — agent shells are tmux
-sessions; the server is started on demand).
+Requirements: Rust ≥ 1.85, `git`, `tmux` **≥ 3.0** — a shell's identity lives
+on tmux pane options and is read back with `#{@user-option}` in a format,
+which 3.0 is the first release to interpolate. Developed against 3.7b.
 
 ```sh
 lazywingman
@@ -50,8 +51,9 @@ lazywingman
 
 Run it from a pane of your tmux session, or from a bare shell — from a bare
 shell it re-launches itself inside a tmux session of its own, so it is always
-a tmux pane. `Enter` attaches to a shell, the back-key `C-o` returns to the
-dashboard.
+a tmux pane. Move the cursor onto a shell and that agent's **real** tmux pane
+appears beside the tree; `Enter` puts the cursor in it, and getting back out
+is your own tmux binding (`<prefix> + ←` by default).
 
 First run writes an exhaustive, fully commented config to
 `$XDG_CONFIG_HOME/lazywingman/config.toml` (never overwriting an existing
@@ -77,7 +79,7 @@ the help overlay (`?`).
 | `PgUp` / `PgDn`, `ctrl-u` / `ctrl-d` | half page up / down |
 | `ctrl-f` / `ctrl-b` | full page up / down |
 | `h` | collapse / jump to parent |
-| `l` / `Enter` | expand, or **attach** to the selected shell (a one-shell worktree attaches straight away — see the folded row below) |
+| `l` / `Enter` | expand, or **enter** the selected shell's docked pane (a one-shell worktree goes straight in — see the folded row below). Simply moving onto a shell already docks it; `Enter` is what puts the cursor there |
 | `n` | new worktree (git worktree + branch + agent shell) — a prompt asks for the name and names the branch it will be cut from: the repository's **base branch** (`worktrees.base_branch`, per-repository override), never the branch the repo has checked out |
 | `a` | add a shell to the selected worktree — a picker asks what it runs: the repository's default agent command first (`Enter` takes it), then the other configured `[[agents]]` presets, then a **plain shell** that just drops you at your own `$SHELL` prompt with nothing sent to it (`j`/`k` moves, `1`-`9` pick directly, `Esc` closes). Anything else you want to run, you type in that plain shell |
 | `s` | **quick-send** a line to the selected shell (or to a one-shell worktree's row). Any way out of the editor that is not a send (`Esc`, a click outside the popup, the `ctrl-t` theme chord) keeps the unsent text as that shell's draft; `s` on it again picks up where you left off, cursor included. A draft is dropped once the message is actually delivered. It otherwise survives quitting — parked in `$XDG_STATE_HOME/lazywingman/drafts.json` and kept until its shell is gone |
@@ -92,11 +94,18 @@ Mouse: click a row selects, double-click opens (same as `Enter`), the wheel
 scrolls the **preview** (never the tree), statusbar entries are clickable, and
 clicking outside an overlay dismisses it.
 
-**Attach & return**: `Enter` on a shell switches your client to that agent's
-window. Press the tmux prefix + the *back-key* to return to the dashboard —
-`C-b C-o` by default, the second half configurable via `tmux.back_key`. The
-chord is bound in the prefix table (never the root table, so no other TUI
-ever loses the key).
+**Docking**: the pane beside the tree is the agent's own tmux pane, swapped
+in — not a rendering of it. Moving the cursor onto a shell docks it without
+taking your keyboard along, so the next `j` is still a `j`; `Enter` puts the
+cursor *in* the pane. From there everything is tmux's own binding and
+deliberately unbound here: moving between the panes (`<prefix> + ←` / `→` /
+`o` / `;`), scrolling and searching the scrollback, selecting and copying,
+zooming (`<prefix> + z`) and resizing. None of the agent's own keys —
+`1`/`2`/`3`, typing, image paste — is intercepted on the way in.
+
+Run a second dashboard in another folder and the two share the tmux server:
+a shell one has docked shows in the other as `leased` and previews instead,
+and `Enter` takes it, telling both sides.
 
 ## Configuration
 
@@ -116,9 +125,6 @@ confirm_on_delete = true
 
 [preview]
 colors = "full"              # pane colours as-is; "foreground" drops backgrounds, "none" = plain text
-
-[tmux]
-back_key = "C-o"             # prefix + C-o jumps back to the dashboard (prefix table)
 
 [worktrees]
 root = ""                    # default: <parent-of-repo>/.lazywingman-worktrees
@@ -181,9 +187,9 @@ merge deeply, lists are replaced outright):
 
 A repository-local file is meant to be committed — a teammate clones the repo
 and is already configured. A few keys belong to the user, not the repository,
-and are **ignored in repository files with a diagnostic**: `tmux.back_key`
-(your global tmux binding), `worktrees.root` and `discovery.scan_root`
-(machine-specific paths). Set those in your user config.
+and are **ignored in repository files with a diagnostic**: `worktrees.root`
+and `discovery.scan_root` (machine-specific paths). Set those in your user
+config.
 
 Inspect the resolved config any time:
 
@@ -389,14 +395,18 @@ without hunting for the status word at the end of the row.
   everything is rediscoverable after a restart (`tmux list-sessions` →
   per-session `list-windows`), even if the state file is lost.
 - All interaction goes through the tmux CLI (`new-session`, `new-window`,
-  `send-keys`, `capture-pane`, `switch-client`, `select-window`,
-  `kill-window`, `list-panes -a`, `bind-key`); nothing is shell-interpreted.
-- **Attach & return**: `Enter` on a shell = `select-window` to the shell's
-  window + `switch-client` to the agent session. The back chord
-  (prefix + `C-o` by default, configurable via `tmux.back_key`) is bound in
-  the PREFIX table to `switch-client` back to the dashboard window, rebound
-  on every startup; legacy root-table bindings from earlier versions are
-  removed on startup.
+  `send-keys`, `capture-pane`, `swap-pane`, `select-pane`, `kill-window`,
+  `list-panes -a`); nothing is shell-interpreted.
+- **Docking is one `swap-pane`.** Every agent window carries a sleeping
+  *holder* and the dashboard window a matching *slot*, so a dock exchanges two
+  panes that already exist: no window and no session is created or destroyed,
+  and because the two are the same size tmux redraws from its own buffer —
+  the agent sees no `SIGWINCH` and does not repaint. Undocking is the same
+  swap backwards, and quitting sends the pane home before taking the slot
+  down.
+- **Pane navigation is yours.** LazyWingman binds no movement key and sets no
+  chord in your tmux. The back-key it used to bind is retired: with the agent
+  beside the tree there is no window to travel back from.
 - **New worktree**: the branch and worktree are cut from the repository's
   **base branch** (`worktrees.base_branch`, or the repository's override), not
   from whatever the repo has checked out. The New Worktree popup names that
@@ -569,15 +579,15 @@ repository row entirely (the flat layout).
 **Worktrees without a shell**: every worktree `git worktree list` reports
 gets a row, whether LazyWingman created it or you did. A worktree it has no
 tmux window for — one made by hand, or one whose agent shell you closed —
-has nothing to attach to, send to or capture, so its row is drawn dimmed and
+has nothing to dock, send to or capture, so its row is drawn dimmed and
 selecting it says so in the preview instead of showing a pane. It is a
 listing, not a dead end: `a` starts a shell in that worktree and it joins the
 rest, and `d` deletes it like any other.
 
 **The folded row** (`login` above): the nominal case is one worktree, one
 agent, so a worktree with a single shell has no child row at all — its own row
-*is* that shell. It carries the shell's status, and `Enter` / `s` attach and
-quick-send to it directly. `a` gives the worktree a
+*is* that shell. It carries the shell's status, and `Enter` / `s` enter its
+docked pane and quick-send to it directly. `a` gives the worktree a
 second shell, and the subtree appears. Only worktrees with several shells (or
 none) are expandable.
 
@@ -586,7 +596,7 @@ name, no session chip, no repository count. Every shortcut in the app —
 status bar, modal footer, help palette — is written the same way, `<action>
 <key>` ("cancel esc"), with only the key in the accent colour and glyphs
 from `[icons]` where a key has one (`↵`, `↑↓`). Notices ("worktree 'x' created",
-"attach failed: …") appear as a toast above the bar and fade after a few
+"dock failed: …") appear as a toast above the bar and fade after a few
 seconds; the log and the diagnostics overlay (`D`) keep the record.
 
 The tree takes a percentage of the frame width, capped at 48 columns — it

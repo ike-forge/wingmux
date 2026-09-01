@@ -214,7 +214,7 @@ fn worktree_icon(ic: &crate::config::IconsConfig, st: WorktreeState) -> &str {
 /// like every other row.
 /// A worktree whose directory is gone borrows `failed`: it is the one
 /// role every theme keeps distinct from those three, and the row is
-/// broken — it cannot be attached to, sent to or previewed, only removed.
+/// broken — it cannot be docked, sent to or previewed, only removed.
 fn worktree_state_color(theme: &ResolvedColors, st: WorktreeState) -> Color {
     match st {
         WorktreeState::New => theme.dim,
@@ -284,7 +284,7 @@ fn row_color(theme: &ResolvedColors, dead: bool, live: Color) -> Color {
 }
 
 /// The colour a worktree row draws in. A worktree LazyWingman has no tmux
-/// window for gets muted whole: it cannot be attached to, sent to or
+/// window for gets muted whole: it cannot be docked, sent to or
 /// previewed, so the row is a listing and nothing more. `live` is the
 /// colour the span would otherwise take.
 fn worktree_color(
@@ -966,7 +966,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         None if selected_worktree_has_no_shell(app) => Text::from(
             "no agent shell for this worktree\n\n\
              wingman has no tmux window here, so there is nothing to\n\
-             preview, attach to or send to.\n\n\
+             preview, dock or send to.\n\n\
              press `a` to start a shell in this worktree.",
         ),
         None => Text::from(
@@ -2510,7 +2510,7 @@ mod tests {
         panic!("{needle:?} is not on screen");
     }
 
-    /// A worktree LazyWingman has no tmux window for cannot be attached,
+    /// A worktree LazyWingman has no tmux window for cannot be docked,
     /// sent to or previewed. Its row mutes *whole* — the same "the eye
     /// skips it" rule a dead row follows — while a worktree with shells
     /// keeps the live colour.

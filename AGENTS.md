@@ -27,10 +27,12 @@ global TUI rules on purpose, say so here with the reason.
   screen. All diagnostics go to the log file.
 - **No root in this environment**: install into `$HOME/.local` (deb
   extraction), never `apt-get install`.
+- **tmux floor is 3.0**, for `#{@user-option}` in formats — shell identity
+  lives on pane options and the poll reads it back through one `list-panes -F`,
+  so a tmux that cannot interpolate a user option in a format cannot run this
+  app at all. Developed against 3.7b.
 - tmux needs `LD_LIBRARY_PATH=$HOME/.local/tmux-prefix/usr/lib/x86_64-linux-gnu`
-  (installed non-root; currently tmux 3.7b — `list-keys` output is
-  column-aligned and its padding differs from 3.5, so never parse it by
-  fixed-width prefix).
+  (installed non-root; currently tmux 3.7b).
 - **Do not re-run `hermes verify --save`**: `.hermes/environment.json` has
   `start: null` on purpose (a TUI with no HTTP endpoint), and detection
   regenerates `start: cargo run`, whose readiness poll then fails.

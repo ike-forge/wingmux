@@ -172,22 +172,19 @@ the same commit as the change.
   makes rediscovery after a crash/close possible (`list-sessions` +
   per-session `list-windows`). Killing the worktree's last window
   auto-destroys the session (verified against tmux 3.5a).
-- **Attach/back across sessions**: attach = `select-window -t @<shell-window>`
-  then `switch-client -t <agent-session>`. Window IDs are server-global, so the
-  selection works clientlessly and is done FIRST: the session is then already
-  showing the right window whether or not the switch lands (it needs a client,
-  which a headless test has not got). The back-key is bound in every agent
-  session to
-  `switch-client -t <user-session> \; select-window -t @<dashboard-window>`
-  (rebound at startup and at session creation).
-- **The back-key lives behind the prefix.** It was first bound with
-  `bind-key -n` (root table), which is server-wide in tmux: it hijacked `C-o`
-  for every session and every TUI running inside (vim's `C-o`, readline, …).
-  The chord is now bound in the PREFIX table (`bind-key -T prefix <key>`), so
-  it only fires after the user's tmux prefix (`C-b C-o` by default) and no
-  application ever loses the key. Legacy root bindings are removed on startup,
-  but only the exact command we bound — a user's own root binding of the same
-  key is untouched. `tmux.back_key` configures the second half of the chord.
+- **The back-key is retired** (M18). It bound a chord — `switch-client` +
+  `select-window` — that jumped from an agent window back to the dashboard
+  window. Docking answers that question differently: the agent's pane is
+  *already* beside the tree, so "back to the dashboard" is a move between two
+  panes of one window, which is `<prefix> + ←` and the user's own binding. It
+  also ends a latent bug: tmux key tables are server-wide, so one binding
+  served every dashboard on the server and the newest one to start silently
+  retargeted the chord for all the others. Gone with it: `bind_back_key`,
+  `unbind_legacy_root_back_key`, `legacy_root_back_key`, `App::bind_back_keys`
+  and `TmuxConfig`. `[tmux]` stays a *known* config section with no keys, so a
+  file still carrying `back_key` is told which key is stray rather than that
+  the whole section is — the treatment the retired message `label` key
+  established.
 - **`a` is a picker, not a command prompt.** Adding a shell used to open a
   single-line prompt for the command, defaulting to the repository's agent
   command. That made the *frequent* choices — the configured agents, and a
@@ -253,6 +250,76 @@ the same commit as the change.
   - The one thing not wrapped is a launch with no terminal to hand tmux —
     piped, redirected, cron. Wrapping there would fail where not wrapping
     merely degrades.
+
+## Docking
+
+Docking is the answer to "stop emulating the agent's terminal": the selected
+shell's **real** tmux pane sits beside the tree, so direct keys, copy-mode
+scrolling, search, selection and resize are tmux's own, confined to that pane,
+with nothing re-implemented. Four invariants hold the whole thing up.
+
+- **Pane options are identity.** A shell is its `@lw_repo` / `@lw_worktree` /
+  `@lw_index`, written at spawn and travelling with the pane across windows
+  and sessions. Window names are labels; a pane's own options are what
+  `reconcile` groups by, which is why a docked pane sitting in the dashboard's
+  session is still found, and why renaming a window by hand costs nothing.
+- **Windows are storage.** A tmux window is the only place a pane can be alive
+  and off-screen, and the nominal case is many hidden agents. What M18 retired
+  is the window *name* as an identity mechanism, not the window.
+- **No live tmux coordinates in `state.json`.** Panes, window ids and indices
+  are re-derived from one `list-panes -a` per poll; the file keeps
+  repositories and worktrees. A coordinate that survived a restart would name
+  a window that no longer holds this shell — or holds someone else's.
+- **Anything shared between instances lives in tmux, and is re-read every
+  poll.** Two dashboards have no channel to each other except the tmux server.
+  So the lease is a pane option (`@lw_docked`), never a field in the state
+  file, and it is read fresh on every poll rather than cached across one.
+
+### Why `swap-pane`, and not `join-pane`/`break-pane`
+
+Moving a pane out of a single-pane window destroys the window, and destroying
+an agent session's last window destroys the session — which would take out
+rediscovery, undock's target, and the "dead = gone from tmux" model all at
+once. A swap never changes any window's pane count, so that entire failure
+class does not exist.
+
+That is why every agent window carries a **holder** and the dashboard window
+carries a **slot**: two sleeping panes so that docking is one `swap-pane`
+between panes that already exist. Agent sessions are set to `window-size
+manual` and their windows held at the dashboard window's size, so the two
+panes are the same size and tmux redraws from its own buffer — no `SIGWINCH`,
+no repaint. The holder also does UX work: someone who attaches to an agent
+session directly finds a pane saying where their agent went.
+
+Two degradations are accepted rather than fixed. Attaching an agent session
+directly resizes its windows, so the next dock costs one repaint. And a holder
+is one sleeping process per shell, visible in `list-panes` and in the user's
+own pane navigation — marked once and filtered once.
+
+### The lease: looking yields, pressing steals
+
+Eager stealing plus automatic docking would ping-pong: two idle instances with
+the same shell selected would take it from each other forever, with nobody
+pressing a key. So the trigger decides. A selection-driven dock that meets a
+live lease **yields** and shows the preview instead; an explicit `Enter`
+**steals**, unconfirmed, with a toast on both sides. The steal is
+undock-then-dock rather than a direct swap, so each instance keeps its own
+slot.
+
+A `@lw_docked` mark is only a lease while the dashboard pane it names is still
+alive: a mark left by an instance that crashed is wreckage, and treating it as
+a lease would fence the shell off for good.
+
+### The preview stays
+
+Both renderers are maintained on purpose. The preview is the browse mode, the
+fallback for a shell another dashboard holds, and the only view below the
+split tier. What a docked dashboard does *not* do is draw both: a second,
+narrower, one-poll-behind copy of the agent beside the agent is the exact
+duplication docking exists to end.
+
+### The rest of the decisions
+
 - **Furniture is never a shell, whatever identity is written on it** (M18).
   `Tmux::list_panes` selects panes by identity, and the exclusion of holders
   and slots used to rest on an assumption: furniture carries no `@lw_repo`,
@@ -444,7 +511,7 @@ the same commit as the change.
 - **A one-shell worktree is folded, not collapsed**: the nominal case is one
   worktree, one agent, so a worktree with a single shell gets no child row at
   all — its own row carries the shell's status and acts as that shell (`Enter`
-  attaches, `s` quick-sends, the preview follows it). Making it "collapsed by
+  docks it, `s` quick-sends, the preview follows it). Making it "collapsed by
   default" instead would still cost a keypress to see a row that repeats the
   worktree's name and nothing else. The rule lives in one predicate,
   `App::solo_shell`, and is enforced in `visible_nodes()` so navigation, mouse
@@ -494,7 +561,7 @@ the same commit as the change.
   existing theme copy picks it up unedited. `deleted` borrows `failed` because it is the one status role every
   shipped theme keeps distinct from the other three (`dead` and `idle`
   both fall back to `dim`, which is `new`), and the row *is* broken: it
-  cannot be attached to, sent to or previewed, only removed.
+  cannot be docked, sent to or previewed, only removed.
 - **A settled worktree is muted whole.** Once a worktree is merged or its
   directory is gone, the only decision left is whether to remove it — what
   the agent inside was doing is history. So those two states dim the
@@ -595,7 +662,7 @@ the same commit as the change.
   `ensure_worktrees` lists every worktree the repo has, so rows appear for
   worktrees LazyWingman never created. The row state worth showing is not *who
   made it* but *whether there is a tmux window for it*: with no window there
-  is nothing to attach to, send to or capture, whoever made the worktree. So
+  is nothing to dock, send to or capture, whoever made the worktree. So
   the predicate is derived — `shells.is_empty()`, which `prune` keeps honest
   by dropping shells whose window vanished — and NOT a persisted
   `created_by_wingman` flag. A flag would have needed a schema field, a
@@ -633,15 +700,28 @@ the same commit as the change.
   the theme's background, `none` is the escape hatch. Config-only — the modes
   are a preference, not a per-moment decision, so they take no keybinding.
 
-- **The wheel belongs to the preview, not the tree.** The tree is the only
-  panel with a cursor, so a wheel that moves it loses your place the moment
-  you look back at what an agent printed; the preview is the panel with
-  something to scroll. In `Mode::Normal` the wheel therefore always drives the
-  preview, wherever the pointer is — no hover hit-testing, no focus concept to
-  learn. An open overlay still owns the viewport (help, picker, diagnostics,
-  messages), and below the split tier — where the layout has already dropped
-  the preview — the wheel falls back to the tree rather than becoming dead.
-  The keyboard is untouched: `j`/`k` never change meaning under you.
+- **The wheel belongs to the preview, and once a pane is docked it belongs to
+  tmux** (rewritten for M18). The original reasoning still holds for the
+  preview: the tree is the only panel with a cursor, so a wheel that moves it
+  loses your place the moment you look back at what an agent printed, and the
+  preview is the panel with something to scroll. In `Mode::Normal` the wheel
+  therefore always drives the preview, wherever the pointer is — no hover
+  hit-testing, no focus concept to learn. An open overlay still owns the
+  viewport (help, picker, diagnostics, messages), and below the split tier —
+  where the layout has already dropped the preview — the wheel falls back to
+  the tree rather than becoming dead.
+
+  What M18 changes is the claim underneath it, that there is "no focus concept
+  to learn". Once a shell is docked there really are two focusable things on
+  screen, and the second is a real tmux pane. That focus is **tmux's**, not one
+  we invented: the divider is a pane divider, the mouse lands in whichever pane
+  it is over because tmux's own mouse handling puts it there, and the wheel
+  scrolls the agent's scrollback through copy mode without this code seeing the
+  event at all. So the rule is unchanged where it applies — the dashboard's own
+  strip, where the preview is the only scrollable panel — and simply does not
+  reach across the divider. The keyboard is untouched either way: `j`/`k` never
+  change meaning under you, and they never reach a docked agent, because
+  looking at a row does not move the cursor into it.
 - **Parking takes its own deep capture.** The poll captures 120 lines per pane
   because that is what `status::classify` needs; scrolling through four
   screenfuls and hitting a wall would read as a bug. Leaving the live tail
@@ -867,7 +947,7 @@ the same commit as the change.
 ## Input, mouse and accessibility
 
 - Keybindings: hardcoded vim-ish set (documented in the help overlay,
-  `docs/shortcuts.md` and README); only the tmux back-key is configurable
+  `docs/shortcuts.md` and README); no keybinding is configurable
   (cheap win, avoids clashing with the user's tmux bindings).
 - **Accessibility**: one dispatch layer above all modes handles
   PageUp/PageDown/Home/End + ctrl-d/u/f/b + ctrl-c; `g`/`G` stay normal-mode
@@ -965,8 +1045,8 @@ the same commit as the change.
   walking upward from cwd, stopping at the first hit *and* at a repository
   root (`.git`) so a sibling repo's config is never inherited. Per the
   configuration rules, some keys are user-only and are rejected in repository
-  files with a diagnostic (never silently applied): `tmux.back_key` (a global
-  tmux binding), `worktrees.root`, `discovery.scan_root` (machine paths).
+  files with a diagnostic (never silently applied): `worktrees.root` and
+  `discovery.scan_root` (machine paths).
 - **The written config is exhaustive and inert**: on first run — and only when
   the file is absent — `DEFAULT_CONFIG` is written out with *every* key the
   loader recognises, each commented at its built-in default. Defaults
@@ -1038,9 +1118,11 @@ the same commit as the change.
   group. Reentrancy is per thread (`DEPTH` + a `DepthReset` drop guard, not a
   `ReentrantLock`) because the fixtures must keep nesting, and because the
   guard has to be released only after the depth is back to 0.
-- Interactive back-key firing cannot be simulated here (pty byte-injection is
-  blocked by the host guardrail) — binding registration and `select-window` are
-  verified separately instead.
+- Interactive key firing inside a *docked* pane cannot be simulated here (pty
+  byte-injection is blocked by the host guardrail). What is verified instead is
+  everything up to the pane: that the swap puts the right pane in the slot,
+  that identity and the lease travel with it, and that `select-pane` lands.
+  What happens after that is tmux's, and tmux is not under test.
 
 ## tmux quirks hit and worked around
 
