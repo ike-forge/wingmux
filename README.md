@@ -424,7 +424,11 @@ without hunting for the status word at the end of the row.
 - Worktree deletion kills the worktree's windows — a session whose last shell
   window is killed destroys itself — then `git worktree remove` (with
   `--force` offered when the worktree is dirty). The worktree branch goes
-  with it unless `worktrees.delete_branch = false`.
+  with it unless `worktrees.delete_branch = false`. The confirm says
+  whether the worktree is clean, and it counts committed work too: a clean
+  working tree on a branch that is ahead of the base reads as "NOT clean:
+  unmerged commits", with a warning line, because deleting the branch
+  discards them.
   The confirm popup answers to `y`, `Enter` or `d` — pressing `d` twice
   deletes, the way `dd` does in vim.
 - Shell deletion (`d` on a shell row) kills that one window and drops the

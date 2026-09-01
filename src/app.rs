@@ -1954,12 +1954,34 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// Does the worktree hold commits the base branch does not have?
+    /// (drives the delete confirm's wording, not the `--force` option:
+    /// `git worktree remove` is happy to remove a worktree whose branch is
+    /// ahead.) Asked fresh rather than read off `wt_state`, which is a
+    /// cache polled on an interval and would answer for the tree as it was
+    /// up to [`WT_STATE_INTERVAL`] ago.
+    pub fn worktree_has_unmerged_commits(&self, ri: usize, wi: usize) -> bool {
+        let Some(repo) = self.state.repositories.get(ri) else {
+            return false;
+        };
+        let Some(wt) = repo.worktrees.get(wi) else {
+            return false;
+        };
+        let Ok(base) = Git.resolve_base_branch(&repo.path, &repo.base_branch) else {
+            return false;
+        };
+        let fork = wt.base_commit.clone().unwrap_or_else(|| base.clone());
+        Git.worktree_committed_ahead(&wt.path, &fork, &base)
+            .unwrap_or(false)
+    }
+
     pub fn confirm_delete_worktree(&mut self) {
         let Some((ri, wi, _)) = self.selected_worktree_ctx() else {
             self.notify("select a worktree first");
             return;
         };
         let dirty = self.worktree_is_dirty(ri, wi);
+        let unmerged = self.worktree_has_unmerged_commits(ri, wi);
         let wt = &self.state.repositories[ri].worktrees[wi];
         self.mode = Mode::Confirm {
             confirm: Confirm {
@@ -1968,16 +1990,36 @@ impl App {
                     "Delete worktree '{}'?\nworktree: {}\n{}",
                     wt.name,
                     wt.path.display(),
-                    if dirty {
-                        "worktree is NOT clean"
-                    } else {
-                        "worktree is clean"
+                    // "clean" is claimed only when the worktree carries no
+                    // work at all: an unmerged branch with a clean tree is
+                    // still work, and calling that clean is the one lie the
+                    // dialog must not tell.
+                    match (dirty, unmerged) {
+                        (true, true) =>
+                            "worktree is NOT clean: uncommitted changes, unmerged commits",
+                        (true, false) => "worktree is NOT clean: uncommitted changes",
+                        (false, true) => "worktree is NOT clean: unmerged commits",
+                        (false, false) => "worktree is clean",
                     }
                 ),
                 // Dirty: `git worktree remove` refuses, so `f` is the only
-                // answer that deletes anything.
+                // answer that deletes anything. Unmerged commits do not
+                // block the removal — the branch outlives the worktree.
                 yes_label: (!dirty).then(|| "yes".into()),
-                warning: dirty.then(|| "uncommitted changes — force delete discards them".into()),
+                // Which caveat is the true one depends on
+                // `worktrees.delete_branch`: with it on (the default) the
+                // branch is deleted with `-D`, so unmerged commits are
+                // lost, not parked.
+                warning: match (dirty, unmerged) {
+                    (true, _) => Some("uncommitted changes — force delete discards them".into()),
+                    (false, true) if self.cfg.worktrees.delete_branch => {
+                        Some("unmerged commits — deleting the branch discards them".into())
+                    }
+                    (false, true) => {
+                        Some("unmerged commits — the worktree goes, its branch keeps them".into())
+                    }
+                    (false, false) => None,
+                },
                 force_label: if dirty {
                     Some("force delete (discards changes)".into())
                 } else {
@@ -4146,6 +4188,66 @@ mod tests {
             let hint = app.new_worktree_base().expect("base hint");
             assert_eq!(hint.branch, "main");
             assert!(hint.missing.is_none(), "main exists: {hint:?}");
+        });
+    }
+
+    /// A worktree whose working tree is clean but whose branch is ahead is
+    /// still carrying work: the confirm must not call it clean. The plain
+    /// `y` stays on offer — `git worktree remove` removes it happily and
+    /// the branch keeps the commits — so the caveat is the whole warning.
+    #[test]
+    fn the_delete_confirm_names_unmerged_commits_on_a_clean_tree() {
+        crate::util::testutil::with_test_lock(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            let path = repo_with_commit(root.path(), "repo");
+            let fork = Git.rev_parse(&path, "main").unwrap();
+            let wt = root.path().join("wt-ahead");
+            Git.worktree_add(&path, &wt, "ahead", "main").unwrap();
+            std::fs::write(wt.join("f.txt"), "work").unwrap();
+            git(&wt, &["add", "."]);
+            git(&wt, &["commit", "-m", "work"]);
+
+            let mut app = app_with(tmux_standalone("unused"));
+            app.state.repositories.push(Repository {
+                name: "repo".into(),
+                path,
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: None,
+                missing: false,
+                worktrees: vec![Worktree {
+                    name: "ahead".into(),
+                    branch: "ahead".into(),
+                    path: wt,
+                    created_at: String::new(),
+                    base_commit: Some(fork),
+                    shells: vec![],
+                }],
+            });
+            app.build_tree_flags();
+            app.sel = Sel::Worktree(0, 0);
+            app.confirm_delete_worktree();
+
+            let Mode::Confirm { confirm } = &app.mode else {
+                panic!("expected a confirm, got {:?}", app.mode);
+            };
+            assert!(
+                confirm
+                    .body
+                    .contains("worktree is NOT clean: unmerged commits"),
+                "committed work must not read as clean: {}",
+                confirm.body
+            );
+            assert!(
+                confirm.warning.is_some(),
+                "the caveat is drawn as a warning"
+            );
+            assert!(
+                confirm.yes_label.is_some(),
+                "the plain answer still succeeds — only a dirty tree needs --force"
+            );
+            assert!(confirm.force_label.is_none(), "nothing to force-discard");
         });
     }
 
