@@ -14,6 +14,7 @@
 use std::path::Path;
 use std::process::Command;
 
+use crate::dock::{self, ShellId};
 use crate::error::{Error, Result};
 
 /// Dashboard coordinates when LazyWingman itself runs inside tmux.
@@ -174,7 +175,7 @@ impl Tmux {
     // ---------------------------------------------------------- naming
 
     /// Sanitise a name component: no colons, spaces or control chars.
-    fn sanitize(s: &str) -> String {
+    pub fn sanitize(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         for c in s.chars() {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/') {
@@ -247,11 +248,15 @@ impl Tmux {
         win_name: &str,
         cwd: &Path,
         shell: &str,
+        id: &ShellId,
     ) -> Result<WindowRef> {
         let mut last = None;
         for attempt in 0..3 {
             match self.try_new_session(session, win_name, cwd, shell) {
-                Ok(w) => return Ok(w),
+                Ok(w) => {
+                    self.stamp_shell(&w.pane_id, id)?;
+                    return Ok(w);
+                }
                 Err(e) => {
                     log::warn!("new-session attempt {} failed: {e}", attempt + 1);
                     last = Some(e);
@@ -335,11 +340,15 @@ impl Tmux {
         name: &str,
         cwd: &Path,
         shell: &str,
+        id: &ShellId,
     ) -> Result<WindowRef> {
         let mut last = None;
         for attempt in 0..3 {
             match self.try_new_window(session, name, cwd, shell) {
-                Ok(w) => return Ok(w),
+                Ok(w) => {
+                    self.stamp_shell(&w.pane_id, id)?;
+                    return Ok(w);
+                }
                 Err(e) => {
                     log::warn!("new-window attempt {} failed: {e}", attempt + 1);
                     last = Some(e);
@@ -430,6 +439,16 @@ impl Tmux {
     /// disposes of it with the pane, so there is nothing to clean up.
     pub fn set_pane_option(&self, pane_id: &str, key: &str, value: &str) -> Result<()> {
         self.run(&["set-option", "-p", "-t", pane_id, key, value])?;
+        Ok(())
+    }
+
+    /// Write a shell's identity onto its own pane. Called by both spawn
+    /// paths before they return, so no caller can forget: an unstamped pane
+    /// is invisible to [`Self::list_panes`] and would read as a lost shell.
+    pub fn stamp_shell(&self, pane_id: &str, id: &ShellId) -> Result<()> {
+        self.set_pane_option(pane_id, dock::REPO_KEY, &id.repo)?;
+        self.set_pane_option(pane_id, dock::WORKTREE_KEY, &id.worktree)?;
+        self.set_pane_option(pane_id, dock::INDEX_KEY, &id.index_value())?;
         Ok(())
     }
 
@@ -948,6 +967,49 @@ mod tests {
         assert_eq!(p.overlay_raw, "");
     }
 
+    /// Both spawn paths stamp the pane before returning. `new_session`
+    /// creates its first window on a different tmux command than
+    /// `new_window`, so each is asserted separately — a shell spawned
+    /// through the path nobody tested would be invisible to the poll.
+    #[test]
+    fn both_spawn_paths_stamp_the_pane_with_its_identity() {
+        with_tmux_server(|_sock, tmux| {
+            let read = |pane: &str, key: &str| {
+                tmux.run_raw(&["display-message", "-p", "-t", pane, &format!("#{{{key}}}")])
+                    .expect("display-message")
+                    .trim()
+                    .to_string()
+            };
+            let assert_stamped = |pane: &str, worktree: &str, index: &str| {
+                assert_eq!(read(pane, dock::REPO_KEY), "stamp");
+                assert_eq!(read(pane, dock::WORKTREE_KEY), worktree);
+                assert_eq!(read(pane, dock::INDEX_KEY), index);
+            };
+
+            let first = tmux
+                .new_session(
+                    "wingman-session-stamp",
+                    "lw:feat/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-stamp", "feat", 0),
+                )
+                .expect("session");
+            assert_stamped(&first.pane_id, "feat", "0");
+
+            let second = tmux
+                .new_window(
+                    "wingman-session-stamp",
+                    "lw:feat/1",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-stamp", "feat", 1),
+                )
+                .expect("window");
+            assert_stamped(&second.pane_id, "feat", "1");
+        });
+    }
+
     #[test]
     fn pane_option_roundtrip_and_clear() {
         with_tmux_server(|sock, tmux| {
@@ -956,6 +1018,7 @@ mod tests {
                 "lw:feat/0",
                 std::path::Path::new("/tmp"),
                 "bash",
+                &ShellId::for_session("wingman-session-opt", "feat", 0),
             )
             .expect("session");
             let pane = tmux
@@ -995,6 +1058,7 @@ mod tests {
                 "lw:feat/0",
                 std::path::Path::new("/tmp"),
                 "bash",
+                &ShellId::for_session("wingman-session-hook", "feat", 0),
             )
             .expect("session");
             let pane = tmux
@@ -1101,7 +1165,13 @@ mod tests {
             assert!(tmux.list_panes().unwrap().is_empty());
             // and real agent sessions can be created on it
             let w = tmux
-                .new_session("wingman-session-p", "lw:f/0", Path::new("/tmp"), "bash")
+                .new_session(
+                    "wingman-session-p",
+                    "lw:f/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-p", "f", 0),
+                )
                 .unwrap();
             assert!(w.window_id.starts_with('@'));
             assert!(tmux.session_exists("wingman-session-p"));
@@ -1118,7 +1188,13 @@ mod tests {
 
             // create the agent session with its first window
             let w0 = tmux
-                .new_session("wingman-session-p", "lw:feat/0", Path::new("/tmp"), "bash")
+                .new_session(
+                    "wingman-session-p",
+                    "lw:feat/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-p", "feat", 0),
+                )
                 .unwrap();
             assert!(w0.window_id.starts_with('@'));
             assert!(w0.pane_id.starts_with('%'));
@@ -1126,7 +1202,13 @@ mod tests {
 
             // a second window joins the session
             let w1 = tmux
-                .new_window("wingman-session-p", "lw:feat/1", Path::new("/tmp"), "bash")
+                .new_window(
+                    "wingman-session-p",
+                    "lw:feat/1",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-p", "feat", 1),
+                )
                 .unwrap();
             let windows = tmux.list_windows("wingman-session-p").unwrap();
             assert_eq!(windows.len(), 2);
@@ -1165,7 +1247,13 @@ mod tests {
     fn spawn_send_capture_kill_roundtrip() {
         with_tmux_server(|_sock, tmux| {
             let w = tmux
-                .new_session("wingman-session-p", "lw:f/0", Path::new("/tmp"), "bash")
+                .new_session(
+                    "wingman-session-p",
+                    "lw:f/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-p", "f", 0),
+                )
                 .unwrap();
             assert!(w.window_id.starts_with('@'));
             assert!(w.pane_id.starts_with('%'));
@@ -1197,7 +1285,13 @@ mod tests {
     fn full_capture_reaches_past_the_polls_shallow_window() {
         with_tmux_server(|_sock, tmux| {
             let w = tmux
-                .new_session("wingman-session-s", "lw:s/0", Path::new("/tmp"), "bash")
+                .new_session(
+                    "wingman-session-s",
+                    "lw:s/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-s", "s", 0),
+                )
                 .unwrap();
             tmux.send_keys(
                 &w.pane_id,
@@ -1236,7 +1330,13 @@ mod tests {
     fn capture_keeps_pane_colours_for_the_preview() {
         with_tmux_server(|_sock, tmux| {
             let w = tmux
-                .new_session("wingman-session-p", "lw:f/0", Path::new("/tmp"), "bash")
+                .new_session(
+                    "wingman-session-p",
+                    "lw:f/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-p", "f", 0),
+                )
                 .unwrap();
             tmux.send_keys(&w.pane_id, r#"printf '\033[31mlw-red\033[0m\n'"#, true)
                 .unwrap();
@@ -1270,7 +1370,13 @@ mod tests {
     fn paste_keys_inserts_literal_multiline_text() {
         with_tmux_server(|_sock, tmux| {
             let w = tmux
-                .new_session("wingman-session-p", "lw:f/0", Path::new("/tmp"), "bash")
+                .new_session(
+                    "wingman-session-p",
+                    "lw:f/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-p", "f", 0),
+                )
                 .unwrap();
             // Paste a multi-line prompt WITHOUT a trailing Enter: bracketed
             // paste (set-buffer + paste-buffer -p) delivers the text
@@ -1297,7 +1403,13 @@ mod tests {
         with_tmux_server(|_sock, tmux| {
             // run a command that exits immediately: window dies
             let w = tmux
-                .new_session("wingman-session-p", "lw:f/1", Path::new("/tmp"), "bash")
+                .new_session(
+                    "wingman-session-p",
+                    "lw:f/1",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-p", "f", 1),
+                )
                 .unwrap();
             tmux.send_keys(&w.pane_id, "exit", true).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(400));
@@ -1316,8 +1428,14 @@ mod tests {
     #[test]
     fn back_key_binding_registers_in_prefix_table_not_root() {
         with_tmux_server(|_sock, tmux| {
-            tmux.new_session("wingman-session-p", "lw:f/0", Path::new("/tmp"), "bash")
-                .unwrap();
+            tmux.new_session(
+                "wingman-session-p",
+                "lw:f/0",
+                Path::new("/tmp"),
+                "bash",
+                &ShellId::for_session("wingman-session-p", "f", 0),
+            )
+            .unwrap();
             tmux.bind_back_key("C-o", "main", "@0").unwrap();
             let prefix = tmux.run_raw(&["list-keys", "-T", "prefix"]).unwrap();
             assert!(
@@ -1379,8 +1497,14 @@ mod tests {
                 "@0",
             ])
             .unwrap();
-            tmux.new_session("wingman-session-p", "lw:f/0", Path::new("/tmp"), "bash")
-                .unwrap();
+            tmux.new_session(
+                "wingman-session-p",
+                "lw:f/0",
+                Path::new("/tmp"),
+                "bash",
+                &ShellId::for_session("wingman-session-p", "f", 0),
+            )
+            .unwrap();
             // A user's own root binding on a DIFFERENT key must survive:
             // bind C-t to something else in the root table.
             tmux.run(&["bind-key", "-n", "C-t", "choose-tree"]).unwrap();

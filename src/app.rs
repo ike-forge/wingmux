@@ -1501,18 +1501,23 @@ impl App {
         &mut self,
         tmux: &Tmux,
         repo: &crate::state::Repository,
-        first_window: &str,
+        worktree: &str,
+        index: usize,
         cwd: &std::path::Path,
         shell: &str,
-    ) -> Result<(String, Option<crate::tmux::WindowRef>)> {
+    ) -> Result<(String, crate::dock::ShellId, Option<crate::tmux::WindowRef>)> {
         let name = match &repo.session_name {
             Some(n) if tmux.session_exists(n) => n.clone(),
             _ => self.agent_session_name(tmux, repo),
         };
+        // The identity is minted from the session that will hold the shell,
+        // so it is the same whether the session already existed or is
+        // created below.
+        let id = crate::dock::ShellId::for_session(&name, worktree, index);
         if tmux.session_exists(&name) {
-            return Ok((name, None));
+            return Ok((name, id, None));
         }
-        let w = tmux.new_session(&name, first_window, cwd, shell)?;
+        let w = tmux.new_session(&name, &Tmux::window_name(worktree, index), cwd, shell, &id)?;
         if let Some(inside) = &tmux.inside {
             let _ = tmux.bind_back_key(
                 &self.cfg.tmux.back_key,
@@ -1524,7 +1529,7 @@ impl App {
             "created agent session {name} (first window {})",
             w.window_id
         );
-        Ok((name, Some(w)))
+        Ok((name, id, Some(w)))
     }
 
     pub fn create_worktree(&mut self, ri: usize, name: &str) -> Result<()> {
@@ -1581,11 +1586,11 @@ impl App {
         // spawn the agent shell in the repository's dedicated session (created
         // on demand; never touches the dashboard's own session)
         let wname = Tmux::window_name(&slug, 0);
-        let (session_name, window) =
-            self.ensure_agent_session(&tmux, &repo, &wname, &root, &repo.agent_shell)?;
+        let (session_name, id, window) =
+            self.ensure_agent_session(&tmux, &repo, &slug, 0, &root, &repo.agent_shell)?;
         let w = match window {
             Some(w) => w,
-            None => tmux.new_window(&session_name, &wname, &root, &repo.agent_shell)?,
+            None => tmux.new_window(&session_name, &wname, &root, &repo.agent_shell, &id)?,
         };
         let spawn_cmd = self.agent_command_for_spawn(&repo.agent_command);
         tmux.send_keys(&w.pane_id, &spawn_cmd, true)?;
@@ -1655,11 +1660,11 @@ impl App {
             ShellSpawn::Plain => crate::util::login_shell(),
             ShellSpawn::Agent(_) => repo.agent_shell.clone(),
         };
-        let (session_name, window) =
-            self.ensure_agent_session(&tmux, &repo, &wname, &wt.path, &shell)?;
+        let (session_name, id, window) =
+            self.ensure_agent_session(&tmux, &repo, &wt.branch, idx, &wt.path, &shell)?;
         let w = match window {
             Some(w) => w,
-            None => tmux.new_window(&session_name, &wname, &wt.path, &shell)?,
+            None => tmux.new_window(&session_name, &wname, &wt.path, &shell, &id)?,
         };
         let what = match spawn {
             // An empty command falls back to the repository's default, so
@@ -3504,7 +3509,13 @@ mod tests {
     /// window really exist on the test tmux server.
     fn seed_repository_with_shell(tmux: &Tmux, app: &mut App) -> (String, String) {
         let w = tmux
-            .new_session("wingman-session-p", "lw:wt/0", Path::new("/tmp"), "bash")
+            .new_session(
+                "wingman-session-p",
+                "lw:wt/0",
+                Path::new("/tmp"),
+                "bash",
+                &crate::dock::ShellId::for_session("wingman-session-p", "wt", 0),
+            )
             .unwrap();
         app.state.repositories.push(Repository {
             name: "p".into(),
@@ -4949,7 +4960,13 @@ mod tests {
             let mut app = app_with(tmux.clone());
             seed_repository_with_shell(&tmux, &mut app);
             let w2 = tmux
-                .new_window("wingman-session-p", "lw:wt/1", Path::new("/tmp"), "bash")
+                .new_window(
+                    "wingman-session-p",
+                    "lw:wt/1",
+                    Path::new("/tmp"),
+                    "bash",
+                    &crate::dock::ShellId::for_session("wingman-session-p", "wt", 1),
+                )
                 .unwrap();
             app.state.repositories[0].worktrees[0].shells.push(Shell {
                 index: 1,
@@ -4991,7 +5008,13 @@ mod tests {
             let mut app = app_with(tmux.clone());
             seed_repository_with_shell(&tmux, &mut app);
             let w2 = tmux
-                .new_window("wingman-session-p", "lw:wt/1", Path::new("/tmp"), "bash")
+                .new_window(
+                    "wingman-session-p",
+                    "lw:wt/1",
+                    Path::new("/tmp"),
+                    "bash",
+                    &crate::dock::ShellId::for_session("wingman-session-p", "wt", 1),
+                )
                 .unwrap();
             app.state.repositories[0].worktrees[0].shells.push(Shell {
                 index: 1,

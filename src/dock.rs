@@ -58,6 +58,26 @@ impl ShellId {
         })
     }
 
+    /// The identity of shell `index` of `worktree`, living in agent session
+    /// `session`.
+    ///
+    /// The repository field is the **session slug** — the session name minus
+    /// its `wingman-session-` prefix — because that is what already
+    /// distinguishes two repositories whose names collide (the second one's
+    /// session carries a hash suffix). Both components are sanitised the
+    /// same way the window name is, so a stamp and a name backfilled from a
+    /// window name agree by construction.
+    pub fn for_session(session: &str, worktree: &str, index: usize) -> ShellId {
+        ShellId {
+            repo: session
+                .strip_prefix(crate::tmux::SESSION_PREFIX)
+                .unwrap_or(session)
+                .to_string(),
+            worktree: crate::tmux::Tmux::sanitize(worktree),
+            index,
+        }
+    }
+
     /// The index as tmux should store it.
     pub fn index_value(&self) -> String {
         self.index.to_string()
@@ -102,6 +122,18 @@ mod tests {
                 index: 7,
             })
         );
+    }
+
+    /// The repository field is the session slug, so a hash-suffixed session
+    /// names its own repository rather than colliding with the plain one.
+    #[test]
+    fn for_session_takes_the_session_slug_as_the_repository() {
+        let a = ShellId::for_session("wingman-session-app", "Feat One!", 0);
+        assert_eq!(a.repo, "app");
+        assert_eq!(a.worktree, "Feat-One");
+        let b = ShellId::for_session("wingman-session-app-1a2b3c4d", "feat", 0);
+        assert_eq!(b.repo, "app-1a2b3c4d");
+        assert_ne!(a.repo, b.repo);
     }
 
     /// Every option key is distinct: a typo that aliased two of them would
