@@ -953,13 +953,7 @@ impl App {
     /// LazyWingman was started from when unset. Relative roots resolve
     /// against `cwd`, which is injected so tests don't have to `chdir`.
     fn scan_root_from(&self, cwd: &std::path::Path) -> PathBuf {
-        let root = self.cfg.discovery.scan_root.trim();
-        if root.is_empty() {
-            cwd.to_path_buf()
-        } else {
-            let p = PathBuf::from(root);
-            if p.is_absolute() { p } else { cwd.join(p) }
-        }
+        scope_for(&self.cfg, cwd)
     }
 
     /// Startup scope discovery (interactive boot only). No prompt, no
@@ -3375,6 +3369,24 @@ fn now_str() -> String {
 }
 
 /// The main loop: draw, poll on interval, handle keys.
+/// The scope a launch in `cwd` will show: `[discovery].scan_root`, or `cwd`
+/// itself when that is unset. Relative roots resolve against `cwd`.
+///
+/// Absolute and normalised, and a free function rather than a method,
+/// because the self-wrap needs it BEFORE an `App` exists: it is the key a
+/// second launch looks a running dashboard up by (`@lw_scope`), so the two
+/// must be computed exactly the same way.
+pub fn scope_for(cfg: &Config, cwd: &std::path::Path) -> PathBuf {
+    let root = cfg.discovery.scan_root.trim();
+    let p = if root.is_empty() {
+        cwd.to_path_buf()
+    } else {
+        let p = PathBuf::from(root);
+        if p.is_absolute() { p } else { cwd.join(p) }
+    };
+    crate::util::normalize_path(&p)
+}
+
 pub fn run(cfg: Config, theme: Theme, tmux: Tmux) -> Result<()> {
     let mut app = App::new(cfg, theme, Some(tmux));
     app.interactive_boot = true;

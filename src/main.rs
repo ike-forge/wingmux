@@ -183,6 +183,9 @@ fn real_main() -> Result<()> {
         log::warn!("config diagnostic: {d}");
     }
     let tmux = tmux::Tmux::detect()?;
+    if should_wrap(tmux.inside.is_some(), std::io::stdin().is_terminal()) {
+        return wrap_into_tmux(&tmux, &cfg, &cwd);
+    }
     match &tmux.inside {
         Some(i) => log::info!(
             "dashboard inside tmux: session='{}' window={} pane={}",
@@ -190,10 +193,99 @@ fn real_main() -> Result<()> {
             i.window_id,
             i.pane_id
         ),
-        None => log::info!("dashboard standalone (no tmux around it)"),
+        // Only reachable when there was no terminal to give tmux — a piped
+        // or non-interactive launch that `should_wrap` declined to wrap.
+        None => log::warn!("no tmux around us and no terminal to start one in"),
     }
     app::run(cfg, theme, tmux)
 }
+
+/// Should this process re-launch itself inside tmux?
+///
+/// LazyWingman docks the agent's *real* tmux pane beside its tree, so it has
+/// to BE a tmux pane. Launched from a bare shell it therefore execs into a
+/// tmux that runs it again — but only when there is a terminal to hand over:
+/// with stdin piped or redirected (automation, a cron entry, a test harness)
+/// there is nothing for tmux to attach, and wrapping would fail where not
+/// wrapping merely degrades.
+///
+/// No recursion guard is needed. The tmux we exec into sets `TMUX` and
+/// `TMUX_PANE`, which is exactly what makes `inside` `Some` next time round.
+fn should_wrap(inside: bool, is_tty: bool) -> bool {
+    !inside && is_tty
+}
+
+/// Re-launch this process inside tmux. Returns only on failure: on success
+/// it `exec`s and this pid becomes the tmux client — one process, so signals
+/// and the exit code stay the shell's own, which a spawn-and-wait would
+/// swallow a layer deep.
+fn wrap_into_tmux(tmux: &tmux::Tmux, cfg: &config::Config, cwd: &std::path::Path) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    let scope = app::scope_for(cfg, cwd);
+    let exe = std::env::current_exe()
+        .map_err(|e| error::Error::Config(format!("cannot locate my own binary: {e}")))?;
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let mut cmd = tmux.client_command();
+
+    match tmux.find_scope_window(&scope)? {
+        // A dashboard is already showing this scope: attach to it instead of
+        // racing a second one beside it. Selected clientlessly first, then
+        // attached, so the two never have to be chained into one client.
+        Some(w) if tmux.has_dashboard_pane(&w.window_id)? => {
+            log::info!(
+                "a dashboard already shows {} ({} in {}) — attaching",
+                scope.display(),
+                w.window_id,
+                w.session_name
+            );
+            tmux.select_window(&w.window_id)?;
+            cmd.args(["attach-session", "-t", &w.session_name]);
+        }
+        // The window outlived its dashboard: its slot, and whatever agent
+        // pane was docked into it, are still there. Split a fresh dashboard
+        // back beside them rather than abandoning panes that never died.
+        Some(w) => {
+            log::info!(
+                "the dashboard of {} is gone — splitting a fresh one back into {}",
+                scope.display(),
+                w.window_id
+            );
+            let mut split = tmux.client_command();
+            split.args(["split-window", "-t", &w.window_id, "-c"]);
+            split.arg(cwd);
+            split.arg("--").arg(&exe).args(&argv);
+            let out = split
+                .output()
+                .map_err(|e| error::Error::Tmux(format!("cannot run tmux split-window: {e}")))?;
+            if !out.status.success() {
+                return Err(error::Error::Tmux(format!(
+                    "tmux split-window failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )));
+            }
+            tmux.select_window(&w.window_id)?;
+            cmd.args(["attach-session", "-t", &w.session_name]);
+        }
+        // Nothing showing this scope anywhere: our own session, created or
+        // re-attached by the same `-A` call.
+        None => {
+            log::info!("no dashboard for {} — starting one", scope.display());
+            cmd.args(["new-session", "-A", "-s", WRAPPER_SESSION, "-c"]);
+            cmd.arg(cwd);
+            cmd.arg("--").arg(&exe).args(&argv);
+        }
+    }
+    // Past here the process is tmux, or the exec failed and we say why.
+    let e = cmd.exec();
+    Err(error::Error::Tmux(format!("cannot exec tmux: {e}")))
+}
+
+/// The session the self-wrap creates when nothing is showing this scope yet.
+/// `new-session -A` makes it a re-attach when it already exists, so a second
+/// launch in an unrelated folder shares it rather than starting a rival
+/// server — `swap-pane` cannot cross tmux servers.
+const WRAPPER_SESSION: &str = "lazywingman";
 
 /// `lazywingman hook <Event>`: called by Claude Code, once per lifecycle
 /// event, in the agent's own pane. Must be fast and must never write to
@@ -240,4 +332,29 @@ fn run_hook_subcommand(event: &str, socket: Option<String>) -> Result<()> {
         eprintln!("lazywingman hook {event}: {e}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_wrap;
+
+    /// M18 Task 6 — the wrap decision. The `exec` itself is not testable
+    /// here (it replaces the test binary); this is the whole of the choice
+    /// that leads to it, and manual verification covers the rest.
+    #[test]
+    fn a_bare_interactive_shell_is_the_only_thing_worth_wrapping() {
+        assert!(should_wrap(false, true), "bare shell: wrap into tmux");
+        assert!(
+            !should_wrap(true, true),
+            "already a tmux pane: wrapping again would nest"
+        );
+        assert!(
+            !should_wrap(false, false),
+            "no terminal to attach: wrapping would fail where not wrapping degrades"
+        );
+        assert!(
+            !should_wrap(true, false),
+            "inside tmux wins regardless of the terminal"
+        );
+    }
 }

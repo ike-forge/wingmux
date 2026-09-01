@@ -77,7 +77,6 @@ pub struct WindowRef {
     /// The session the window is in. A window id is server-global, so this
     /// is only needed by the callers that must ATTACH to it — the self-wrap
     /// looking up an existing dashboard.
-    #[allow(dead_code)] // the self-wrap attaches by it (Task 6)
     pub session_name: String,
 }
 
@@ -185,6 +184,13 @@ impl Tmux {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// A `tmux` [`Command`] on our socket, for the callers that must run a
+    /// tmux CLIENT rather than send it a command — the self-wrap, which
+    /// `exec`s into `attach-session` and never returns.
+    pub fn client_command(&self) -> Command {
+        base_command(&self.socket)
     }
 
     /// Run a raw tmux command and return stdout (used by state.rs for
@@ -508,7 +514,6 @@ impl Tmux {
     /// One `list-windows -a`, the same discipline as the pane poll: the
     /// scope is a user-chosen path and may itself contain `|`, so it goes
     /// LAST and the parse keeps the remainder whole.
-    #[allow(dead_code)] // the self-wrap looks a running dashboard up (Task 6)
     pub fn find_scope_window(&self, scope: &Path) -> Result<Option<WindowRef>> {
         let want = scope.to_string_lossy();
         let fmt = format!(
@@ -537,6 +542,26 @@ impl Tmux {
                 session_name,
             })
         }))
+    }
+
+    /// Does `window_id` still hold a pane that is none of ours?
+    ///
+    /// The dashboard is such a pane: it carries no `@lw_*` option of its
+    /// own. A window that announced a scope but keeps only its slot and
+    /// whatever agent pane was docked into it has therefore lost its
+    /// dashboard — the process died, tmux closed its pane, and the window
+    /// survived only because the furniture is still in it.
+    pub fn has_dashboard_pane(&self, window_id: &str) -> Result<bool> {
+        let fmt = format!(
+            "#{{{repo}}}|#{{{holder}}}|#{{{slot}}}",
+            repo = dock::REPO_KEY,
+            holder = dock::HOLDER_KEY,
+            slot = dock::SLOT_KEY,
+        );
+        let out = self.run(&["list-panes", "-t", window_id, "-F", &fmt])?;
+        Ok(out
+            .lines()
+            .any(|l| l.split('|').all(|field| field.trim().is_empty())))
     }
 
     /// Unset a pane user option, handing the shell back to the heuristics.
