@@ -146,7 +146,7 @@ text = "continue"            # listed and sent verbatim, as if you had typed it
 [[messages]]                 # tokens resolved against the selected shell:
                              # <base_branch> <branch> <worktree>
                              # <repository> <worktree_path>
-text = "merge to <base_branch>"
+text = "merge to LOCAL <base_branch>"
 
 [[messages]]
 text = "summarise what you've changed and what's still left"

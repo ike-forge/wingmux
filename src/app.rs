@@ -6190,8 +6190,8 @@ mod tests {
 
     /// A message is a template: the tokens naming the selected shell's
     /// context are resolved from state before the text is shown or sent,
-    /// so a preset can say "merge to <base_branch>" once and be right in
-    /// every project.
+    /// so a preset can say "merge to LOCAL <base_branch>" once and be
+    /// right in every project.
     #[test]
     fn expand_message_resolves_the_selected_shells_context() {
         let app = app_with_shell();
@@ -6223,8 +6223,8 @@ mod tests {
         let mut app = app_with_shell();
         app.sel = Sel::Repository(0);
         assert_eq!(
-            app.expand_message("merge to <base_branch>"),
-            "merge to <base_branch>"
+            app.expand_message("merge to LOCAL <base_branch>"),
+            "merge to LOCAL <base_branch>"
         );
     }
 
