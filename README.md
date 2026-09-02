@@ -596,8 +596,11 @@ The statusbar carries the contextual shortcuts and nothing else — no app
 name, no session chip, no repository count. Every shortcut in the app —
 status bar, modal footer, help palette — is written the same way, `<action>
 <key>` ("cancel esc"), with only the key in the accent colour and glyphs
-from `[icons]` where a key has one (`↵`, `↑↓`). Notices ("worktree 'x' created",
-"dock failed: …") appear as a toast above the bar and fade after a few
+from `[icons]` where a key has one (`↵`, `↑↓`). On a frame too narrow to
+hold them all the entries wrap onto a second bar row instead of losing
+their tail at the border. Notices ("worktree 'x' created",
+"dock failed: …") appear as a toast above the bar, wrapped to as many as
+three rows so a long error stays readable, and fade after a few
 seconds; the log and the diagnostics overlay (`D`) keep the record.
 
 The tree takes a percentage of the frame width, capped at 54 columns — it

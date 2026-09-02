@@ -708,8 +708,9 @@ pub struct App {
     /// The theme name the picker opened with — restored on Esc.
     pub picker_original: String,
     /// Hit ranges of the statusbar shortcut entries, set by the renderer:
-    /// (x_start, x_end, action) on the statusbar row.
-    pub bar_hits: Vec<(u16, u16, BarAction)>,
+    /// (x_start, x_end, y, action). The bar wraps onto a second row on a
+    /// narrow frame, so each entry carries the row it landed on.
+    pub bar_hits: Vec<(u16, u16, u16, BarAction)>,
     /// Last left-click (time, x, y) — double-click detection, since this
     /// crossterm version does not report a click count on mouse events.
     last_click: Option<(Instant, u16, u16)>,
@@ -3633,11 +3634,15 @@ impl App {
             }
             return;
         }
-        let h = self.viewport.1;
-        // Statusbar row: click a shortcut entry to run its action.
-        if h > 0 && y == h - 1 && !self.bar_hits.is_empty() {
-            if let Some((_, _, action)) =
-                self.bar_hits.iter().find(|(x0, x1, _)| *x0 <= x && x < *x1)
+        // Statusbar rows: click a shortcut entry to run its action.
+        let bar_top = self.bar_hits.iter().map(|(_, _, by, _)| *by).min();
+        if let Some(top) = bar_top
+            && y >= top
+        {
+            if let Some((_, _, _, action)) = self
+                .bar_hits
+                .iter()
+                .find(|(x0, x1, by, _)| *by == y && *x0 <= x && x < *x1)
             {
                 self.run_bar_action(*action);
             }
@@ -7310,13 +7315,13 @@ mod tests {
         assert!(!app.bar_hits.is_empty());
         assert_eq!(app.sel, Sel::Repository(0));
         // a repository's bar has "n worktree" → the new-worktree input
-        let (x0, x1, _) = app
+        let (x0, x1, y, _) = app
             .bar_hits
             .iter()
-            .find(|(_, _, a)| *a == BarAction::NewWorktree)
+            .find(|(_, _, _, a)| *a == BarAction::NewWorktree)
             .copied()
             .expect("bar must offer 'n worktree' for a repository");
-        app.on_mouse(click((x0 + x1) / 2, 39));
+        app.on_mouse(click((x0 + x1) / 2, y));
         assert!(
             matches!(
                 app.mode,
