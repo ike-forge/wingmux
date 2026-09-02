@@ -969,11 +969,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
              preview, dock or send to.\n\n\
              press `a` to start a shell in this worktree.",
         ),
-        None => Text::from(
-            "select a shell to preview its pane\n\n\
-             the tail of `capture-pane` is shown here, updated on every poll.\n\
-             status is classified from this text + the pane's foreground process.",
-        ),
+        None => Text::from("select a shell to preview its contents"),
     };
     let p = Paragraph::new(text)
         .block(block)
