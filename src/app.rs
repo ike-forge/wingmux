@@ -2858,20 +2858,24 @@ impl App {
         self.mode = Mode::Confirm {
             confirm: Confirm {
                 title: "Delete Worktree".into(),
+                // Three beats, blank line between each: the question, the
+                // path it is about, the state of the tree. The state line
+                // says only clean or not — *what* is unclean is the
+                // warning line's job, and saying it twice made the dialog
+                // read as two different problems.
+                //
+                // "clean" is claimed only when the worktree carries no work
+                // at all: an unmerged branch with a clean tree is still
+                // work, and calling that clean is the one lie the dialog
+                // must not tell.
                 body: format!(
-                    "Delete worktree '{}'?\nworktree: {}\n{}",
+                    "Delete worktree '{}'?\n\n{}\n\n{}",
                     wt.name,
                     wt.path.display(),
-                    // "clean" is claimed only when the worktree carries no
-                    // work at all: an unmerged branch with a clean tree is
-                    // still work, and calling that clean is the one lie the
-                    // dialog must not tell.
-                    match (dirty, unmerged) {
-                        (true, true) =>
-                            "worktree is NOT clean: uncommitted changes, unmerged commits",
-                        (true, false) => "worktree is NOT clean: uncommitted changes",
-                        (false, true) => "worktree is NOT clean: unmerged commits",
-                        (false, false) => "worktree is clean",
+                    if dirty || unmerged {
+                        "worktree is NOT clean"
+                    } else {
+                        "worktree is clean"
                     }
                 ),
                 // Dirty: `git worktree remove` refuses, so `f` is the only
@@ -2883,7 +2887,18 @@ impl App {
                 // branch is deleted with `-D`, so unmerged commits are
                 // lost, not parked.
                 warning: match (dirty, unmerged) {
-                    (true, _) => Some("uncommitted changes — force delete discards them".into()),
+                    (true, true) if self.cfg.worktrees.delete_branch => Some(
+                        "uncommitted changes and unmerged commits — force delete discards both"
+                            .into(),
+                    ),
+                    (true, true) => Some(
+                        "uncommitted changes — force delete discards them; the branch keeps its \
+                         commits"
+                            .into(),
+                    ),
+                    (true, false) => {
+                        Some("uncommitted changes — force delete discards them".into())
+                    }
                     (false, true) if self.cfg.worktrees.delete_branch => {
                         Some("unmerged commits — deleting the branch discards them".into())
                     }
@@ -5419,16 +5434,33 @@ mod tests {
             let Mode::Confirm { confirm } = &app.mode else {
                 panic!("expected a confirm, got {:?}", app.mode);
             };
+            let lines: Vec<&str> = confirm.body.lines().collect();
+            assert_eq!(
+                lines.len(),
+                5,
+                "question, path and state, one blank line apart: {lines:?}"
+            );
+            assert!(lines[0].starts_with("Delete worktree 'ahead'?"));
+            assert!(lines[1].is_empty() && lines[3].is_empty(), "{lines:?}");
             assert!(
-                confirm
-                    .body
-                    .contains("worktree is NOT clean: unmerged commits"),
-                "committed work must not read as clean: {}",
+                lines[2].ends_with("ahead"),
+                "the path stands alone: {lines:?}"
+            );
+            assert_eq!(
+                lines[4], "worktree is NOT clean",
+                "committed work must not read as clean"
+            );
+            assert!(
+                !confirm.body.contains("unmerged commits"),
+                "the reason belongs to the warning line alone: {}",
                 confirm.body
             );
             assert!(
-                confirm.warning.is_some(),
-                "the caveat is drawn as a warning"
+                confirm
+                    .warning
+                    .as_deref()
+                    .is_some_and(|w| w.contains("unmerged commits")),
+                "the caveat names the reason and is drawn as a warning"
             );
             assert!(
                 confirm.yes_label.is_some(),

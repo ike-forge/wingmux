@@ -369,10 +369,10 @@ fn worktree_state_color(theme: &ResolvedColors, st: WorktreeState) -> Color {
 /// Whether the worktree's own state is the whole story of the row. Once
 /// the work is merged, or the directory is gone, what the agent inside is
 /// doing no longer matters — the only thing left to decide is whether to
-/// remove the worktree. Such a row is muted whole (name and status label
-/// dim) so the one glyph that carries the state is the only thing that
-/// reads, instead of a yellow `waiting` pulling the eye to a shell nobody
-/// needs to answer.
+/// remove the worktree. Such a row drops the shell status entirely and
+/// mutes its name, so the one glyph that carries the state is the only
+/// thing that reads, instead of a yellow `waiting` pulling the eye to a
+/// shell nobody needs to answer.
 fn worktree_state_settles_row(st: WorktreeState) -> bool {
     matches!(st, WorktreeState::Merged | WorktreeState::Deleted)
 }
@@ -567,6 +567,17 @@ fn fits(area: Rect, min: (u16, u16)) -> bool {
 /// the app's own labels.
 pub(crate) fn warn_mark(icons: &crate::config::IconsConfig) -> &str {
     &icons.warn
+}
+
+/// The prefix a warning line opens with, and the column its text starts
+/// in — continuation rows indent to the same column. The gap is two
+/// spaces, not one: `⚠` is East-Asian *ambiguous* width, so unicode-width
+/// (and therefore ratatui's layout) counts it as one cell while plenty of
+/// terminals draw it as two, swallowing a single separator and leaving
+/// `⚠unmerged commits` jammed together.
+pub(crate) fn warn_prefix(icons: &crate::config::IconsConfig) -> (String, usize) {
+    let mark = warn_mark(icons);
+    (format!("{mark}  "), UnicodeWidthStr::width(mark) + 2)
 }
 
 pub(crate) fn sep(icons: &crate::config::IconsConfig) -> &str {
@@ -1034,16 +1045,16 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                         worktree_color(theme, wt, fdead, theme.tree_worktree)
                     }),
                 ),
-                match solo {
+                // A settled row drops the status altogether: once the work
+                // is merged (or the directory is gone) the only thing left
+                // to do is remove the worktree, and what the agent inside
+                // is waiting for is no longer anybody's business.
+                match solo.filter(|_| !settled) {
                     Some(si) => {
                         let st = shell_status(app, &wt.shells[si]);
                         Span::styled(
                             format!("  {}{}", status_icon(ic, st, spin), st.label()),
-                            fg(if settled {
-                                theme.dim
-                            } else {
-                                status_color(theme, st)
-                            }),
+                            fg(status_color(theme, st)),
                         )
                     }
                     // A multi-shell worktree says nothing extra: its shells
@@ -1531,10 +1542,17 @@ fn draw_toast(f: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let theme = &app.theme.colors;
+    // Only an error wears the alarm colour. A plain notice ("worktree
+    // deleted") used to take `accent` — peach/orange in most shipped
+    // themes, which reads as a warning sitting next to `status_failed`.
+    // It takes `title_fg` instead: the toast is already painted on
+    // `title_bg`, so that is the one colour guaranteed to be legible on it
+    // in every theme (several make `accent`, `border_focused` and
+    // `title_bg` the same hue), and it says "a note", not "a problem".
     let color = if toast.error {
         theme.status_failed
     } else {
-        theme.accent
+        theme.title_fg
     };
     // Fit inside the frame: the text, plus borders and one space either
     // side, capped at two thirds of the width. It floats one cell inside
@@ -1935,8 +1953,7 @@ fn draw_diagnostics(f: &mut Frame, app: &App) -> Popup {
 /// app's scroll clamp (same pattern as the help palette).
 fn diag_lines(app: &App, width: usize) -> Vec<Line<'_>> {
     let theme = &app.theme.colors;
-    let mark = warn_mark(&app.cfg.icons);
-    let indent = UnicodeWidthStr::width(mark) + 1;
+    let (mark, indent) = warn_prefix(&app.cfg.icons);
     let mut lines = Vec::new();
     for d in &app.cfg.diagnostics {
         // A dropped config unit says which key and why, which is a
@@ -1949,7 +1966,7 @@ fn diag_lines(app: &App, width: usize) -> Vec<Line<'_>> {
             lines.push(Line::from(vec![
                 Span::styled(
                     if i == 0 {
-                        format!("{mark} ")
+                        mark.clone()
                     } else {
                         " ".repeat(indent)
                     },
@@ -2502,8 +2519,7 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Popup {
     // colour, bold, so it reads before the shortcuts do.
     if let Some(warning) = &confirm.warning {
         let style = fg(theme.status_failed).add_modifier(Modifier::BOLD);
-        let mark = warn_mark(ic);
-        let indent = UnicodeWidthStr::width(mark) + 1;
+        let (mark, indent) = warn_prefix(ic);
         for (i, l) in wrap(warning, body_w.saturating_sub(indent))
             .into_iter()
             .enumerate()
@@ -2511,7 +2527,7 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Popup {
             lines.push(Line::from(vec![
                 Span::styled(
                     if i == 0 {
-                        format!("{mark} ")
+                        mark.clone()
                     } else {
                         " ".repeat(indent)
                     },
@@ -4499,6 +4515,13 @@ mod tests {
             .unwrap_or_else(|| panic!("no warning row: {rows:?}"));
         let x = col_of(&rows[y], "uncommitted changes") as u16;
 
+        assert!(
+            rows[y].contains(&format!("{}  uncommitted", app.cfg.icons.warn)),
+            "two spaces after the mark: `⚠` is ambiguous-width and a single \
+             one gets swallowed where the terminal draws it wide: {:?}",
+            rows[y]
+        );
+
         let cell = &terminal.backend().buffer()[(x, y as u16)];
         assert_eq!(
             cell.fg, app.theme.colors.status_failed,
@@ -4551,11 +4574,12 @@ mod tests {
     /// the tree draws is one cell wide, so a char offset is a column — a
     /// byte offset is not, and the box-drawing guides make the two differ.
     /// A settled worktree — merged, or its directory gone — mutes its name
-    /// and its shell's status: nothing there needs answering any more, so
-    /// only the state glyph keeps a colour, and a leftover `waiting` no
-    /// longer competes with the rows that do want the user.
+    /// and drops its shell's status entirely: nothing there needs
+    /// answering any more, the next step is deletion, so only the state
+    /// glyph keeps a colour and no leftover `waiting` competes with the
+    /// rows that do want the user.
     #[test]
-    fn a_settled_worktree_dims_everything_but_its_state_glyph() {
+    fn a_settled_worktree_drops_its_status_and_dims_its_name() {
         for state in [WorktreeState::Merged, WorktreeState::Deleted] {
             let mut app = seeded_app_with_shell();
             app.statuses.insert("%1".into(), Status::Waiting);
@@ -4568,17 +4592,16 @@ mod tests {
             let rows = buffer_rows(&terminal);
             let y = rows
                 .iter()
-                .position(|r| r.contains(Status::Waiting.label()))
+                .position(|r| r.contains("wt"))
                 .unwrap_or_else(|| panic!("no worktree row: {rows:?}"));
             let buf = terminal.backend().buffer();
             let c = &app.theme.colors;
             let fg_at = |needle: &str| buf[(col_of(&rows[y], needle) as u16, y as u16)].fg;
 
             assert_eq!(fg_at("wt"), c.dim, "{state:?}: the name is dimmed");
-            assert_eq!(
-                fg_at(Status::Waiting.label()),
-                c.dim,
-                "{state:?}: the leftover status is dimmed"
+            assert!(
+                !rows.iter().any(|r| r.contains(Status::Waiting.label())),
+                "{state:?}: the status is gone from the tree: {rows:?}"
             );
             assert!(
                 (0..buf.area.width)

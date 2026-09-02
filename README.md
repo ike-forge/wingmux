@@ -436,11 +436,13 @@ without hunting for the status word at the end of the row.
 - Worktree deletion kills the worktree's windows — a session whose last shell
   window is killed destroys itself — then `git worktree remove` (with
   `--force` offered when the worktree is dirty). The worktree branch goes
-  with it unless `worktrees.delete_branch = false`. The confirm says
-  whether the worktree is clean, and it counts committed work too: a clean
-  working tree on a branch that is ahead of the base reads as "NOT clean:
-  unmerged commits", with a warning line, because deleting the branch
-  discards them.
+  with it unless `worktrees.delete_branch = false`. The confirm is three beats a
+  blank line apart — the question, the worktree path, then whether the
+  worktree is clean — and "clean" counts committed work too: a clean
+  working tree on a branch that is ahead of the base reads as "worktree is
+  NOT clean", and the warning line below names why ("unmerged commits —
+  deleting the branch discards them"). Only the warning names the reason;
+  the state line used to repeat it, which read as two separate problems.
   The confirm popup answers to `y`, `Enter` or `d` — pressing `d` twice
   deletes, the way `dd` does in vim.
 - Shell deletion (`d` on a shell row) kills that one window and drops the
@@ -522,9 +524,10 @@ stay aligned whichever one a row draws. The state is also colour-coded:
 new is dim, ahead is the `waiting` colour, merged is `worktree_merged`
 (green), and a deleted worktree is the `failed` colour — that row is broken, not
 finished. Merged and deleted rows are *settled*: the state glyph keeps its
-colour and the rest of the row — the worktree name and its shell's status —
-is dimmed. Nothing there needs answering any more, so a leftover yellow
-`waiting` must not compete with the rows that do want you. No patched font? Set
+colour, the worktree name is dimmed, and the shell's status is dropped from
+the row altogether. Nothing there needs answering any more — the next step
+is deletion — so a leftover `waiting` must not compete with the rows that do
+want you. No patched font? Set
 `preset = "unicode"` for `▣`/`▤`/`▢` and `○`/`◆`/`✓`/`⊘`. Rows carry
 meaning in symbols, labels and position as well as colour.
 
@@ -623,7 +626,8 @@ hold them all the entries wrap onto a second bar row instead of losing
 their tail at the border. Notices ("worktree 'x' created",
 "dock failed: …") appear as a toast above the bar, wrapped to as many as
 three rows so a long error stays readable, and fade after a few
-seconds; the log and the diagnostics overlay (`D`) keep the record.
+seconds. Only errors are drawn in the failure colour; an ordinary notice
+takes `title_fg`, so "worktree deleted" never reads as a problem; the log and the diagnostics overlay (`D`) keep the record.
 
 The tree takes a percentage of the frame width, capped at 54 columns — it
 holds short names, so on a wide screen the extra width goes to the preview
