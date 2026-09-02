@@ -481,15 +481,31 @@ pub(crate) fn textarea_height(viewport_h: u16) -> u16 {
 }
 
 /// Width of the quick-send textarea popup for a viewport width.
+///
+/// Capped at [`crate::ui::MODAL_MAX_W`] like every other overlay: the
+/// viewport is the dashboard's own strip while a pane is docked, and a
+/// popup that took a share of *that* would be a different editor in each
+/// layout. Never wider than the frame, and never below the strip's own
+/// minimum.
 pub(crate) fn textarea_width(viewport_w: u16) -> u16 {
-    (viewport_w * 70 / 100).clamp(40, 96)
+    (viewport_w * 90 / 100)
+        .clamp(crate::dock::DASH_MIN_WIDTH, crate::ui::MODAL_MAX_W)
+        .min(viewport_w)
 }
 
-/// Content rows of the textarea popup (inside the border and the modal
-/// padding, above the spacer and the hint row): height − 4 (2 borders +
-/// spacer + hint — the modal padding costs no row).
-pub(crate) fn textarea_visible_lines(viewport_h: u16) -> usize {
-    (textarea_height(viewport_h) as usize).saturating_sub(4)
+/// Content rows of the textarea popup: its height, less the two borders,
+/// less the footer — the rule row and however many rows the hints took at
+/// this width. The modal padding costs no row.
+///
+/// The footer is measured rather than assumed: in the dashboard's own
+/// strip the editor is 26 columns wide and its three hints do not fit one
+/// row, and a content window that ignored that would draw text under them.
+pub(crate) fn textarea_visible_lines(
+    icons: &crate::config::IconsConfig,
+    viewport: (u16, u16),
+) -> usize {
+    (textarea_height(viewport.1) as usize)
+        .saturating_sub(2 + crate::ui::textarea_footer_h(icons, viewport.0))
 }
 
 /// Soft-wrap width of the textarea content: the popup width minus the two
@@ -2865,7 +2881,7 @@ impl App {
         }
         // The textarea's page size = its visible content rows; its
         // soft-wrap width decides how many visual rows those hold.
-        let visible_lines = textarea_visible_lines(self.viewport.1);
+        let visible_lines = textarea_visible_lines(&self.cfg.icons, self.viewport);
         let wrap_width = textarea_wrap_width(self.viewport.0);
         // The add-shell picker's row count, resolved before the borrow of
         // `mode` below (its arm cannot call back into `self`).
@@ -6909,7 +6925,7 @@ mod tests {
         crate::util::testutil::with_fresh_xdg(|| {
             let mut app = app_with_shell();
             app.viewport = (120, 40);
-            let visible = textarea_visible_lines(40);
+            let visible = textarea_visible_lines(&app.cfg.icons, (120, 40));
             assert!(visible >= 3, "the test needs a roomy window, got {visible}");
 
             app.on_key(key(KeyCode::Char('s'), false));
@@ -7273,8 +7289,9 @@ mod tests {
     #[test]
     fn help_palette_motions_jump_scroll_and_clamp() {
         let mut app = app_with_help(3);
-        // scroll a long way down
-        for _ in 0..100 {
+        // scroll a long way down — the palette reflows for a narrow strip,
+        // so it is many more lines than it is rows
+        for _ in 0..500 {
             app.on_key(key(KeyCode::Char('j'), false));
         }
         let max_scroll = app.help_scroll;

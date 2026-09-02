@@ -107,18 +107,99 @@ pub(crate) fn tree_width_for(app: &App) -> Option<u16> {
 /// Minimum popup size per overlay kind; below it the overlay is refused
 /// with a message ("frame too small for this dialog") instead of drawing
 /// garbage — never a crash.
+///
+/// Every width is [`dock::DASH_MIN_WIDTH`][crate::dock::DASH_MIN_WIDTH],
+/// the narrowest strip a docked dashboard ever draws in: an overlay that
+/// asked for more than that would be refused exactly when it is most
+/// needed, on the layout the app spends its life in. What differs is the
+/// height, and only because a dialog with no room for its own shortcuts is
+/// not a dialog.
 fn overlay_min(kind: OverlayKind) -> (u16, u16) {
     // Border + `MODAL_PADDING` included: each of these leaves the same
     // usable content box the pre-padding minimums did.
+    let w = crate::dock::DASH_MIN_WIDTH;
     match kind {
-        OverlayKind::Help => (48, 14),
-        OverlayKind::Diagnostics => (48, 10),
-        OverlayKind::ThemePicker => (38, 10),
-        OverlayKind::Messages | OverlayKind::AddShell => (38, 10),
-        OverlayKind::Input | OverlayKind::Confirm => (38, 10),
+        OverlayKind::Help => (w, 10),
+        OverlayKind::Diagnostics => (w, 8),
+        OverlayKind::ThemePicker => (w, 8),
+        OverlayKind::Messages | OverlayKind::AddShell => (w, 8),
+        OverlayKind::Input | OverlayKind::Confirm => (w, 7),
         // The textarea is the main interaction — it needs real estate.
-        OverlayKind::Textarea => (54, 12),
+        OverlayKind::Textarea => (w, 10),
     }
+}
+
+/// The widest any overlay is ever drawn, docked or not.
+///
+/// A docked dashboard owns a strip of at most
+/// [`dock::DASH_MAX_WIDTH`][crate::dock::DASH_MAX_WIDTH] columns; an
+/// undocked one owns its whole window. An overlay sized to its frame would
+/// therefore be two dialogs — the same question in two shapes, changing
+/// under the user as panes come and go. So every overlay is built for the
+/// strip and capped there. The cap costs the undocked layout nothing: a
+/// dialog that asks one question has never needed 200 columns.
+pub(crate) const MODAL_MAX_W: u16 = crate::dock::DASH_MAX_WIDTH;
+
+/// The width an overlay is drawn at: what its content asked for, capped to
+/// [`MODAL_MAX_W`] and to the frame.
+fn modal_width(frame: Rect, want: u16) -> u16 {
+    want.min(MODAL_MAX_W).min(frame.width)
+}
+
+/// The content width inside a modal of `width` columns — what every
+/// wrapping and truncating decision is made against.
+fn modal_text_width(width: u16) -> usize {
+    width.saturating_sub(MODAL_CHROME_W).max(1) as usize
+}
+
+/// Word-wrap `text` to `width` columns, breaking inside a word only when
+/// the word cannot fit a line of its own. Returns at least one line, so a
+/// wrapped empty string is still a blank row and not a vanished one.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let mut word = word;
+        // A word longer than the whole line is cut where the line ends;
+        // anything else would print past the border.
+        while UnicodeWidthStr::width(word) > width {
+            let (head, tail) = split_at_width(word, width);
+            if !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+                continue;
+            }
+            out.push(head.to_string());
+            word = tail;
+        }
+        let need = UnicodeWidthStr::width(word) + usize::from(!line.is_empty());
+        if UnicodeWidthStr::width(line.as_str()) + need > width {
+            out.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    out.push(line);
+    out
+}
+
+/// Split `s` at the last char boundary that still fits `width` columns.
+fn split_at_width(s: &str, width: usize) -> (&str, &str) {
+    let mut end = 0;
+    for (i, c) in s.char_indices() {
+        let next = i + c.len_utf8();
+        if UnicodeWidthStr::width(&s[..next]) > width {
+            break;
+        }
+        end = next;
+    }
+    // Never return an empty head: a zero-width step would loop for ever.
+    if end == 0 {
+        end = s.char_indices().nth(1).map_or(s.len(), |(i, _)| i);
+    }
+    s.split_at(end)
 }
 
 #[derive(Clone, Copy)]
@@ -323,12 +404,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // frame so mouse "click outside dismisses" tracks what is on screen;
     // in Normal there is nothing to dismiss.
     app.popup_area = None;
+    let mut hint_rows = 1;
     match &app.mode {
         Mode::Help => {
             let kind = OverlayKind::Help;
             if fits(area, overlay_min(kind)) {
-                let rect = draw_help(f, app);
-                app.popup_area = Some(rect);
+                let popup = draw_help(f, app);
+                app.popup_area = Some(popup.area);
+                hint_rows = popup.hint_rows;
             } else {
                 draw_overlay_too_small(f, area, app, kind);
             }
@@ -336,8 +419,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::Diagnostics => {
             let kind = OverlayKind::Diagnostics;
             if fits(area, overlay_min(kind)) {
-                let rect = draw_diagnostics(f, app);
-                app.popup_area = Some(rect);
+                let popup = draw_diagnostics(f, app);
+                app.popup_area = Some(popup.area);
+                hint_rows = popup.hint_rows;
             } else {
                 draw_overlay_too_small(f, area, app, kind);
             }
@@ -345,8 +429,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::ThemePicker { .. } => {
             let kind = OverlayKind::ThemePicker;
             if fits(area, overlay_min(kind)) {
-                let rect = draw_theme_picker(f, app);
-                app.popup_area = Some(rect);
+                let popup = draw_theme_picker(f, app);
+                app.popup_area = Some(popup.area);
+                hint_rows = popup.hint_rows;
             } else {
                 draw_overlay_too_small(f, area, app, kind);
             }
@@ -354,8 +439,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::AddShell { .. } => {
             let kind = OverlayKind::AddShell;
             if fits(area, overlay_min(kind)) {
-                let rect = draw_add_shell(f, app);
-                app.popup_area = Some(rect);
+                let popup = draw_add_shell(f, app);
+                app.popup_area = Some(popup.area);
+                hint_rows = popup.hint_rows;
             } else {
                 draw_overlay_too_small(f, area, app, kind);
             }
@@ -363,8 +449,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::Messages { .. } => {
             let kind = OverlayKind::Messages;
             if fits(area, overlay_min(kind)) {
-                let rect = draw_messages(f, app);
-                app.popup_area = Some(rect);
+                let popup = draw_messages(f, app);
+                app.popup_area = Some(popup.area);
+                hint_rows = popup.hint_rows;
             } else {
                 draw_overlay_too_small(f, area, app, kind);
             }
@@ -372,8 +459,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::Input { .. } => {
             let kind = OverlayKind::Input;
             if fits(area, overlay_min(kind)) {
-                let rect = draw_input(f, app);
-                app.popup_area = Some(rect);
+                let popup = draw_input(f, app);
+                app.popup_area = Some(popup.area);
+                hint_rows = popup.hint_rows;
             } else {
                 draw_overlay_too_small(f, area, app, kind);
             }
@@ -381,8 +469,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::Textarea { .. } => {
             let kind = OverlayKind::Textarea;
             if fits(area, overlay_min(kind)) {
-                let rect = draw_textarea(f, app);
-                app.popup_area = Some(rect);
+                let popup = draw_textarea(f, app);
+                app.popup_area = Some(popup.area);
+                hint_rows = popup.hint_rows;
             } else {
                 draw_overlay_too_small(f, area, app, kind);
             }
@@ -390,8 +479,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::Confirm { .. } => {
             let kind = OverlayKind::Confirm;
             if fits(area, overlay_min(kind)) {
-                let rect = draw_confirm(f, app);
-                app.popup_area = Some(rect);
+                let popup = draw_confirm(f, app);
+                app.popup_area = Some(popup.area);
+                hint_rows = popup.hint_rows;
             } else {
                 draw_overlay_too_small(f, area, app, kind);
             }
@@ -402,7 +492,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // reserves above its shortcuts. One place, so no overlay can forget
     // it — the same discipline as `MODAL_PADDING`.
     if let Some(rect) = app.popup_area {
-        draw_footer_rule(f, rect, &app.theme.colors);
+        draw_footer_rule(f, rect, &app.theme.colors, hint_rows);
     }
 }
 
@@ -462,6 +552,79 @@ fn hint_spans(theme: &ResolvedColors, h: &Hint) -> [Span<'static>; 2] {
         Span::styled(format!("{} ", h.desc), fg(theme.foreground)),
         Span::styled(h.key.clone(), fg(theme.accent).add_modifier(Modifier::BOLD)),
     ]
+}
+
+/// Grow `lines` with blank rows until it is `n` long (never shrinks it).
+fn pad_to(lines: &mut Vec<Line<'_>>, n: usize) {
+    while lines.len() < n {
+        lines.push(Line::from(""));
+    }
+}
+
+/// A drawn overlay: where it landed, and how many rows its footer hints
+/// took — the rule above them is painted from that.
+#[derive(Clone, Copy)]
+struct Popup {
+    area: Rect,
+    hint_rows: usize,
+}
+
+impl From<Rect> for Popup {
+    fn from(area: Rect) -> Self {
+        Popup { area, hint_rows: 1 }
+    }
+}
+
+/// How the hints of a footer are packed into rows of `width` columns:
+/// greedily, in order, one row while they fit.
+///
+/// A modal footer is drawn in the dashboard's own strip, which is 26
+/// columns at its narrowest — a single row silently cut at the border
+/// loses `cancel esc`, the one hint that must never be lost. So the footer
+/// wraps, and the modals that build it size themselves to however many
+/// rows it took.
+fn hint_packing(
+    icons: &crate::config::IconsConfig,
+    hints: &[Hint],
+    width: usize,
+) -> Vec<Vec<Hint>> {
+    let sep_w = UnicodeWidthStr::width(sep(icons));
+    let mut rows: Vec<Vec<Hint>> = Vec::new();
+    let mut row: Vec<Hint> = Vec::new();
+    let mut used = 0usize;
+    for h in hints {
+        let w = UnicodeWidthStr::width(h.label().as_str());
+        let need = if row.is_empty() { w } else { w + sep_w };
+        if !row.is_empty() && used + need > width {
+            rows.push(std::mem::take(&mut row));
+            used = 0;
+        }
+        used += if row.is_empty() { w } else { w + sep_w };
+        row.push(h.clone());
+    }
+    rows.push(row);
+    rows
+}
+
+/// The footer rows for `hints` at `width` columns — one line each, in the
+/// same order the caller listed them.
+fn hint_rows(
+    theme: &ResolvedColors,
+    icons: &crate::config::IconsConfig,
+    hints: &[Hint],
+    width: usize,
+) -> Vec<Line<'static>> {
+    hint_packing(icons, hints, width)
+        .into_iter()
+        .map(|row| hint_line(theme, icons, &row))
+        .collect()
+}
+
+/// Rows a modal footer occupies: the rule row it is separated by, plus the
+/// hint rows themselves. Every modal sizes itself with this instead of a
+/// constant, because how many rows the hints need depends on the width.
+fn footer_h(icons: &crate::config::IconsConfig, hints: &[Hint], width: usize) -> usize {
+    1 + hint_packing(icons, hints, width).len()
 }
 
 /// A row of hints joined with the app's separator — the footer every modal
@@ -589,7 +752,11 @@ fn modal_inner(area: Rect) -> Rect {
     }
 }
 
-/// Rows a modal footer owns: the rule and the hint row itself.
+/// Rows a modal footer owns when its hints fit one row: the rule and the
+/// hint row itself. The scrolling overlays measure their own footer (it
+/// wraps in a narrow strip — see [`footer_h`]); this is what the app's
+/// page-scroll math assumes, where being a row out only changes the size
+/// of a jump the renderer clamps anyway.
 pub(crate) const MODAL_FOOTER_H: usize = 2;
 
 /// The rule between a modal's body and its shortcuts, drawn border to
@@ -600,13 +767,13 @@ pub(crate) const MODAL_FOOTER_H: usize = 2;
 /// hint line, so no sizing math changes — and only the symbol and the
 /// foreground are written, leaving each cell's background as the modal
 /// drew it (some overlays fill `popup_bg`, some do not).
-fn draw_footer_rule(f: &mut Frame, area: Rect, theme: &ResolvedColors) {
-    // Two borders plus the hint row: a modal this short has no body to
+fn draw_footer_rule(f: &mut Frame, area: Rect, theme: &ResolvedColors, hint_rows: usize) {
+    // Two borders plus the hint rows: a modal this short has no body to
     // divide from its footer.
-    if area.height < 4 || area.width < 2 {
+    if (area.height as usize) < 3 + hint_rows || area.width < 2 {
         return;
     }
-    let y = area.y + area.height - 3;
+    let y = area.y + area.height - 2 - hint_rows as u16;
     let right = area.x + area.width - 1;
     let buf = f.buffer_mut();
     for x in area.x..=right {
@@ -1127,7 +1294,7 @@ fn centered_rect(area: Rect, w_pct: u16, h_pct: u16) -> Rect {
     h
 }
 
-fn draw_help(f: &mut Frame, app: &App) -> Rect {
+fn draw_help(f: &mut Frame, app: &App) -> Popup {
     let theme = &app.theme.colors;
     // Grouped by context (discoverability rule): the overlay is the app's
     // palette, so every action appears grouped — navigate / repositories /
@@ -1135,9 +1302,13 @@ fn draw_help(f: &mut Frame, app: &App) -> Rect {
     // The popup sizes itself to the content (bounded by the frame); long
     // content scrolls (j/k, arrows, PgUp/PgDn, ctrl-u/d, Home/End) and the
     // title advertises it.
-    let lines = help_lines(app);
-    let h = (lines.len() as u16 + MODAL_FOOTER_H as u16 + MODAL_CHROME_H).min(f.area().height);
-    let w = (82u16 + MODAL_CHROME_W).min(f.area().width);
+    let w = modal_width(f.area(), MODAL_MAX_W);
+    let body_w = modal_text_width(w);
+    let lines = help_lines(app, body_w);
+    // Sized against a footer that may itself have wrapped: at 26 columns
+    // `scroll j/k · close esc` does not always fit one row.
+    let footer_h = footer_h(&app.cfg.icons, &help_hints(app, true), body_w);
+    let h = (lines.len() as u16 + footer_h as u16 + MODAL_CHROME_H).min(f.area().height);
     let area = Rect::new(
         f.area().x + (f.area().width.saturating_sub(w)) / 2,
         f.area().y + (f.area().height.saturating_sub(h)) / 2,
@@ -1148,14 +1319,21 @@ fn draw_help(f: &mut Frame, app: &App) -> Rect {
     // The footer is pinned: it says how to leave, so it must not scroll
     // away. Only the rows above it move.
     let inner_h = h.saturating_sub(MODAL_CHROME_H) as usize;
-    let body_h = inner_h.saturating_sub(MODAL_FOOTER_H);
+    let body_h = inner_h.saturating_sub(footer_h);
     let max_scroll = lines.len().saturating_sub(body_h);
     let scroll = app.help_scroll.min(max_scroll);
     let mut window: Vec<Line> = lines.iter().skip(scroll).take(body_h).cloned().collect();
-    window.extend(help_footer(app, max_scroll > 0));
+    let footer = help_footer(app, max_scroll > 0, body_w);
+    let hint_rows = footer.len() - 1;
+    // The popup was sized for a footer that offers the scroll motion; when
+    // it does not, the body is one row short of filling the box. Pad it,
+    // so the footer stays pinned to the bottom border where the rule is
+    // painted.
+    pad_to(&mut window, inner_h.saturating_sub(footer.len()));
+    window.extend(footer);
     let block = popup_block(theme, &app.cfg.icons, " Help ");
     f.render_widget(Paragraph::new(Text::from(window)).block(block), area);
-    area
+    Popup { area, hint_rows }
 }
 
 /// One help row: the key spellings (joined with the app's separator) and
@@ -1240,7 +1418,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
 /// Build the help overlay lines — the single source of truth for both the
 /// renderer (which clips them to the popup) and the scroll-height math in
 /// the app (which must never drift from what is rendered).
-fn help_lines(app: &App) -> Vec<Line<'_>> {
+fn help_lines(app: &App, width: usize) -> Vec<Line<'_>> {
     let theme = &app.theme.colors;
     let ic = &app.cfg.icons;
     let s = sep(ic);
@@ -1251,63 +1429,99 @@ fn help_lines(app: &App) -> Vec<Line<'_>> {
             fg(theme.dim).add_modifier(Modifier::BOLD),
         )));
         for (keys, desc) in *rows {
-            // `<description> <key>`, the same shape as every other hint:
-            // the action in a fixed column, then the key that runs it.
             let key_str = keys
                 .iter()
                 .map(|k| key_label(ic, k))
                 .collect::<Vec<_>>()
                 .join(s);
-            let mut spans = vec![
-                Span::styled(
-                    format!("  {:<w$}", desc[0], w = HELP_DESC_W),
-                    fg(theme.foreground),
-                ),
-                Span::styled(
-                    format!("{key_str:<w$}", w = HELP_KEY_W),
-                    fg(theme.accent).add_modifier(Modifier::BOLD),
-                ),
-            ];
-            if desc.len() > 1 {
-                spans.push(Span::styled(desc[1..].join(s), fg(theme.dim)));
-            }
-            lines.push(Line::from(spans));
+            lines.extend(help_row(theme, width, desc, &key_str, s));
         }
         lines.push(Line::from(""));
     }
-    lines.push(Line::from(Span::styled(
+    for prose in [
         format!(
             "mouse: click selects{s}double-click opens{s}wheel scrolls{s}bar entries clickable"
         ),
-        fg(theme.dim),
-    )));
-    lines.push(Line::from(""));
-    // Once a pane is docked there are two focusable things on screen, and
-    // the second one is tmux's, not ours: say whose keys move between them.
-    lines.push(Line::from(Span::styled(
-        "Enter docks the shell's real pane beside the tree and puts the cursor in it",
-        fg(theme.dim),
-    )));
-    lines.push(Line::from(Span::styled(
+        String::new(),
+        // Once a pane is docked there are two focusable things on screen,
+        // and the second one is tmux's, not ours: say whose keys move
+        // between them.
+        "Enter docks the shell's real pane beside the tree and puts the cursor in it".to_string(),
         format!(
             "moving between the panes, scrolling, searching and zooming are tmux's own bindings{s}\
-             back to the tree is <prefix>+left by default",
+             back to the tree is <prefix>+left by default"
         ),
-        fg(theme.dim),
-    )));
+    ] {
+        for l in wrap(&prose, width) {
+            lines.push(Line::from(Span::styled(l, fg(theme.dim))));
+        }
+    }
     lines
 }
 
-/// Column widths of a help row: the action, then the key that runs it.
-/// Fixed so the keys line up in a column the eye can run down.
-const HELP_DESC_W: usize = 24;
-const HELP_KEY_W: usize = 20;
+/// One help row, laid out for the width it actually has.
+///
+/// The palette is drawn in the dashboard's own strip, which is 26 to 48
+/// columns wide — no fixed two-column table survives that, so the row
+/// reflows instead: `<description> <key>` on one line while it fits, the
+/// key on its own indented line when it does not, and the notes wrapped
+/// underneath in dim. The order never changes, so the eye learns one
+/// shape: what it does, then the key that does it.
+fn help_row<'a>(
+    theme: &ResolvedColors,
+    width: usize,
+    desc: &'a [&'a str],
+    key_str: &str,
+    s: &str,
+) -> Vec<Line<'a>> {
+    const INDENT: usize = 2;
+    let body = width.saturating_sub(INDENT);
+    let pad = " ".repeat(INDENT);
+    let mut out: Vec<Line> = Vec::new();
+    let action = desc[0];
+    let key_style = fg(theme.accent).add_modifier(Modifier::BOLD);
+    let one_line = UnicodeWidthStr::width(action) + 1 + UnicodeWidthStr::width(key_str) <= body;
+    if one_line {
+        out.push(Line::from(vec![
+            Span::styled(format!("{pad}{action} "), fg(theme.foreground)),
+            Span::styled(key_str.to_string(), key_style),
+        ]));
+    } else {
+        for l in wrap(action, body) {
+            out.push(Line::from(Span::styled(
+                format!("{pad}{l}"),
+                fg(theme.foreground),
+            )));
+        }
+        for l in wrap(key_str, body.saturating_sub(2)) {
+            out.push(Line::from(Span::styled(format!("{pad}  {l}"), key_style)));
+        }
+    }
+    if desc.len() > 1 {
+        for l in wrap(&desc[1..].join(s), body.saturating_sub(2)) {
+            out.push(Line::from(Span::styled(
+                format!("{pad}  {l}"),
+                fg(theme.dim),
+            )));
+        }
+    }
+    out
+}
 
 /// The help palette's pinned footer: it says how to scroll and how to
 /// leave, so it never scrolls away. It reserves the row above it for the
 /// footer rule, like every modal footer.
-fn help_footer(app: &App, scrollable: bool) -> Vec<Line<'static>> {
+fn help_footer(app: &App, scrollable: bool, width: usize) -> Vec<Line<'static>> {
     let theme = &app.theme.colors;
+    let ic = &app.cfg.icons;
+    let mut lines = vec![Line::from("")];
+    lines.extend(hint_rows(theme, ic, &help_hints(app, scrollable), width));
+    lines
+}
+
+/// The help palette's footer hints. Named once so the sizing pass and the
+/// render agree on how many rows they take.
+fn help_hints(app: &App, scrollable: bool) -> Vec<Hint> {
     let ic = &app.cfg.icons;
     let mut hints = Vec::new();
     // Only offer the motion when there is something below the fold — an
@@ -1316,24 +1530,46 @@ fn help_footer(app: &App, scrollable: bool) -> Vec<Line<'static>> {
         hints.push(hint(ic, "scroll", "j/k"));
     }
     hints.push(hint(ic, "close", "esc"));
-    vec![Line::from(""), hint_line(theme, ic, &hints)]
+    hints
 }
 
 /// Total scrollable help line count (the footer is pinned, so it is not
 /// part of this) — the app clamps its scroll offset against this, built
 /// the same way as the renderer so the two cannot drift.
 pub(crate) fn help_line_count(app: &App) -> usize {
-    help_lines(app).len()
+    help_lines(
+        app,
+        modal_text_width(modal_width(viewport_rect(app), MODAL_MAX_W)),
+    )
+    .len()
+}
+
+/// The frame as the renderer will see it, from the viewport the last draw
+/// recorded — so the scroll clamp measures the popup the user is looking
+/// at, not a hypothetical one.
+fn viewport_rect(app: &App) -> Rect {
+    // Before the first draw the viewport is still (0, 0). Measuring a
+    // wrapped palette against a zero-width popup would report thousands of
+    // lines and let the scroll run away, so an unmeasured frame is taken
+    // to be a full-width one.
+    let w = if app.viewport.0 == 0 {
+        MODAL_MAX_W
+    } else {
+        app.viewport.0
+    };
+    Rect::new(0, 0, w, app.viewport.1)
 }
 
 /// The startup diagnostics overlay: one line per dropped config unit, with
 /// the same motions and sizing as the help palette (scrolls, dismisses).
 /// Shown once at startup when `Config::diagnostics` is non-empty.
-fn draw_diagnostics(f: &mut Frame, app: &App) -> Rect {
+fn draw_diagnostics(f: &mut Frame, app: &App) -> Popup {
     let theme = &app.theme.colors;
-    let lines = diag_lines(app);
-    let h = (lines.len() as u16 + MODAL_FOOTER_H as u16 + MODAL_CHROME_H).min(f.area().height);
-    let w = (74u16 + MODAL_CHROME_W).min(f.area().width);
+    let w = modal_width(f.area(), MODAL_MAX_W);
+    let body_w = modal_text_width(w);
+    let lines = diag_lines(app, body_w);
+    let footer_h = footer_h(&app.cfg.icons, &diag_hints(app, true), body_w);
+    let h = (lines.len() as u16 + footer_h as u16 + MODAL_CHROME_H).min(f.area().height);
     let area = Rect::new(
         f.area().x + (f.area().width.saturating_sub(w)) / 2,
         f.area().y + (f.area().height.saturating_sub(h)) / 2,
@@ -1342,11 +1578,14 @@ fn draw_diagnostics(f: &mut Frame, app: &App) -> Rect {
     );
     f.render_widget(Clear, area);
     let inner_h = h.saturating_sub(MODAL_CHROME_H) as usize;
-    let body_h = inner_h.saturating_sub(MODAL_FOOTER_H);
+    let body_h = inner_h.saturating_sub(footer_h);
     let max_scroll = lines.len().saturating_sub(body_h);
     let scroll = app.diag_scroll.min(max_scroll);
     let mut window: Vec<Line> = lines.iter().skip(scroll).take(body_h).cloned().collect();
-    window.extend(diag_footer(app, max_scroll > 0));
+    let footer = diag_footer(app, max_scroll > 0, body_w);
+    let hint_rows = footer.len() - 1;
+    pad_to(&mut window, inner_h.saturating_sub(footer.len()));
+    window.extend(footer);
     let title_text = format!(" Startup Diagnostics ({}) ", app.cfg.diagnostics.len());
     let block = popup_block(theme, &app.cfg.icons, title_text);
     f.render_widget(
@@ -1355,53 +1594,77 @@ fn draw_diagnostics(f: &mut Frame, app: &App) -> Rect {
             .style(on(theme.popup_fg, theme.popup_bg)),
         area,
     );
-    area
+    Popup { area, hint_rows }
 }
 
 /// The diagnostics overlay lines — single source for rendering and the
 /// app's scroll clamp (same pattern as the help palette).
-fn diag_lines(app: &App) -> Vec<Line<'_>> {
+fn diag_lines(app: &App, width: usize) -> Vec<Line<'_>> {
     let theme = &app.theme.colors;
     let mark = warn_mark(&app.cfg.icons);
-    app.cfg
-        .diagnostics
-        .iter()
-        .map(|d| {
-            Line::from(vec![
+    let indent = UnicodeWidthStr::width(mark) + 1;
+    let mut lines = Vec::new();
+    for d in &app.cfg.diagnostics {
+        // A dropped config unit says which key and why, which is a
+        // sentence, not a label: it wraps under its own mark rather than
+        // running off the border.
+        for (i, l) in wrap(d, width.saturating_sub(indent))
+            .into_iter()
+            .enumerate()
+        {
+            lines.push(Line::from(vec![
                 Span::styled(
-                    format!("{mark} "),
+                    if i == 0 {
+                        format!("{mark} ")
+                    } else {
+                        " ".repeat(indent)
+                    },
                     fg(theme.status_failed).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(d.clone(), fg(theme.foreground)),
-            ])
-        })
-        .collect()
+                Span::styled(l, fg(theme.foreground)),
+            ]));
+        }
+    }
+    lines
 }
 
 /// The diagnostics overlay's pinned footer — same shape as the help
 /// palette's: the reserved rule row, then the shortcuts.
-fn diag_footer(app: &App, scrollable: bool) -> Vec<Line<'static>> {
+fn diag_footer(app: &App, scrollable: bool, width: usize) -> Vec<Line<'static>> {
     let theme = &app.theme.colors;
+    let ic = &app.cfg.icons;
+    let mut lines = vec![Line::from("")];
+    lines.extend(hint_rows(theme, ic, &diag_hints(app, scrollable), width));
+    lines
+}
+
+/// The diagnostics footer's hints — named once, like the palette's, so the
+/// sizing pass and the render cannot disagree on their height.
+fn diag_hints(app: &App, scrollable: bool) -> Vec<Hint> {
     let ic = &app.cfg.icons;
     let mut hints = Vec::new();
     if scrollable {
         hints.push(hint(ic, "scroll", "j/k"));
     }
     hints.push(hint(ic, "dismiss", "esc"));
-    vec![Line::from(""), hint_line(theme, ic, &hints)]
+    hints
 }
 
 /// Total scrollable diagnostics height (the footer is pinned and not part
 /// of it) — the app clamps its scroll against this; same construction as
 /// the renderer.
 pub(crate) fn diag_line_count(app: &App) -> usize {
-    diag_lines(app).len()
+    diag_lines(
+        app,
+        modal_text_width(modal_width(viewport_rect(app), MODAL_MAX_W)),
+    )
+    .len()
 }
 
 /// The live theme picker (`ctrl-t`): one row per theme, built-ins first.
 /// Moving the cursor previews live (the whole screen repaints with the new
 /// palette via `App::preview_picker_theme`); Enter keeps, Esc restores.
-fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
+fn draw_theme_picker(f: &mut Frame, app: &App) -> Popup {
     let theme = &app.theme.colors;
     let names: Vec<&str> = app.theme_names.iter().map(String::as_str).collect();
     let index = match &app.mode {
@@ -1410,22 +1673,22 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
     };
     // Size to content (bounded by the frame), like the help overlay.
     let ic = &app.cfg.icons;
-    let footer = hint_line(
-        theme,
-        ic,
-        &[hint(ic, "keep", "Enter"), hint(ic, "cancel", "esc")],
-    );
+    let hints = [hint(ic, "keep", "Enter"), hint(ic, "cancel", "esc")];
     let w = names
         .iter()
         .map(|n| n.chars().count() as u16)
         .max()
         .unwrap_or(20)
         .saturating_add(4)
-        .max(footer.width() as u16)
         .saturating_add(MODAL_CHROME_W)
-        .max(34)
-        .min(f.area().width);
-    let h = (names.len() as u16 + MODAL_FOOTER_H as u16 + MODAL_CHROME_H).min(f.area().height);
+        // Wide enough for the shortcuts on one row where the cap allows
+        // it: they wrap in a narrow strip, but a list of three short
+        // entries should not push them onto a second row by itself.
+        .max(hint_line(theme, ic, &hints).width() as u16 + MODAL_CHROME_W);
+    let w = modal_width(f.area(), w);
+    let footer = hint_rows(theme, ic, &hints, modal_text_width(w));
+    let hint_rows = footer.len();
+    let h = (names.len() as u16 + 1 + hint_rows as u16 + MODAL_CHROME_H).min(f.area().height);
     let area = Rect::new(
         f.area().x + (f.area().width.saturating_sub(w)) / 2,
         f.area().y + (f.area().height.saturating_sub(h)) / 2,
@@ -1434,7 +1697,7 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
     );
     f.render_widget(Clear, area);
     let inner = modal_inner(area);
-    let rows = (inner.height as usize).saturating_sub(MODAL_FOOTER_H);
+    let rows = (inner.height as usize).saturating_sub(1 + hint_rows);
     let mut lines: Vec<Line> = Vec::new();
     for (i, name) in names.iter().take(rows).enumerate() {
         let selected = i == index;
@@ -1447,6 +1710,9 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
                 " ".repeat(UnicodeWidthStr::width(marker.as_str()))
             )
         };
+        // The strip is 26 columns at its narrowest: a long theme name is
+        // cut, not printed over the border.
+        let label = truncate(&label, inner.width as usize, &ic.ellipsis);
         lines.push(Line::from(if selected {
             vec![Span::styled(
                 label,
@@ -1459,16 +1725,16 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Rect {
     // The row the footer rule is painted over, reserved here so the
     // list can never grow into it.
     lines.push(Line::from(""));
-    lines.push(footer);
+    lines.extend(footer);
     let block = popup_block(theme, ic, " Themes ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
-    area
+    Popup { area, hint_rows }
 }
 
 /// The predefined-message modal (`p`): the configured presets as a
 /// numbered list. Same shape as the theme picker — content-sized, cursor
 /// on the selection, keys in the footer.
-fn draw_messages(f: &mut Frame, app: &App) -> Rect {
+fn draw_messages(f: &mut Frame, app: &App) -> Popup {
     let theme = &app.theme.colors;
     let index = match &app.mode {
         Mode::Messages { index } => *index,
@@ -1483,26 +1749,26 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
         .map(|m| app.expand_message(&m.text))
         .collect();
     let ic = &app.cfg.icons;
-    let footer = hint_line(
-        theme,
-        ic,
-        &[
-            hint(ic, "send", "Enter"),
-            hint(ic, "pick", "1-9"),
-            hint(ic, "cancel", "esc"),
-        ],
-    );
+    let hints = [
+        hint(ic, "send", "Enter"),
+        hint(ic, "pick", "1-9"),
+        hint(ic, "cancel", "esc"),
+    ];
     let w = entries
         .iter()
         .map(|l| UnicodeWidthStr::width(l.as_str()) as u16)
         .max()
         .unwrap_or(20)
         .saturating_add(6)
-        .max(footer.width() as u16)
         .saturating_add(MODAL_CHROME_W)
-        .max(34)
-        .min(f.area().width);
-    let h = (entries.len() as u16 + MODAL_FOOTER_H as u16 + MODAL_CHROME_H).min(f.area().height);
+        // Wide enough for the shortcuts on one row where the cap allows
+        // it: they wrap in a narrow strip, but a list of three short
+        // entries should not push them onto a second row by itself.
+        .max(hint_line(theme, ic, &hints).width() as u16 + MODAL_CHROME_W);
+    let w = modal_width(f.area(), w);
+    let footer = hint_rows(theme, ic, &hints, modal_text_width(w));
+    let hint_rows = footer.len();
+    let h = (entries.len() as u16 + 1 + hint_rows as u16 + MODAL_CHROME_H).min(f.area().height);
     let area = Rect::new(
         f.area().x + (f.area().width.saturating_sub(w)) / 2,
         f.area().y + (f.area().height.saturating_sub(h)) / 2,
@@ -1511,7 +1777,7 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
     );
     f.render_widget(Clear, area);
     let inner = modal_inner(area);
-    let rows = (inner.height as usize).saturating_sub(MODAL_FOOTER_H);
+    let rows = (inner.height as usize).saturating_sub(1 + hint_rows);
     let mut lines: Vec<Line> = Vec::new();
     for (i, entry) in entries.iter().take(rows).enumerate() {
         let selected = i == index;
@@ -1530,6 +1796,9 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
                 " ".repeat(UnicodeWidthStr::width(marker.as_str()))
             )
         };
+        // Cut to the strip rather than printed over the border; the
+        // number stays, so `1-9` still names what it picks.
+        let row = truncate(&row, inner.width as usize, &ic.ellipsis);
         lines.push(Line::from(if selected {
             vec![Span::styled(
                 row,
@@ -1540,16 +1809,16 @@ fn draw_messages(f: &mut Frame, app: &App) -> Rect {
         }));
     }
     lines.push(Line::from(""));
-    lines.push(footer);
+    lines.extend(footer);
     let block = popup_block(theme, ic, " Messages ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
-    area
+    Popup { area, hint_rows }
 }
 
 /// The add-shell picker (`a`): what the new shell runs, as a numbered
 /// list. Same shape as the predefined-message modal — the repository's
 /// agent command sits first (Enter starts it), a plain login shell last.
-fn draw_add_shell(f: &mut Frame, app: &App) -> Rect {
+fn draw_add_shell(f: &mut Frame, app: &App) -> Popup {
     let theme = &app.theme.colors;
     let index = match &app.mode {
         Mode::AddShell { index } => *index,
@@ -1561,26 +1830,26 @@ fn draw_add_shell(f: &mut Frame, app: &App) -> Rect {
         .map(|c| c.label)
         .collect();
     let ic = &app.cfg.icons;
-    let footer = hint_line(
-        theme,
-        ic,
-        &[
-            hint(ic, "start", "Enter"),
-            hint(ic, "pick", "1-9"),
-            hint(ic, "cancel", "esc"),
-        ],
-    );
+    let hints = [
+        hint(ic, "start", "Enter"),
+        hint(ic, "pick", "1-9"),
+        hint(ic, "cancel", "esc"),
+    ];
     let w = entries
         .iter()
         .map(|l| UnicodeWidthStr::width(l.as_str()) as u16)
         .max()
         .unwrap_or(20)
         .saturating_add(6)
-        .max(footer.width() as u16)
         .saturating_add(MODAL_CHROME_W)
-        .max(34)
-        .min(f.area().width);
-    let h = (entries.len() as u16 + MODAL_FOOTER_H as u16 + MODAL_CHROME_H).min(f.area().height);
+        // Wide enough for the shortcuts on one row where the cap allows
+        // it: they wrap in a narrow strip, but a list of three short
+        // entries should not push them onto a second row by itself.
+        .max(hint_line(theme, ic, &hints).width() as u16 + MODAL_CHROME_W);
+    let w = modal_width(f.area(), w);
+    let footer = hint_rows(theme, ic, &hints, modal_text_width(w));
+    let hint_rows = footer.len();
+    let h = (entries.len() as u16 + 1 + hint_rows as u16 + MODAL_CHROME_H).min(f.area().height);
     let area = Rect::new(
         f.area().x + (f.area().width.saturating_sub(w)) / 2,
         f.area().y + (f.area().height.saturating_sub(h)) / 2,
@@ -1589,7 +1858,7 @@ fn draw_add_shell(f: &mut Frame, app: &App) -> Rect {
     );
     f.render_widget(Clear, area);
     let inner = modal_inner(area);
-    let rows = (inner.height as usize).saturating_sub(MODAL_FOOTER_H);
+    let rows = (inner.height as usize).saturating_sub(1 + hint_rows);
     let mut lines: Vec<Line> = Vec::new();
     for (i, entry) in entries.iter().take(rows).enumerate() {
         let selected = i == index;
@@ -1608,6 +1877,9 @@ fn draw_add_shell(f: &mut Frame, app: &App) -> Rect {
                 " ".repeat(UnicodeWidthStr::width(marker.as_str()))
             )
         };
+        // Cut to the strip rather than printed over the border; the
+        // number stays, so `1-9` still names what it picks.
+        let row = truncate(&row, inner.width as usize, &ic.ellipsis);
         lines.push(Line::from(if selected {
             vec![Span::styled(
                 row,
@@ -1618,67 +1890,86 @@ fn draw_add_shell(f: &mut Frame, app: &App) -> Rect {
         }));
     }
     lines.push(Line::from(""));
-    lines.push(footer);
+    lines.extend(footer);
     let block = popup_block(theme, ic, " Add Shell ");
     f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
-    area
+    Popup { area, hint_rows }
 }
 
-/// Upper bound on a content-sized dialog: never wider than 60% of the
-/// frame, so a long typed path (or a long confirm body) still leaves the
-/// dashboard visible around it.
+/// Upper bound on a content-sized dialog. The frame is the dashboard's own
+/// strip whenever a pane is docked, so the cap is [`MODAL_MAX_W`] and not a
+/// share of the frame: a percentage would make the same dialog a different
+/// width in the docked and undocked layouts.
 fn dialog_max_w(area: Rect) -> u16 {
-    area.width * 60 / 100
+    modal_width(area, MODAL_MAX_W)
 }
 
-fn draw_input(f: &mut Frame, app: &App) -> Rect {
+fn draw_input(f: &mut Frame, app: &App) -> Popup {
     let theme = &app.theme.colors;
     let (title, label) = match &app.mode {
         Mode::Input { kind, .. } => match kind {
-            InputKind::NewWorktree => ("New Worktree", "worktree name: "),
-            InputKind::QuickSend => ("Quick Send", "send to agent: "),
+            InputKind::NewWorktree => ("New Worktree", "worktree name"),
+            InputKind::QuickSend => ("Quick Send", "send to agent"),
         },
         _ => unreachable!(),
     };
     let Mode::Input { kind, text } = &app.mode else {
-        return Rect::default();
+        return Rect::default().into();
     };
     let title_text = format!(" {title} ");
     let block = popup_block(theme, &app.cfg.icons, title_text.clone());
-    // No leading spacer line: MODAL_PADDING already keeps the field off
-    // the border.
-    let mut lines = vec![Line::from(vec![
-        Span::styled(label, fg(theme.accent)),
-        Span::raw(text.clone()),
-    ])];
+    // Fixed at the cap rather than sized to what has been typed: a field
+    // that grows with the text jitters under the hands typing into it, and
+    // the tail-scrolling below needs a width it can count on.
+    let w = dialog_max_w(f.area());
+    let body_w = modal_text_width(w);
+    // The label sits on its own row and the field under it. Inline
+    // ("worktree name: …") does not survive a 26-column strip: the label
+    // alone is wider than the field would be.
+    const FIELD_INDENT: usize = 2;
+    // One cell is left for the caret, so a field typed full still shows
+    // where the next character lands.
+    let field_w = body_w.saturating_sub(FIELD_INDENT + 1);
+    let shown = tail_to_width(text, field_w);
+    let mut lines = vec![
+        Line::from(Span::styled(label, fg(theme.accent))),
+        Line::from(Span::raw(format!("{}{shown}", " ".repeat(FIELD_INDENT)))),
+    ];
     // new-worktree only: the worktree is cut from the repository's base
     // branch, NOT from whatever the repo has checked out. Name the branch
     // so nobody has to guess which one it is.
     if *kind == InputKind::NewWorktree
         && let Some(hint) = app.new_worktree_base()
     {
-        lines.push(Line::from(Span::styled(
-            format!("branches from: {} (base branch)", hint.branch),
-            fg(theme.dim),
-        )));
+        for l in wrap(
+            &format!("branches from: {} (base branch)", hint.branch),
+            body_w,
+        ) {
+            lines.push(Line::from(Span::styled(l, fg(theme.dim))));
+        }
         if let Some(configured) = &hint.missing {
-            lines.push(Line::from(Span::styled(
-                format!("base branch '{configured}' not found; using current branch"),
-                fg(theme.status_waiting),
-            )));
+            for l in wrap(
+                &format!("base branch '{configured}' not found; using current branch"),
+                body_w,
+            ) {
+                lines.push(Line::from(Span::styled(l, fg(theme.status_waiting))));
+            }
         }
     }
     let ic = &app.cfg.icons;
     lines.push(Line::from(""));
-    lines.push(hint_line(
+    let footer = hint_rows(
         theme,
         ic,
         &[hint(ic, "submit", "Enter"), hint(ic, "cancel", "esc")],
-    ));
-    let area = dialog_rect(f.area(), &lines, &title_text, 34, dialog_max_w(f.area()));
+        body_w,
+    );
+    let hint_rows = footer.len();
+    lines.extend(footer);
+    let area = dialog_rect(f.area(), &lines, &title_text, w, w);
     f.render_widget(Clear, area);
-    // Inside the border AND the padding — the first content row is the
-    // input row.
+    // Inside the border AND the padding — the label row is the first
+    // content row, the field the second.
     let inner = modal_inner(area);
     let popup_style = on(theme.popup_fg, theme.popup_bg);
     f.render_widget(
@@ -1687,19 +1978,33 @@ fn draw_input(f: &mut Frame, app: &App) -> Rect {
             .style(popup_style),
         area,
     );
-    // cursor after the typed text, on the input row (the first content
-    // line, flush under the top border — the padding is horizontal only).
-    // Only when the popup fits the frame — a cursor off the buffer would
-    // corrupt the terminal.
-    let cursor_x = inner.x + label.chars().count() as u16 + text.chars().count() as u16;
-    let cursor_y = inner.y;
+    // The caret sits after the last character actually shown — the field
+    // scrolls with the text, so that is the end of the tail, not the end
+    // of the buffer. Only when it lands inside the popup: a cursor off the
+    // buffer would corrupt the terminal.
+    let cursor_x = inner.x + (FIELD_INDENT + UnicodeWidthStr::width(shown)) as u16;
+    let cursor_y = inner.y + 1;
     if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
         f.set_cursor_position(Position::new(cursor_x, cursor_y));
     }
-    area
+    Popup { area, hint_rows }
 }
 
-fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
+/// The tail of `text` that fits `width` columns — what a one-line field
+/// shows once more has been typed than it can hold. The end is what
+/// matters: it is where the caret is.
+fn tail_to_width(text: &str, width: usize) -> &str {
+    let mut start = text.len();
+    for (i, _) in text.char_indices().rev() {
+        if UnicodeWidthStr::width(&text[i..]) > width {
+            break;
+        }
+        start = i;
+    }
+    &text[start..]
+}
+
+fn draw_textarea(f: &mut Frame, app: &App) -> Popup {
     let theme = &app.theme.colors;
     // Span the popup to the textarea geometry (shared with the key
     // handler's page-size math via app::textarea_visible_lines).
@@ -1708,10 +2013,10 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
     let area = centered_rect_wh(f.area(), w, h);
     f.render_widget(Clear, area);
     let Mode::Textarea { buf } = &app.mode else {
-        return area;
+        return area.into();
     };
-    let content_lines = crate::app::textarea_visible_lines(app.viewport.1).max(1);
     let ic = &app.cfg.icons;
+    let content_lines = crate::app::textarea_visible_lines(ic, app.viewport).max(1);
     let block = popup_block(theme, ic, " Quick Send ");
     let inner = modal_inner(area);
     // Row layout inside the border: content, spacer, hint. The popup
@@ -1737,17 +2042,11 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
             None => lines.push(Line::from("")),
         }
     }
-    // Spacer, then the hint row.
+    // Spacer, then the hint rows.
     lines.push(Line::from(""));
-    lines.push(hint_line(
-        theme,
-        ic,
-        &[
-            hint(ic, "newline", "Enter"),
-            hint(ic, "send", "ctrl-s"),
-            hint(ic, "cancel", "esc"),
-        ],
-    ));
+    let footer = hint_rows(theme, ic, &textarea_hints(ic), modal_text_width(area.width));
+    let hint_rows = footer.len();
+    lines.extend(footer);
 
     let popup_style = on(theme.popup_fg, theme.popup_bg);
     f.render_widget(
@@ -1766,7 +2065,25 @@ fn draw_textarea(f: &mut Frame, app: &App) -> Rect {
             f.set_cursor_position(Position::new(cursor_x, cursor_y));
         }
     }
-    area
+    Popup { area, hint_rows }
+}
+
+/// The quick-send editor's footer hints. Shared with
+/// [`crate::app::textarea_visible_lines`], which has to know how many rows
+/// they take before it can say how many lines of text are left.
+pub(crate) fn textarea_hints(ic: &crate::config::IconsConfig) -> Vec<Hint> {
+    vec![
+        hint(ic, "newline", "Enter"),
+        hint(ic, "send", "ctrl-s"),
+        hint(ic, "cancel", "esc"),
+    ]
+}
+
+/// Rows the quick-send editor's footer occupies at a viewport width — the
+/// hint rows and the rule above them.
+pub(crate) fn textarea_footer_h(ic: &crate::config::IconsConfig, viewport_w: u16) -> usize {
+    let w = crate::app::textarea_width(viewport_w);
+    footer_h(ic, &textarea_hints(ic), modal_text_width(w))
 }
 
 /// Centered rect of an exact width/height (the percentage version cannot
@@ -1800,10 +2117,10 @@ fn dialog_rect(frame: Rect, lines: &[Line], title: &str, min_w: u16, max_w: u16)
     centered_rect_wh(frame, w, h)
 }
 
-fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
+fn draw_confirm(f: &mut Frame, app: &App) -> Popup {
     let theme = &app.theme.colors;
     let Mode::Confirm { confirm } = &app.mode else {
-        return Rect::default();
+        return Rect::default().into();
     };
     let ic = &app.cfg.icons;
     // Only the answers that can actually succeed are offered, and only
@@ -1817,26 +2134,53 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
         hints.push(hint(ic, fl, "f"));
     }
     hints.push(hint(ic, "cancel", "n"));
+    // Wrapped before the dialog is sized, not after: the body is a
+    // sentence about a path, and the widest line a docked dashboard can
+    // give it is `MODAL_MAX_W`.
+    let body_w = modal_text_width(dialog_max_w(f.area()));
     let mut lines: Vec<Line> = confirm
         .body
         .lines()
-        .map(|l| Line::from(Span::raw(l.to_string())))
+        .flat_map(|l| wrap(l, body_w))
+        .map(|l| Line::from(Span::raw(l)))
         .collect();
     // The caveat is an error, not prose: mark and text both in the failure
     // colour, bold, so it reads before the shortcuts do.
     if let Some(warning) = &confirm.warning {
         let style = fg(theme.status_failed).add_modifier(Modifier::BOLD);
-        lines.push(Line::from(vec![
-            Span::styled(format!("{} ", warn_mark(ic)), style),
-            Span::styled(warning.clone(), style),
-        ]));
+        let mark = warn_mark(ic);
+        let indent = UnicodeWidthStr::width(mark) + 1;
+        for (i, l) in wrap(warning, body_w.saturating_sub(indent))
+            .into_iter()
+            .enumerate()
+        {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if i == 0 {
+                        format!("{mark} ")
+                    } else {
+                        " ".repeat(indent)
+                    },
+                    style,
+                ),
+                Span::styled(l, style),
+            ]));
+        }
     }
     lines.push(Line::from(""));
-    lines.push(hint_line(theme, ic, &hints));
+    let footer = hint_rows(theme, ic, &hints, body_w);
+    let hint_rows = footer.len();
+    lines.extend(footer);
     let title_text = format!(" {} ", confirm.title);
     let block = popup_block(theme, ic, title_text.clone());
     let popup_style = on(theme.popup_fg, theme.popup_bg);
-    let area = dialog_rect(f.area(), &lines, &title_text, 34, dialog_max_w(f.area()));
+    let area = dialog_rect(
+        f.area(),
+        &lines,
+        &title_text,
+        crate::dock::DASH_MIN_WIDTH,
+        dialog_max_w(f.area()),
+    );
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(Text::from(lines))
@@ -1844,7 +2188,7 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Rect {
             .style(popup_style),
         area,
     );
-    area
+    Popup { area, hint_rows }
 }
 
 #[cfg(test)]
@@ -1956,11 +2300,14 @@ mod tests {
         }
     }
 
-    /// The input popup's block cursor must sit on the input text row, right
-    /// after the typed text. Regression, twice: `modal_inner` kept counting
-    /// a vertical padding row that `MODAL_PADDING` no longer reserves, so
-    /// the caret landed a row below the text in every input popup (new
+    /// The input popup's caret must sit on the field row, right after the
+    /// typed text. Regression, twice: `modal_inner` kept counting a
+    /// vertical padding row that `MODAL_PADDING` no longer reserves, so the
+    /// caret landed a row below the text in every input popup (new
     /// worktree, add-shell, quick-send) — on the "branches from" hint.
+    ///
+    /// The label now has a row of its own (it does not fit beside a field
+    /// in a 26-column strip), so the field is the *second* content row.
     #[test]
     fn input_popup_cursor_sits_on_input_row() {
         // seeded: the add-shell hint needs a repository to name, and it adds
@@ -1972,8 +2319,8 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
         for (kind, label, text) in [
-            (InputKind::NewWorktree, "worktree name: ", "foo"),
-            (InputKind::QuickSend, "send to agent: ", "busy 2"),
+            (InputKind::NewWorktree, "worktree name", "foo"),
+            (InputKind::QuickSend, "send to agent", "busy 2"),
         ] {
             app.mode = Mode::Input {
                 kind,
@@ -1983,19 +2330,41 @@ mod tests {
                 .draw(|f| draw(f, &mut app))
                 .expect("draw must not fail");
 
-            // the popup sizes itself to its content, so take the rect the
-            // draw actually used
             let area = app.popup_area.expect("input popup is on screen");
-            // inside the border AND the one column of padding
-            let expected_x =
-                area.x + 2 + label.chars().count() as u16 + text.chars().count() as u16;
-            let expected_y = area.y + 1; // input row = first content row
+            let body = buffer_text(&terminal);
+            assert!(body.contains(label), "the label names the field: {label:?}");
+            // inside the border AND the one column of padding, then the
+            // field's own indent, then the text
+            let expected_x = area.x + 2 + 2 + text.chars().count() as u16;
+            let expected_y = area.y + 2; // label row, then the field row
             assert_eq!(
                 terminal.get_cursor_position().unwrap(),
                 Position::new(expected_x, expected_y),
-                "cursor must sit on the input row after the typed text ({label:?})",
+                "cursor must sit on the field row after the typed text ({label:?})",
             );
         }
+    }
+
+    /// A field holds more than the strip is wide: what it shows is the
+    /// tail, so the caret — which is always at the end of what has been
+    /// typed — stays on screen instead of walking off the border.
+    #[test]
+    fn a_long_input_shows_its_tail_and_keeps_the_caret_inside() {
+        let mut app = seeded_app();
+        app.mode = Mode::Input {
+            kind: InputKind::QuickSend,
+            text: "x".repeat(200),
+        };
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        let area = app.popup_area.expect("input popup is on screen");
+        assert!(area.width <= MODAL_MAX_W, "capped like every overlay");
+        let pos = terminal.get_cursor_position().unwrap();
+        assert!(
+            pos.x < area.x + area.width && pos.y < area.y + area.height,
+            "the caret stays inside the popup: {pos:?} in {area:?}"
+        );
     }
 
     /// The textarea popup shows the WHOLE visible window, not just the
@@ -2018,7 +2387,7 @@ mod tests {
             buf.newline();
         }
         buf.ensure_visible(
-            crate::app::textarea_visible_lines(40),
+            crate::app::textarea_visible_lines(&app.cfg.icons, (120, 40)),
             crate::app::textarea_wrap_width(120),
         );
         app.mode = Mode::Textarea { buf };
@@ -2053,7 +2422,7 @@ mod tests {
             buf.insert_char(c);
         }
         buf.ensure_visible(
-            crate::app::textarea_visible_lines(40),
+            crate::app::textarea_visible_lines(&app.cfg.icons, (120, 40)),
             crate::app::textarea_wrap_width(120),
         );
         app.mode = Mode::Textarea { buf };
@@ -2559,7 +2928,10 @@ mod tests {
     fn overlay_refused_on_tiny_frame() {
         let mut app = seeded_app();
         app.mode = Mode::Help;
-        let backend = ratatui::backend::TestBackend::new(30, 8);
+        // Wide enough for the dashboard's own strip, too short for any
+        // dialog: overlays are built for 26 columns now, so height is what
+        // refuses them.
+        let backend = ratatui::backend::TestBackend::new(40, 7);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
@@ -2704,7 +3076,9 @@ mod tests {
     #[test]
     fn help_overlay_groups_actions_by_context() {
         let mut app = seeded_app();
-        let text = help_text(&mut app, 120, 40);
+        // Tall enough for the whole palette: reflowed for the strip it is
+        // a long column, and this test is about the words, not the fold.
+        let text = help_text(&mut app, 120, 80);
         for header in ["navigate", "repositories", "worktrees", "shells", "global"] {
             assert!(text.contains(header), "group header {header:?} missing");
         }
@@ -2759,7 +3133,7 @@ mod tests {
         // For every bar entry, the action's word appears in the help
         // overlay (bar: "worktree n" vs help: "new worktree", etc.).
         let mut app = seeded_app();
-        let text = help_text(&mut app, 120, 40);
+        let text = help_text(&mut app, 120, 80);
         let app2 = seeded_app();
         for (entry, _) in crate::ui::bar_entries(&app2) {
             match entry.desc.as_str() {
@@ -3297,7 +3671,7 @@ mod tests {
             "short frame must advertise scrolling: {short:?}"
         );
         let mut app = seeded_app();
-        let tall = help_text(&mut app, 120, 50);
+        let tall = help_text(&mut app, 120, 80);
         assert!(
             !tall.contains("scroll j/k"),
             "tall frame fits everything: {tall:?}"
@@ -3356,7 +3730,10 @@ mod tests {
         let mut app = seeded_app();
         app.theme_names = crate::theme::available_names().unwrap();
         app.mode = Mode::ThemePicker { index: 0 };
-        let backend = ratatui::backend::TestBackend::new(30, 8);
+        // Wide enough for the dashboard's own strip, too short for any
+        // dialog: overlays are built for 26 columns now, so height is what
+        // refuses them.
+        let backend = ratatui::backend::TestBackend::new(40, 7);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
@@ -3422,7 +3799,10 @@ mod tests {
     fn diagnostics_refused_on_tiny_frame() {
         let mut app = app_with_diags(2);
         app.mode = Mode::Diagnostics;
-        let backend = ratatui::backend::TestBackend::new(30, 8);
+        // Wide enough for the dashboard's own strip, too short for any
+        // dialog: overlays are built for 26 columns now, so height is what
+        // refuses them.
+        let backend = ratatui::backend::TestBackend::new(40, 7);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
@@ -3979,7 +4359,10 @@ mod tests {
     fn tiny_frame_refuses_the_messages_modal() {
         let mut app = seeded_app();
         app.mode = Mode::Messages { index: 0 };
-        let backend = ratatui::backend::TestBackend::new(30, 8);
+        // Wide enough for the dashboard's own strip, too short for any
+        // dialog: overlays are built for 26 columns now, so height is what
+        // refuses them.
+        let backend = ratatui::backend::TestBackend::new(40, 7);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
@@ -4402,6 +4785,104 @@ mod tests {
                 "{label:?}: the key is highlighted"
             );
             assert_ne!(buf[(x0, y)].fg, accent, "{label:?}: the description is not");
+        }
+    }
+
+    // ---- the narrow strip: overlays built for the dashboard's own pane ----
+
+    #[test]
+    fn wrap_breaks_on_words_and_only_cuts_a_word_that_cannot_fit() {
+        assert_eq!(wrap("one two three", 7), vec!["one two", "three"]);
+        assert_eq!(wrap("", 10), vec![""]);
+        assert_eq!(wrap("short", 10), vec!["short"]);
+        // A word wider than the line is cut where the line ends, never
+        // printed past it.
+        assert_eq!(wrap("aaaaaaaa", 3), vec!["aaa", "aaa", "aa"]);
+        assert_eq!(wrap("hi aaaaaa", 3), vec!["hi", "aaa", "aaa"]);
+        for line in wrap("a much longer sentence than the box", 9) {
+            assert!(UnicodeWidthStr::width(line.as_str()) <= 9, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_tail_is_what_a_full_field_shows() {
+        assert_eq!(tail_to_width("abcdef", 3), "def");
+        assert_eq!(tail_to_width("abc", 10), "abc");
+        assert_eq!(tail_to_width("", 4), "");
+    }
+
+    /// Every overlay is built for the dashboard's own strip: it must be
+    /// drawn — not refused — at the narrowest width a docked dashboard
+    /// ever has, and it must never be wider than that strip's cap, so the
+    /// same dialog is the same dialog whether or not a pane is docked.
+    #[test]
+    fn every_overlay_is_drawn_in_the_narrowest_strip_and_capped_in_a_wide_one() {
+        let modes = || {
+            vec![
+                Mode::Help,
+                Mode::Diagnostics,
+                Mode::ThemePicker { index: 0 },
+                Mode::AddShell { index: 0 },
+                Mode::Messages { index: 0 },
+                Mode::Input {
+                    kind: InputKind::NewWorktree,
+                    text: "a-long-worktree-name-typed-in-full".into(),
+                },
+                Mode::Textarea {
+                    buf: crate::app::TextBuf::new(),
+                },
+                Mode::Confirm {
+                    confirm: Confirm {
+                        title: "Delete Worktree".into(),
+                        body: "delete worktree 'wt' at /tmp/repo-a-wt, kill its windows and \
+                               remove the branch?"
+                            .into(),
+                        warning: Some("this cannot be undone".into()),
+                        yes_label: Some("delete".into()),
+                        force_label: Some("force".into()),
+                        action: ConfirmAction::DeleteWorktree {
+                            repository: 0,
+                            worktree: 0,
+                        },
+                    },
+                },
+            ]
+        };
+        for (w, h) in [(crate::dock::DASH_MIN_WIDTH, 24), (200, 60)] {
+            for mode in modes() {
+                let mut app = seeded_app_with_shell();
+                app.cfg.diagnostics = vec!["[worktrees] unknown key 'foo' — dropped".into()];
+                app.theme_names = vec!["ansi".into(), "gruvbox".into()];
+                app.mode = mode;
+                let backend = ratatui::backend::TestBackend::new(w, h);
+                let mut terminal = ratatui::Terminal::new(backend).unwrap();
+                terminal.draw(|f| draw(f, &mut app)).expect("draw");
+                let text = buffer_text(&terminal);
+                let area = app
+                    .popup_area
+                    .unwrap_or_else(|| panic!("{:?} refused at {w}x{h}: {text}", app.mode));
+                assert!(
+                    area.width <= MODAL_MAX_W && area.width <= w,
+                    "{:?} at {w}x{h} is {} columns wide",
+                    app.mode,
+                    area.width
+                );
+                assert!(
+                    !text.contains("too small"),
+                    "{:?} refused at {w}x{h}",
+                    app.mode
+                );
+                // The way out survives the width: a footer cut at the
+                // border would lose `cancel esc`, which is the one hint a
+                // dialog cannot afford to lose. (The confirm spells its
+                // own `cancel n` instead — `esc` cancels every overlay and
+                // is not re-taught per dialog.)
+                assert!(
+                    text.contains("esc") || text.contains("cancel n"),
+                    "{:?} at {w}x{h} has no way out on screen: {text}",
+                    app.mode
+                );
+            }
         }
     }
 }

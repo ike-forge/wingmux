@@ -889,8 +889,9 @@ duplication docking exists to end.
   reads as its own compartment the way a table header rule separates the
   header from the rows. A line inside the padding would have floated, ending
   a column short of the frame on both sides. Mechanically it paints *over* the
-  blank row every modal already reserves above its hint line, so `MODAL_FOOTER_H`
-  stays 2 and no sizing math changed; it writes the symbol and foreground only,
+  blank row every modal already reserves above its hint line, so no sizing
+  math changed (the footer's height is now measured per modal — see the
+  narrow-strip entry below); it writes the symbol and foreground only,
   leaving each cell's background alone, because some overlays fill `popup_bg`
   and some do not. It is called once in `draw`, off `app.popup_area`, so a new
   overlay cannot forget it — the same discipline as `MODAL_PADDING`. The
@@ -927,10 +928,44 @@ duplication docking exists to end.
   confirm dialog (delete worktree/repository) are sized to
   their content by `dialog_rect` — widest line and line count, plus one
   column/row of `DIALOG_PADDING` inside the border on every side — clamped
-  to a 34-column floor and 60%-of-frame ceiling. They used to take a fixed
-  percentage of the frame (62%×26% for confirms), so a two-line question
-  drew a box a quarter of the screen tall with text jammed against the
-  border.
+  to a `DASH_MIN_WIDTH` floor and the `MODAL_MAX_W` ceiling below. They used
+  to take a fixed percentage of the frame (62%×26% for confirms), so a
+  two-line question drew a box a quarter of the screen tall with text
+  jammed against the border.
+- **Overlays are built for the narrow strip, and capped there** (post-M18).
+  Docking left the dashboard living in 26–48 columns while a pane is docked
+  and in the whole window while none is, and the overlays were built for the
+  second one: the help palette was a fixed 82-column table, the dialogs took
+  60% of the frame, and every `overlay_min` was wider than the strip — so
+  the same dialog was two different dialogs, and `?` was refused outright on
+  the layout the app spends its life in. Now:
+  - `MODAL_MAX_W` (= `dock::DASH_MAX_WIDTH`) caps *every* overlay, docked or
+    not, and every `overlay_min` width is `dock::DASH_MIN_WIDTH`. What is
+    left to refuse an overlay is height. A dialog that asks one question
+    never needed 200 columns, so the cap costs the undocked layout nothing
+    and buys one dialog instead of two.
+  - **The palette reflows instead of tabulating.** `help_row` writes
+    `<description> <key>` on one line while it fits and stacks the key
+    underneath when it does not, with the notes wrapped in dim below —
+    always in that order, so the shape is learnable at any width. The
+    fixed `HELP_DESC_W`/`HELP_KEY_W` columns are gone with the table.
+  - **Footers wrap, and the modal that owns one sizes itself to it.**
+    `hint_packing` splits the hints across rows; `footer_h` reports how many
+    rows that took, and each modal adds it instead of the old constant. A
+    single truncated row would have dropped `cancel esc` — the one hint a
+    dialog cannot lose — at exactly the width where it is hardest to guess.
+    `draw_footer_rule` takes the row count so the rule still lands directly
+    above the hints, which is why the overlay draw functions return a
+    `Popup { area, hint_rows }` rather than a bare `Rect`.
+  - **Long text wraps, long rows are cut.** Prose (the confirm body, a
+    diagnostic, the base-branch hint) is wrapped by `wrap` *before* the
+    dialog is sized; list rows (themes, messages, add-shell) are truncated
+    with the configured ellipsis, because a wrapped list row would break the
+    one-row-per-`1-9`-key correspondence the picker teaches.
+  - **The input field carries its label on its own row and scrolls to its
+    tail.** "worktree name: " alone is wider than a 26-column field, and the
+    caret is always at the end of what was typed, so `tail_to_width` shows
+    the end and the caret stays inside the border.
 - **Icons**: `[icons]` (`src/config.rs`) covers the tree's type icons and
   guides, the seven agent-status icons, the cursor marker, the separator,
   the warn mark, the ellipsis, the Enter glyph and the border style, chosen
