@@ -2220,6 +2220,22 @@ impl App {
         Ok(())
     }
 
+    /// Send the docked pane home before `window` is killed.
+    ///
+    /// While a shell is docked, its own window holds the **slot**, not the
+    /// agent pane — the swap put the agent beside the tree. Killing that
+    /// window would take the furniture and leave the agent pane living in
+    /// the dashboard's own window, still drawing over the panel, with no
+    /// row left in the tree to say what it is. Undocking first puts the
+    /// agent pane back where the kill can reach it.
+    fn release_dock_before_kill(&mut self, window: &str, pane: Option<&str>) {
+        let ours = self.docked_home.as_deref() == Some(window)
+            || (pane.is_some() && self.docked.as_deref() == pane);
+        if ours {
+            self.drop_slot();
+        }
+    }
+
     pub fn delete_worktree(&mut self, ri: usize, wi: usize, force: bool) -> Result<()> {
         let tmux = self.require_tmux()?;
         let repo = self
@@ -2235,6 +2251,7 @@ impl App {
             .ok_or_else(|| Error::State(format!("worktree index {wi} out of range")))?;
         for sh in &wt.shells {
             if let Some(wid) = &sh.window_id {
+                self.release_dock_before_kill(wid, sh.pane_id.as_deref());
                 match tmux.kill_window(wid) {
                     Ok(()) => log::info!("killed window {wid} ({})", sh.window_name),
                     Err(e) => log::warn!("kill-window {wid}: {e}"),
@@ -2282,6 +2299,7 @@ impl App {
             .cloned()
             .ok_or_else(|| Error::State(format!("shell index {si} out of range")))?;
         if let Some(wid) = &sh.window_id {
+            self.release_dock_before_kill(wid, sh.pane_id.as_deref());
             match tmux.kill_window(wid) {
                 Ok(()) => log::info!("killed window {wid} ({})", sh.window_name),
                 Err(e) => log::warn!("kill-window {wid}: {e}"),
@@ -5482,6 +5500,39 @@ mod tests {
             app.poll();
             assert_eq!(app.docked, None);
             assert!(app.message.is_none());
+        });
+    }
+
+    /// Killing a docked shell kills its **home** window — and while it is
+    /// docked, that window holds the slot, not the agent pane. Without a
+    /// release the agent pane would outlive the row that named it, still
+    /// drawn beside the tree with nothing left to select.
+    #[test]
+    fn deleting_the_docked_shell_takes_its_pane_off_the_dashboard() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (wid, pane) = seed_repository_with_shell(&tmux, &mut app);
+            app.dock_pane(&pane, false).expect("dock");
+            assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
+
+            // Some other window's shell: not ours to let go of.
+            app.release_dock_before_kill("@999", Some("%999"));
+            assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
+
+            app.release_dock_before_kill(&wid, Some(&pane));
+            assert_eq!(app.docked, None, "the dock is released");
+            assert_eq!(app.slot, None, "and the slot with it");
+            let home = tmux
+                .list_panes()
+                .expect("panes")
+                .into_iter()
+                .find(|p| p.pane_id == pane)
+                .expect("the agent pane is still alive");
+            assert_eq!(
+                home.window_id, wid,
+                "the agent pane is home, where the kill can reach it"
+            );
         });
     }
 

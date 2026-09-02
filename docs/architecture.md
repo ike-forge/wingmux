@@ -404,6 +404,15 @@ duplication docking exists to end.
     `App::drop_slot` gives the dashboard its whole window back and the preview
     returns with it. The preview is the browse mode and the only view that
     works for a shell we do not hold, so it must not be a slot-shaped hole.
+  - **Deleting a docked shell undocks it first.** `d` on a shell or worktree
+    kills the shell's *home* window — which, while that shell is docked,
+    holds the slot and not the agent pane. The kill would take the furniture
+    and leave the agent pane living in the dashboard's own window, still
+    drawn beside the tree with no row left to name it, and `reconcile_docked`
+    would not object because the lease is still ours and still valid. So
+    `App::release_dock_before_kill` runs first, on the window id rather than
+    the pane id (`docked_home` is exactly "the window the kill is about to
+    remove"), and the agent pane dies with its own window.
 
 - **A poll stamps its own clock** (M18 follow-up). `App::poll` did not touch
   `App::last_poll`, so the event loop's "is a poll due" test stayed true for
