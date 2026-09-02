@@ -655,15 +655,20 @@ duplication docking exists to end.
   shipped theme keeps distinct from the other three (`dead` and `idle`
   both fall back to `dim`, which is `new`), and the row *is* broken: it
   cannot be docked, sent to or previewed, only removed.
-- **A settled worktree is muted whole.** Once a worktree is merged or its
-  directory is gone, the only decision left is whether to remove it — what
-  the agent inside was doing is history. So those two states dim the
-  worktree name *and* the solo shell's status label, and the state glyph is
-  the single span that keeps a colour (it also keeps it when the row would
+- **A settled worktree is muted whole and drops its status.** Once a
+  worktree is merged or its directory is gone, the only decision left is
+  whether to remove it — what the agent inside was doing is history. So
+  those two states dim the worktree name and omit the solo shell's status
+  label entirely (a dimmed `waiting` still said something the user can act
+  on, and there is nothing to act on), leaving the state glyph as the
+  single span that keeps a colour (it also keeps it when the row would
   otherwise mute for having no shells or only dead ones — muting it too
-  would leave nothing saying why the row is quiet). The rule this fixes:
-  colour is for what needs the user, and a merged worktree parked on
-  `waiting` was pulling attention with the brightest role in the palette.
+  would leave nothing saying why the row is quiet). The shells of a
+  multi-shell settled worktree still show their own status on their own
+  rows: that is where a live agent is still addressable. The rule this
+  fixes: colour is for what needs the user, and a merged worktree parked
+  on `waiting` was pulling attention with the brightest role in the
+  palette.
   - **Uncommitted changes ARE folded in** (user's call, reversing the
     earlier rule): an agent that has edited a worktree but not committed
     has plainly done something there, and drawing it with the "nothing
@@ -1003,7 +1008,12 @@ duplication docking exists to end.
   chip and the repository count never changed anything the user could act on,
   and the message slot was never cleared, so the last notice stayed on screen
   for the rest of the session. Notices are toasts above the bar with their own
-  TTL (4s, 6s for errors) — the log and the diagnostics overlay stay the
+  TTL (4s, 6s for errors) and only errors wear `status_failed`; an ordinary
+  notice takes `title_fg` (it used to take `accent`, which is peach in the
+  Catppuccin flavours and made "worktree deleted" read like a failure —
+  and `accent`/`border_focused` equal `title_bg` in three shipped themes,
+  so `title_fg` is the one role guaranteed legible on the toast's own
+  background) — the log and the diagnostics overlay stay the
   permanent record. The bar's entries are contextual, clickable, and computed
   per selection; hjkl/Esc/q deliberately take no slot (assumed knowledge).
   The bar wraps onto a second row when the entries do not fit its width
