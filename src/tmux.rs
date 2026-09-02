@@ -2141,6 +2141,44 @@ pub(crate) mod testutil {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    /// A handle on a socket **no other test shares**: a tmux for the tests
+    /// that never mean to talk to one.
+    ///
+    /// It used to be the literal socket `"unused"`, on the assumption that
+    /// nothing would ever run a command on it. That assumption is not the
+    /// test's to make — an action under test may legitimately reach tmux
+    /// (pressing `Enter` on a repository row starts its inline shell), and
+    /// a session left on a shared socket is then found by the next test
+    /// that captures a pane there. A socket of one's own turns that from a
+    /// cross-test failure into nothing at all.
+    pub fn dead_socket() -> String {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        format!(
+            "lwdead-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    /// [`tmux_inside`] on a socket of its own — see [`dead_socket`].
+    pub fn tmux_nowhere() -> Tmux {
+        tmux_inside(&dead_socket())
+    }
+
+    /// Kill whatever server a handle's socket ended up with — for a test
+    /// that deliberately reaches tmux on a [`dead_socket`] and should not
+    /// leave a server (and its shells) running past the run.
+    pub fn kill_socket(tmux: &Tmux) {
+        if let Some(sock) = &tmux.socket {
+            let _ = Command::new("tmux")
+                .arg("-L")
+                .arg(sock)
+                .arg("kill-server")
+                .output();
+        }
+    }
+
     /// A handle pretending the dashboard runs inside the `main` session.
     pub fn tmux_inside(sock: &str) -> Tmux {
         Tmux {

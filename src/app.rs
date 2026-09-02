@@ -526,6 +526,10 @@ pub enum BarAction {
     PredefinedSend,
     DeleteWorktree,
     DeleteShell,
+    /// Close the selected repository's inline shell.
+    CloseRepoShell,
+    /// Start (if needed) and dock the selected repository's inline shell.
+    RepoShell,
     /// Bring the selected shell's real pane beside the tree.
     Dock,
     /// Back to the live tail from a preview parked in the scrollback.
@@ -586,6 +590,13 @@ pub enum ConfirmAction {
         repository: usize,
         worktree: usize,
         shell: usize,
+    },
+    /// Close a repository's inline shell. The repository, its worktrees
+    /// and their agents are untouched — this kills one window. Named for
+    /// what the dialog says rather than for the two variants above it: `d`
+    /// on a shell has always read "Close Shell".
+    CloseRepoShell {
+        repository: usize,
     },
 }
 
@@ -1219,6 +1230,7 @@ impl App {
             agent_shell: agent.shell,
             session_name: None,
             missing: false,
+            shell: None,
             worktrees: Vec::new(),
         });
         Ok(())
@@ -1582,6 +1594,13 @@ impl App {
                 if let Some(e) = self.repo_expanded.get_mut(ri) {
                     *e = !*e;
                 }
+                // A repository row does two things at once on `Enter`, and
+                // they do not compete: the tree opens (or closes), and the
+                // panel gets the repository's own shell. The disclosure is
+                // about the rows below; the shell is about the panel beside
+                // them — the same `Enter` that enters a worktree, entering
+                // the repository.
+                self.enter_repo_shell(ri);
             }
             Sel::Worktree(ri, wi) => {
                 // Folded worktree: there is nothing to expand into, so the
@@ -1772,7 +1791,24 @@ impl App {
     /// mutation can outdate for the frame between the change and the next
     /// `clamp_sel`, and a renderer asking what is selected must get `None`
     /// there rather than panic.
+    /// A repository row answers with its own inline shell, which is what
+    /// makes docking, the preview and the lease follow that row exactly as
+    /// they follow a worktree's. What it deliberately does NOT reach is
+    /// [`App::selected_shell`] — the `(repository, worktree, shell)` triple
+    /// the send paths take — so `s` and `p` stay unbound on a repository
+    /// row: the presets are agent prompts, and a command you want a shell
+    /// to run is a command you type in it.
     pub fn selected_shell_pane(&self) -> Option<String> {
+        if let Sel::Repository(ri) = self.sel {
+            return self
+                .state
+                .repositories
+                .get(ri)?
+                .shell
+                .as_ref()?
+                .pane_id
+                .clone();
+        }
         let (ri, wi, si) = self.selected_shell()?;
         self.state
             .repositories
@@ -2062,18 +2098,26 @@ impl App {
         else {
             return;
         };
-        let Some(pane) = sh.pane_id.clone() else {
+        let (pane, name) = (sh.pane_id.clone(), sh.window_name.clone());
+        let Some(pane) = pane else {
             self.notify("shell has no live pane");
             return;
         };
-        let name = sh.window_name.clone();
+        self.enter_pane(&pane, &name);
+    }
+
+    /// The half of [`App::dock_shell`] that is about a pane rather than a
+    /// tree position — shared with the repository row, whose inline shell
+    /// hangs off the repository and has no `(worktree, shell)` to be found
+    /// by.
+    fn enter_pane(&mut self, pane: &str, name: &str) {
         // Taken from another dashboard, unconfirmed: the case is rare and
         // the answer is always yes — someone pressed `Enter` on the row.
         // A dialog here would cost every ordinary dock a habit of dismissing
         // one. Both sides are told instead: this toast, and the loser's in
         // `reconcile_docked`.
-        let taken_from = self.leased_by(&pane).map(|l| l.label());
-        if let Err(e) = self.dock_pane(&pane, true) {
+        let taken_from = self.leased_by(pane).map(|l| l.label());
+        if let Err(e) = self.dock_pane(pane, true) {
             self.notify_err(format!("dock failed: {e}"));
             log::error!("dock {name} ({pane}): {e}");
             return;
@@ -2083,14 +2127,120 @@ impl App {
         }
     }
 
+    /// The repository's own inline shell, if it has one and tmux still
+    /// holds its pane.
+    pub fn repo_shell_pane(&self, ri: usize) -> Option<String> {
+        self.state
+            .repositories
+            .get(ri)?
+            .shell
+            .as_ref()?
+            .pane_id
+            .clone()
+    }
+
+    /// Start the repository's inline shell if it has none yet: a plain
+    /// login shell in the repository's own checkout — the base branch, the
+    /// working copy the worktrees were cut from.
+    ///
+    /// Nothing is sent to it, for the reason a plain worktree shell gets
+    /// nothing sent to it either: the window already *is* the shell. And
+    /// nothing starts it but an explicit `Enter` on the row — spawning one
+    /// per repository the cursor passed over would cost two or three
+    /// seconds each for shells nobody asked for.
+    pub fn ensure_repo_shell(&mut self, ri: usize) -> Result<()> {
+        if self
+            .state
+            .repositories
+            .get(ri)
+            .is_some_and(|r| r.shell.is_some())
+        {
+            return Ok(());
+        }
+        let tmux = self.require_tmux()?;
+        let repo = self
+            .state
+            .repositories
+            .get(ri)
+            .cloned()
+            .ok_or_else(|| Error::State(format!("repository index {ri} out of range")))?;
+        // `missing` is a poll's verdict and can be a few seconds old; the
+        // directory is asked about here, because a shell opened in a path
+        // that is not there lands wherever tmux decides to put it, which is
+        // the one answer nobody wants from "run a command in this repo".
+        if repo.missing || !repo.path.is_dir() {
+            return Err(Error::State(format!(
+                "repository '{}' is missing ({} is not a git repo)",
+                repo.name,
+                repo.path.display()
+            )));
+        }
+        // The user's own shell, not `[defaults].agent_shell`: the point of
+        // the row is running the commands you would type by hand, and the
+        // shell you type them in is `$SHELL`.
+        let shell = crate::util::login_shell();
+        let wname = Tmux::window_name(crate::dock::REPO_WORKTREE, crate::dock::REPO_INDEX);
+        let (session_name, id, window) = self.ensure_agent_session(
+            &tmux,
+            &repo,
+            crate::dock::REPO_WORKTREE,
+            crate::dock::REPO_INDEX,
+            &repo.path,
+            &shell,
+        )?;
+        let w = match window {
+            Some(w) => w,
+            None => tmux.new_window(
+                &session_name,
+                &wname,
+                &repo.path,
+                &shell,
+                &id,
+                self.holder_width(&tmux),
+            )?,
+        };
+        self.state.repositories[ri].session_name = Some(session_name);
+        self.state.repositories[ri].shell = Some(Shell {
+            index: crate::dock::REPO_INDEX,
+            window_name: wname,
+            window_id: Some(w.window_id),
+            pane_id: Some(w.pane_id),
+        });
+        self.save_state()?;
+        self.notify(format!(
+            "shell started in {} ({} on {})",
+            repo.name,
+            crate::util::shell_name(&shell),
+            repo.base_branch
+        ));
+        Ok(())
+    }
+
+    /// `Enter` on a repository row: start the inline shell if there is
+    /// none, then dock it and put the cursor in it.
+    fn enter_repo_shell(&mut self, ri: usize) {
+        if let Err(e) = self.ensure_repo_shell(ri) {
+            self.fail(&e);
+            return;
+        }
+        let Some(pane) = self.repo_shell_pane(ri) else {
+            return;
+        };
+        let name = self.state.repositories[ri].name.clone();
+        self.enter_pane(&pane, &name);
+    }
+
     /// The window name of the shell living in `pane`, for a message about
     /// a pane the tree still knows even though tmux has moved it.
     fn shell_name_for_pane(&self, pane: &str) -> Option<String> {
         self.state
             .repositories
             .iter()
-            .flat_map(|r| r.worktrees.iter())
-            .flat_map(|w| w.shells.iter())
+            .flat_map(|r| {
+                r.shell
+                    .iter()
+                    .chain(r.worktrees.iter().flat_map(|w| w.shells.iter()))
+            })
             .find(|s| s.pane_id.as_deref() == Some(pane))
             .map(|s| s.window_name.clone())
     }
@@ -2604,6 +2754,60 @@ impl App {
         };
     }
 
+    pub fn confirm_delete_repo_shell(&mut self, ri: usize) {
+        let Some(repo) = self.state.repositories.get(ri) else {
+            return;
+        };
+        if repo.shell.is_none() {
+            self.notify("this repository has no shell");
+            return;
+        }
+        self.mode = Mode::Confirm {
+            confirm: Confirm {
+                title: "Close Shell".into(),
+                body: format!(
+                    "Close the inline shell of repository '{}'?\nThe tmux window is killed; the repository, its worktrees and their agents stay.",
+                    repo.name
+                ),
+                yes_label: Some("yes".into()),
+                warning: None,
+                force_label: None,
+                action: ConfirmAction::CloseRepoShell { repository: ri },
+            },
+        };
+    }
+
+    /// Close a repository's inline shell: kill its tmux window and drop it
+    /// from the repository. Pressing `Enter` on the row again starts a
+    /// fresh one.
+    pub fn delete_repo_shell(&mut self, ri: usize) -> Result<()> {
+        let tmux = self.require_tmux()?;
+        let repo = self
+            .state
+            .repositories
+            .get(ri)
+            .cloned()
+            .ok_or_else(|| Error::State(format!("repository index {ri} out of range")))?;
+        let Some(sh) = repo.shell.clone() else {
+            return Err(Error::State(format!(
+                "repository '{}' has no shell",
+                repo.name
+            )));
+        };
+        if let Some(wid) = &sh.window_id {
+            self.release_dock_before_kill(wid, sh.pane_id.as_deref());
+            match tmux.kill_window(wid) {
+                Ok(()) => log::info!("killed window {wid} ({})", sh.window_name),
+                Err(e) => log::warn!("kill-window {wid}: {e}"),
+            }
+        }
+        Self::kill_session_if_empty(&tmux, &repo);
+        self.state.repositories[ri].shell = None;
+        self.save_state()?;
+        self.notify(format!("shell of '{}' closed", repo.name));
+        Ok(())
+    }
+
     /// Open the add-shell picker (`a`) on the selected worktree. The
     /// cursor starts on the first entry — the repository's own agent
     /// command — so the common case is still `a` then Enter.
@@ -2789,6 +2993,12 @@ impl App {
         for repo in &self.state.repositories {
             let path = repo.path.to_string_lossy().into_owned();
             let cmd = repo.agent_command.clone();
+            // The inline shell is polled like any other: the preview needs
+            // its capture, and `Status::Dead` is how a row learns that the
+            // shell behind it exited.
+            if let Some(pid) = repo.shell.as_ref().and_then(|s| s.pane_id.clone()) {
+                shells.push((path.clone(), cmd.clone(), pid));
+            }
             for wt in &repo.worktrees {
                 for sh in &wt.shells {
                     if let Some(pid) = &sh.pane_id {
@@ -3169,6 +3379,13 @@ impl App {
             KeyCode::Char('p') => self.open_messages(),
             KeyCode::Char('d') => match self.sel {
                 Sel::Shell(..) => self.confirm_delete_shell(),
+                // `d` stays "close the thing this row stands for": on a
+                // repository row that is its inline shell, and only while
+                // it has one. With none it falls through to the worktree
+                // path, which says what to select instead.
+                Sel::Repository(ri) if self.repo_shell_pane(ri).is_some() => {
+                    self.confirm_delete_repo_shell(ri)
+                }
                 _ => self.confirm_delete_worktree(),
             },
             KeyCode::Char('r') => {
@@ -3679,6 +3896,16 @@ impl App {
             BarAction::PredefinedSend => self.open_messages(),
             BarAction::DeleteWorktree => self.confirm_delete_worktree(),
             BarAction::DeleteShell => self.confirm_delete_shell(),
+            BarAction::CloseRepoShell => {
+                if let Sel::Repository(ri) = self.sel {
+                    self.confirm_delete_repo_shell(ri);
+                }
+            }
+            BarAction::RepoShell => {
+                if let Sel::Repository(ri) = self.sel {
+                    self.enter_repo_shell(ri);
+                }
+            }
             BarAction::Dock => {
                 if let Some((ri, wi, si)) = self.selected_shell() {
                     self.dock_shell(ri, wi, si);
@@ -3867,6 +4094,7 @@ impl App {
                 worktree,
                 shell,
             } => self.delete_shell(repository, worktree, shell),
+            ConfirmAction::CloseRepoShell { repository } => self.delete_repo_shell(repository),
         };
         if let Err(e) = res {
             self.fail(&e);
@@ -4037,7 +4265,7 @@ mod tests {
     use super::*;
     use crate::state::{Repository, Shell, Worktree};
     use crate::theme;
-    use crate::tmux::testutil::{tmux_inside, with_tmux_server};
+    use crate::tmux::testutil::{tmux_inside, tmux_nowhere, with_tmux_server};
     use std::path::Path;
 
     fn app_with(tmux: Tmux) -> App {
@@ -4100,6 +4328,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: Some("wingman-session-p".into()),
             missing: false,
+            shell: None,
             worktrees: vec![Worktree {
                 name: "wt".into(),
                 branch: "wt".into(),
@@ -4221,7 +4450,7 @@ mod tests {
             repo_with_commit(r, "repo-b");
             std::fs::create_dir_all(r.join("node_modules/dep/.git")).unwrap();
 
-            let mut app = app_with(tmux_inside("unused"));
+            let mut app = app_with(tmux_nowhere());
             let n = app.discover_and_import(r).unwrap();
             assert_eq!(n, 2);
             assert_eq!(app.state.repositories.len(), 2);
@@ -4251,7 +4480,7 @@ mod tests {
             repo_with_commit(r, "repo-b");
             std::fs::create_dir_all(r.join("node_modules/dep/.git")).unwrap();
 
-            let mut app = app_with(tmux_inside("unused"));
+            let mut app = app_with(tmux_nowhere());
             app.boot_discovery_from(r).unwrap();
             // No prompt — the scan just ran and imported the scope.
             assert!(matches!(app.mode, Mode::Normal));
@@ -4285,7 +4514,11 @@ mod tests {
                 repos.push(repo_with_commit(r, &format!("repo-{i}")));
             }
 
-            let mut app = app_with(tmux_inside("unused"));
+            // Expanding a repository row also starts its inline shell, so
+            // this test really does talk to tmux — on a socket of its own,
+            // killed at the end rather than left running.
+            let tmux = tmux_nowhere();
+            let mut app = app_with(tmux.clone());
             app.boot_discovery_from(r).unwrap();
             assert!(!app.flatten, "6 repositories → not flattened");
             assert_eq!(
@@ -4316,6 +4549,7 @@ mod tests {
             // …and the background drain skips what expanding already did
             while app.drain_pending_worktrees() {}
             assert!(app.worktrees_loaded.iter().all(|f| *f));
+            crate::tmux::testutil::kill_socket(&tmux);
         });
     }
 
@@ -4324,7 +4558,7 @@ mod tests {
     /// `git worktree list`), ≤30 expand.
     #[test]
     fn many_repositories_collapse_by_default_few_expand() {
-        let mut app = app_with(tmux_inside("unused"));
+        let mut app = app_with(tmux_nowhere());
         app.scope_root = PathBuf::from("/");
         for i in 0..31 {
             app.state.repositories.push(Repository {
@@ -4335,6 +4569,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
+                shell: None,
                 worktrees: vec![],
             });
         }
@@ -4343,7 +4578,7 @@ mod tests {
         assert!(!app.flatten);
         assert!(app.repo_expanded.iter().all(|e| !*e));
 
-        let mut few = app_with(tmux_inside("unused"));
+        let mut few = app_with(tmux_nowhere());
         few.scope_root = PathBuf::from("/");
         for i in 0..30 {
             few.state.repositories.push(Repository {
@@ -4354,6 +4589,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
+                shell: None,
                 worktrees: vec![],
             });
         }
@@ -4362,7 +4598,7 @@ mod tests {
         assert!(few.repo_expanded.iter().all(|e| *e));
 
         // 1 repository WITH worktrees → flattened (worktrees are the tree)
-        let mut one = app_with(tmux_inside("unused"));
+        let mut one = app_with(tmux_nowhere());
         one.scope_root = PathBuf::from("/");
         one.state.repositories.push(Repository {
             name: "p".into(),
@@ -4372,6 +4608,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
+            shell: None,
             worktrees: vec![Worktree {
                 name: "f".into(),
                 branch: "f".into(),
@@ -4386,7 +4623,7 @@ mod tests {
 
         // 1 repository WITHOUT worktrees → NOT flattened; the row stays so
         // the repository is visible instead of a blank tree.
-        let mut empty = app_with(tmux_inside("unused"));
+        let mut empty = app_with(tmux_nowhere());
         empty.scope_root = PathBuf::from("/");
         empty.state.repositories.push(Repository {
             name: "p".into(),
@@ -4396,6 +4633,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
+            shell: None,
             worktrees: vec![],
         });
         empty.build_tree_flags();
@@ -4407,7 +4645,7 @@ mod tests {
     /// nothing (its shells are already in state).
     #[test]
     fn worktrees_are_expanded_by_default() {
-        let mut app = app_with(tmux_inside("unused"));
+        let mut app = app_with(tmux_nowhere());
         app.scope_root = PathBuf::from("/");
         for i in 0..2 {
             app.state.repositories.push(Repository {
@@ -4418,6 +4656,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
+                shell: None,
                 worktrees: vec![Worktree {
                     name: "f".into(),
                     branch: "f".into(),
@@ -4447,7 +4686,7 @@ mod tests {
                 repo_with_commit(r, &format!("repo-{i}"));
             }
 
-            let mut app = app_with(tmux_inside("unused"));
+            let mut app = app_with(tmux_nowhere());
             app.boot_discovery_from(r).unwrap();
             assert!(
                 app.repo_expanded.iter().all(|e| *e),
@@ -4487,7 +4726,7 @@ mod tests {
             git(&repo, &["worktree", "add", "-b", "wt", "../repo-a-wt"]);
             repo_with_commit(r, "repo-b");
 
-            let mut app = app_with(tmux_inside("unused"));
+            let mut app = app_with(tmux_nowhere());
             app.boot_discovery_from(r).unwrap();
             while app.drain_pending_worktrees() {}
 
@@ -4514,7 +4753,7 @@ mod tests {
     /// but never get rows.
     #[test]
     fn scope_filters_repositories_from_other_scopes() {
-        let mut app = app_with(tmux_inside("unused"));
+        let mut app = app_with(tmux_nowhere());
         app.scope_root = PathBuf::from("/work/scope-a");
         app.state.repositories.push(Repository {
             name: "in-a".into(),
@@ -4524,6 +4763,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
+            shell: None,
             worktrees: vec![],
         });
         app.state.repositories.push(Repository {
@@ -4534,6 +4774,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
+            shell: None,
             worktrees: vec![],
         });
         let vis = app.visible_repositories();
@@ -4565,7 +4806,7 @@ mod tests {
                 ],
             );
 
-            let mut app = app_with(tmux_inside("unused"));
+            let mut app = app_with(tmux_nowhere());
             app.boot_discovery_from(&repo).unwrap();
             assert_eq!(app.state.repositories.len(), 1);
             let imported = &app.state.repositories[0];
@@ -4584,7 +4825,7 @@ mod tests {
             assert_eq!(app.state.repositories[0].worktrees.len(), 1);
 
             // booting from INSIDE the worktree resolves to the main repo
-            let mut app2 = app_with(tmux_inside("unused"));
+            let mut app2 = app_with(tmux_nowhere());
             app2.boot_discovery_from(&wt).unwrap();
             assert_eq!(app2.state.repositories.len(), 1);
             assert_eq!(app2.state.repositories[0].path, repo);
@@ -4602,7 +4843,7 @@ mod tests {
             let r = root.path();
             repo_with_commit(r, "repo-a");
 
-            let mut app = app_with(tmux_inside("unused"));
+            let mut app = app_with(tmux_nowhere());
             // A root that HAS a repo to find, so a surviving scan would show.
             app.cfg.discovery.scan_root = r.to_string_lossy().into_owned();
             for k in ['i', 'I'] {
@@ -4620,7 +4861,7 @@ mod tests {
     /// rejected with a clear error instead of failing deep in git/tmux.
     #[test]
     fn actions_reject_missing_repositories() {
-        let mut app = app_with(tmux_inside("unused"));
+        let mut app = app_with(tmux_nowhere());
         app.state.repositories.push(Repository {
             name: "gone".into(),
             path: PathBuf::from("/definitely/not/here"),
@@ -4629,6 +4870,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: true,
+            shell: None,
             worktrees: vec![Worktree {
                 name: "wt".into(),
                 branch: "wt".into(),
@@ -4667,6 +4909,7 @@ mod tests {
                     agent_shell: "bash".into(),
                     session_name: None,
                     missing: false,
+                    shell: None,
                     worktrees: vec![],
                 });
                 app.build_tree_flags();
@@ -4711,7 +4954,7 @@ mod tests {
             // the repo sits on an unrelated branch — the popup must ignore it
             git(&path, &["checkout", "-b", "some-other-branch"]);
 
-            let mut app = app_with(tmux_inside("unused"));
+            let mut app = app_with(tmux_nowhere());
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path: path.clone(),
@@ -4720,6 +4963,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
+                shell: None,
                 worktrees: vec![],
             });
             app.build_tree_flags();
@@ -4755,7 +4999,7 @@ mod tests {
             git(&wt, &["add", "."]);
             git(&wt, &["commit", "-m", "work"]);
 
-            let mut app = app_with(tmux_inside("unused"));
+            let mut app = app_with(tmux_nowhere());
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path,
@@ -4764,6 +5008,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
+                shell: None,
                 worktrees: vec![Worktree {
                     name: "ahead".into(),
                     branch: "ahead".into(),
@@ -4829,7 +5074,7 @@ mod tests {
             }
             git(&path, &["merge", "--no-ff", "-m", "merge", "merged"]);
 
-            let mut app = app_with(tmux_inside("unused"));
+            let mut app = app_with(tmux_nowhere());
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path: path.clone(),
@@ -4838,6 +5083,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
+                shell: None,
                 worktrees: wts,
             });
             // a missing repository must not be probed at all
@@ -4849,6 +5095,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: true,
+                shell: None,
                 worktrees: vec![Worktree {
                     name: "wt".into(),
                     branch: "wt".into(),
@@ -4879,7 +5126,7 @@ mod tests {
             let root = tempfile::TempDir::new().unwrap();
             let path = repo_with_commit(root.path(), "repo");
 
-            let mut app = app_with(tmux_inside("unused"));
+            let mut app = app_with(tmux_nowhere());
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path: path.clone(),
@@ -4888,6 +5135,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
+                shell: None,
                 worktrees: vec![],
             });
             app.build_tree_flags();
@@ -4905,7 +5153,7 @@ mod tests {
     #[test]
     fn new_worktree_popup_has_no_base_hint_for_a_missing_repository() {
         crate::util::testutil::with_test_lock(|| {
-            let mut app = app_with(tmux_inside("unused"));
+            let mut app = app_with(tmux_nowhere());
             app.state.repositories.push(Repository {
                 name: "gone".into(),
                 path: PathBuf::from("/definitely/not/here"),
@@ -4914,6 +5162,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: true,
+                shell: None,
                 worktrees: vec![],
             });
             app.build_tree_flags();
@@ -4929,7 +5178,7 @@ mod tests {
     /// Seed a headless app with `n` repositories (no tmux needed: navigation
     /// is pure state).
     fn app_with_repositories(n: usize) -> App {
-        let mut app = app_with(tmux_inside("unused"));
+        let mut app = app_with(tmux_nowhere());
         for i in 0..n {
             app.state.repositories.push(Repository {
                 name: format!("p{i}"),
@@ -4939,6 +5188,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
+                shell: None,
                 worktrees: vec![],
             });
         }
@@ -4949,7 +5199,7 @@ mod tests {
 
     /// A repository with one worktree holding one shell, for action tests.
     fn app_with_shell() -> App {
-        let mut app = app_with(tmux_inside("unused"));
+        let mut app = app_with(tmux_nowhere());
         app.state.repositories.push(Repository {
             name: "p".into(),
             path: PathBuf::from("/tmp/p"),
@@ -4958,6 +5208,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
+            shell: None,
             worktrees: vec![Worktree {
                 name: "wt".into(),
                 branch: "wt".into(),
@@ -5191,7 +5442,7 @@ mod tests {
         // Parking a draft persists it under XDG_STATE_HOME — keep the
         // test off the developer's real drafts.json.
         crate::util::testutil::with_fresh_xdg(|| {
-            // `tmux_inside("unused")` has no server: `paste_keys` errors.
+            // `tmux_nowhere()` has no server: `paste_keys` errors.
             let mut app = app_with_shell();
             app.viewport = (120, 40);
             app.on_key(key(KeyCode::Char('s'), false));
@@ -5850,6 +6101,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
+                shell: None,
                 worktrees: vec![],
             });
             look_at(&mut app, Sel::Repository(0));
@@ -6235,6 +6487,145 @@ mod tests {
             .find(|p| p.pane_id == pane)
             .expect("pane is still one of ours");
         (p.window_id, p.docked_by, p.active)
+    }
+
+    /// Seed a repository whose path is a real directory — the inline shell
+    /// refuses a path that is not there, and `/tmp/p` is not.
+    fn seed_bare_repository(app: &mut App, dir: &std::path::Path) {
+        app.state.repositories.push(Repository {
+            name: "p".into(),
+            path: dir.to_path_buf(),
+            base_branch: "main".into(),
+            agent_command: "claude".into(),
+            agent_shell: "bash".into(),
+            session_name: None,
+            missing: false,
+            shell: None,
+            worktrees: vec![],
+        });
+        app.build_tree_flags();
+        app.sel = Sel::Repository(0);
+        app.clamp_sel();
+    }
+
+    /// A repository row is a place to run commands: `Enter` starts a shell
+    /// in the repository's own checkout and docks it, and a second `Enter`
+    /// re-enters that same shell rather than starting another.
+    #[test]
+    fn enter_on_a_repository_row_starts_and_docks_its_inline_shell() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            with_tmux_server(|sock, _tmux| {
+                let dir = tempfile::TempDir::new().unwrap();
+                let tmux = tmux_inside(sock);
+                let mut app = app_with(tmux.clone());
+                seed_bare_repository(&mut app, dir.path());
+                assert!(
+                    app.selected_shell_pane().is_none(),
+                    "nothing runs in a repository nobody has entered"
+                );
+
+                app.on_key(key(KeyCode::Enter, false));
+
+                let pane = app.repo_shell_pane(0).expect("Enter starts the shell");
+                assert_eq!(
+                    app.selected_shell_pane().as_deref(),
+                    Some(pane.as_str()),
+                    "the repository row owns that pane, so the panel follows it"
+                );
+                assert_eq!(
+                    app.docked.as_deref(),
+                    Some(pane.as_str()),
+                    "and the pane is docked beside the tree"
+                );
+                let id = tmux
+                    .list_panes()
+                    .expect("panes")
+                    .into_iter()
+                    .find(|p| p.pane_id == pane)
+                    .and_then(|p| p.shell)
+                    .expect("the pane carries an identity");
+                assert!(
+                    id.is_repo_shell(),
+                    "stamped as the repository's shell, not a worktree's"
+                );
+
+                app.on_key(key(KeyCode::Enter, false));
+                assert_eq!(
+                    app.repo_shell_pane(0).as_deref(),
+                    Some(pane.as_str()),
+                    "a second Enter re-enters the shell it started"
+                );
+            });
+        });
+    }
+
+    /// The shell is lazy: moving the cursor onto a repository row must not
+    /// pay for a shell nobody asked for.
+    #[test]
+    fn looking_at_a_repository_row_starts_nothing() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            with_tmux_server(|sock, _tmux| {
+                let dir = tempfile::TempDir::new().unwrap();
+                let tmux = tmux_inside(sock);
+                let mut app = app_with(tmux.clone());
+                seed_bare_repository(&mut app, dir.path());
+
+                app.poll();
+                app.auto_dock(false);
+
+                assert!(
+                    app.state.repositories[0].shell.is_none(),
+                    "looking is free; only Enter starts a shell"
+                );
+                assert!(app.docked.is_none(), "and there is nothing to dock");
+            });
+        });
+    }
+
+    /// `d` on a repository row closes its inline shell and nothing else —
+    /// and `Enter` afterwards starts a fresh one.
+    #[test]
+    fn d_on_a_repository_row_closes_its_inline_shell() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            with_tmux_server(|sock, _tmux| {
+                let dir = tempfile::TempDir::new().unwrap();
+                let tmux = tmux_inside(sock);
+                let mut app = app_with(tmux.clone());
+                seed_bare_repository(&mut app, dir.path());
+                app.ensure_repo_shell(0).expect("shell");
+                let pane = app.repo_shell_pane(0).expect("pane");
+
+                app.on_key(key(KeyCode::Char('d'), false));
+                assert!(
+                    matches!(app.mode, Mode::Confirm { .. }),
+                    "closing a shell asks first"
+                );
+                app.on_key(key(KeyCode::Char('y'), false));
+
+                assert!(app.state.repositories[0].shell.is_none());
+                assert!(
+                    !tmux
+                        .list_panes()
+                        .expect("panes")
+                        .iter()
+                        .any(|p| p.pane_id == pane),
+                    "the tmux window went with it"
+                );
+            });
+        });
+    }
+
+    /// A repository whose path is gone gets a message, not a shell opened
+    /// wherever tmux felt like putting it.
+    #[test]
+    fn a_missing_repository_gets_no_inline_shell() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with(tmux_nowhere());
+            seed_bare_repository(&mut app, std::path::Path::new("/tmp/lw-does-not-exist"));
+
+            assert!(app.ensure_repo_shell(0).is_err());
+            assert!(app.state.repositories[0].shell.is_none());
+        });
     }
 
     /// `Enter` on a shell row is the whole gesture: the shell's own tmux
@@ -7169,6 +7560,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
+            shell: None,
             worktrees: vec![],
         });
         app.build_tree_flags();

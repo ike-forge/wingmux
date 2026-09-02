@@ -46,6 +46,22 @@ pub const DOCKED_KEY: &str = "@lw_docked";
 /// Absolute scope path, on the dashboard *window*.
 pub const SCOPE_KEY: &str = "@lw_scope";
 
+/// The worktree component of a **repository shell** — the inline shell that
+/// runs in a repository's own checkout rather than in a worktree.
+///
+/// A sentinel, and a safe one: git refuses a ref whose path component
+/// begins with a dot, so no branch can ever sanitise to `.repo` and no
+/// worktree can collide with it. That is what lets the repository shell
+/// reuse the whole identity scheme — one `@lw_repo`/`@lw_worktree`/
+/// `@lw_index` stamp, found by the same `list-panes`, docked by the same
+/// swap — without a second mechanism beside it.
+pub const REPO_WORKTREE: &str = ".repo";
+
+/// The index of a repository shell. There is exactly one per repository:
+/// the row it hangs off is the repository, and a second inline shell is
+/// what a worktree is for.
+pub const REPO_INDEX: usize = 0;
+
 /// The identity of one agent shell, as carried by its pane.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ShellId {
@@ -92,6 +108,11 @@ impl ShellId {
             worktree: crate::tmux::Tmux::sanitize(worktree),
             index,
         }
+    }
+
+    /// Is this the repository's inline shell rather than a worktree's?
+    pub fn is_repo_shell(&self) -> bool {
+        self.worktree == REPO_WORKTREE
     }
 
     /// The index as tmux should store it.

@@ -41,6 +41,11 @@ the same commit as the change.
   identity rather than walking window names, and a window renamed by hand —
   or a pane sitting in a session that is not its own — costs the tree
   nothing. `Tmux::window_name` stays, purely as the human-facing label.
+- **`Repository.shell` is additive, not a schema bump.** The repository's
+  inline shell is a `#[serde(default)]` field, so a v4 file written before
+  it loads unchanged and simply has none — and the pane, if it is still
+  alive, is adopted back by the next `reconcile`. A version bump would have
+  thrown away every discovered repository to add one optional field.
 - Shell indices are never reused: `Worktree::next_shell_index` counts past
   the highest index in use, because the index is part of a shell's identity
   and is what `reconcile` matches a live pane back to.
@@ -250,6 +255,71 @@ the same commit as the change.
   - The one thing not wrapped is a launch with no terminal to hand tmux —
     piped, redirected, cron. Wrapping there would fail where not wrapping
     merely degrades.
+
+## The repository's inline shell
+
+A repository row used to leave the panel empty: it had no shell, so there
+was nothing to dock and nothing to preview. It is also the one row that
+names a checkout nobody is agenting in — the base branch, the working copy
+the worktrees were cut from — which is exactly where `make`, `mise run …`
+and `cat config.toml` belong. So the row got a shell of its own.
+
+- **One shell, on the repository, not a worktree row.** `Repository.shell`
+  is an `Option<Shell>`. Modelling the main checkout as a `Worktree` was
+  the obvious alternative and is wrong twice over: it would put a row in
+  the tree for something the app never created and must never delete, and
+  `d` on that row would then read as "delete the main checkout".
+- **The identity scheme is reused, not extended.** The pane is stamped
+  `@lw_repo` / `@lw_worktree` / `@lw_index` like every other shell, with
+  `dock::REPO_WORKTREE` (`.repo`) as the worktree component. The sentinel
+  is safe by construction: git refuses a ref whose path component begins
+  with a dot, so no branch can sanitise to `.repo` and no worktree can
+  collide with it. Reconcile, prune, the leases, the holder/slot furniture
+  and `swap-pane` therefore all work on it unchanged — there is no second
+  mechanism beside the first.
+- **Lazy, and only on `Enter`.** A shell costs two or three seconds, and
+  most repository rows are only ever expanded to look at what hangs below
+  them. Docking on *look* would pay that for every row the cursor passes
+  over, so `App::auto_dock` docks an inline shell that already exists and
+  never starts one. `Enter` on a repository row keeps toggling the
+  disclosure and additionally ensures the shell: the disclosure is about
+  the rows below, the shell about the panel beside them, and the two do not
+  compete for the key.
+- **It is `$SHELL`, and nothing is sent to it.** `[defaults].agent_shell`
+  (`bash`, chosen for agents) is not the shell anyone wants to type `make`
+  in — the same reasoning that made a plain worktree shell use
+  `util::login_shell`. Nothing is sent for the same reason as there: the
+  window already *is* the shell.
+- **The directory is checked at the moment of the spawn.** `missing` is a
+  poll's verdict and can be seconds old; a shell opened in a path that is
+  not there lands wherever tmux decides to put it, which is the one answer
+  nobody wants from "run a command in this repository". So
+  `ensure_repo_shell` asks `path.is_dir()` itself.
+- **`selected_shell_pane` answers on a repository row;
+  `selected_shell` does not.** The pane is what docking, the preview and
+  the lease need, and giving the row a pane makes all three follow it for
+  free. The `(repository, worktree, shell)` triple is what the *send* paths
+  take, and it stays `None` — so `s` and `p` are unbound on the row. The
+  presets are agent prompts, and a command you want a shell to run is a
+  command you type in it.
+- **`d` closes it, and only appears when there is one.** The bar offers
+  `close d` on a repository row exactly while `repo.shell` is live; with
+  none, `d` falls through to the worktree path, which says what to select
+  instead. `Enter` afterwards starts a fresh one — closing is not a state
+  you can get stuck in.
+- **The empty panel is where the feature is discoverable.** A repository
+  row with no shell yet is the one row whose panel is blank because nothing
+  has been started, so the preview says so and names the key. It is the
+  same treatment a worktree with no shell gets, and for the same reason:
+  never a silent hole.
+- **Test fallout, and what it revealed.** Headless tests used a single
+  shared tmux socket named `unused`, on the assumption that nothing would
+  ever run a command on it. `Enter` on a repository row falsified that: a
+  navigation test now legitimately started a session there, and the next
+  test to `capture-pane` on that socket found it. The assumption was never
+  the test's to make, so `tmux::testutil::tmux_nowhere` hands out a socket
+  of its own per call (`dead_socket`), and `kill_socket` cleans up after
+  the one test that deliberately spawns.
 
 ## Docking
 

@@ -66,6 +66,15 @@ pub struct Repository {
     /// again.
     #[serde(default)]
     pub missing: bool,
+    /// The repository's own inline shell: a plain login shell in the main
+    /// checkout (`path`, on the base branch), for the one-off commands a
+    /// repository row invites — `make`, `mise run …`, `cat config.toml`.
+    ///
+    /// Spawned **lazily**, on the first `Enter` on the repository row: a
+    /// shell costs two or three seconds, and most repository rows are only
+    /// ever expanded to look at the worktrees below them.
+    #[serde(default)]
+    pub shell: Option<Shell>,
     pub worktrees: Vec<Worktree>,
 }
 
@@ -201,7 +210,14 @@ impl State {
             let session = format!("{SESSION_PREFIX}{}", id.repo);
             let Some(ri) = self.repo_index_for_session(&session, &id.repo) else {
                 // A shell of an unknown repository — try reconstructing from
-                // the pane's cwd (the worktree path) + git metadata.
+                // the pane's cwd (the worktree path) + git metadata. A
+                // repository shell has no worktree to reconstruct: its
+                // repository is either known or out of scope, and inventing
+                // a worktree from the main checkout would put the repo's own
+                // path in the tree as a worktree row.
+                if id.is_repo_shell() {
+                    continue;
+                }
                 if let Some(path) = pane_cwd(tmux, &pane.pane_id) {
                     self.reconstruct_worktree(&path, &id.repo, &id.worktree, id.index);
                 }
@@ -212,6 +228,34 @@ impl State {
             if repo.session_name.as_deref() != Some(&session) {
                 repo.session_name = Some(session.clone());
                 log::info!("repository '{}' → agent session {session}", repo.name);
+            }
+            // The repository's own inline shell hangs off the repository,
+            // not off a worktree: no branch can sanitise to the sentinel,
+            // so this arm can never swallow a worktree's shell.
+            if id.is_repo_shell() {
+                match &mut repo.shell {
+                    Some(shell) => {
+                        shell.window_id = Some(pane.window_id.clone());
+                        shell.pane_id = Some(pane.pane_id.clone());
+                    }
+                    // Alive in tmux but not in state (state file deleted, a
+                    // shell another instance started): adopt it. The
+                    // repository is already known, so unlike a worktree
+                    // there is nothing to reconstruct from the pane's cwd.
+                    none => {
+                        *none = Some(Shell {
+                            index: crate::dock::REPO_INDEX,
+                            window_name: crate::tmux::Tmux::window_name(
+                                crate::dock::REPO_WORKTREE,
+                                crate::dock::REPO_INDEX,
+                            ),
+                            window_id: Some(pane.window_id.clone()),
+                            pane_id: Some(pane.pane_id.clone()),
+                        });
+                        log::info!("adopted the inline shell of repository '{}'", repo.name);
+                    }
+                }
+                continue;
             }
             // Worktrees are matched by their branch slug.
             let wt_idx = repo
@@ -406,6 +450,21 @@ impl State {
                 }
                 // else: worktrees stay as-is until the repository is expanded —
                 // lazy loading owns verification then.
+                //
+                // The repository's own shell is pruned whatever `verify`
+                // says: it hangs off the repository, not off the worktree
+                // listing, so the expensive `git worktree list` this branch
+                // is gated on has nothing to do with it.
+                if let Some(live) = &live_panes
+                    && repo
+                        .shell
+                        .as_ref()
+                        .is_some_and(|s| s.pane_id.as_deref().is_some_and(|p| !live.contains(p)))
+                {
+                    log::info!("inline shell of repository '{}' is gone", repo.name);
+                    repo.shell = None;
+                    removed_shells += 1;
+                }
             }
             // If the agent session vanished (crashed server, killed session)
             // but the repository still exists, drop the stale name so a new
@@ -522,6 +581,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: Some("wingman-session-repo".into()),
             missing: false,
+            shell: None,
             worktrees: vec![Worktree {
                 name: "wt".into(),
                 branch: "wt".into(),
@@ -612,6 +672,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
+            shell: None,
             worktrees: vec![],
         });
         s.prune(None, &vec![true; s.repositories.len()]).unwrap();
@@ -658,6 +719,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
+            shell: None,
             worktrees: vec![Worktree {
                 name: "wt".into(),
                 branch: "wt".into(),
@@ -703,6 +765,56 @@ mod tests {
         assert_eq!(s.repositories[0].worktrees[0].shells.len(), 1);
     }
 
+    /// A pane stamped with the repository sentinel reconciles onto the
+    /// repository itself, never onto a worktree — and is adopted when state
+    /// has forgotten it, the way a worktree's shell is.
+    #[test]
+    fn a_repository_shell_reconciles_onto_its_repository() {
+        crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
+            let id = crate::dock::ShellId::for_session(
+                "wingman-session-p",
+                crate::dock::REPO_WORKTREE,
+                crate::dock::REPO_INDEX,
+            );
+            assert!(id.is_repo_shell());
+            let w = tmux
+                .new_session(
+                    "wingman-session-p",
+                    "lw:.repo/0",
+                    std::path::Path::new("/tmp"),
+                    "bash",
+                    &id,
+                    crate::tmux::testutil::HOLDER_W,
+                )
+                .expect("the repository's shell window");
+
+            let mut s = State::default();
+            s.repositories.push(Repository {
+                name: "p".into(),
+                path: PathBuf::from("/tmp/p"),
+                base_branch: "main".into(),
+                agent_command: "claude".into(),
+                agent_shell: "bash".into(),
+                session_name: Some("wingman-session-p".into()),
+                missing: false,
+                shell: None,
+                worktrees: vec![],
+            });
+
+            s.reconcile(&tmux).expect("reconcile");
+
+            let shell = s.repositories[0]
+                .shell
+                .as_ref()
+                .expect("the live pane is adopted onto the repository");
+            assert_eq!(shell.pane_id.as_deref(), Some(w.pane_id.as_str()));
+            assert!(
+                s.repositories[0].worktrees.is_empty(),
+                "and no worktree is invented for it"
+            );
+        });
+    }
+
     fn run_git(dir: &std::path::Path, args: &[&str]) {
         let status = std::process::Command::new("git")
             .arg("-C")
@@ -725,6 +837,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
+                shell: None,
                 worktrees: vec![],
             });
             s.save().unwrap();
@@ -777,6 +890,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: Some("wingman-session-p".into()),
                 missing: false,
+                shell: None,
                 worktrees: vec![Worktree {
                     name: "wt".into(),
                     branch: "wt".into(),
@@ -836,6 +950,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: Some("wingman-session-p".into()),
                 missing: false,
+                shell: None,
                 worktrees: vec![Worktree {
                     name: "feat".into(),
                     branch: "feat".into(),
@@ -889,6 +1004,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
+                shell: None,
                 worktrees: vec![],
             });
             s.save().expect("save");
