@@ -87,7 +87,28 @@ tail — `help ?`, the way to everything that did not fit, sits at that end.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
+| `Enter` / `l` | expand the repository **and** enter its inline shell: a plain `$SHELL` in the repository's own checkout (the base branch), started on the first press and docked beside the tree | domain convention (open the thing the row stands for); no dead keys |
 | `n` | new worktree (git worktree + branch cut from the repository's base branch, + agent shell) | create action |
+| `d` | close the inline shell (kills its window; the repository, its worktrees and their agents stay). Absent until there is one to close | vim `d` destructive, confirms; an answer that cannot succeed is not offered |
+
+`Enter` on a repository row does two things at once, and they do not
+compete: the **tree** opens or closes (the rows below), and the **panel**
+gets the repository's own shell (the space beside them). It is the same
+`Enter` that enters a worktree — entering the repository.
+
+The shell is **lazy**: moving the cursor onto a repository row starts
+nothing. It costs two or three seconds, and most repository rows are only
+ever expanded to look at what hangs below them. Once it exists, looking at
+the row docks it like any other shell, and `d` is how it goes away.
+
+It is a plain `$SHELL`, not `[defaults].agent_shell`: the point is running
+the commands you would otherwise type by hand — `make`, `mise run …`,
+`cat config.toml` — and the shell you type those in is your own. Nothing is
+sent to it; the window already *is* the shell.
+
+`s` and `p` stay unbound on a repository row. The predefined messages are
+written as agent prompts, and a command you want a shell to run is a command
+you type in it.
 
 ### Worktree selected
 

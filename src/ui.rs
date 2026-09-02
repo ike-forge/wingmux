@@ -887,6 +887,22 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             if repo.missing {
                 spans.push(Span::styled(" (missing)", fg(theme.dim)));
             }
+            // A repository with an inline shell says so, and names the
+            // checkout it runs in — the base branch, which is the one thing
+            // that distinguishes it from the worktrees hanging below it.
+            if let Some(sh) = &repo.shell {
+                spans.push(Span::styled(
+                    format!("  {}{}", ic.shell, repo.base_branch),
+                    fg(row_color(
+                        theme,
+                        shell_status(app, sh) == Status::Dead,
+                        theme.tree_shell,
+                    )),
+                ));
+                if shell_leased(app, sh).is_some() {
+                    mark_leased(theme, &mut spans);
+                }
+            }
             items.push(ListItem::new(Line::from(spans)));
             if app.sel == Sel::Repository(ri) {
                 sel_row = Some(row);
@@ -1153,6 +1169,18 @@ fn preview_scroll_max_lines(len: usize, rows: usize) -> usize {
     len.saturating_sub(rows)
 }
 
+/// The selected repository, when a repository row is selected and it has
+/// no inline shell yet — the state the panel has something to say about.
+fn selected_repository_without_shell(app: &App) -> Option<&crate::state::Repository> {
+    let Sel::Repository(ri) = app.sel else {
+        return None;
+    };
+    app.state
+        .repositories
+        .get(ri)
+        .filter(|r| r.shell.is_none() && !r.missing)
+}
+
 /// Is a worktree row selected whose worktree has no shell at all?
 fn selected_worktree_has_no_shell(app: &App) -> bool {
     let Sel::Worktree(ri, wi) = app.sel else {
@@ -1189,34 +1217,47 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
     };
     let block = panel_block(theme, &app.cfg.icons, &title, off > 0);
     let off = app.preview_offset();
-    let text = match app.selected_shell() {
-        Some(_) => {
-            if app.selected_shell_pane().is_some() {
-                if let Some(cap) = app.preview_source() {
-                    // borders take two rows off the panel; the capture keeps
-                    // the pane's escapes, rendered per [preview].colors
-                    let win = preview_window(cap, area.height.saturating_sub(2) as usize, off);
-                    crate::ansi::styled_text(&win, app.cfg.preview.colors)
-                } else {
-                    Text::from(format!(
-                        "capturing{} (select the shell in the tree)",
-                        app.cfg.icons.ellipsis
-                    ))
-                }
-            } else {
-                Text::from("no live pane for this shell")
-            }
+    // Pane first, not tree position: a repository row has a pane to show
+    // (its inline shell) without having a `(worktree, shell)` to be found
+    // by, and what the panel draws is whatever pane the selection owns.
+    let text = if app.selected_shell_pane().is_some() {
+        if let Some(cap) = app.preview_source() {
+            // borders take two rows off the panel; the capture keeps
+            // the pane's escapes, rendered per [preview].colors
+            let win = preview_window(cap, area.height.saturating_sub(2) as usize, off);
+            crate::ansi::styled_text(&win, app.cfg.preview.colors)
+        } else {
+            Text::from(format!(
+                "capturing{} (select the shell in the tree)",
+                app.cfg.icons.ellipsis
+            ))
         }
+    } else if app.selected_shell().is_some() {
+        Text::from("no live pane for this shell")
+    } else if let Some(repo) = selected_repository_without_shell(app) {
+        // The one row whose panel is empty because nothing has been
+        // started yet — and starting it is one keystroke, so the panel
+        // says which.
+        Text::from(format!(
+            "no shell in this repository yet\n\n\
+             press `{}` to start one in the repository's own checkout\n\
+             ({}), for the commands you would otherwise run by\n\
+             hand: make, mise run …, cat config.\n\n\
+             it starts on the first press and stays until `d` closes it.",
+            app.cfg.icons.enter, repo.base_branch,
+        ))
+    } else if selected_worktree_has_no_shell(app) {
         // A worktree with no shell: there is no pane to capture, and the
         // generic hint below would send the user hunting for a child row
         // that does not exist.
-        None if selected_worktree_has_no_shell(app) => Text::from(
+        Text::from(
             "no agent shell for this worktree\n\n\
              wingman has no tmux window here, so there is nothing to\n\
              preview, dock or send to.\n\n\
              press `a` to start a shell in this worktree.",
-        ),
-        None => Text::from("select a shell to preview its contents"),
+        )
+    } else {
+        Text::from("select a shell to preview its contents")
     };
     let p = Paragraph::new(text)
         .block(block)
@@ -1240,7 +1281,21 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         return vec![(h("save & back", "esc"), TodoBack)];
     }
     let mut entries = match app.sel {
-        Sel::Repository(_) => vec![(h("worktree", "n"), NewWorktree), (h("help", "?"), Help)],
+        // The repository row's `Enter` starts (or re-enters) its inline
+        // shell, so the bar names it — the one action on this row that is
+        // not otherwise discoverable. `d` closes it, and only appears once
+        // there is one to close.
+        Sel::Repository(ri) => {
+            let mut v = vec![
+                (h("shell", "Enter"), RepoShell),
+                (h("worktree", "n"), NewWorktree),
+            ];
+            if app.repo_shell_pane(ri).is_some() {
+                v.push((h("close", "d"), CloseRepoShell));
+            }
+            v.push((h("help", "?"), Help));
+            v
+        }
         // A folded worktree row is its shell: it offers the shell actions
         // on top of the worktree ones (`a` gives it a second shell, which
         // unfolds the subtree).
@@ -1276,9 +1331,13 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
     if app
         .selected_shell_pane()
         .is_some_and(|p| app.leased_by(&p).is_some())
-        && let Some(slot) = entries.iter().position(|(_, a)| matches!(a, Dock))
+        && let Some(slot) = entries
+            .iter()
+            .position(|(_, a)| matches!(a, Dock | RepoShell))
     {
-        entries[slot] = (h("take", "Enter"), Dock);
+        // The word changes, the action does not: on a repository row it is
+        // still the inline shell that gets taken.
+        entries[slot] = (h("take", "Enter"), entries[slot].1);
     }
     // A parked preview is a state you can be stuck in — the way out leads
     // the bar, where the eye lands first.
@@ -1523,7 +1582,18 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
     ),
     (
         "repositories",
-        &[(&["n"], &["new worktree", "worktree + agent shell"])],
+        &[
+            (
+                &["Enter"],
+                &[
+                    "shell in the checkout",
+                    "for make, mise, cat",
+                    "starts on first press",
+                ],
+            ),
+            (&["n"], &["new worktree", "worktree + agent shell"]),
+            (&["d"], &["close that shell", "the repository stays"]),
+        ],
     ),
     (
         "worktrees",
@@ -2456,6 +2526,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: true,
+            shell: None,
             worktrees: vec![],
         });
         app.build_tree_flags();
@@ -2716,6 +2787,7 @@ mod tests {
                 agent_shell: "bash".into(),
                 session_name: None,
                 missing: false,
+                shell: None,
                 worktrees: vec![],
             });
             app.build_tree_flags();
@@ -2767,6 +2839,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
+            shell: None,
             worktrees: vec![],
         });
         // A second repository keeps the fixture out of flatten mode (a lone
@@ -2780,6 +2853,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
+            shell: None,
             worktrees: vec![],
         });
         app.build_tree_flags();
@@ -2964,6 +3038,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
+            shell: None,
             worktrees,
         });
         app.build_tree_flags();
@@ -4387,6 +4462,7 @@ mod tests {
             agent_shell: "bash".into(),
             session_name: None,
             missing: false,
+            shell: None,
             worktrees: vec![],
         });
         app.state.repositories[0]
@@ -4733,6 +4809,82 @@ mod tests {
     /// The add-shell picker lists what a new shell can run: the
     /// repository's own agent command first, a plain login shell last —
     /// numbered, because the numbers are the keys that take an entry.
+    /// A repository row with no shell says what the empty panel is for and
+    /// which key fills it — the panel is the only place that can, since the
+    /// row itself has nothing to draw yet.
+    #[test]
+    fn the_repository_panel_says_how_to_start_a_shell() {
+        let mut app = seeded_app();
+        app.sel = crate::app::Sel::Repository(0);
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("no shell in this repository yet"),
+            "the empty panel names its state: {text}"
+        );
+        assert!(
+            text.contains("mise run"),
+            "and what the shell is for: {text}"
+        );
+    }
+
+    /// Once it has one, the row says so and names the checkout it runs in
+    /// — the base branch, which is what tells it from the worktrees below.
+    #[test]
+    fn a_repository_row_names_the_checkout_its_shell_runs_in() {
+        let mut app = seeded_app();
+        app.state.repositories[0].shell = Some(crate::state::Shell {
+            index: 0,
+            window_name: "lw:.repo/0".into(),
+            window_id: Some("@9".into()),
+            pane_id: Some("%9".into()),
+        });
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("● main"),
+            "the row carries the base branch its shell sits on: {text}"
+        );
+    }
+
+    /// The bar names `Enter` on a repository row — the one action there
+    /// that is not otherwise discoverable — and only offers `d` once there
+    /// is a shell to close.
+    #[test]
+    fn the_repository_bar_names_the_shell_and_its_close() {
+        let mut app = seeded_app();
+        app.sel = crate::app::Sel::Repository(0);
+        let entries = bar_entries(&app);
+        assert!(
+            entries
+                .iter()
+                .any(|(h, a)| h.label() == "shell ↵" && *a == BarAction::RepoShell),
+            "Enter is named: {:?}",
+            entries.iter().map(|(h, _)| h.label()).collect::<Vec<_>>()
+        );
+        assert!(
+            !entries.iter().any(|(_, a)| *a == BarAction::CloseRepoShell),
+            "nothing to close yet"
+        );
+
+        app.state.repositories[0].shell = Some(crate::state::Shell {
+            index: 0,
+            window_name: "lw:.repo/0".into(),
+            window_id: Some("@9".into()),
+            pane_id: Some("%9".into()),
+        });
+        assert!(
+            bar_entries(&app)
+                .iter()
+                .any(|(h, a)| h.label() == "close d" && *a == BarAction::CloseRepoShell),
+            "and `d` appears once there is one"
+        );
+    }
+
     #[test]
     fn add_shell_picker_lists_the_agent_and_a_plain_shell() {
         let mut app = seeded_app();

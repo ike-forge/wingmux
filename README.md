@@ -29,6 +29,10 @@ RepositoryB
   shell running the default agent command.
 - **Shell** = a tmux window running a command inside the worktree —
   usually an agent, but useful for any long-running command.
+- A repository also gets **one shell of its own**, in its main checkout on
+  the base branch, for the commands you run by hand: `make`, `mise run …`,
+  `cat config.toml`. It starts the first time you press `Enter` on the
+  repository row and is docked beside the tree like any other shell.
 
 Non-goals (deliberate): no orchestration, no MCP/skill management, no web UI,
 no Telegram, no repo creation/deletion, no merge/PR automation. Only worktree
@@ -79,13 +83,13 @@ the help overlay (`?`).
 | `PgUp` / `PgDn`, `ctrl-u` / `ctrl-d` | half page up / down |
 | `ctrl-f` / `ctrl-b` | full page up / down |
 | `h` | collapse / jump to parent |
-| `l` / `Enter` | expand, or **enter** the selected shell's docked pane (a one-shell worktree goes straight in — see the folded row below). Simply moving onto a shell already docks it; `Enter` is what puts the cursor there |
+| `l` / `Enter` | expand, or **enter** the selected shell's docked pane (a one-shell worktree goes straight in — see the folded row below). Simply moving onto a shell already docks it; `Enter` is what puts the cursor there. On a **repository** row it also opens that repository's own inline shell — see below |
 | `n` | new worktree (git worktree + branch + agent shell) — a prompt asks for the name and names the branch it will be cut from: the repository's **base branch** (`worktrees.base_branch`, per-repository override), never the branch the repo has checked out |
 | `a` | add a shell to the selected worktree — a picker asks what it runs: the repository's default agent command first (`Enter` takes it), then the other configured `[[agents]]` presets, then a **plain shell** that just drops you at your own `$SHELL` prompt with nothing sent to it (`j`/`k` moves, `1`-`9` pick directly, `Esc` closes). Anything else you want to run, you type in that plain shell |
 | `s` | **quick-send** a line to the selected shell (or to a one-shell worktree's row). Any way out of the editor that is not a send (`Esc`, a click outside the popup, the `ctrl-t` theme chord) keeps the unsent text as that shell's draft; `s` on it again picks up where you left off, cursor included. A draft is dropped once the message is actually delivered. It otherwise survives quitting — parked in `$XDG_STATE_HOME/lazywingman/drafts.json` and kept until its shell is gone |
 | `p` | **predefined messages** for the selected shell (or a one-shell worktree's row) — a modal of configured presets, each listed in full with its `<base_branch>`-style tokens already resolved (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
 | `t` | **todo pad** — a scratch pad for the next steps you cannot start yet ("rebase the API worktree once the schema lands"). It opens in the tree's own panel and is edited in place, so the preview — or the docked agent — beside it stays put; `Esc` saves and hands the panel back to the tree, `ctrl-s` saves without leaving. One pad for the whole machine, not one per directory, parked as plain text in `$XDG_STATE_HOME/lazywingman/todo.md` (yours to edit with `$EDITOR` too) |
-| `d` | on a worktree: delete it (kills windows, removes worktree; `f` = force when dirty). On a shell row: close that shell (kills its window only — the worktree and its other shells stay) |
+| `d` | on a worktree: delete it (kills windows, removes worktree; `f` = force when dirty). On a shell row: close that shell (kills its window only — the worktree and its other shells stay). On a repository row: close its inline shell |
 | `r` | refresh — reconcile state against reality |
 | `R` | **reset the layout** — the dashboard's strip, every agent window and every holder back to their default proportions, after a stray drag or `resize-pane` pulled them out of shape. Nothing is undocked |
 | `?` | help overlay (grouped, scrollable: `j`/`k`, `PgUp`/`PgDn`) |
