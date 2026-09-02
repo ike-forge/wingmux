@@ -527,16 +527,16 @@ pub(crate) fn textarea_wrap_width(viewport_w: u16) -> usize {
     (textarea_width(viewport_w).saturating_sub(5) as usize).max(1)
 }
 
-/// Content rows of the todo panel: the frame, less the statusbar, less the
-/// panel's two borders. The pad is edited in the tree's own panel, so its
-/// geometry is the panel's — not the textarea popup's.
+/// Content rows of the todo panel: its share of the tree's column, less the
+/// panel's two borders. The pad is a panel split off the tree's column, so
+/// its geometry is [`crate::ui::todo_panel_h`]'s — not the textarea popup's.
 ///
-/// The statusbar is *measured*, not assumed to be one row: it wraps onto a
-/// second row in a narrow strip, and a content window that ignored that
-/// would put the caret under it.
+/// Read while the pad is *open*, which is the only time the caret needs a
+/// window, so this is the open half of the column rather than the collapsed
+/// height a parked pad draws at.
 pub(crate) fn todo_visible_lines(app: &App) -> usize {
-    let bar = crate::ui::statusbar_h(app, app.viewport.0);
-    (app.viewport.1.saturating_sub(2 + bar) as usize).max(1)
+    let h = crate::ui::todo_panel_h(app, crate::ui::main_h(app));
+    (h.saturating_sub(2) as usize).max(1)
 }
 
 /// Soft-wrap width of the todo panel's text: the panel width minus its two
@@ -1840,9 +1840,16 @@ impl App {
             let (row, col) = (self.todo.cursor_row(), self.todo.cursor_col());
             self.todo = TextBuf::from_parked(&text, row, col);
         }
-        let mut buf = self.todo.clone();
-        buf.ensure_visible(todo_visible_lines(self), todo_wrap_width(self));
-        self.mode = Mode::Todo { buf };
+        // The mode goes up first: the panel is half the column while it is
+        // open and collapsed while it is not, so the window the caret is
+        // scrolled into only exists once the pad *is* open.
+        self.mode = Mode::Todo {
+            buf: self.todo.clone(),
+        };
+        let (visible, wrap) = (todo_visible_lines(self), todo_wrap_width(self));
+        if let Mode::Todo { buf } = &mut self.mode {
+            buf.ensure_visible(visible, wrap);
+        }
     }
 
     /// Leave the pad, keeping what is in it. Every exit goes through here —
@@ -4035,8 +4042,13 @@ impl App {
                 }
                 return;
             }
-            let inside = crate::ui::tree_width_for(self).is_some_and(|w| x < w);
-            if !inside {
+            // Inside the pad's own rows the click is a no-op (the caret
+            // is placed by the keyboard, like every other cursor here);
+            // anywhere else — the tree above it included — is the way back.
+            let in_column = crate::ui::tree_width_for(self).is_some_and(|w| x < w);
+            let in_pad =
+                crate::ui::todo_panel_rows(self).is_some_and(|(top, bot)| y >= top && y < bot);
+            if !(in_column && in_pad) {
                 self.close_todo();
             }
             return;
@@ -4152,6 +4164,15 @@ impl App {
         if x >= tree_w {
             return; // detail/preview panels are not selectable
         }
+        // A parked pad shares the column: clicking it is how you get the
+        // keyboard into it, the same way clicking a tree row selects it.
+        if let Some((top, bot)) = crate::ui::todo_panel_rows(self)
+            && y >= top
+            && y < bot
+        {
+            self.open_todo();
+            return;
+        }
         let row = y.saturating_sub(1) as usize; // below the top border
         let nodes = self.visible_nodes();
         if let Some(sel) = nodes.get(row) {
@@ -4197,9 +4218,10 @@ impl App {
     }
 
     fn move_sel_page(&mut self, half_pages: i32) {
-        // Page size = the tree's visible rows (statusbar + panel borders
-        // subtracted). ctrl-u/d are half pages, ctrl-f/b full pages.
-        let rows = (self.viewport.1.saturating_sub(3)).max(1) as i32;
+        // Page size = the tree's visible rows (statusbar, the todo panel
+        // and the tree's own borders subtracted). ctrl-u/d are half pages,
+        // ctrl-f/b full pages.
+        let rows = crate::ui::tree_rows(self) as i32;
         let step = (rows / 2).max(1) * half_pages;
         self.move_sel(step);
     }
@@ -5657,6 +5679,61 @@ mod tests {
             app.mouse_click(tree_w + 5, 3, false);
             assert!(matches!(app.mode, Mode::Normal), "back to the tree");
             assert_eq!(crate::todo::load(), "still here");
+        });
+    }
+
+    /// `Esc` hands the keyboard back to the tree but does not take the
+    /// note off the screen: the panel stays, collapsed to the note's own
+    /// height. An empty pad is the one that goes away — there is nothing
+    /// left to stand as a reminder.
+    #[test]
+    fn esc_collapses_the_pad_rather_than_closing_it() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 41);
+            app.on_key(key(KeyCode::Char('t'), false));
+            typed(&mut app, "rebase wt2");
+            app.on_key(key(KeyCode::Esc, false));
+            assert!(matches!(app.mode, Mode::Normal), "the tree has the keys");
+            assert_eq!(
+                crate::ui::todo_panel_rows(&app),
+                Some((37, 40)),
+                "one line of text, so a three-row panel at the column's foot"
+            );
+
+            // Emptied and left: nothing to remind anyone of, no panel.
+            app.on_key(key(KeyCode::Char('t'), false));
+            for _ in 0.."rebase wt2".len() {
+                app.on_key(key(KeyCode::Backspace, false));
+            }
+            app.on_key(key(KeyCode::Esc, false));
+            assert_eq!(crate::ui::todo_panel_rows(&app), None);
+        });
+    }
+
+    /// Clicking the parked panel is how the keyboard gets into it — the
+    /// same gesture that selects a tree row. A click on the tree while the
+    /// pad is open is the way back out, and it keeps the text.
+    #[test]
+    fn clicks_move_the_keyboard_between_the_tree_and_the_parked_pad() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 41);
+            app.on_key(key(KeyCode::Char('t'), false));
+            typed(&mut app, "later");
+            app.on_key(key(KeyCode::Esc, false));
+            let (top, _) = crate::ui::todo_panel_rows(&app).unwrap();
+
+            app.mouse_click(3, top + 1, false);
+            assert!(
+                matches!(app.mode, Mode::Todo { .. }),
+                "the pad has the keys"
+            );
+
+            // The tree is above the open pad now, so clicking it leaves.
+            app.mouse_click(3, 2, false);
+            assert!(matches!(app.mode, Mode::Normal), "back to the tree");
+            assert_eq!(crate::todo::load(), "later");
         });
     }
 

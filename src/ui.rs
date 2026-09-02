@@ -29,6 +29,9 @@ const TREE_MIN: (u16, u16) = (26, 7);
 /// glyph from `[icons]`: it has to render in the `unicode` preset too.
 const UP_ARROW: &str = "\u{2191}";
 
+/// Rows below the pad's window, in its title (see [`draw_todo`]).
+const DOWN_ARROW: &str = "\u{2193}";
+
 /// Cap on the tree panel's width, in columns (see [`tree_width`]).
 const TREE_MAX: u16 = 54;
 
@@ -102,6 +105,64 @@ pub(crate) fn tree_width_for(app: &App) -> Option<u16> {
         Tier::TreeOnly => Some(app.viewport.0),
         _ => tree_width(app.viewport),
     }
+}
+
+/// Rows the tree keeps for itself when the todo pad shares its column:
+/// border, one row, border. A column that cannot spare them is not split.
+const TREE_MIN_ROWS: u16 = 3;
+
+/// The main area's height: the frame, less the statusbar. The statusbar is
+/// *measured* — it wraps onto a second row in a narrow strip.
+pub(crate) fn main_h(app: &App) -> u16 {
+    app.viewport
+        .1
+        .saturating_sub(statusbar_h(app, app.viewport.0))
+}
+
+/// Rows the todo panel takes at the bottom of the left column, out of a
+/// column `main_h` rows tall. `0` means it is not drawn; `main_h` means it
+/// took the whole column because there was no room for two panels.
+///
+/// Two heights, one rule: the pad being typed into gets half the column,
+/// because that is what writing in it needs; a parked pad gets exactly as
+/// many rows as it has lines of text, because that is what *reading* it
+/// needs — five lines of text is a five-line panel — and never more than
+/// the open half, so a long note cannot push the tree off the screen.
+pub(crate) fn todo_panel_h(app: &App, main_h: u16) -> u16 {
+    let open = matches!(app.mode, Mode::Todo { .. });
+    if !open && app.todo.text().trim().is_empty() {
+        return 0;
+    }
+    let cap = (main_h / 2).min(main_h.saturating_sub(TREE_MIN_ROWS));
+    if cap < TREE_MIN_ROWS {
+        // No room to split. An open pad still has to be somewhere, so it
+        // takes the column the way it did before the split existed; a
+        // parked one yields to the tree, which is the panel you steer with.
+        return if open { main_h } else { 0 };
+    }
+    if open {
+        return cap;
+    }
+    let rows = app.todo.visual_len(crate::app::todo_wrap_width(app)) as u16;
+    rows.saturating_add(2).clamp(TREE_MIN_ROWS, cap)
+}
+
+/// The rows the todo panel occupies, as `[top, bottom)` — `None` when it is
+/// not drawn. Rendering and mouse hit-testing share it, so a click always
+/// lands on the panel the eye sees.
+pub(crate) fn todo_panel_rows(app: &App) -> Option<(u16, u16)> {
+    let main = main_h(app);
+    let h = todo_panel_h(app, main);
+    (h > 0).then(|| (main - h, main))
+}
+
+/// Content rows of the tree panel: its share of the column, less its two
+/// borders. Drives the page motions, which must not step by more than the
+/// tree actually shows.
+pub(crate) fn tree_rows(app: &App) -> usize {
+    let main = main_h(app);
+    let todo = todo_panel_h(app, main);
+    ((main.saturating_sub(todo)).saturating_sub(2) as usize).max(1)
 }
 
 /// Minimum popup size per overlay kind; below it the overlay is refused
@@ -663,16 +724,25 @@ fn draw_split(f: &mut Frame, area: Rect, app: &mut App, tree_w: u16) {
     draw_statusbar(f, statusbar, app);
 }
 
-/// The left panel: the tree, or the todo pad when it is open (`t`).
+/// The left column: the tree, with the todo pad split off its bottom
+/// ([`todo_panel_h`] decides how much).
 ///
-/// One panel, two things in it — the pad is edited in place rather than in
-/// an overlay, so it takes the tree's frame instead of covering it and the
-/// preview beside it (or the docked agent) stays exactly where it was.
+/// The pad is a panel of its own rather than an overlay, so it neither
+/// covers the tree nor the preview beside it (or the docked agent) — both
+/// stay exactly where they were. It is the only panel in the app that can
+/// be absent: an empty pad is drawn as nothing at all, because a framed
+/// box with nothing in it is worse than the row it costs.
 fn draw_left(f: &mut Frame, area: Rect, app: &App) {
-    if matches!(app.mode, Mode::Todo { .. }) {
-        draw_todo(f, area, app);
-    } else {
-        draw_tree(f, area, app);
+    match todo_panel_h(app, area.height) {
+        0 => draw_tree(f, area, app),
+        // Nothing to split: the pad being typed into takes the column.
+        h if h >= area.height => draw_todo(f, area, app),
+        h => {
+            let [tree, todo] =
+                Layout::vertical([Constraint::Min(0), Constraint::Length(h)]).areas(area);
+            draw_tree(f, tree, app);
+            draw_todo(f, todo, app);
+        }
     }
 }
 
@@ -1064,26 +1134,40 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-/// The todo pad, drawn in the tree's own panel.
+/// The todo pad, at the bottom of the tree's column.
 ///
-/// A live editor, not a rendering of one: the caret is placed with
-/// `set_cursor_position`, so the terminal's own cursor sits in the text and
-/// the panel reads as the thing that has the keyboard. The border is drawn
-/// focused for the same reason — while the pad is open, that is where the
-/// typing goes.
+/// Open (`t`) it is a live editor, not a rendering of one: the caret is
+/// placed with `set_cursor_position`, so the terminal's own cursor sits in
+/// the text and the panel reads as the thing that has the keyboard. The
+/// border is drawn focused for the same reason.
+///
+/// Parked (after `Esc`) the same panel keeps showing the note, unfocused
+/// and without a caret — the pad is a standing reminder, and a reminder you
+/// have to press a key to see is not one. It is collapsed to the note's own
+/// height, so what it costs is what it holds; when even that does not fit,
+/// the title says how many rows are below the fold.
 fn draw_todo(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
-    let Mode::Todo { buf } = &app.mode else {
-        return;
+    let (buf, focused) = match &app.mode {
+        Mode::Todo { buf } => (buf, true),
+        _ => (&app.todo, false),
     };
-    let block = panel_block(theme, &app.cfg.icons, "Todo", true);
-    let inner = block.inner(area);
-    let content_lines = crate::app::todo_visible_lines(app).min(inner.height as usize);
     let wrap_width = crate::app::todo_wrap_width(app)
-        .min(inner.width as usize)
+        .min(area.width.saturating_sub(3).max(1) as usize)
         .max(1);
     let rows = buf.visual_rows(wrap_width);
-    let scroll = buf.scroll();
+    // A parked pad is never scrolled: it has no caret to follow, so it
+    // reads from the top and says what it had to leave out.
+    let scroll = if focused { buf.scroll() } else { 0 };
+    let content_lines = (area.height.saturating_sub(2) as usize).max(1);
+    let hidden = rows.len().saturating_sub(scroll + content_lines);
+    let title = if hidden > 0 {
+        format!("Todo  {DOWN_ARROW}{hidden}")
+    } else {
+        "Todo".to_string()
+    };
+    let block = panel_block(theme, &app.cfg.icons, &title, focused);
+    let inner = block.inner(area);
     let mut lines: Vec<Line> = Vec::new();
     if buf.text().is_empty() {
         // Ghost text: an empty panel with a bare caret in it says nothing
@@ -1113,6 +1197,9 @@ fn draw_todo(f: &mut Frame, area: Rect, app: &App) {
             .style(fg(theme.foreground)),
         area,
     );
+    if !focused {
+        return;
+    }
     let (cur_row, render_col) = buf.visual_cursor(wrap_width);
     if cur_row >= scroll && cur_row - scroll < content_lines {
         let x = inner.x + render_col as u16;
@@ -1641,8 +1728,8 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                 &["t"],
                 &[
                     "todo pad",
-                    "edited in place",
-                    "esc saves and goes back",
+                    "half the tree's column",
+                    "esc saves; the note stays, collapsed",
                     "one pad for every repository",
                 ],
             ),
@@ -3402,11 +3489,12 @@ mod tests {
         );
     }
 
-    /// The pad takes the tree's panel — it replaces the tree rather than
-    /// covering it — and the preview beside it is untouched, because the
-    /// pad is written *about* what that panel shows.
+    /// The pad splits the tree's column rather than replacing the tree or
+    /// covering it: both are on screen, the pad under the tree, and the
+    /// preview beside them is untouched — the pad is written *about* what
+    /// those panels show.
     #[test]
-    fn the_pad_replaces_the_tree_and_leaves_the_preview_alone() {
+    fn the_open_pad_splits_the_tree_column_and_leaves_the_preview_alone() {
         let mut app = seeded_app_with_shell();
         app.viewport = (120, 40);
         app.mode = crate::app::Mode::Todo {
@@ -3418,12 +3506,78 @@ mod tests {
         let text = buffer_text(&terminal);
         assert!(text.contains("Todo"), "the panel names itself: {text:?}");
         assert!(text.contains("ship the schema first"), "and holds the pad");
-        assert!(
-            !text.contains("repo-a"),
-            "the tree is gone while the pad is open"
-        );
+        assert!(text.contains("repo-a"), "the tree stays above it");
         assert!(text.contains("Preview"), "the panel beside it is untouched");
         assert!(text.contains("save & back"), "the bar says how to get out");
+    }
+
+    /// The open pad takes half the column — enough of a window to write
+    /// in — and the tree keeps the other half.
+    #[test]
+    fn the_open_pad_takes_half_the_column() {
+        let mut app = seeded_app();
+        app.viewport = (120, 41);
+        app.mode = crate::app::Mode::Todo {
+            buf: crate::app::TextBuf::from_parked("a", 0, 0),
+        };
+        let main = main_h(&app);
+        assert_eq!(main, 40, "one statusbar row at this width");
+        assert_eq!(todo_panel_h(&app, main), 20, "half the column");
+        assert_eq!(todo_panel_rows(&app), Some((20, 40)));
+    }
+
+    /// Parked, the pad is as tall as the note: five lines of text is a
+    /// five-line panel (plus its two borders), and an empty pad is no
+    /// panel at all.
+    #[test]
+    fn a_parked_pad_is_as_tall_as_its_note() {
+        let mut app = seeded_app();
+        app.viewport = (120, 41);
+        let main = main_h(&app);
+        assert_eq!(todo_panel_h(&app, main), 0, "an empty pad draws nothing");
+        assert_eq!(todo_panel_rows(&app), None);
+        app.todo = crate::app::TextBuf::from_parked("a\nb\nc\nd\ne", 0, 0);
+        assert_eq!(todo_panel_h(&app, main), 7, "five lines plus two borders");
+        // …and never past the half the open pad would take.
+        app.todo = crate::app::TextBuf::from_parked(&"x\n".repeat(60), 0, 0);
+        assert_eq!(todo_panel_h(&app, main), 20, "capped at half the column");
+    }
+
+    /// A parked pad keeps showing its note, unfocused, and says how many
+    /// rows it had to leave below the fold.
+    #[test]
+    fn a_parked_pad_keeps_showing_the_note_and_owns_up_to_what_it_hides() {
+        let mut app = seeded_app();
+        app.viewport = (120, 41);
+        app.todo = crate::app::TextBuf::from_parked(&"note\n".repeat(60), 0, 0);
+        let backend = ratatui::backend::TestBackend::new(120, 41);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("Todo"), "the panel is there in Normal too");
+        assert!(text.contains("note"), "and still shows the note");
+        assert!(text.contains("repo-a"), "beside a tree that still works");
+        assert!(
+            text.contains(&format!("{DOWN_ARROW}43")),
+            "18 rows shown of the note's 61: {text:?}"
+        );
+    }
+
+    /// A column with no room for two panels is not split: the open pad
+    /// takes it whole, the way it did before the split existed, and a
+    /// parked one yields to the tree — the panel you steer with.
+    #[test]
+    fn a_column_too_short_to_split_is_not_split() {
+        let mut app = seeded_app();
+        // The narrowest, shortest frame the dashboard still draws in.
+        app.viewport = TREE_MIN;
+        app.todo = crate::app::TextBuf::from_parked("later", 0, 0);
+        let main = main_h(&app);
+        assert_eq!(todo_panel_h(&app, main), 0, "parked yields the column");
+        app.mode = crate::app::Mode::Todo {
+            buf: crate::app::TextBuf::from_parked("later", 0, 0),
+        };
+        assert_eq!(todo_panel_h(&app, main), main, "open takes it whole");
     }
 
     /// An empty pad says what it is for. Ghost text, in dim, replaced by

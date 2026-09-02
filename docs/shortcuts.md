@@ -33,7 +33,7 @@ subtracted), recomputed every frame from the stored viewport.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `t` | open the todo pad in the tree's panel (edited in place) | mnemonic; a panel, not an overlay |
+| `t` | open the todo pad, split off the bottom of the tree's column | mnemonic; a panel, not an overlay |
 | `r` | refresh — reconcile state against tmux reality | LazyGit/Docker `r` = refresh |
 | `R` | reset the layout — dashboard strip, agent windows and holders back to their default proportions | shifted pair of `r`: the same subject (put reality back in step), the heavier repair on the shifted key. `r` stays refresh because that is the tradition's binding |
 | `ctrl-t` | live theme picker (preview on move, Enter keeps, Esc restores) | ctrl layer; picker lists built-ins first |
@@ -166,11 +166,26 @@ the trailing Enter submits.
 
 ## Todo pad (opened with `t`)
 
-The pad takes the **tree's own panel** and is edited in place — it is not an
-overlay, so the preview (or the docked agent) beside it stays exactly where
-it was: the pad is written about what that panel shows. The panel is the
-editor, so it owns every printable key and there is no navigation layer
-underneath it; `Esc` is the way back to the tree.
+The pad is a panel of its own, split off the **bottom of the tree's column**
+— not an overlay, so neither the tree above it nor the preview (or the docked
+agent) beside it is covered: the pad is written about what those panels show.
+The panel is the editor, so it owns every printable key and there is no
+navigation layer underneath it; `Esc` is the way back to the tree.
+
+It has two heights, and no third state:
+
+- **Open** (`t`): **half the column**, which is what writing in it needs.
+- **Parked** (after `Esc`, with something in it): as many rows as the note
+  has lines — five lines of text is a five-line panel — capped at the open
+  half, so a long note cannot push the tree off the screen. The border is
+  unfocused and there is no caret. The note stays on screen because a
+  reminder you have to press a key to see is not one; when the cap cuts it
+  off, the title says how many rows are below the fold (`Todo ↓12`).
+- **Empty and parked**: no panel at all. A framed box with nothing in it is
+  worse than the row it costs.
+
+A column too short for two panels is not split: an open pad takes it whole,
+a parked one yields to the tree — the panel you steer with.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
@@ -183,12 +198,12 @@ underneath it; `Esc` is the way back to the tree.
 | `PgUp` / `PgDn`, `ctrl-u` / `ctrl-d` | page the cursor half a page | accessibility, owned by the pad |
 | `ctrl-f` / `ctrl-b` | page the cursor a full page | accessibility, owned by the pad |
 | `ctrl-s` | save without leaving | explicit save for a pad kept open |
-| `Esc` | save and go back to the tree | leave innermost first; a scratch pad may not lose a note |
+| `Esc` | save and go back to the tree; the note stays, collapsed | leave innermost first; a scratch pad may not lose a note |
 | `ctrl-t` | theme picker — parks the pad first | ctrl layer keeps only quit and theme |
 | `ctrl-c` | quit, even here — the pad is written on the way out | ctrl layer over every state |
 | wheel | walk the caret 3 lines (the pad has no scroll of its own) | the wheel belongs to the panel that has something to scroll |
 | click on the pad | nothing — the caret is placed with the keyboard | display-only click, like the preview panel |
-| click anywhere else | save and go back to the tree | click outside dismisses |
+| click anywhere else (the tree above it included) | save and go back to the tree | click outside dismisses |
 
 `?` is **not** bound here: it types a question mark. For the same reason the
 statusbar drops every entry but `save & back esc` while the pad is open.
@@ -222,6 +237,7 @@ too and the footer drops them: `git worktree remove` refuses without
 | Action | Meaning | Rule satisfied |
 |---|---|---|
 | click a tree row | select | click to select |
+| click the parked todo panel | open the pad (`t`) | click to focus the panel you clicked |
 | double-click a row | same as `Enter` | click on row = `Enter` where unambiguous |
 | wheel | scroll the preview 3 lines through the selected pane's scrollback; the tree selection never moves | the wheel belongs to the panel that has something to scroll |
 | wheel below the split tier | scroll the tree (the preview is not drawn there) | no dead keys |
@@ -325,14 +341,14 @@ An inert key is a decision, not an omission.
 
 - `/` — no search/filter panel exists yet (the tree is small; statuses are
   classified automatically). When a filter lands it takes `/` per the rules.
-- `Tab` / `Shift-Tab` — no panel cycling: there is exactly one focusable
-  panel (the tree, or the todo pad in its place); the detail/preview panes
-  are display-only. In the quick-send textarea and in the pad, `Tab`
-  inserts a tab (see above).
+- `Tab` / `Shift-Tab` — no panel cycling: the two focusable panels (the tree
+  and the todo pad below it) are each reached by name — `t` into the pad,
+  `Esc` back — and the detail/preview panes are display-only. In the
+  quick-send textarea and in the pad, `Tab` inserts a tab (see above).
 - `1` / `2` / `3` — no numbered panels. LazyGit numbers its panel stack
-  because it has five of them; here there are two things the left panel can
-  hold and one of them is reached by what it is (`t` for todo), which is a
-  name rather than a position and cannot go stale when a third arrives.
+  because it has five of them; here the left column holds two and one of
+  them is reached by what it is (`t` for todo), which is a name rather than
+  a position and cannot go stale when a third arrives.
 - pane navigation, scrolling, search, selection, copy, zoom and resize —
   all deliberately unbound. Once a pane is docked they are tmux's own
   bindings, whatever the user has them set to; re-implementing any of them

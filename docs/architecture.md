@@ -951,13 +951,32 @@ duplication docking exists to end.
   state is (temp file, rename over) — two dashboards share it, so
   last-writer-wins is the rule, but a half-written pad is not something the
   user can get back.
-- **Edited in place, in the tree's panel — not in an overlay.** The pad is a
-  `Mode` like any other, but `draw_left` swaps it in for the tree instead of
-  drawing it on top: a modal would cover the preview, or the docked agent,
-  that the note is being written *about*. The panel is the editor, so it owns
-  every printable key (`q` types a `q`) and the accessibility layer yields
-  its motions the same way it does for the textarea. `Esc` is the way back,
-  and it saves — a scratch pad that can lose a note is not one.
+- **A panel split off the tree's column — not an overlay.** The pad is a
+  `Mode` like any other, but `draw_left` splits the left column and draws it
+  under the tree instead of on top of anything: a modal would cover the
+  preview, or the docked agent, that the note is being written *about*, and
+  taking the tree's whole panel covered the tree the note is written *from*.
+  The panel is the editor, so it owns every printable key (`q` types a `q`)
+  and the accessibility layer yields its motions the same way it does for the
+  textarea. `Esc` is the way back, and it saves — a scratch pad that can lose
+  a note is not one.
+- **Two heights, one rule: a panel costs what it holds.** `ui::todo_panel_h`
+  is the single source for the geometry — rendering, the caret's window
+  (`app::todo_visible_lines`), the tree's page size (`ui::tree_rows`) and
+  mouse hit-testing (`ui::todo_panel_rows`) all read it, so a click always
+  lands on the panel the eye sees. Open, the pad gets **half the column**,
+  because that is what writing needs. Parked, it gets **as many rows as the
+  note has lines** (five lines of text is a five-line panel), capped at that
+  same half so a long note cannot push the tree off the screen; past the cap
+  the title owns up to what is below the fold (`Todo ↓12`). Empty and parked,
+  it is not drawn at all.
+- **`Esc` collapses the pad, it does not close it.** The note stays on
+  screen, unfocused and caretless, because a reminder you have to press a key
+  to see is not a reminder — and unlike every other `Mode`, leaving this one
+  leaves something behind to look at. Only an emptied pad disappears: there
+  is nothing left to stand for. A column with no room for two panels is not
+  split — an open pad takes it whole (the pre-split behaviour), a parked one
+  yields to the tree, which is the panel the user steers with.
 - **Saved on every exit, and on the poll.** `close_todo` writes it; so does
   `App::poll` while the dirty flag is up, and so does the event loop on
   `quit`, because ctrl-c quits from any state. The worst a `kill -9` costs is
