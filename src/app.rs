@@ -530,8 +530,13 @@ pub(crate) fn textarea_wrap_width(viewport_w: u16) -> usize {
 /// Content rows of the todo panel: the frame, less the statusbar, less the
 /// panel's two borders. The pad is edited in the tree's own panel, so its
 /// geometry is the panel's — not the textarea popup's.
-pub(crate) fn todo_visible_lines(viewport: (u16, u16)) -> usize {
-    (viewport.1.saturating_sub(3) as usize).max(1)
+///
+/// The statusbar is *measured*, not assumed to be one row: it wraps onto a
+/// second row in a narrow strip, and a content window that ignored that
+/// would put the caret under it.
+pub(crate) fn todo_visible_lines(app: &App) -> usize {
+    let bar = crate::ui::statusbar_h(app, app.viewport.0);
+    (app.viewport.1.saturating_sub(2 + bar) as usize).max(1)
 }
 
 /// Soft-wrap width of the todo panel's text: the panel width minus its two
@@ -741,8 +746,9 @@ pub struct App {
     /// The theme name the picker opened with — restored on Esc.
     pub picker_original: String,
     /// Hit ranges of the statusbar shortcut entries, set by the renderer:
-    /// (x_start, x_end, action) on the statusbar row.
-    pub bar_hits: Vec<(u16, u16, BarAction)>,
+    /// (x_start, x_end, y, action). The bar wraps onto a second row on a
+    /// narrow frame, so each entry carries the row it landed on.
+    pub bar_hits: Vec<(u16, u16, u16, BarAction)>,
     /// Last left-click (time, x, y) — double-click detection, since this
     /// crossterm version does not report a click count on mouse events.
     last_click: Option<(Instant, u16, u16)>,
@@ -996,6 +1002,44 @@ impl App {
                 log::warn!("resize holder {}: {e}", p.pane_id);
             }
         }
+    }
+
+    /// Put the layout back at the proportions it is meant to have: the
+    /// dashboard's own strip at [`dock::dash_width`][crate::dock::dash_width],
+    /// every agent window at the dashboard window's size, every holder cut
+    /// to match, and any missing holder backfilled.
+    ///
+    /// It exists because the sizes are only re-cut when the *window* size
+    /// changes ([`App::refresh_dash_window`]): a strip the user dragged, or
+    /// a stray `resize-pane`, stays dragged until something asks for it
+    /// back. Nothing here moves a shell — the furniture is repaired, what
+    /// is docked stays docked.
+    pub(crate) fn reset_layout(&mut self) {
+        let Ok(tmux) = self.require_tmux() else {
+            self.notify_err("no tmux session");
+            return;
+        };
+        let size = self.dash_window_size(&tmux);
+        if size == (0, 0) {
+            self.notify_err("cannot read the dashboard window size");
+            return;
+        }
+        self.dash_window = Some(size);
+        let width = crate::dock::dash_width(size.0);
+        // Our own strip first, and only when something of ours sits beside
+        // it: the neighbour takes the rest of the row, so one resize
+        // settles both. With no slot and nothing docked the dashboard is a
+        // guest in the user's own window, and its width is theirs to set.
+        if (self.slot.is_some() || self.docked.is_some())
+            && let Some(inside) = &tmux.inside
+            && let Err(e) = tmux.resize_pane_width(&inside.pane_id, width)
+        {
+            log::warn!("cannot re-cut the dashboard pane: {e}");
+        }
+        self.resize_agent_windows(&tmux, size);
+        crate::dock::ensure_holders(&tmux, width);
+        log::info!("layout reset to {width} columns of {}", size.0);
+        self.notify("layout reset");
     }
 
     /// The dashboard's slot pane, created if it is not there.
@@ -1778,7 +1822,7 @@ impl App {
             self.todo = TextBuf::from_parked(&text, row, col);
         }
         let mut buf = self.todo.clone();
-        buf.ensure_visible(todo_visible_lines(self.viewport), todo_wrap_width(self));
+        buf.ensure_visible(todo_visible_lines(self), todo_wrap_width(self));
         self.mode = Mode::Todo { buf };
     }
 
@@ -1827,7 +1871,7 @@ impl App {
     /// view follows, in the panel as in the textarea — so the wheel moves
     /// the caret rather than sliding text out from under it.
     fn todo_scroll_by(&mut self, lines: isize) {
-        let visible = todo_visible_lines(self.viewport);
+        let visible = todo_visible_lines(self);
         let wrap = todo_wrap_width(self);
         if let Mode::Todo { buf } = &mut self.mode {
             for _ in 0..lines.unsigned_abs() {
@@ -3029,7 +3073,7 @@ impl App {
         let wrap_width = textarea_wrap_width(self.viewport.0);
         // The pad's page size and soft-wrap width are the tree panel's, not
         // the popup's — resolved here, before `mode` is borrowed.
-        let todo_lines = todo_visible_lines(self.viewport);
+        let todo_lines = todo_visible_lines(self);
         let todo_wrap = todo_wrap_width(self);
         // The add-shell picker's row count, resolved before the borrow of
         // `mode` below (its arm cannot call back into `self`).
@@ -3377,6 +3421,7 @@ impl App {
             KeyCode::Char('r') => {
                 self.refresh();
             }
+            KeyCode::Char('R') => self.reset_layout(),
             KeyCode::Char('?') => self.open_help(),
             _ => {}
         }
@@ -3757,16 +3802,23 @@ impl App {
         // alone — it is placed by the keyboard, like every other cursor
         // here — and a click anywhere else is the way back to the tree.
         if matches!(self.mode, Mode::Todo { .. }) {
-            let h = self.viewport.1;
-            if h > 0 && y == h - 1 && !self.bar_hits.is_empty() {
-                if let Some((_, _, action)) =
-                    self.bar_hits.iter().find(|(x0, x1, _)| *x0 <= x && x < *x1)
+            // The statusbar wraps, so its rows are found the same way the
+            // normal-mode click below finds them: by the row each entry
+            // landed on, never by "the last line of the frame".
+            let bar_top = self.bar_hits.iter().map(|(_, _, by, _)| *by).min();
+            if let Some(top) = bar_top
+                && y >= top
+            {
+                if let Some((_, _, _, action)) = self
+                    .bar_hits
+                    .iter()
+                    .find(|(x0, x1, by, _)| *by == y && *x0 <= x && x < *x1)
                 {
                     self.run_bar_action(*action);
                 }
                 return;
             }
-            let inside = crate::ui::tree_width_for(self).is_some_and(|w| x < w && y + 1 < h);
+            let inside = crate::ui::tree_width_for(self).is_some_and(|w| x < w);
             if !inside {
                 self.close_todo();
             }
@@ -3862,11 +3914,15 @@ impl App {
             }
             return;
         }
-        let h = self.viewport.1;
-        // Statusbar row: click a shortcut entry to run its action.
-        if h > 0 && y == h - 1 && !self.bar_hits.is_empty() {
-            if let Some((_, _, action)) =
-                self.bar_hits.iter().find(|(x0, x1, _)| *x0 <= x && x < *x1)
+        // Statusbar rows: click a shortcut entry to run its action.
+        let bar_top = self.bar_hits.iter().map(|(_, _, by, _)| *by).min();
+        if let Some(top) = bar_top
+            && y >= top
+        {
+            if let Some((_, _, _, action)) = self
+                .bar_hits
+                .iter()
+                .find(|(x0, x1, by, _)| *by == y && *x0 <= x && x < *x1)
             {
                 self.run_bar_action(*action);
             }
@@ -4315,6 +4371,13 @@ mod tests {
                 crate::tmux::testutil::HOLDER_W,
             )
             .unwrap();
+        // A detached session's windows default to 80x24, which leaves the
+        // agent pane a 25-column sliver beside a full-width holder. The
+        // real app never runs that way — `resize_agent_windows` puts every
+        // agent window at the dashboard window's size — so the fixture
+        // does the same, and no test comes to depend on where 80 columns
+        // happen to wrap.
+        tmux.resize_window(&w.window_id, 200, 50).unwrap();
         app.state.repositories.push(Repository {
             name: "p".into(),
             path: PathBuf::from("/tmp/p"),
@@ -6810,6 +6873,59 @@ mod tests {
         });
     }
 
+    /// `R` is the repair for a layout dragged out of shape: an agent
+    /// window someone resized by hand, and a holder cut to the wrong
+    /// width, are both put back without the dashboard window changing size
+    /// (which is the only thing that otherwise re-cuts them).
+    #[test]
+    fn reset_layout_puts_the_agent_windows_and_holders_back() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (agent_window, _pane) = seed_repository_with_shell(&tmux, &mut app);
+            app.poll();
+
+            // Someone attaches the agent session and drags it about.
+            tmux.resize_window(&agent_window, 100, 30).unwrap();
+            let holder = tmux
+                .list_furniture()
+                .unwrap()
+                .into_iter()
+                .find(|p| p.holder)
+                .expect("holder");
+            tmux.resize_pane_width(&holder.pane_id, 20).unwrap();
+
+            app.on_key(key(KeyCode::Char('R'), false));
+
+            assert_eq!(
+                tmux.window_size(&agent_window).unwrap(),
+                (200, 50),
+                "the agent window is back at the dashboard window's size"
+            );
+            let width = tmux
+                .run_raw(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    &holder.pane_id,
+                    "#{pane_width}",
+                ])
+                .unwrap()
+                .trim()
+                .parse::<u16>()
+                .unwrap();
+            assert_eq!(
+                width,
+                crate::dock::dash_width(200),
+                "and the holder is back at the dashboard pane's width"
+            );
+            assert!(
+                app.toast().is_some_and(|t| t.text.contains("layout reset")),
+                "and it says so"
+            );
+        });
+    }
+
     /// The confirm popup takes `d` as a yes: `dd` deletes the way vim
     /// does, without moving the hand off the key that opened the popup.
     #[test]
@@ -7617,13 +7733,13 @@ mod tests {
         assert!(!app.bar_hits.is_empty());
         assert_eq!(app.sel, Sel::Repository(0));
         // a repository's bar has "n worktree" → the new-worktree input
-        let (x0, x1, _) = app
+        let (x0, x1, y, _) = app
             .bar_hits
             .iter()
-            .find(|(_, _, a)| *a == BarAction::NewWorktree)
+            .find(|(_, _, _, a)| *a == BarAction::NewWorktree)
             .copied()
             .expect("bar must offer 'n worktree' for a repository");
-        app.on_mouse(click((x0 + x1) / 2, 39));
+        app.on_mouse(click((x0 + x1) / 2, y));
         assert!(
             matches!(
                 app.mode,

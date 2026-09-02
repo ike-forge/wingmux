@@ -299,6 +299,17 @@ directly resizes its windows, so the next dock costs one repaint. And a holder
 is one sleeping process per shell, visible in `list-panes` and in the user's
 own pane navigation — marked once and filtered once.
 
+Those sizes are only re-cut when the dashboard's *window* size changes
+(`App::refresh_dash_window`), so a pane the user dragged — or a stray
+`resize-pane` — stays dragged: nothing in a steady-state poll disagrees with
+it. `R` (`App::reset_layout`) is the explicit way back: it re-cuts the
+dashboard's own strip to `dock::dash_width`, puts every agent window at the
+dashboard window's size, re-cuts every holder and backfills a missing one.
+It is a repair of the furniture only — what is docked stays docked — and it
+leaves the dashboard's pane alone when nothing of ours sits beside it, since
+an undocked dashboard is a guest in the user's own window and its width is
+theirs to set.
+
 ### The lease: looking yields, pressing steals
 
 Eager stealing plus automatic docking would ping-pong: two idle instances with
@@ -906,6 +917,12 @@ duplication docking exists to end.
   TTL (4s, 6s for errors) — the log and the diagnostics overlay stay the
   permanent record. The bar's entries are contextual, clickable, and computed
   per selection; hjkl/Esc/q deliberately take no slot (assumed knowledge).
+  The bar wraps onto a second row when the entries do not fit its width
+  (two rows is the ceiling — beyond that the tree loses more than the bar
+  gains), and each entry's hit range carries the row it landed on, so a
+  click on the wrapped row still runs its action. A toast wraps the same
+  way, up to three rows: errors are sentences, and a cut one names neither
+  what failed nor why.
 - **One shape for every shortcut hint**: `<action> <key>` ("cancel esc"),
   with only the key in the accent colour, everywhere the app names a key —
   status bar, modal footers, help palette (`ui::Hint`, `ui::hint_line`). The
@@ -976,7 +993,7 @@ duplication docking exists to end.
   two-line question drew a box a quarter of the screen tall with text
   jammed against the border.
 - **Overlays are built for the narrow strip, and capped there** (post-M18).
-  Docking left the dashboard living in 26–48 columns while a pane is docked
+  Docking left the dashboard living in 26–54 columns while a pane is docked
   and in the whole window while none is, and the overlays were built for the
   second one: the help palette was a fixed 82-column table, the dialogs took
   60% of the frame, and every `overlay_min` was wider than the strip — so

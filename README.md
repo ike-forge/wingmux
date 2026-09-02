@@ -87,6 +87,7 @@ the help overlay (`?`).
 | `t` | **todo pad** — a scratch pad for the next steps you cannot start yet ("rebase the API worktree once the schema lands"). It opens in the tree's own panel and is edited in place, so the preview — or the docked agent — beside it stays put; `Esc` saves and hands the panel back to the tree, `ctrl-s` saves without leaving. One pad for the whole machine, not one per directory, parked as plain text in `$XDG_STATE_HOME/lazywingman/todo.md` (yours to edit with `$EDITOR` too) |
 | `d` | on a worktree: delete it (kills windows, removes worktree; `f` = force when dirty). On a shell row: close that shell (kills its window only — the worktree and its other shells stay) |
 | `r` | refresh — reconcile state against reality |
+| `R` | **reset the layout** — the dashboard's strip, every agent window and every holder back to their default proportions, after a stray drag or `resize-pane` pulled them out of shape. Nothing is undocked |
 | `?` | help overlay (grouped, scrollable: `j`/`k`, `PgUp`/`PgDn`) |
 | `q` / `Esc` / `ctrl-c` | quit (ctrl-c works from any state) |
 | `Esc` / `q` / `Enter` (startup) | dismiss the startup diagnostics overlay (shown when config problems were dropped at load) |
@@ -596,11 +597,14 @@ The statusbar carries the contextual shortcuts and nothing else — no app
 name, no session chip, no repository count. Every shortcut in the app —
 status bar, modal footer, help palette — is written the same way, `<action>
 <key>` ("cancel esc"), with only the key in the accent colour and glyphs
-from `[icons]` where a key has one (`↵`, `↑↓`). Notices ("worktree 'x' created",
-"dock failed: …") appear as a toast above the bar and fade after a few
+from `[icons]` where a key has one (`↵`, `↑↓`). On a frame too narrow to
+hold them all the entries wrap onto a second bar row instead of losing
+their tail at the border. Notices ("worktree 'x' created",
+"dock failed: …") appear as a toast above the bar, wrapped to as many as
+three rows so a long error stays readable, and fade after a few
 seconds; the log and the diagnostics overlay (`D`) keep the record.
 
-The tree takes a percentage of the frame width, capped at 48 columns — it
+The tree takes a percentage of the frame width, capped at 54 columns — it
 holds short names, so on a wide screen the extra width goes to the preview
 instead of to empty tree padding. Below 64x12 the tree takes a larger share
 of the width; below 44x9 the preview hides and the tree fills the frame;
