@@ -117,7 +117,7 @@ pub const SLOT_NOTE: &str = "[LazyWingman] slot — the selected agent's pane do
 pub const DASH_MIN_WIDTH: u16 = 26;
 /// Widest: the tree never earns more, and every extra column is one the
 /// agent does not get. Matches `ui::TREE_MAX`.
-pub const DASH_MAX_WIDTH: u16 = 48;
+pub const DASH_MAX_WIDTH: u16 = 54;
 
 /// Width of the dashboard's own pane once a slot sits beside it — and so,
 /// by construction, the width of every holder.

@@ -30,7 +30,7 @@ const TREE_MIN: (u16, u16) = (26, 7);
 const UP_ARROW: &str = "\u{2191}";
 
 /// Cap on the tree panel's width, in columns (see [`tree_width`]).
-const TREE_MAX: u16 = 48;
+const TREE_MAX: u16 = 54;
 
 /// Which panels fit in a frame of `(width, height)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1407,6 +1407,13 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                 &["back to the live tail", "while the preview is parked"],
             ),
             (&["r"], &["refresh", "reconcile state"]),
+            (
+                &["R"],
+                &[
+                    "reset the layout",
+                    "strip and panes back to their proportions",
+                ],
+            ),
             (&["ctrl-t"], &["change theme", "live picker"]),
             (&["?"], &["this help", "palette"]),
             (&["q", "Esc"], &["quit"]),
@@ -1461,7 +1468,7 @@ fn help_lines(app: &App, width: usize) -> Vec<Line<'_>> {
 
 /// One help row, laid out for the width it actually has.
 ///
-/// The palette is drawn in the dashboard's own strip, which is 26 to 48
+/// The palette is drawn in the dashboard's own strip, which is 26 to 54
 /// columns wide — no fixed two-column table survives that, so the row
 /// reflows instead: `<description> <key>` on one line while it fits, the
 /// key on its own indented line when it does not, and the notes wrapped
@@ -3055,7 +3062,7 @@ mod tests {
     fn tree_width_follows_tier_math() {
         assert_eq!(tree_width((120, 40)), Some(38)); // full: 32%
         assert_eq!(tree_width((50, 10)), Some(21)); // no-preview: 42%
-        assert_eq!(tree_width((400, 60)), Some(48)); // wide screen: capped
+        assert_eq!(tree_width((400, 60)), Some(54)); // wide screen: capped
         assert_eq!(tree_width((30, 8)), Some(30)); // tree-only: 100%
         assert_eq!(tree_width((20, 5)), None); // message tier
     }
@@ -3094,6 +3101,7 @@ mod tests {
             "close shell",
             "quick-send",
             "refresh",
+            "reset the layout",
             "this help",
         ] {
             assert!(text.contains(needle), "action {needle:?} missing from help");

@@ -86,6 +86,7 @@ the help overlay (`?`).
 | `p` | **predefined messages** for the selected shell (or a one-shell worktree's row) — a modal of configured presets, each listed in full with its `<base_branch>`-style tokens already resolved (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
 | `d` | on a worktree: delete it (kills windows, removes worktree; `f` = force when dirty). On a shell row: close that shell (kills its window only — the worktree and its other shells stay) |
 | `r` | refresh — reconcile state against reality |
+| `R` | **reset the layout** — the dashboard's strip, every agent window and every holder back to their default proportions, after a stray drag or `resize-pane` pulled them out of shape. Nothing is undocked |
 | `?` | help overlay (grouped, scrollable: `j`/`k`, `PgUp`/`PgDn`) |
 | `q` / `Esc` / `ctrl-c` | quit (ctrl-c works from any state) |
 | `Esc` / `q` / `Enter` (startup) | dismiss the startup diagnostics overlay (shown when config problems were dropped at load) |
@@ -599,7 +600,7 @@ from `[icons]` where a key has one (`↵`, `↑↓`). Notices ("worktree 'x' cre
 "dock failed: …") appear as a toast above the bar and fade after a few
 seconds; the log and the diagnostics overlay (`D`) keep the record.
 
-The tree takes a percentage of the frame width, capped at 48 columns — it
+The tree takes a percentage of the frame width, capped at 54 columns — it
 holds short names, so on a wide screen the extra width goes to the preview
 instead of to empty tree padding. Below 64x12 the tree takes a larger share
 of the width; below 44x9 the preview hides and the tree fills the frame;

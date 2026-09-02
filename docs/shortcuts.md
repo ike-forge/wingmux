@@ -34,6 +34,7 @@ subtracted), recomputed every frame from the stored viewport.
 | Key | Meaning | Rule satisfied |
 |---|---|---|
 | `r` | refresh — reconcile state against tmux reality | LazyGit/Docker `r` = refresh |
+| `R` | reset the layout — dashboard strip, agent windows and holders back to their default proportions | shifted pair of `r`: the same subject (put reality back in step), the heavier repair on the shifted key. `r` stays refresh because that is the tradition's binding |
 | `ctrl-t` | live theme picker (preview on move, Enter keeps, Esc restores) | ctrl layer; picker lists built-ins first |
 | `?` | open the grouped help overlay (the palette) | palette key; `?` is never rebound |
 | `Esc` (preview parked) | back to the live tail | leave innermost first |

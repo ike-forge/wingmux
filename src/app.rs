@@ -952,6 +952,44 @@ impl App {
         }
     }
 
+    /// Put the layout back at the proportions it is meant to have: the
+    /// dashboard's own strip at [`dock::dash_width`][crate::dock::dash_width],
+    /// every agent window at the dashboard window's size, every holder cut
+    /// to match, and any missing holder backfilled.
+    ///
+    /// It exists because the sizes are only re-cut when the *window* size
+    /// changes ([`App::refresh_dash_window`]): a strip the user dragged, or
+    /// a stray `resize-pane`, stays dragged until something asks for it
+    /// back. Nothing here moves a shell — the furniture is repaired, what
+    /// is docked stays docked.
+    pub(crate) fn reset_layout(&mut self) {
+        let Ok(tmux) = self.require_tmux() else {
+            self.notify_err("no tmux session");
+            return;
+        };
+        let size = self.dash_window_size(&tmux);
+        if size == (0, 0) {
+            self.notify_err("cannot read the dashboard window size");
+            return;
+        }
+        self.dash_window = Some(size);
+        let width = crate::dock::dash_width(size.0);
+        // Our own strip first, and only when something of ours sits beside
+        // it: the neighbour takes the rest of the row, so one resize
+        // settles both. With no slot and nothing docked the dashboard is a
+        // guest in the user's own window, and its width is theirs to set.
+        if (self.slot.is_some() || self.docked.is_some())
+            && let Some(inside) = &tmux.inside
+            && let Err(e) = tmux.resize_pane_width(&inside.pane_id, width)
+        {
+            log::warn!("cannot re-cut the dashboard pane: {e}");
+        }
+        self.resize_agent_windows(&tmux, size);
+        crate::dock::ensure_holders(&tmux, width);
+        log::info!("layout reset to {width} columns of {}", size.0);
+        self.notify("layout reset");
+    }
+
     /// The dashboard's slot pane, created if it is not there.
     ///
     /// Lazy on purpose: the dashboard often runs in the user's own window,
@@ -3135,6 +3173,7 @@ impl App {
             KeyCode::Char('r') => {
                 self.refresh();
             }
+            KeyCode::Char('R') => self.reset_layout(),
             KeyCode::Char('?') => self.open_help(),
             _ => {}
         }
@@ -4041,6 +4080,13 @@ mod tests {
                 crate::tmux::testutil::HOLDER_W,
             )
             .unwrap();
+        // A detached session's windows default to 80x24, which leaves the
+        // agent pane a 25-column sliver beside a full-width holder. The
+        // real app never runs that way — `resize_agent_windows` puts every
+        // agent window at the dashboard window's size — so the fixture
+        // does the same, and no test comes to depend on where 80 columns
+        // happen to wrap.
+        tmux.resize_window(&w.window_id, 200, 50).unwrap();
         app.state.repositories.push(Repository {
             name: "p".into(),
             path: PathBuf::from("/tmp/p"),
@@ -6400,6 +6446,59 @@ mod tests {
                 width,
                 crate::dock::dash_width(140),
                 "and its holder was re-cut to the dashboard pane's width"
+            );
+        });
+    }
+
+    /// `R` is the repair for a layout dragged out of shape: an agent
+    /// window someone resized by hand, and a holder cut to the wrong
+    /// width, are both put back without the dashboard window changing size
+    /// (which is the only thing that otherwise re-cuts them).
+    #[test]
+    fn reset_layout_puts_the_agent_windows_and_holders_back() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (agent_window, _pane) = seed_repository_with_shell(&tmux, &mut app);
+            app.poll();
+
+            // Someone attaches the agent session and drags it about.
+            tmux.resize_window(&agent_window, 100, 30).unwrap();
+            let holder = tmux
+                .list_furniture()
+                .unwrap()
+                .into_iter()
+                .find(|p| p.holder)
+                .expect("holder");
+            tmux.resize_pane_width(&holder.pane_id, 20).unwrap();
+
+            app.on_key(key(KeyCode::Char('R'), false));
+
+            assert_eq!(
+                tmux.window_size(&agent_window).unwrap(),
+                (200, 50),
+                "the agent window is back at the dashboard window's size"
+            );
+            let width = tmux
+                .run_raw(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    &holder.pane_id,
+                    "#{pane_width}",
+                ])
+                .unwrap()
+                .trim()
+                .parse::<u16>()
+                .unwrap();
+            assert_eq!(
+                width,
+                crate::dock::dash_width(200),
+                "and the holder is back at the dashboard pane's width"
+            );
+            assert!(
+                app.toast().is_some_and(|t| t.text.contains("layout reset")),
+                "and it says so"
             );
         });
     }
