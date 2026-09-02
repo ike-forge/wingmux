@@ -1923,18 +1923,38 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
     // the tail-scrolling below needs a width it can count on.
     let w = dialog_max_w(f.area());
     let body_w = modal_text_width(w);
-    // The label sits on its own row and the field under it. Inline
-    // ("worktree name: …") does not survive a 26-column strip: the label
-    // alone is wider than the field would be.
-    const FIELD_INDENT: usize = 2;
+    // The label sits beside the field ("worktree name: …") whenever the
+    // strip is wide enough to leave the field something to work with;
+    // below that it takes a row of its own, because in a 26-column strip
+    // the label alone is wider than the field would be.
+    let inline_label = format!("{label}: ");
+    let inline_indent = UnicodeWidthStr::width(inline_label.as_str());
+    // Under this the inline field is too cramped to read what is typed
+    // into it, so the stacked layout wins.
+    const MIN_INLINE_FIELD: usize = 12;
+    const STACKED_INDENT: usize = 2;
+    // +1 for the caret cell the field always keeps free.
+    let inline = body_w > inline_indent + MIN_INLINE_FIELD;
+    let field_indent = if inline {
+        inline_indent
+    } else {
+        STACKED_INDENT
+    };
     // One cell is left for the caret, so a field typed full still shows
     // where the next character lands.
-    let field_w = body_w.saturating_sub(FIELD_INDENT + 1);
+    let field_w = body_w.saturating_sub(field_indent + 1);
     let shown = tail_to_width(text, field_w);
-    let mut lines = vec![
-        Line::from(Span::styled(label, fg(theme.accent))),
-        Line::from(Span::raw(format!("{}{shown}", " ".repeat(FIELD_INDENT)))),
-    ];
+    let mut lines = if inline {
+        vec![Line::from(vec![
+            Span::styled(inline_label, fg(theme.accent)),
+            Span::raw(shown.to_string()),
+        ])]
+    } else {
+        vec![
+            Line::from(Span::styled(label, fg(theme.accent))),
+            Line::from(Span::raw(format!("{}{shown}", " ".repeat(STACKED_INDENT)))),
+        ]
+    };
     // new-worktree only: the worktree is cut from the repository's base
     // branch, NOT from whatever the repo has checked out. Name the branch
     // so nobody has to guess which one it is.
@@ -1968,8 +1988,8 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
     lines.extend(footer);
     let area = dialog_rect(f.area(), &lines, &title_text, w, w);
     f.render_widget(Clear, area);
-    // Inside the border AND the padding — the label row is the first
-    // content row, the field the second.
+    // Inside the border AND the padding — the field shares the first
+    // content row with the label, or sits on the second when stacked.
     let inner = modal_inner(area);
     let popup_style = on(theme.popup_fg, theme.popup_bg);
     f.render_widget(
@@ -1982,8 +2002,8 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
     // scrolls with the text, so that is the end of the tail, not the end
     // of the buffer. Only when it lands inside the popup: a cursor off the
     // buffer would corrupt the terminal.
-    let cursor_x = inner.x + (FIELD_INDENT + UnicodeWidthStr::width(shown)) as u16;
-    let cursor_y = inner.y + 1;
+    let cursor_x = inner.x + (field_indent + UnicodeWidthStr::width(shown)) as u16;
+    let cursor_y = inner.y + if inline { 0 } else { 1 };
     if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
         f.set_cursor_position(Position::new(cursor_x, cursor_y));
     }
@@ -2306,8 +2326,10 @@ mod tests {
     /// caret landed a row below the text in every input popup (new
     /// worktree, add-shell, quick-send) — on the "branches from" hint.
     ///
-    /// The label now has a row of its own (it does not fit beside a field
-    /// in a 26-column strip), so the field is the *second* content row.
+    /// The label sits beside the field whenever the strip is wide enough
+    /// (it stacks onto its own row only in a narrow strip, where it does
+    /// not fit beside a field), so here the field is the *first* content
+    /// row, indented by the label.
     #[test]
     fn input_popup_cursor_sits_on_input_row() {
         // seeded: the add-shell hint needs a repository to name, and it adds
@@ -2334,9 +2356,10 @@ mod tests {
             let body = buffer_text(&terminal);
             assert!(body.contains(label), "the label names the field: {label:?}");
             // inside the border AND the one column of padding, then the
-            // field's own indent, then the text
-            let expected_x = area.x + 2 + 2 + text.chars().count() as u16;
-            let expected_y = area.y + 2; // label row, then the field row
+            // inline label, then the text
+            let expected_x =
+                area.x + 2 + (label.chars().count() + 2) as u16 + text.chars().count() as u16;
+            let expected_y = area.y + 1; // the field shares the label's row
             assert_eq!(
                 terminal.get_cursor_position().unwrap(),
                 Position::new(expected_x, expected_y),
