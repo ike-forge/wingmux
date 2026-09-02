@@ -77,7 +77,9 @@ shell, and a command you want to run often belongs in `[[agents]]`.
 ## Actions — by selection
 
 The statusbar shows only the entries that do something right now; the help
-overlay lists all of them grouped by context. Same words in both.
+overlay lists all of them grouped by context. Same words in both. A narrow
+frame wraps the entries onto a second bar row rather than dropping the
+tail — `help ?`, the way to everything that did not fit, sits at that end.
 
 ### Repository selected
 

@@ -647,8 +647,11 @@ fn hint_line(
 /// Tree | preview, statusbar below. `tree_w` comes from [`tree_width`] —
 /// the same math drives mouse hit-testing.
 fn draw_split(f: &mut Frame, area: Rect, app: &mut App, tree_w: u16) {
-    let [main, statusbar] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let [main, statusbar] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(statusbar_h(app, area.width)),
+    ])
+    .areas(area);
     let [tree, preview] =
         Layout::horizontal([Constraint::Length(tree_w), Constraint::Fill(1)]).areas(main);
 
@@ -660,8 +663,11 @@ fn draw_split(f: &mut Frame, area: Rect, app: &mut App, tree_w: u16) {
 
 /// Tree across the whole main area.
 fn draw_tree_only(f: &mut Frame, area: Rect, app: &mut App) {
-    let [main, statusbar] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let [main, statusbar] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(statusbar_h(app, area.width)),
+    ])
+    .areas(area);
     draw_tree(f, main, app);
     draw_toast(f, main, app);
     draw_statusbar(f, statusbar, app);
@@ -1203,27 +1209,71 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
 /// Notices live in [`draw_toast`] and fade by themselves.
 fn draw_statusbar(f: &mut Frame, area: Rect, app: &mut App) {
     let theme = &app.theme.colors;
-    // Each entry gets a hit range so a mouse click can run it. Truncated
-    // (never wrapped) on narrow frames — the tail just drops off.
-    let entries = bar_entries(app);
+    // Each entry gets a hit range so a mouse click can run it.
     let sp = sep(&app.cfg.icons);
-    let mut spans: Vec<Span> = vec![Span::raw(" ")];
-    let mut hits: Vec<(u16, u16, BarAction)> = Vec::new();
-    let mut cx: u16 = 1;
-    for (i, (entry, action)) in entries.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(sp, fg(theme.dim)));
-            cx += sp.chars().count() as u16;
+    let mut hits: Vec<(u16, u16, u16, BarAction)> = Vec::new();
+    let mut lines: Vec<Line> = Vec::new();
+    for (row, entries) in bar_packing(app, area.width).into_iter().enumerate() {
+        let mut spans: Vec<Span> = vec![Span::raw(" ")];
+        let mut cx: u16 = 1;
+        let y = area.y + row as u16;
+        for (i, (entry, action)) in entries.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled(sp, fg(theme.dim)));
+                cx += sp.chars().count() as u16;
+            }
+            let start = cx;
+            // `<description> <key>`, the key highlighted — the same shape the
+            // modal footers and the help palette use.
+            cx += entry.label().chars().count() as u16;
+            spans.extend(hint_spans(theme, entry));
+            hits.push((start, cx, y, *action));
         }
-        let start = cx;
-        // `<description> <key>`, the key highlighted — the same shape the
-        // modal footers and the help palette use.
-        cx += entry.label().chars().count() as u16;
-        spans.extend(hint_spans(theme, entry));
-        hits.push((start, cx, *action));
+        lines.push(Line::from(spans));
     }
     app.bar_hits = hits;
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    f.render_widget(Paragraph::new(Text::from(lines)), area);
+}
+
+/// Rows the statusbar takes at `width`: the shortcuts wrap onto a second
+/// line rather than losing their tail at the border — on a narrow frame a
+/// single row drops the last entries silently, and `help ?` (the way to
+/// every action that did not fit) is the first to go.
+///
+/// Two rows is the ceiling: the statusbar is read constantly but the tree
+/// is what the frame is for, so beyond that the tail is cut as before.
+pub(crate) const STATUSBAR_MAX_ROWS: usize = 2;
+
+pub(crate) fn statusbar_h(app: &App, width: u16) -> u16 {
+    bar_packing(app, width).len() as u16
+}
+
+/// The statusbar entries packed into rows of `width` columns, greedily and
+/// in order — the same packing the modal footers use, capped at
+/// [`STATUSBAR_MAX_ROWS`]; whatever is left over joins the last row and is
+/// cut at the border.
+fn bar_packing(app: &App, width: u16) -> Vec<Vec<(Hint, BarAction)>> {
+    let entries = bar_entries(app);
+    // One leading space, and one column kept free at the right so a row
+    // filled exactly to the border still reads as a row of hints.
+    let width = (width as usize).saturating_sub(2);
+    let sep_w = UnicodeWidthStr::width(sep(&app.cfg.icons));
+    let mut rows: Vec<Vec<(Hint, BarAction)>> = Vec::new();
+    let mut row: Vec<(Hint, BarAction)> = Vec::new();
+    let mut used = 0usize;
+    for e in entries {
+        let w = UnicodeWidthStr::width(e.0.label().as_str());
+        let need = if row.is_empty() { w } else { w + sep_w };
+        if !row.is_empty() && used + need > width && rows.len() + 1 < STATUSBAR_MAX_ROWS {
+            rows.push(std::mem::take(&mut row));
+            used = w;
+        } else {
+            used += need;
+        }
+        row.push(e);
+    }
+    rows.push(row);
+    rows
 }
 
 /// Cut a notice to `max` columns, marking the cut with an ellipsis.
@@ -1234,6 +1284,10 @@ fn truncate(text: &str, max: usize, ellipsis: &str) -> String {
     let keep = max.saturating_sub(ellipsis.chars().count());
     text.chars().take(keep).collect::<String>() + ellipsis
 }
+
+/// Rows of text a toast may take before it is cut — an error message runs
+/// to a sentence, a stack of them would cover the panel underneath.
+const TOAST_MAX_ROWS: usize = 3;
 
 /// A transient notice, bottom-right above the statusbar. It expires on
 /// its own (see [`App::toast`]) and never covers an open overlay — the
@@ -1258,13 +1312,34 @@ fn draw_toast(f: &mut Frame, area: Rect, app: &App) {
     if max_text < 8 || area.height < 5 {
         return;
     }
-    let text = truncate(&toast.text, max_text, &app.cfg.icons.ellipsis);
-    let w = text.chars().count() as u16 + 4;
+    // Errors are sentences, not labels: a notice that does not fit the
+    // width wraps instead of losing its tail, up to [`TOAST_MAX_ROWS`] —
+    // past that it is cut, because a toast that grows without bound covers
+    // the panel it is reporting on.
+    let mut rows = wrap(&toast.text, max_text);
+    let room = (area.height.saturating_sub(3) as usize).min(TOAST_MAX_ROWS);
+    if rows.len() > room {
+        rows.truncate(room.max(1));
+        if let Some(last) = rows.last_mut() {
+            *last = truncate(
+                &format!("{last}{}", app.cfg.icons.ellipsis),
+                max_text,
+                &app.cfg.icons.ellipsis,
+            );
+        }
+    }
+    let text_w = rows
+        .iter()
+        .map(|r| UnicodeWidthStr::width(r.as_str()))
+        .max()
+        .unwrap_or(0);
+    let w = text_w as u16 + 4;
+    let h = rows.len() as u16 + 2;
     let rect = Rect {
         x: area.right().saturating_sub(w + 2),
-        y: area.bottom().saturating_sub(4),
+        y: area.bottom().saturating_sub(h + 1),
         width: w,
-        height: 3,
+        height: h,
     };
     f.render_widget(Clear, rect);
     let block = Block::default()
@@ -1272,10 +1347,11 @@ fn draw_toast(f: &mut Frame, area: Rect, app: &App) {
         .border_type(border_type(&app.cfg.icons))
         .border_style(fg(color))
         .style(on(theme.title_fg, theme.title_bg));
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(format!(" {text} "), fg(color)))).block(block),
-        rect,
-    );
+    let lines: Vec<Line> = rows
+        .into_iter()
+        .map(|r| Line::from(Span::styled(format!(" {r} "), fg(color))))
+        .collect();
+    f.render_widget(Paragraph::new(Text::from(lines)).block(block), rect);
 }
 
 fn centered_rect(area: Rect, w_pct: u16, h_pct: u16) -> Rect {
@@ -3206,6 +3282,52 @@ mod tests {
             let label = entry.label();
             assert!(last.contains(&label), "bar shows {label:?}: {last:?}");
         }
+    }
+
+    /// A narrow frame wraps the shortcuts onto a second row instead of
+    /// cutting the tail at the border — the tail is where `help ?` lives,
+    /// the one entry that leads to everything that did not fit.
+    #[test]
+    fn statusbar_wraps_instead_of_losing_its_tail() {
+        let mut app = seeded_app_with_shell();
+        app.sel = crate::app::Sel::Shell(0, 0, 0);
+        let (w, h) = (46u16, 20u16);
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let row = |y: u16| -> String { (0..w).map(|x| buf[(x, y)].symbol()).collect() };
+        let bar = format!("{}{}", row(h - 2), row(h - 1));
+        assert_eq!(statusbar_h(&app, w), 2, "the entries need a second row");
+        for (entry, _) in bar_entries(&app) {
+            let label = entry.label();
+            assert!(bar.contains(&label), "bar keeps {label:?}: {bar:?}");
+        }
+        // …and a wide frame still spends a single row on it.
+        let mut wide = seeded_app_with_shell();
+        wide.sel = crate::app::Sel::Shell(0, 0, 0);
+        assert_eq!(statusbar_h(&wide, 120), 1, "one row is enough at 120");
+    }
+
+    /// A long error is a sentence: the toast wraps it rather than cutting
+    /// it at a width that would leave the message unreadable.
+    #[test]
+    fn a_long_toast_wraps_onto_more_than_one_row() {
+        let mut app = seeded_app();
+        let msg = "git worktree add failed: fatal: invalid reference: origin/main";
+        app.notify(msg);
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        for word in msg.split_whitespace() {
+            assert!(text.contains(word), "the whole notice is shown: {word:?}");
+        }
+        // Wrapped, not squeezed onto one row: no row holds all of it.
+        assert!(
+            !text.lines().any(|l| l.contains(msg)),
+            "a notice this long does not fit one row:\n{text}"
+        );
     }
 
     /// A notice is a toast above the bar, and it is gone once it expires —

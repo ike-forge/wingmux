@@ -863,6 +863,12 @@ duplication docking exists to end.
   TTL (4s, 6s for errors) — the log and the diagnostics overlay stay the
   permanent record. The bar's entries are contextual, clickable, and computed
   per selection; hjkl/Esc/q deliberately take no slot (assumed knowledge).
+  The bar wraps onto a second row when the entries do not fit its width
+  (two rows is the ceiling — beyond that the tree loses more than the bar
+  gains), and each entry's hit range carries the row it landed on, so a
+  click on the wrapped row still runs its action. A toast wraps the same
+  way, up to three rows: errors are sentences, and a cut one names neither
+  what failed nor why.
 - **One shape for every shortcut hint**: `<action> <key>` ("cancel esc"),
   with only the key in the accent colour, everywhere the app names a key —
   status bar, modal footers, help palette (`ui::Hint`, `ui::hint_line`). The
