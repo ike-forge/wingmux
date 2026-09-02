@@ -34,6 +34,12 @@ const TOAST_TTL_ERR: Duration = Duration::from_secs(6);
 /// something the user can act on any sooner.
 const WT_STATE_INTERVAL: Duration = Duration::from_secs(5);
 
+/// How long a queued launch waits for its shell to draw a prompt before
+/// it is typed anyway. A cold zsh with a heavy rc takes a couple of
+/// seconds; past this the shell either has no prompt to draw or is wedged,
+/// and typing blind is still better than never starting the agent.
+const LAUNCH_GRACE: Duration = Duration::from_secs(8);
+
 /// Hard ceiling on one quick-send draft. Not a limit anyone types into —
 /// a backstop so a runaway paste cannot grow the buffer without bound.
 const TEXTBUF_MAX_BYTES: usize = 1_000_000;
@@ -41,6 +47,26 @@ const TEXTBUF_MAX_BYTES: usize = 1_000_000;
 /// Repositories unfold by default up to this many in scope. Past it the tree
 /// is longer than any terminal and folding is the readable default.
 const UNFOLD_CAP: usize = 30;
+
+/// The first command of a freshly spawned shell, waiting for the shell to
+/// be ready for it.
+///
+/// `new-window` returns as soon as tmux has forked the shell — long before
+/// the shell has read its rc files and started its line editor, which on a
+/// cold zsh is a good two seconds later. Anything typed into that gap is
+/// echoed raw by the tty line discipline, reflowed by the holder split
+/// that follows it, and then drawn a SECOND time when the line editor
+/// finally picks the buffered line up: the messy first screen (command
+/// shown twice, or once, or swallowed by an rc that clears) this exists to
+/// prevent. Held here instead, and typed by [`App::drain_pending_launches`]
+/// once the pane has drawn something.
+#[derive(Debug, Clone)]
+struct PendingLaunch {
+    pane_id: String,
+    command: String,
+    /// When to stop waiting for a prompt and type regardless.
+    deadline: Instant,
+}
 
 /// A transient notice. Rendered as a small box above the statusbar and
 /// gone on its own after [`TOAST_TTL`] — nothing on the bar is permanent.
@@ -651,6 +677,9 @@ pub struct App {
     pub wt_expanded: Vec<Vec<bool>>,
     pub mode: Mode,
     pub panes: HashMap<String, PaneInfo>,
+    /// Spawn commands owed to shells that are not ready to be typed into
+    /// yet, drained by every poll. See [`PendingLaunch`].
+    pending_launches: Vec<PendingLaunch>,
     pub captures: HashMap<String, String>,
     /// How far the preview is parked above the live tail, in lines. `0` is
     /// the live tail — the only state the preview had before it scrolled.
@@ -826,6 +855,7 @@ impl App {
             wt_expanded: Vec::new(),
             mode: Mode::Normal,
             panes: HashMap::new(),
+            pending_launches: Vec::new(),
             captures: HashMap::new(),
             preview_scroll: 0,
             preview_buf: None,
@@ -2103,7 +2133,7 @@ impl App {
             )?,
         };
         let spawn_cmd = self.agent_command_for_spawn(&repo.agent_command);
-        tmux.send_keys(&w.pane_id, &spawn_cmd, true)?;
+        self.queue_launch(&w.pane_id, spawn_cmd);
 
         self.state.repositories[ri].session_name = Some(session_name.clone());
         self.state.repositories[ri].worktrees.push(Worktree {
@@ -2196,7 +2226,7 @@ impl App {
                 // what gets instrumented — M17 injects --settings only when
                 // it is a recognised `claude`.
                 let spawn_cmd = self.agent_command_for_spawn(&command);
-                tmux.send_keys(&w.pane_id, &spawn_cmd, true)?;
+                self.queue_launch(&w.pane_id, spawn_cmd);
                 command
             }
             // Nothing is sent: the window already *is* the shell.
@@ -3094,6 +3124,58 @@ impl App {
     }
 
     /// Poll tmux: pane metadata + capture tail → statuses, preview.
+    /// Owe `command` to a shell that has just been spawned: it is typed by
+    /// the first poll that finds the pane ready. See [`PendingLaunch`] for
+    /// why it is not sent right here.
+    fn queue_launch(&mut self, pane_id: &str, command: String) {
+        self.pending_launches.push(PendingLaunch {
+            pane_id: pane_id.to_string(),
+            command,
+            deadline: Instant::now() + LAUNCH_GRACE,
+        });
+    }
+
+    /// Type the queued spawn commands into the shells that are ready for
+    /// them. Readiness is "the pane has drawn something" — a prompt on
+    /// screen means the shell's line editor is up and will take the keys
+    /// as a line, echo it once, and run it.
+    ///
+    /// Nothing here costs a tmux call of its own: the poll's single
+    /// `list-panes` already carries the cursor position.
+    fn drain_pending_launches(&mut self, tmux: &Tmux) {
+        if self.pending_launches.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let pending = std::mem::take(&mut self.pending_launches);
+        for p in pending {
+            let pane = self.panes.get(&p.pane_id);
+            let ready = pane.is_some_and(|i| !i.blank);
+            let expired = now >= p.deadline;
+            if !ready && !expired {
+                self.pending_launches.push(p);
+                continue;
+            }
+            // A pane that never appeared has died before it could run
+            // anything; typing into it is at best pointless.
+            if pane.is_none() {
+                log::warn!("pane {} vanished before '{}' ran", p.pane_id, p.command);
+                continue;
+            }
+            if !ready {
+                log::warn!(
+                    "pane {} drew no prompt in {LAUNCH_GRACE:?}; typing '{}' anyway",
+                    p.pane_id,
+                    p.command
+                );
+            }
+            if let Err(e) = tmux.send_keys(&p.pane_id, &p.command, true) {
+                log::warn!("cannot start '{}' in {}: {e}", p.command, p.pane_id);
+                self.notify_err(format!("cannot start agent: {e}"));
+            }
+        }
+    }
+
     pub fn poll(&mut self) {
         // Stamped FIRST, and unconditionally: every early return below is
         // a reason to wait for the next tick, not to poll again straight
@@ -3126,6 +3208,10 @@ impl App {
             .iter()
             .map(|p| (p.pane_id.clone(), p.clone()))
             .collect();
+        // Straight after the pane map is refreshed: a shell spawned since
+        // the last poll may have finished starting up and be owed its
+        // first command.
+        self.drain_pending_launches(&tmux);
         self.refresh_leases(&tmux, &panes);
         self.reconcile_docked(&tmux, &panes);
         // A decline is only good for the poll that made it: a lease may
@@ -8972,6 +9058,66 @@ mod tests {
         );
     }
 
+    /// Drive polls until every queued spawn command has been typed, the way
+    /// the event loop does — a spawn is owed to a shell that has not drawn
+    /// its prompt yet, so nothing lands until a poll finds it ready.
+    fn settle_launches(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !app.pending_launches.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            app.poll();
+        }
+        assert!(
+            app.pending_launches.is_empty(),
+            "the spawn command never went in"
+        );
+    }
+
+    /// The spawn command waits for a prompt. Typed into a shell that is
+    /// still sourcing its rc files it would be echoed raw by the tty, then
+    /// reflowed by the holder split, then drawn again by the line editor —
+    /// the garbled first screen this queue exists to prevent.
+    #[test]
+    fn a_spawn_command_waits_for_the_shell_to_draw_its_prompt() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_wid, pid) = seed_repository_with_shell(&tmux, &mut app);
+            app.queue_launch(&pid, "echo lw-late-marker".into());
+
+            app.panes.insert(
+                pid.clone(),
+                PaneInfo {
+                    pane_id: pid.clone(),
+                    blank: true,
+                    ..Default::default()
+                },
+            );
+            app.drain_pending_launches(&tmux);
+            assert_eq!(
+                app.pending_launches.len(),
+                1,
+                "a pane that has drawn nothing is not typed into"
+            );
+            std::thread::sleep(Duration::from_millis(300));
+            let capture = tmux.capture_pane(&pid, 50).unwrap();
+            assert!(
+                !capture.contains("lw-late-marker"),
+                "nothing reached the pane, capture: {capture}"
+            );
+
+            app.panes.get_mut(&pid).unwrap().blank = false;
+            app.drain_pending_launches(&tmux);
+            assert!(app.pending_launches.is_empty(), "the queue is drained");
+            std::thread::sleep(Duration::from_millis(300));
+            let capture = tmux.capture_pane(&pid, 50).unwrap();
+            assert!(
+                capture.contains("lw-late-marker"),
+                "a drawn prompt takes the command, capture: {capture}"
+            );
+        });
+    }
+
     /// Enter on the first entry runs the repository's agent command — the
     /// pre-picker default behaviour, one keystroke longer.
     #[test]
@@ -8993,6 +9139,7 @@ mod tests {
                 let shells = &app.state.repositories[0].worktrees[0].shells;
                 assert_eq!(shells.len(), 2, "the shell was created");
                 let pid = shells[1].pane_id.clone().unwrap();
+                settle_launches(&mut app);
                 std::thread::sleep(std::time::Duration::from_millis(300));
                 let capture = tmux.capture_pane(&pid, 50).unwrap();
                 assert!(
