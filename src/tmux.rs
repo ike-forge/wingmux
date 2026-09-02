@@ -61,6 +61,12 @@ pub struct PaneInfo {
     /// `hooks::Overlay::parse`; kept as a string here so tmux stays
     /// ignorant of what the value means.
     pub overlay_raw: String,
+    /// Is the cursor still at the home position, with nothing drawn yet?
+    /// A shell that has not finished reading its rc files has printed no
+    /// prompt, and typing into it lands in the tty's line buffer instead
+    /// of its line editor — see `App::drain_pending_launches`, the only
+    /// reader.
+    pub blank: bool,
 }
 
 /// One pane, seen only as furniture: where it sits and what kind of
@@ -467,7 +473,7 @@ impl Tmux {
         let fmt = format!(
             "#{{pane_id}}|#{{window_id}}|#{{pane_current_command}}|#{{pane_dead}}|#{{session_name}}\
              |#{{{repo}}}|#{{{worktree}}}|#{{{index}}}|#{{pane_active}}|#{{{docked}}}\
-             |#{{{holder}}}#{{{slot}}}|#{{{overlay}}}",
+             |#{{{holder}}}#{{{slot}}}|#{{cursor_x}}|#{{cursor_y}}|#{{{overlay}}}",
             repo = dock::REPO_KEY,
             worktree = dock::WORKTREE_KEY,
             index = dock::INDEX_KEY,
@@ -921,13 +927,13 @@ impl Tmux {
 
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
     // Field order: pane | window | command | dead | session | repo |
-    // worktree | index | active | docked | furniture | overlay. Every new
-    // field goes BEFORE the overlay: the overlay is taken verbatim as the
-    // remainder, so a '|' inside it cannot desync parsing, and only a last
-    // field can afford that. `furniture` is the holder and slot marks
-    // concatenated — neither has a value worth telling apart here, only
-    // whether either is set.
-    let mut it = line.splitn(12, '|');
+    // worktree | index | active | docked | furniture | cursor_x | cursor_y
+    // | overlay. Every new field goes BEFORE the overlay: the overlay is
+    // taken verbatim as the remainder, so a '|' inside it cannot desync
+    // parsing, and only a last field can afford that. `furniture` is the
+    // holder and slot marks concatenated — neither has a value worth
+    // telling apart here, only whether either is set.
+    let mut it = line.splitn(14, '|');
     let pane_id = it.next()?.to_string();
     let window_id = it.next()?.to_string();
     let current_command = it.next()?.to_string();
@@ -939,6 +945,13 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
     let active = it.next().unwrap_or("") == "1";
     let docked_by = it.next().unwrap_or("").trim().to_string();
     let furniture = !it.next().unwrap_or("").trim().is_empty();
+    // Home cursor: the pane is still bare. Both coordinates are read (and
+    // each `next()` bound to its own name, so no short-circuit can leave a
+    // field unconsumed and desync the overlay behind it), because a prompt
+    // may well sit on the first column of a later line.
+    let home_x = it.next().unwrap_or("0").trim() == "0";
+    let home_y = it.next().unwrap_or("0").trim() == "0";
+    let blank = home_x && home_y;
     Some(PaneInfo {
         pane_id,
         window_id,
@@ -955,6 +968,7 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
         active,
         docked_by: (!docked_by.is_empty()).then_some(docked_by),
         overlay_raw: it.next().unwrap_or("").to_string(),
+        blank,
     })
 }
 
@@ -1057,8 +1071,9 @@ mod tests {
 
     #[test]
     fn pane_line_parsing_keeps_the_overlay_verbatim() {
-        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||blocked:1755600000")
-            .expect("parses");
+        let p =
+            parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||0|0|blocked:1755600000")
+                .expect("parses");
         assert_eq!(p.pane_id, "%3");
         assert_eq!(p.current_command, "claude");
         assert!(!p.dead);
@@ -1069,7 +1084,8 @@ mod tests {
     /// can never desync the parser.
     #[test]
     fn overlay_may_contain_the_field_separator() {
-        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||a|b").expect("parses");
+        let p =
+            parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||0|0|a|b").expect("parses");
         assert_eq!(p.overlay_raw, "a|b");
         assert_eq!(
             p.shell,

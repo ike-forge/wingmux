@@ -215,6 +215,25 @@ the same commit as the change.
   `env -i`). Status classification needs no change: a login shell as the
   pane's foreground command is exactly the `ended` heuristic's input, and a
   plain shell reading `ended` — "no agent running here" — is accurate.
+- **The spawn command is queued, not typed straight away.** `new-window`
+  returns as soon as tmux has forked the shell, which is long before that
+  shell has read its rc files and started its line editor — a couple of
+  seconds on a cold `zsh` with a plugin manager. Keys sent into that gap land
+  in the tty's line buffer: the line discipline echoes them raw, the holder
+  split that follows reflows the echo at half the width, and the line editor
+  draws the line a SECOND time when it finally reads it. That is the messy
+  first screen — the command shown twice, or once, or not at all when an rc
+  clears the display. So `App::queue_launch` parks the command in
+  `pending_launches` and `drain_pending_launches` types it on the first poll
+  that finds the pane ready. Readiness is "the pane has drawn something",
+  read off `#{cursor_x}`/`#{cursor_y}` in the poll's existing `list-panes`
+  format (`PaneInfo::blank`), so waiting costs no extra tmux call: a prompt
+  on screen means the line editor is up and will take the keys as a line,
+  echo them once and run them. `LAUNCH_GRACE` (8s) is the backstop — a shell
+  with no prompt to draw gets typed into blind rather than never starting.
+  Only the two *first* commands of a fresh shell go through the queue;
+  quick-send and the predefined messages talk to an agent that is already
+  running and need no such wait.
 - **Always inside tmux — it starts one for you** (M18, replacing "runs inside
   AND outside tmux"). The old answer was that the dashboard did not require
   tmux around itself: it ran standalone against an auto-started server, and
