@@ -569,6 +569,17 @@ pub(crate) fn warn_mark(icons: &crate::config::IconsConfig) -> &str {
     &icons.warn
 }
 
+/// The prefix a warning line opens with, and the column its text starts
+/// in — continuation rows indent to the same column. The gap is two
+/// spaces, not one: `⚠` is East-Asian *ambiguous* width, so unicode-width
+/// (and therefore ratatui's layout) counts it as one cell while plenty of
+/// terminals draw it as two, swallowing a single separator and leaving
+/// `⚠unmerged commits` jammed together.
+pub(crate) fn warn_prefix(icons: &crate::config::IconsConfig) -> (String, usize) {
+    let mark = warn_mark(icons);
+    (format!("{mark}  "), UnicodeWidthStr::width(mark) + 2)
+}
+
 pub(crate) fn sep(icons: &crate::config::IconsConfig) -> &str {
     &icons.separator
 }
@@ -1942,8 +1953,7 @@ fn draw_diagnostics(f: &mut Frame, app: &App) -> Popup {
 /// app's scroll clamp (same pattern as the help palette).
 fn diag_lines(app: &App, width: usize) -> Vec<Line<'_>> {
     let theme = &app.theme.colors;
-    let mark = warn_mark(&app.cfg.icons);
-    let indent = UnicodeWidthStr::width(mark) + 1;
+    let (mark, indent) = warn_prefix(&app.cfg.icons);
     let mut lines = Vec::new();
     for d in &app.cfg.diagnostics {
         // A dropped config unit says which key and why, which is a
@@ -1956,7 +1966,7 @@ fn diag_lines(app: &App, width: usize) -> Vec<Line<'_>> {
             lines.push(Line::from(vec![
                 Span::styled(
                     if i == 0 {
-                        format!("{mark} ")
+                        mark.clone()
                     } else {
                         " ".repeat(indent)
                     },
@@ -2509,8 +2519,7 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Popup {
     // colour, bold, so it reads before the shortcuts do.
     if let Some(warning) = &confirm.warning {
         let style = fg(theme.status_failed).add_modifier(Modifier::BOLD);
-        let mark = warn_mark(ic);
-        let indent = UnicodeWidthStr::width(mark) + 1;
+        let (mark, indent) = warn_prefix(ic);
         for (i, l) in wrap(warning, body_w.saturating_sub(indent))
             .into_iter()
             .enumerate()
@@ -2518,7 +2527,7 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Popup {
             lines.push(Line::from(vec![
                 Span::styled(
                     if i == 0 {
-                        format!("{mark} ")
+                        mark.clone()
                     } else {
                         " ".repeat(indent)
                     },
@@ -4505,6 +4514,13 @@ mod tests {
             .position(|r| r.contains("uncommitted changes"))
             .unwrap_or_else(|| panic!("no warning row: {rows:?}"));
         let x = col_of(&rows[y], "uncommitted changes") as u16;
+
+        assert!(
+            rows[y].contains(&format!("{}  uncommitted", app.cfg.icons.warn)),
+            "two spaces after the mark: `⚠` is ambiguous-width and a single \
+             one gets swallowed where the terminal draws it wide: {:?}",
+            rows[y]
+        );
 
         let cell = &terminal.backend().buffer()[(x, y as u16)];
         assert_eq!(

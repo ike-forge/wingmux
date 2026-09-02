@@ -153,7 +153,17 @@ the same commit as the change.
   which is polled on an interval and would answer for a worktree as it was
   minutes ago. Unmerged commits do NOT remove the plain `y`: `git worktree
   remove` succeeds on them, so the answer can succeed — it is the warning
-  line, not the offered keys, that carries the risk.
+  line, not the offered keys, that carries the risk. The body says only
+  *whether* the tree is clean, in three beats one blank line apart
+  (question / path / state): naming the reason there as well as in the
+  warning below ("NOT clean: unmerged commits" over "unmerged commits —
+  deleting the branch discards them") read as two findings instead of one.
+- **A warning mark is followed by two spaces**, and its wrapped rows indent
+  to the same column (`warn_prefix`). `⚠` is East-Asian *ambiguous* width:
+  unicode-width — and so ratatui's layout — counts one cell, while plenty
+  of terminals draw two, swallowing a single separator and printing
+  `⚠unmerged commits`. Two spaces cost one column where the glyph is
+  narrow and are correct where it is wide.
 - **The New Worktree popup names the base branch it cuts from.** A worktree's
   branch has always been cut from the repository's base branch
   (`worktrees.base_branch`, or the repository's override), never from the
