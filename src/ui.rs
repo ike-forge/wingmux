@@ -486,7 +486,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 draw_overlay_too_small(f, area, app, kind);
             }
         }
-        Mode::Normal => {}
+        // The pad draws no overlay: it is the left panel (see
+        // `draw_left`), so there is nothing on top and nothing to dismiss.
+        Mode::Normal | Mode::Todo { .. } => {}
     }
     // The body/footer rule goes on last, over the blank row every modal
     // reserves above its shortcuts. One place, so no overlay can forget
@@ -652,17 +654,30 @@ fn draw_split(f: &mut Frame, area: Rect, app: &mut App, tree_w: u16) {
     let [tree, preview] =
         Layout::horizontal([Constraint::Length(tree_w), Constraint::Fill(1)]).areas(main);
 
-    draw_tree(f, tree, app);
+    draw_left(f, tree, app);
     draw_preview(f, preview, app);
     draw_toast(f, main, app);
     draw_statusbar(f, statusbar, app);
+}
+
+/// The left panel: the tree, or the todo pad when it is open (`t`).
+///
+/// One panel, two things in it — the pad is edited in place rather than in
+/// an overlay, so it takes the tree's frame instead of covering it and the
+/// preview beside it (or the docked agent) stays exactly where it was.
+fn draw_left(f: &mut Frame, area: Rect, app: &App) {
+    if matches!(app.mode, Mode::Todo { .. }) {
+        draw_todo(f, area, app);
+    } else {
+        draw_tree(f, area, app);
+    }
 }
 
 /// Tree across the whole main area.
 fn draw_tree_only(f: &mut Frame, area: Rect, app: &mut App) {
     let [main, statusbar] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
-    draw_tree(f, main, app);
+    draw_left(f, main, app);
     draw_toast(f, main, app);
     draw_statusbar(f, statusbar, app);
 }
@@ -1027,6 +1042,65 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
+/// The todo pad, drawn in the tree's own panel.
+///
+/// A live editor, not a rendering of one: the caret is placed with
+/// `set_cursor_position`, so the terminal's own cursor sits in the text and
+/// the panel reads as the thing that has the keyboard. The border is drawn
+/// focused for the same reason — while the pad is open, that is where the
+/// typing goes.
+fn draw_todo(f: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme.colors;
+    let Mode::Todo { buf } = &app.mode else {
+        return;
+    };
+    let block = panel_block(theme, &app.cfg.icons, "Todo", true);
+    let inner = block.inner(area);
+    let content_lines = crate::app::todo_visible_lines(app.viewport).min(inner.height as usize);
+    let wrap_width = crate::app::todo_wrap_width(app)
+        .min(inner.width as usize)
+        .max(1);
+    let rows = buf.visual_rows(wrap_width);
+    let scroll = buf.scroll();
+    let mut lines: Vec<Line> = Vec::new();
+    if buf.text().is_empty() {
+        // Ghost text: an empty panel with a bare caret in it says nothing
+        // about what the panel is for. It is dim, and it is gone the moment
+        // anything is typed, so it can never be mistaken for content.
+        for l in wrap(
+            "the next steps you cannot start yet — kept for every repository, not just this one",
+            inner.width as usize,
+        ) {
+            lines.push(Line::from(Span::styled(l, fg(theme.dim))));
+        }
+    } else {
+        for i in 0..content_lines {
+            match rows.get(scroll + i) {
+                // Tabs expand to four spaces, as in the textarea, so the
+                // caret column and the text agree.
+                Some(&(row, start, end)) => {
+                    lines.push(Line::from(buf.line(row)[start..end].replace('\t', "    ")))
+                }
+                None => lines.push(Line::from("")),
+            }
+        }
+    }
+    f.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .style(fg(theme.foreground)),
+        area,
+    );
+    let (cur_row, render_col) = buf.visual_cursor(wrap_width);
+    if cur_row >= scroll && cur_row - scroll < content_lines {
+        let x = inner.x + render_col as u16;
+        let y = inner.y + (cur_row - scroll) as u16;
+        if x < inner.x + inner.width && y < inner.y + inner.height {
+            f.set_cursor_position(Position::new(x, y));
+        }
+    }
+}
+
 /// The capture with its trailing blank padding dropped — the lines the
 /// preview may actually show. `capture-pane` pads the pane's empty area
 /// with rows that carry its colours but no text; they are not content.
@@ -1153,6 +1227,12 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
     use BarAction::*;
     let ic = &app.cfg.icons;
     let h = |desc: &str, key: &str| hint(ic, desc, key);
+    // The pad owns every printable key while it is open, so the bar offers
+    // the one key that still does something: the way back. `? help` is not
+    // listed because `?` types a question mark in there.
+    if matches!(app.mode, Mode::Todo { .. }) {
+        return vec![(h("save & back", "esc"), TodoBack)];
+    }
     let mut entries = match app.sel {
         Sel::Repository(_) => vec![(h("worktree", "n"), NewWorktree), (h("help", "?"), Help)],
         // A folded worktree row is its shell: it offers the shell actions
@@ -1180,6 +1260,11 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             (h("help", "?"), Help),
         ],
     };
+    // The pad is reachable from every row — it is not about the selection
+    // — so it goes in once here rather than in each arm above, just before
+    // `help` (which stays last, where the eye has learned to find it).
+    let before_help = entries.len().saturating_sub(1);
+    entries.insert(before_help, (h("todo", "t"), Todo));
     // `Enter` on a shell another dashboard holds does something different
     // enough to deserve a different word: it takes the pane off them.
     if app
@@ -1405,6 +1490,15 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             (
                 &["Esc"],
                 &["back to the live tail", "while the preview is parked"],
+            ),
+            (
+                &["t"],
+                &[
+                    "todo pad",
+                    "edited in place",
+                    "esc saves and goes back",
+                    "one pad for every repository",
+                ],
             ),
             (&["r"], &["refresh", "reconcile state"]),
             (&["ctrl-t"], &["change theme", "live picker"]),
@@ -3126,6 +3220,48 @@ mod tests {
         );
     }
 
+    /// The pad takes the tree's panel — it replaces the tree rather than
+    /// covering it — and the preview beside it is untouched, because the
+    /// pad is written *about* what that panel shows.
+    #[test]
+    fn the_pad_replaces_the_tree_and_leaves_the_preview_alone() {
+        let mut app = seeded_app_with_shell();
+        app.viewport = (120, 40);
+        app.mode = crate::app::Mode::Todo {
+            buf: crate::app::TextBuf::from_parked("ship the schema first", 0, 0),
+        };
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("Todo"), "the panel names itself: {text:?}");
+        assert!(text.contains("ship the schema first"), "and holds the pad");
+        assert!(
+            !text.contains("repo-a"),
+            "the tree is gone while the pad is open"
+        );
+        assert!(text.contains("Preview"), "the panel beside it is untouched");
+        assert!(text.contains("save & back"), "the bar says how to get out");
+    }
+
+    /// An empty pad says what it is for. Ghost text, in dim, replaced by
+    /// the first thing typed — never mistakable for a note.
+    #[test]
+    fn an_empty_pad_says_what_it_is_for() {
+        let mut app = seeded_app();
+        app.viewport = (120, 40);
+        app.mode = crate::app::Mode::Todo {
+            buf: crate::app::TextBuf::new(),
+        };
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(
+            buffer_text(&terminal).contains("cannot start yet"),
+            "the empty pad explains itself"
+        );
+    }
+
     /// The statusbar entries and the help overlay share their words — the
     /// discoverability rule that makes learning one teach the other.
     #[test]
@@ -3149,6 +3285,7 @@ mod tests {
                 "dock" => assert!(text.contains("dock the shell"), "bar 'dock ↵' ↔ help"),
                 "close" => assert!(text.contains("close shell"), "bar 'close d' ↔ help"),
                 "live" => assert!(text.contains("live tail"), "bar 'live Esc' ↔ help"),
+                "todo" => assert!(text.contains("todo pad"), "bar 'todo t' ↔ help"),
                 other => panic!("unmapped bar entry: {other:?}"),
             }
         }

@@ -33,6 +33,7 @@ subtracted), recomputed every frame from the stored viewport.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
+| `t` | open the todo pad in the tree's panel (edited in place) | mnemonic; a panel, not an overlay |
 | `r` | refresh — reconcile state against tmux reality | LazyGit/Docker `r` = refresh |
 | `ctrl-t` | live theme picker (preview on move, Enter keeps, Esc restores) | ctrl layer; picker lists built-ins first |
 | `?` | open the grouped help overlay (the palette) | palette key; `?` is never rebound |
@@ -138,6 +139,35 @@ to agents, so it behaves like an editor.
 Sending uses tmux's paste-buffer with bracketed paste, so multi-line prompts
 arrive as ONE paste (embedded newlines are content, not Enter presses) and
 the trailing Enter submits.
+
+## Todo pad (opened with `t`)
+
+The pad takes the **tree's own panel** and is edited in place — it is not an
+overlay, so the preview (or the docked agent) beside it stays exactly where
+it was: the pad is written about what that panel shows. The panel is the
+editor, so it owns every printable key and there is no navigation layer
+underneath it; `Esc` is the way back to the tree.
+
+| Key | Meaning | Rule satisfied |
+|---|---|---|
+| any printable | insert at the cursor | printable keys belong to text input |
+| `Enter` | insert a newline | multiline input: Enter writes, it does not submit |
+| `Tab` | insert a tab | tab is content, not focus |
+| `Backspace` / `Delete` | delete before / under the cursor (joining lines at line ends) | editing |
+| `←` `→` `↑` `↓` | move the cursor (wrapping at line ends) | arrows = same code path |
+| `Home` / `End` | line start / line end | editing motions; the pad owns them |
+| `PgUp` / `PgDn`, `ctrl-u` / `ctrl-d` | page the cursor half a page | accessibility, owned by the pad |
+| `ctrl-f` / `ctrl-b` | page the cursor a full page | accessibility, owned by the pad |
+| `ctrl-s` | save without leaving | explicit save for a pad kept open |
+| `Esc` | save and go back to the tree | leave innermost first; a scratch pad may not lose a note |
+| `ctrl-t` | theme picker — parks the pad first | ctrl layer keeps only quit and theme |
+| `ctrl-c` | quit, even here — the pad is written on the way out | ctrl layer over every state |
+| wheel | walk the caret 3 lines (the pad has no scroll of its own) | the wheel belongs to the panel that has something to scroll |
+| click on the pad | nothing — the caret is placed with the keyboard | display-only click, like the preview panel |
+| click anywhere else | save and go back to the tree | click outside dismisses |
+
+`?` is **not** bound here: it types a question mark. For the same reason the
+statusbar drops every entry but `save & back esc` while the pad is open.
 
 ## Confirm dialogs (delete worktree / close shell)
 
@@ -272,8 +302,13 @@ An inert key is a decision, not an omission.
 - `/` — no search/filter panel exists yet (the tree is small; statuses are
   classified automatically). When a filter lands it takes `/` per the rules.
 - `Tab` / `Shift-Tab` — no panel cycling: there is exactly one focusable
-  panel (the tree); the detail/preview panes are display-only. In the
-  quick-send textarea, `Tab` inserts a tab (see above).
+  panel (the tree, or the todo pad in its place); the detail/preview panes
+  are display-only. In the quick-send textarea and in the pad, `Tab`
+  inserts a tab (see above).
+- `1` / `2` / `3` — no numbered panels. LazyGit numbers its panel stack
+  because it has five of them; here there are two things the left panel can
+  hold and one of them is reached by what it is (`t` for todo), which is a
+  name rather than a position and cannot go stale when a third arrives.
 - pane navigation, scrolling, search, selection, copy, zoom and resize —
   all deliberately unbound. Once a pane is docked they are tmux's own
   bindings, whatever the user has them set to; re-implementing any of them
@@ -281,7 +316,7 @@ An inert key is a decision, not an omission.
   docking exists to stop doing.
 - `y` / `v` — no yank or row selection yet (no multi-select model).
 - `:` — no command language; every action already has a key.
-- `e`, `c`, `w`, `b`, `t`, `E`, `C`, ... — reserved for future actions
+- `e`, `c`, `w`, `b`, `E`, `C`, ... — reserved for future actions
   (edit/rename, toggle, etc.); nothing is bound to a letter that has no
   action, so the one-key-one-action table stays unambiguous.
 

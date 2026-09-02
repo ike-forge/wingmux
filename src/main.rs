@@ -21,6 +21,7 @@ mod state;
 mod status;
 mod theme;
 mod tmux;
+mod todo;
 mod ui;
 mod util;
 

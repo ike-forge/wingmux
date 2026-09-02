@@ -142,6 +142,18 @@ pub enum Mode {
     /// dropped at load — see the configuration guidelines). Scrollable list
     /// of diagnostics, dismissed with Esc/q/Enter.
     Diagnostics,
+    /// The todo pad (`t`), edited **in place** in the tree's own panel
+    /// rather than in an overlay: a scratch pad you keep open while
+    /// reading the tree beside it is not a dialog, and a dialog would
+    /// cover the preview it is written about.
+    ///
+    /// The panel is the editor, so it owns every printable key — there is
+    /// no navigation layer left underneath, and `Esc` is the way back to
+    /// the tree (saving as it goes). Like [`Mode::Textarea`] it keeps only
+    /// ctrl-c (quit) and ctrl-t (theme) global.
+    Todo {
+        buf: TextBuf,
+    },
 }
 
 /// A multiline text buffer for the quick-send editor: lines + a cursor
@@ -515,11 +527,32 @@ pub(crate) fn textarea_wrap_width(viewport_w: u16) -> usize {
     (textarea_width(viewport_w).saturating_sub(5) as usize).max(1)
 }
 
+/// Content rows of the todo panel: the frame, less the statusbar, less the
+/// panel's two borders. The pad is edited in the tree's own panel, so its
+/// geometry is the panel's — not the textarea popup's.
+pub(crate) fn todo_visible_lines(viewport: (u16, u16)) -> usize {
+    (viewport.1.saturating_sub(3) as usize).max(1)
+}
+
+/// Soft-wrap width of the todo panel's text: the panel width minus its two
+/// borders, minus one more so a cursor at the end of a full row still has a
+/// cell of its own — the same allowance [`textarea_wrap_width`] makes.
+/// A frame too small for a tree has no panel to wrap into, so it falls back
+/// to the narrowest strip the dashboard ever draws in.
+pub(crate) fn todo_wrap_width(app: &App) -> usize {
+    let w = crate::ui::tree_width_for(app).unwrap_or(crate::dock::DASH_MIN_WIDTH);
+    (w.saturating_sub(3) as usize).max(1)
+}
+
 /// An action reachable from the statusbar shortcut entries (and by mouse
 /// click). Same words as the help overlay — learning one teaches the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarAction {
     Help,
+    /// Open the todo pad (`t`).
+    Todo,
+    /// Leave the pad, keeping what is in it (`Esc`).
+    TodoBack,
     NewWorktree,
     AddShell,
     QuickSend,
@@ -722,6 +755,16 @@ pub struct App {
     /// re-resolved every time the popup opens (a `git` call per keystroke
     /// is not on). `None` when the repository could not be read.
     new_worktree_base: Option<BaseHint>,
+    /// The todo pad at rest — where [`Mode::Todo`] hands its buffer back
+    /// when the panel closes, so reopening lands on the line the typing
+    /// stopped at. The text (never the cursor) is what reaches
+    /// `todo.md`; see [`crate::todo`].
+    pub todo: TextBuf,
+    /// Has the pad changed since it was last written? The panel saves on
+    /// the way out, but a dashboard killed with its terminal never gets an
+    /// exit: the flag is flushed by [`App::poll`] as well, so the worst a
+    /// crash costs is one poll interval of typing.
+    todo_dirty: bool,
 }
 
 /// The base branch a new worktree would branch from, as shown in the New
@@ -799,6 +842,8 @@ impl App {
             bar_hits: Vec::new(),
             last_click: None,
             new_worktree_base: None,
+            todo: TextBuf::new(),
+            todo_dirty: false,
         }
     }
 
@@ -836,6 +881,7 @@ impl App {
         // Before `save_state`: that call writes the drafts file too, and
         // an empty in-memory map would erase what this run should resume.
         self.load_drafts();
+        self.load_todo();
         self.save_state()?;
         Ok(())
     }
@@ -1714,6 +1760,95 @@ impl App {
         if restored > 0 {
             log::info!("restored {restored} parked draft(s)");
         }
+    }
+
+    // ------------------------------------------------------------- todo
+
+    /// Open the todo pad in the tree's panel (`t`).
+    ///
+    /// The text is re-read from disk, not taken from the copy this run
+    /// started with: the pad is global, so another dashboard — or the
+    /// user's own `$EDITOR` on `todo.md` — may have moved it on since. The
+    /// cursor is the one part that stays in memory, which is why an
+    /// unchanged file reopens exactly where the typing stopped.
+    fn open_todo(&mut self) {
+        let text = crate::todo::load();
+        if text != self.todo.text() {
+            let (row, col) = (self.todo.cursor_row(), self.todo.cursor_col());
+            self.todo = TextBuf::from_parked(&text, row, col);
+        }
+        let mut buf = self.todo.clone();
+        buf.ensure_visible(todo_visible_lines(self.viewport), todo_wrap_width(self));
+        self.mode = Mode::Todo { buf };
+    }
+
+    /// Leave the pad, keeping what is in it. Every exit goes through here —
+    /// `Esc`, a theme switch, a click outside the panel — because a scratch
+    /// pad that can lose a note is not one.
+    fn close_todo(&mut self) {
+        if let Mode::Todo { buf } = &self.mode {
+            let parked = buf.clone();
+            self.mode = Mode::Normal;
+            self.park_todo(parked);
+        }
+    }
+
+    /// Park an edited pad and write it out.
+    fn park_todo(&mut self, buf: TextBuf) {
+        self.todo = buf;
+        self.todo_dirty = true;
+        self.save_todo();
+    }
+
+    /// Write the pad to `todo.md` when it has changed.
+    ///
+    /// Failures are logged, never toasted — the text is still in memory and
+    /// there is nothing the user could do about it — except that the flag
+    /// stays up, so the next poll tries again.
+    fn save_todo(&mut self) {
+        if !self.todo_dirty {
+            return;
+        }
+        // Read through the open panel when there is one: a pad being
+        // typed into is the live buffer, and `self.todo` only catches up
+        // when the panel closes.
+        let text = match &self.mode {
+            Mode::Todo { buf } => buf.text(),
+            _ => self.todo.text(),
+        };
+        match crate::todo::save(&text) {
+            Ok(()) => self.todo_dirty = false,
+            Err(e) => log::warn!("cannot save todo: {e}"),
+        }
+    }
+
+    /// Wheel over the pad: walk the caret by whole lines and keep it on
+    /// screen. The pad has no scroll of its own — the caret is what the
+    /// view follows, in the panel as in the textarea — so the wheel moves
+    /// the caret rather than sliding text out from under it.
+    fn todo_scroll_by(&mut self, lines: isize) {
+        let visible = todo_visible_lines(self.viewport);
+        let wrap = todo_wrap_width(self);
+        if let Mode::Todo { buf } = &mut self.mode {
+            for _ in 0..lines.unsigned_abs() {
+                if lines < 0 {
+                    buf.move_up();
+                } else {
+                    buf.move_down();
+                }
+            }
+            buf.ensure_visible(visible, wrap);
+        }
+    }
+
+    /// Restore the pad parked by an earlier run (or written by hand).
+    fn load_todo(&mut self) {
+        let text = crate::todo::load();
+        if text.len() > TEXTBUF_MAX_BYTES {
+            log::warn!("todo.md exceeds the buffer cap — not loaded");
+            return;
+        }
+        self.todo = TextBuf::from_parked(&text, 0, 0);
     }
 
     /// Leave the quick-send textarea without sending, parking whatever is
@@ -2722,6 +2857,10 @@ impl App {
         // Independent of tmux (and of its own cadence) — the tree draws
         // the dirty flag whether or not a session exists.
         self.poll_worktree_state(false);
+        // Same reasoning, and before the early return below for the same
+        // reason: a pad typed on a server that has gone away must still
+        // reach the disk.
+        self.save_todo();
         let Ok(tmux) = self.require_tmux() else {
             return;
         };
@@ -2820,7 +2959,10 @@ impl App {
         //
         // ctrl-t opens the live theme picker (a chord, so it dispatches
         // over every state — a theme switch is never behind a prompt).
-        let in_textarea = matches!(self.mode, Mode::Textarea { .. });
+        // Both editors own their own motions: while one is open the
+        // page/Home/End keys move the caret through the text, so the
+        // accessibility layer keeps only ctrl-c (quit) and ctrl-t (theme).
+        let in_textarea = matches!(self.mode, Mode::Textarea { .. } | Mode::Todo { .. });
         let handled = match key.code {
             KeyCode::PageUp if !in_textarea => {
                 self.move_view(-1);
@@ -2859,9 +3001,11 @@ impl App {
                 true
             }
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Park an open draft first: the picker replaces the
-                // textarea, and a theme switch must not eat the text.
+                // Park an open draft (or pad) first: the picker replaces
+                // the textarea and covers the panel, and a theme switch
+                // must not eat the text.
                 self.close_textarea();
+                self.close_todo();
                 self.open_theme_picker();
                 true
             }
@@ -2883,6 +3027,10 @@ impl App {
         // soft-wrap width decides how many visual rows those hold.
         let visible_lines = textarea_visible_lines(&self.cfg.icons, self.viewport);
         let wrap_width = textarea_wrap_width(self.viewport.0);
+        // The pad's page size and soft-wrap width are the tree panel's, not
+        // the popup's — resolved here, before `mode` is borrowed.
+        let todo_lines = todo_visible_lines(self.viewport);
+        let todo_wrap = todo_wrap_width(self);
         // The add-shell picker's row count, resolved before the borrow of
         // `mode` below (its arm cannot call back into `self`).
         let shell_choices = match self.mode {
@@ -2981,6 +3129,99 @@ impl App {
                     // content height and wrap width are known — never
                     // inside TextBuf.
                     buf.ensure_visible(visible_lines, wrap_width);
+                }
+            }
+            Mode::Todo { buf } => {
+                // The panel *is* the editor, so every printable key is
+                // text and there is no navigation layer underneath: `Esc`
+                // is the way back to the tree, and it saves. ctrl-s saves
+                // without leaving, for a pad kept open across a session.
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                if key.code == KeyCode::Esc {
+                    self.close_todo();
+                } else if key.code == KeyCode::Char('s') && ctrl {
+                    let parked = buf.clone();
+                    self.park_todo(parked);
+                    self.notify("todo saved");
+                } else {
+                    // Same editing keys as the quick-send textarea — one
+                    // editor's habits are every editor's here.
+                    let edited = match key.code {
+                        KeyCode::Enter => {
+                            buf.newline();
+                            true
+                        }
+                        KeyCode::Tab => {
+                            buf.insert_tab();
+                            true
+                        }
+                        KeyCode::Backspace => {
+                            buf.backspace();
+                            true
+                        }
+                        KeyCode::Delete => {
+                            buf.delete();
+                            true
+                        }
+                        KeyCode::Left => {
+                            buf.move_left();
+                            false
+                        }
+                        KeyCode::Right => {
+                            buf.move_right();
+                            false
+                        }
+                        KeyCode::Up => {
+                            buf.move_up();
+                            false
+                        }
+                        KeyCode::Down => {
+                            buf.move_down();
+                            false
+                        }
+                        KeyCode::Home => {
+                            buf.move_home();
+                            false
+                        }
+                        KeyCode::End => {
+                            buf.move_end();
+                            false
+                        }
+                        KeyCode::PageUp => {
+                            buf.move_page(-1, buf.page(todo_lines));
+                            false
+                        }
+                        KeyCode::PageDown => {
+                            buf.move_page(1, buf.page(todo_lines));
+                            false
+                        }
+                        KeyCode::Char(c) if ctrl => {
+                            // The pad owns ctrl-u/d/f/b too (the
+                            // accessibility layer yielded them).
+                            match c {
+                                'u' => buf.move_page(-1, buf.page(todo_lines)),
+                                'd' => buf.move_page(1, buf.page(todo_lines)),
+                                'f' => buf.move_page(1, todo_lines.saturating_sub(1)),
+                                'b' => buf.move_page(-1, todo_lines.saturating_sub(1)),
+                                _ => false,
+                            };
+                            false
+                        }
+                        KeyCode::Char(c) => {
+                            buf.insert_char(c);
+                            true
+                        }
+                        _ => false,
+                    };
+                    // Scrolling is decided here, where the panel's real
+                    // content height and wrap width are known.
+                    buf.ensure_visible(todo_lines, todo_wrap);
+                    if edited {
+                        // The text itself is not copied out on every
+                        // keystroke — `save_todo` reads the open buffer.
+                        // This only says there is something to write.
+                        self.todo_dirty = true;
+                    }
                 }
             }
             Mode::Confirm { confirm } => match key.code {
@@ -3128,6 +3369,7 @@ impl App {
                 }
             }
             KeyCode::Char('p') => self.open_messages(),
+            KeyCode::Char('t') => self.open_todo(),
             KeyCode::Char('d') => match self.sel {
                 Sel::Shell(..) => self.confirm_delete_shell(),
                 _ => self.confirm_delete_worktree(),
@@ -3459,6 +3701,8 @@ impl App {
                     self.add_shell_to(self.add_shell_index().saturating_add(3));
                 } else if matches!(self.mode, Mode::ThemePicker { .. }) {
                     self.picker_to(self.picker_index().saturating_add(3));
+                } else if matches!(self.mode, Mode::Todo { .. }) {
+                    self.todo_scroll_by(3);
                 } else if self.preview_on_screen() {
                     self.preview_scroll_by(-3);
                 } else {
@@ -3476,6 +3720,8 @@ impl App {
                     self.add_shell_to(self.add_shell_index().saturating_sub(3));
                 } else if matches!(self.mode, Mode::ThemePicker { .. }) {
                     self.picker_to(self.picker_index().saturating_sub(3));
+                } else if matches!(self.mode, Mode::Todo { .. }) {
+                    self.todo_scroll_by(-3);
                 } else if self.preview_on_screen() {
                     self.preview_scroll_by(3);
                 } else {
@@ -3504,6 +3750,28 @@ impl App {
     }
 
     fn mouse_click(&mut self, x: u16, y: u16, dbl: bool) {
+        // The todo pad is a panel, not an overlay, so it is answered before
+        // the overlay rules below (which would read its absent `popup_area`
+        // as "clicked outside" and drop the mode without saving). The
+        // statusbar keeps working; a click on the pad leaves the caret
+        // alone — it is placed by the keyboard, like every other cursor
+        // here — and a click anywhere else is the way back to the tree.
+        if matches!(self.mode, Mode::Todo { .. }) {
+            let h = self.viewport.1;
+            if h > 0 && y == h - 1 && !self.bar_hits.is_empty() {
+                if let Some((_, _, action)) =
+                    self.bar_hits.iter().find(|(x0, x1, _)| *x0 <= x && x < *x1)
+                {
+                    self.run_bar_action(*action);
+                }
+                return;
+            }
+            let inside = crate::ui::tree_width_for(self).is_some_and(|w| x < w && y + 1 < h);
+            if !inside {
+                self.close_todo();
+            }
+            return;
+        }
         // Overlays: a click outside dismisses them (accessibility rule);
         // a click inside keeps keyboard as the way in. The theme picker is
         // the exception: clicking a theme row selects + previews it, and a
@@ -3640,6 +3908,8 @@ impl App {
                     self.dock_shell(ri, wi, si);
                 }
             }
+            BarAction::Todo => self.open_todo(),
+            BarAction::TodoBack => self.close_todo(),
         }
     }
 
@@ -3950,6 +4220,10 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
         app.auto_dock(event::poll(Duration::ZERO)?);
         terminal.draw(|f| crate::ui::draw(f, app))?;
         if app.quit {
+            // ctrl-c quits from any state, the open pad included: flush it
+            // before the loop ends or the last note typed dies with the
+            // process.
+            app.save_todo();
             // Furniture of ours, in what may well be the user's own window.
             app.drop_slot();
             break;
@@ -4938,6 +5212,138 @@ mod tests {
                 KeyModifiers::NONE
             },
         )
+    }
+
+    // ------------------------------------------------------------- todo
+
+    fn typed(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.on_key(key(KeyCode::Char(c), false));
+        }
+    }
+
+    /// `t` puts the pad in the tree's own panel — no overlay — and `Esc`
+    /// hands the panel back to the tree, keeping what was typed.
+    #[test]
+    fn t_opens_the_pad_in_place_and_esc_goes_back() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.on_key(key(KeyCode::Char('t'), false));
+            assert!(matches!(app.mode, Mode::Todo { .. }), "`t` opens the pad");
+            assert!(
+                app.popup_area.is_none(),
+                "the pad is a panel, not an overlay"
+            );
+            typed(&mut app, "rebase wt2");
+            app.on_key(key(KeyCode::Esc, false));
+            assert!(
+                matches!(app.mode, Mode::Normal),
+                "esc goes back to the tree"
+            );
+            assert_eq!(app.todo.text(), "rebase wt2");
+        });
+    }
+
+    /// Every printable key is text while the pad is open: the normal-mode
+    /// bindings underneath (`q` quit, `d` delete, `j`/`k` move, `?` help)
+    /// must not fire, or the pad could not hold a sentence.
+    #[test]
+    fn the_pad_owns_every_printable_key() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            let before = app.sel;
+            app.on_key(key(KeyCode::Char('t'), false));
+            typed(&mut app, "djkq? gG");
+            let Mode::Todo { buf } = &app.mode else {
+                panic!("still the pad");
+            };
+            assert_eq!(buf.text(), "djkq? gG");
+            assert!(!app.quit, "`q` typed a letter, it did not quit");
+            assert_eq!(app.sel, before, "`j`/`k` typed letters, they did not move");
+        });
+    }
+
+    /// The pad outlives the process: it is one plain file for the whole
+    /// machine, so a dashboard started anywhere else finds the same notes.
+    #[test]
+    fn the_pad_survives_a_restart_and_is_not_per_scope() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.on_key(key(KeyCode::Char('t'), false));
+            typed(&mut app, "wait for the schema");
+            app.on_key(key(KeyCode::Enter, false));
+            typed(&mut app, "then rebase");
+            app.on_key(key(KeyCode::Esc, false));
+            assert_eq!(
+                std::fs::read_to_string(crate::util::todo_path()).unwrap(),
+                "wait for the schema\nthen rebase",
+                "written as plain text, editable without the dashboard"
+            );
+
+            // A second dashboard, in another scope entirely.
+            let mut next = app_with_shell();
+            next.viewport = (120, 40);
+            next.scope_root = PathBuf::from("/somewhere/else");
+            next.load_todo();
+            next.on_key(key(KeyCode::Char('t'), false));
+            let Mode::Todo { buf } = &next.mode else {
+                panic!("the pad opens");
+            };
+            assert_eq!(buf.text(), "wait for the schema\nthen rebase");
+        });
+    }
+
+    /// ctrl-c quits from any state, the open pad included — and the last
+    /// thing typed must still reach the disk. `save_todo` is what the
+    /// event loop calls on the way out.
+    #[test]
+    fn quitting_out_of_the_open_pad_still_writes_it() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.on_key(key(KeyCode::Char('t'), false));
+            typed(&mut app, "unsaved note");
+            app.on_key(key(KeyCode::Char('c'), true));
+            assert!(app.quit, "ctrl-c quits from the pad too");
+            app.save_todo();
+            assert_eq!(crate::todo::load(), "unsaved note");
+        });
+    }
+
+    /// A theme switch is a chord that works over every state, and it
+    /// replaces the panel — so it parks the pad first, exactly as it parks
+    /// an open quick-send draft.
+    #[test]
+    fn a_theme_switch_parks_the_open_pad() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.on_key(key(KeyCode::Char('t'), false));
+            typed(&mut app, "keep me");
+            app.on_key(key(KeyCode::Char('t'), true));
+            assert!(matches!(app.mode, Mode::ThemePicker { .. }));
+            assert_eq!(crate::todo::load(), "keep me");
+        });
+    }
+
+    /// A click outside the pad is the way back to the tree, and it keeps
+    /// the text. The pad has no `popup_area`, so without its own branch the
+    /// overlay rule would have dropped the mode — and the note with it.
+    #[test]
+    fn a_click_outside_the_pad_keeps_what_is_in_it() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.on_key(key(KeyCode::Char('t'), false));
+            typed(&mut app, "still here");
+            let tree_w = crate::ui::tree_width_for(&app).unwrap();
+            app.mouse_click(tree_w + 5, 3, false);
+            assert!(matches!(app.mode, Mode::Normal), "back to the tree");
+            assert_eq!(crate::todo::load(), "still here");
+        });
     }
 
     /// A half-written prompt is not lost by leaving the editor: each

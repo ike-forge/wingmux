@@ -23,6 +23,9 @@ the same commit as the change.
 - Drafts file: JSON at `$XDG_STATE_HOME/lazywingman/drafts.json` — unsent
   quick-send prompts (`src/drafts.rs`). State, not cache: a half-written
   prompt cannot be regenerated.
+- Todo file: **plain text** at `$XDG_STATE_HOME/lazywingman/todo.md` — the
+  todo pad (`src/todo.rs`). Not JSON, and not keyed to anything: see "The
+  todo pad" below.
 - **State schema v4**: `State.version = 4`. `load` reads `version` first and
   discards a well-formed file of any other version, starting empty and
   letting `reconcile` rediscover the repositories and reconstruct their
@@ -844,6 +847,46 @@ duplication docking exists to end.
   `merge-base --is-ancestor HEAD <base>` against the LOCAL branch, so the row
   keeps reading `Ahead` until someone pulls. The preset asks for the thing
   the tree can actually see, and shouts the word the agent has to notice.
+
+## The todo pad
+
+- **What it is for.** Supervising several agents means constantly noticing
+  work that cannot start yet — "rebase the API worktree once the schema
+  lands", "delete wt3 after the release". That note has nowhere to go: it is
+  not a message to an agent (nothing can act on it), and it is not state the
+  tree can derive. `t` opens a scratch pad for exactly it.
+- **It is global, deliberately.** One file for the machine, not one per
+  scope. A note is written while looking at one repository and needed while
+  looking at another; a per-directory pad would hide it exactly then. This is
+  the opposite call from `drafts.json`, and for the opposite reason: a draft
+  belongs to the shell it was typed at and dies with it, while a todo belongs
+  to the user.
+- **Plain text, no schema.** `todo.md` holds the buffer and nothing else — no
+  cursor, no version. A file with no schema cannot have the wrong one, and
+  the point of a global pad is that it is also reachable without the
+  dashboard (`$EDITOR ~/.local/state/lazywingman/todo.md`); the next `t`
+  re-reads it, so an edit made outside is picked up rather than clobbered.
+  The cursor is a within-run convenience kept in `App::todo`. Written the way
+  state is (temp file, rename over) — two dashboards share it, so
+  last-writer-wins is the rule, but a half-written pad is not something the
+  user can get back.
+- **Edited in place, in the tree's panel — not in an overlay.** The pad is a
+  `Mode` like any other, but `draw_left` swaps it in for the tree instead of
+  drawing it on top: a modal would cover the preview, or the docked agent,
+  that the note is being written *about*. The panel is the editor, so it owns
+  every printable key (`q` types a `q`) and the accessibility layer yields
+  its motions the same way it does for the textarea. `Esc` is the way back,
+  and it saves — a scratch pad that can lose a note is not one.
+- **Saved on every exit, and on the poll.** `close_todo` writes it; so does
+  `App::poll` while the dirty flag is up, and so does the event loop on
+  `quit`, because ctrl-c quits from any state. The worst a `kill -9` costs is
+  one poll interval of typing. `save_todo` reads through the open buffer
+  rather than a copy, so the panel never has to clone its text per keystroke.
+- **`t`, not `2`.** The LazyGit-style numbered panel stack (`[1]` files,
+  `[2]` branches, …) buys nothing with two panels: a number is a position,
+  which goes stale the moment a third thing wants the panel, while `t` names
+  what it opens. The statusbar carries `todo t` from every row, since the pad
+  is not about the selection.
 
 ## Layout, wording and rendering
 
