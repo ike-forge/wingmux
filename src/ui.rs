@@ -2264,7 +2264,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
         },
         _ => unreachable!(),
     };
-    let Mode::Input { kind, text } = &app.mode else {
+    let Mode::Input { kind, text, agent } = &app.mode else {
         return Rect::default().into();
     };
     let title_text = format!(" {title} ");
@@ -2278,8 +2278,14 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
     // strip is wide enough to leave the field something to work with;
     // below that it takes a row of its own, because in a 26-column strip
     // the label alone is wider than the field would be.
-    let inline_label = format!("{label}: ");
-    let inline_indent = UnicodeWidthStr::width(inline_label.as_str());
+    // Both fields share one indent, so the two values line up in a column
+    // and the caret lands in the same place whichever field has it.
+    let has_agent = matches!(&app.mode, Mode::Input { agent: Some(_), .. });
+    let inline_indent = [label, if has_agent { "agent" } else { label }]
+        .iter()
+        .map(|l| UnicodeWidthStr::width(*l) + 2)
+        .max()
+        .unwrap_or(0);
     // Under this the inline field is too cramped to read what is typed
     // into it, so the stacked layout wins.
     const MIN_INLINE_FIELD: usize = 12;
@@ -2295,17 +2301,44 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
     // where the next character lands.
     let field_w = body_w.saturating_sub(field_indent + 1);
     let shown = tail_to_width(text, field_w);
-    let mut lines = if inline {
-        vec![Line::from(vec![
-            Span::styled(inline_label, fg(theme.accent)),
-            Span::raw(shown.to_string()),
-        ])]
-    } else {
-        vec![
-            Line::from(Span::styled(label, fg(theme.accent))),
-            Line::from(Span::raw(format!("{}{shown}", " ".repeat(STACKED_INDENT)))),
-        ]
+    // The second field, when there is one. Only the focused field carries
+    // the caret, so the other one says where it is with a dim label —
+    // a popup with two fields and one cursor must not read as one field.
+    let agent_focused = agent.as_ref().is_some_and(|a| a.focused);
+    let label_style = |focused: bool| {
+        if focused {
+            fg(theme.accent)
+        } else {
+            fg(theme.dim)
+        }
     };
+    let field = |label: &str, shown: &str, focused: bool| -> Vec<Line<'static>> {
+        if inline {
+            let pad = " ".repeat(inline_indent.saturating_sub(UnicodeWidthStr::width(label) + 2));
+            vec![Line::from(vec![
+                Span::styled(format!("{label}:{pad} "), label_style(focused)),
+                Span::raw(shown.to_string()),
+            ])]
+        } else {
+            vec![
+                Line::from(Span::styled(label.to_string(), label_style(focused))),
+                Line::from(Span::raw(format!("{}{shown}", " ".repeat(STACKED_INDENT)))),
+            ]
+        }
+    };
+    let mut lines = field(label, shown, !agent_focused);
+    // Row the caret sits on, counted as the popup builds: the name field
+    // is first, the agent field follows it (one row inline, two stacked).
+    let mut cursor_row = if inline { 0 } else { 1 };
+    let mut cursor_text = shown;
+    if let Some(a) = agent {
+        let agent_shown = tail_to_width(&a.text, field_w);
+        if a.focused {
+            cursor_row = lines.len() + if inline { 0 } else { 1 };
+            cursor_text = agent_shown;
+        }
+        lines.extend(field("agent", agent_shown, a.focused));
+    }
     // new-worktree only: the worktree is cut from the repository's base
     // branch, NOT from whatever the repo has checked out. Name the branch
     // so nobody has to guess which one it is.
@@ -2329,12 +2362,13 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
     }
     let ic = &app.cfg.icons;
     lines.push(Line::from(""));
-    let footer = hint_rows(
-        theme,
-        ic,
-        &[hint(ic, "submit", "Enter"), hint(ic, "cancel", "esc")],
-        body_w,
-    );
+    let mut hints = Vec::new();
+    if agent.is_some() {
+        hints.push(hint(ic, "agent field", "tab"));
+    }
+    hints.push(hint(ic, "submit", "Enter"));
+    hints.push(hint(ic, "cancel", "esc"));
+    let footer = hint_rows(theme, ic, &hints, body_w);
     let hint_rows = footer.len();
     lines.extend(footer);
     let area = dialog_rect(f.area(), &lines, &title_text, w, w);
@@ -2353,8 +2387,8 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
     // scrolls with the text, so that is the end of the tail, not the end
     // of the buffer. Only when it lands inside the popup: a cursor off the
     // buffer would corrupt the terminal.
-    let cursor_x = inner.x + (field_indent + UnicodeWidthStr::width(shown)) as u16;
-    let cursor_y = inner.y + if inline { 0 } else { 1 };
+    let cursor_x = inner.x + (field_indent + UnicodeWidthStr::width(cursor_text)) as u16;
+    let cursor_y = inner.y + cursor_row as u16;
     if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
         f.set_cursor_position(Position::new(cursor_x, cursor_y));
     }
@@ -2586,6 +2620,7 @@ mod tests {
             Mode::Input {
                 kind: InputKind::NewWorktree,
                 text: "some-worktree".into(),
+                agent: None,
             },
             Mode::Confirm {
                 confirm: Confirm {
@@ -2698,6 +2733,7 @@ mod tests {
             app.mode = Mode::Input {
                 kind,
                 text: text.into(),
+                agent: None,
             };
             terminal
                 .draw(|f| draw(f, &mut app))
@@ -2719,6 +2755,47 @@ mod tests {
         }
     }
 
+    /// The new-worktree popup is two fields: both are drawn, both labels
+    /// are readable, and the caret is on the focused one — with the agent
+    /// field focused it must not sit on the name row.
+    #[test]
+    fn new_worktree_popup_draws_the_agent_field_and_moves_the_caret_to_it() {
+        let mut app = seeded_app();
+        app.sel = crate::app::Sel::Repository(0);
+        app.open_new_worktree();
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        let body = buffer_text(&terminal);
+        assert!(body.contains("worktree name"), "the name field is drawn");
+        assert!(body.contains("agent"), "the agent field is drawn");
+        assert!(
+            body.contains("claude"),
+            "prefilled with the repository agent"
+        );
+        assert!(body.contains("agent field tab"), "tab is hinted: {body}");
+        let area = app.popup_area.expect("input popup is on screen");
+        let name_row = terminal.get_cursor_position().unwrap();
+        assert_eq!(name_row.y, area.y + 1, "the caret starts on the name field");
+
+        app.on_key(ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Tab,
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        ));
+        terminal.draw(|f| draw(f, &mut app)).expect("draw");
+        let agent_row = terminal.get_cursor_position().unwrap();
+        assert_eq!(
+            agent_row.y,
+            name_row.y + 1,
+            "Tab puts the caret on the agent field below"
+        );
+        assert_eq!(
+            agent_row.x,
+            name_row.x + "claude".len() as u16,
+            "both fields share one indent, so only the text moves the caret"
+        );
+    }
+
     /// A field holds more than the strip is wide: what it shows is the
     /// tail, so the caret — which is always at the end of what has been
     /// typed — stays on screen instead of walking off the border.
@@ -2728,6 +2805,7 @@ mod tests {
         app.mode = Mode::Input {
             kind: InputKind::QuickSend,
             text: "x".repeat(200),
+            agent: None,
         };
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -2978,6 +3056,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/repo-a-wt"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![crate::state::Shell {
                     index: 0,
                     window_name: "lw:wt/0".into(),
@@ -3186,6 +3265,7 @@ mod tests {
                 Mode::Input {
                     kind: InputKind::NewWorktree,
                     text: String::new(),
+                    agent: None,
                 },
                 "New Worktree",
             ),
@@ -3207,6 +3287,7 @@ mod tests {
             path: std::path::PathBuf::from("/tmp/repo-a/wt"),
             created_at: String::new(),
             base_commit: None,
+            agent_command: None,
             shells: vec![],
         }]);
         assert!(app.flatten, "one repository with worktrees flattens");
@@ -3228,6 +3309,7 @@ mod tests {
             path: std::path::PathBuf::from(format!("/tmp/repo-a/{name}")),
             created_at: String::new(),
             base_commit: None,
+            agent_command: None,
             shells: (0..n)
                 .map(|index| crate::state::Shell {
                     index,
@@ -3334,6 +3416,7 @@ mod tests {
             Mode::Input {
                 kind: InputKind::NewWorktree,
                 text: "some-worktree".into(),
+                agent: None,
             },
             Mode::Confirm {
                 confirm: Confirm {
@@ -3386,6 +3469,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/wt-many"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![shell(0), shell(1)],
             });
         app.build_tree_flags();
@@ -3759,6 +3843,7 @@ mod tests {
                     path: std::path::PathBuf::from(format!("/tmp/wt-{name}")),
                     created_at: String::new(),
                     base_commit: None,
+                    agent_command: None,
                     shells: vec![],
                 });
         }
@@ -3836,6 +3921,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/wt-some-worktree"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![],
             });
         app.build_tree_flags();
@@ -3892,6 +3978,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/wt-many"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![shell(0), shell(1)],
             });
         app.state.repositories[0]
@@ -3902,6 +3989,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/wt-one"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![shell(2)],
             });
         app.build_tree_flags();
@@ -3953,6 +4041,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/wt-many"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![shell(0), shell(1)],
             });
         app.state.repositories[0]
@@ -3963,6 +4052,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/wt-one"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![shell(2)],
             });
         app.statuses.insert("%0".into(), Status::Working);
@@ -4021,6 +4111,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/wt-one"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![crate::state::Shell {
                     index: 0,
                     window_name: "lw:f/0".into(),
@@ -4067,6 +4158,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/wt-one"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![],
             });
         app.build_tree_flags();
@@ -4117,6 +4209,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/wt-gone"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![shell(0)],
             });
         app.state.repositories[0]
@@ -4127,6 +4220,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/wt-half"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![shell(1), shell(2)],
             });
         app.statuses.insert("%0".into(), Status::Dead);
@@ -4373,6 +4467,7 @@ mod tests {
                     path: std::path::PathBuf::from(format!("/tmp/{name}")),
                     created_at: String::new(),
                     base_commit: None,
+                    agent_command: None,
                     shells: vec![crate::state::Shell {
                         index: 0,
                         window_name: format!("lw:{name}/0"),
@@ -4423,6 +4518,7 @@ mod tests {
                     path: std::path::PathBuf::from(format!("/tmp/{name}")),
                     created_at: String::new(),
                     base_commit: None,
+                    agent_command: None,
                     shells: vec![crate::state::Shell {
                         index: 0,
                         window_name: format!("lw:{name}/0"),
@@ -4650,6 +4746,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/repo-a-wt"),
                 created_at: "2026-01-01T00:00:00Z".into(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![crate::state::Shell {
                     index: 1,
                     window_name: "wt-1".into(),
@@ -5095,6 +5192,7 @@ mod tests {
             app.mode = Mode::Input {
                 kind,
                 text: String::new(),
+                agent: None,
             };
             for height in [24, 30, 40] {
                 let backend = ratatui::backend::TestBackend::new(100, height);
@@ -5122,6 +5220,7 @@ mod tests {
                 path: std::path::PathBuf::from("/tmp/wt-blocked"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![crate::state::Shell {
                     index: 0,
                     window_name: "lw:needs-me/0".into(),
@@ -5184,6 +5283,7 @@ mod tests {
             Mode::Input {
                 kind: InputKind::NewWorktree,
                 text: "my-worktree".into(),
+                agent: None,
             },
             Mode::Confirm {
                 confirm: Confirm {
@@ -5266,6 +5366,7 @@ mod tests {
                 Mode::Input {
                     kind: InputKind::NewWorktree,
                     text: "claude".into(),
+                    agent: None,
                 },
             ),
             (
@@ -5349,6 +5450,7 @@ mod tests {
                 Mode::Input {
                     kind: InputKind::NewWorktree,
                     text: "claude".into(),
+                    agent: None,
                 },
             ),
             ("themes", Mode::ThemePicker { index: 0 }),
@@ -5446,6 +5548,7 @@ mod tests {
                 Mode::Input {
                     kind: InputKind::NewWorktree,
                     text: "a-long-worktree-name-typed-in-full".into(),
+                    agent: None,
                 },
                 Mode::Textarea {
                     buf: crate::app::TextBuf::new(),

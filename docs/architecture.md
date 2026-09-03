@@ -115,6 +115,32 @@ the same commit as the change.
   goes with the worktree unless `worktrees.delete_branch = false` — a
   worktree branch whose worktree is gone is dead weight in the common case;
   keeping it is the exception, so it is the opt-in.
+- **The agent is chosen per worktree, in the popup that creates it.** A
+  worktree is one unit of work, and which agent runs it is a property of
+  that work, not of the repository holding it — a codex worktree beside a
+  claude one is the ordinary case, not a reconfiguration. So `n` grew a
+  second field (`Mode::Input.agent`, `Tab` between the two) rather than a
+  setting elsewhere: the choice is made where the worktree is made, and
+  costs nothing to anyone who does not make it, because the field is
+  prefilled with what the repository already runs. What it holds is read
+  the way `[[repositories]]` reads its pair of keys — a `[[agents]]` preset
+  name first, otherwise the command itself (`Config::command_for_agent`),
+  so one field covers both without a second one to explain. The resolved
+  command is stored on the worktree (`Worktree.agent_command`, `None` =
+  follow the repository, which is what every pre-existing and every
+  reconciled worktree says) and from then on it is what the first shell
+  runs, what the `a` picker offers first, and which patterns the poll
+  classifies its panes by. The window's *shell* stays the repository's
+  `agent_shell`: a preset's optional `shell` is a per-repository choice and
+  a worktree's shells all share one.
+- **`[defaults].agent` names a preset, `[defaults].agent_command` a
+  command.** The default agent had only ever been a bare command word, so
+  "which agent do I want by default" could not be answered by naming one of
+  the `[[agents]]` presets — the very list that carries its status
+  patterns. `agent` is now the preset a repository without its own falls
+  back to (and the popup's prefill); `agent_command` is what is left when
+  that name matches no preset, so an existing config keeps meaning what it
+  meant.
 - `d` is contextual: on a worktree row it deletes the worktree, on a shell
   row it closes just that shell (kill the window, drop it from the
   worktree). Deleting a worktree from a shell row was the old behaviour and
@@ -209,7 +235,8 @@ the same commit as the change.
   plain interactive shell — cost as much typing as the rare one, and starting
   a normal `zsh` in a worktree meant typing over a prompt pre-explained as an
   agent command. `Mode::AddShell` lists them instead: the repository's agent
-  command first (so the old path is still `a` then `Enter`), the other
+  command first (so the old path is still `a` then `Enter`) — the selected
+  worktree's own, when it was created with one — the other
   `[[agents]]` presets after it (deduplicated against the default), and a
   plain shell last. The free-text prompt is not replaced by anything, on
   purpose: a one-off command is a command you type in the plain shell, and a

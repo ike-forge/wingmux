@@ -95,6 +95,13 @@ pub struct Worktree {
     /// merged worktree as new.
     #[serde(default)]
     pub base_commit: Option<String>,
+    /// The agent command this worktree runs, picked in the new-worktree
+    /// popup. `None` — every worktree written by an older build, and every
+    /// one reconciled from `git worktree list` — means "whatever the
+    /// repository runs", so the repository stays the single answer for
+    /// worktrees that never chose one.
+    #[serde(default)]
+    pub agent_command: Option<String>,
     pub shells: Vec<Shell>,
 }
 
@@ -346,6 +353,7 @@ impl State {
             path: path.to_path_buf(),
             created_at: String::new(),
             base_commit: None,
+            agent_command: None,
             shells: vec![Shell {
                 index: idx,
                 window_name: crate::tmux::Tmux::window_name(fname, idx),
@@ -545,6 +553,7 @@ mod tests {
             path: PathBuf::from("/tmp/wt"),
             created_at: String::new(),
             base_commit: None,
+            agent_command: None,
             shells: vec![],
         };
         assert_eq!(wt.next_shell_index(), 0);
@@ -588,6 +597,7 @@ mod tests {
                 path: PathBuf::from("/tmp/wt/wt"),
                 created_at: "now".into(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![Shell {
                     index: 0,
                     window_name: "lw:wt/0".into(),
@@ -726,6 +736,7 @@ mod tests {
                 path: repo.join("../wt-wt"),
                 created_at: "2026-08-16".into(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![Shell {
                     index: 0,
                     window_name: "lw:wt/0".into(),
@@ -747,6 +758,7 @@ mod tests {
             path: repo.join("../wt-feat2"),
             created_at: "".into(),
             base_commit: None,
+            agent_command: None,
             shells: vec![Shell {
                 index: 0,
                 window_name: "lw:feat2/0".into(),
@@ -897,6 +909,7 @@ mod tests {
                     path: PathBuf::from("/tmp/p-wt"),
                     created_at: String::new(),
                     base_commit: None,
+                    agent_command: None,
                     shells: vec![],
                 }],
             });
@@ -957,6 +970,7 @@ mod tests {
                     path: PathBuf::from("/tmp/p-feat"),
                     created_at: String::new(),
                     base_commit: None,
+                    agent_command: None,
                     shells: vec![],
                 }],
             });

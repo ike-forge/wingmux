@@ -69,8 +69,9 @@ every project. The picked theme survives restarts via `state.json`.
 | `Esc` / `q` | close, creating nothing | cancel |
 | mouse | click a row selects; double-click starts it; click outside = Esc | clickable rows; click outside dismisses |
 
-The entries are, in order: the repository's own agent command (so the
-pre-picker path is still `a` then `Enter`), the other configured `[[agents]]`
+The entries are, in order: the selected worktree's own agent command — the
+one it was created with, falling back to the repository's (so the pre-picker
+path is still `a` then `Enter`) — the other configured `[[agents]]`
 presets, and last a **plain shell** — the user's `$SHELL`, started in the
 worktree with nothing sent to it. There is deliberately no free-text command
 prompt: a command you want to run once is a command you type in that plain
@@ -88,7 +89,7 @@ tail — `help ?`, the way to everything that did not fit, sits at that end.
 | Key | Meaning | Rule satisfied |
 |---|---|---|
 | `Enter` / `l` | expand the repository **and** enter its inline shell: a plain `$SHELL` in the repository's own checkout (the base branch), started on the first press and docked beside the tree | domain convention (open the thing the row stands for); no dead keys |
-| `n` | new worktree (git worktree + branch cut from the repository's base branch, + agent shell) | create action |
+| `n` | new worktree (git worktree + branch cut from the repository's base branch, + a shell running the agent its second field names) | create action |
 | `d` | close the inline shell (kills its window; the repository, its worktrees and their agents stay). Absent until there is one to close | vim `d` destructive, confirms; an answer that cannot succeed is not offered |
 
 `Enter` on a repository row does two things at once, and they do not
@@ -114,8 +115,8 @@ you type in it.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `n` | new worktree (sibling; branched from the base branch, not the checkout) | create action |
-| `a` | add a shell to the worktree (picker: the repository's agent command, the other configured agents, or a plain `$SHELL`) | add action |
+| `n` | new worktree (sibling; branched from the base branch, not the checkout; its own agent) | create action |
+| `a` | add a shell to the worktree (picker: the worktree's own agent command, the other configured agents, or a plain `$SHELL`) | add action |
 | `d` | delete worktree (kills windows, removes worktree; `f` = force when dirty) | vim `d` destructive, confirms; `f` differs by position (confirm mode, not navigation) |
 | `Enter` | on a one-shell worktree: dock that shell (the folded row *is* the shell). With no shell at all it says so and points at `a` — never a silent no-op | no dead keys |
 
@@ -127,19 +128,35 @@ you type in it.
 | `s` | quick-send a prompt to the agent (multiline editor, Alt+Enter sends) | send action |
 | `d` | close this shell (kills its window; the worktree and its other shells stay) | vim `d` destructive, confirms; the object is the selected row |
 
-## Text input (new worktree — single line)
+## Text input (new worktree — two fields)
 
 The New Worktree prompt names the branch it will cut from under the name
 field (`branches from: <base> (base branch)`), and warns when the configured
 base branch is absent and creation falls back to the current checkout.
 
+Under it sits the **agent** field: which agent this worktree's shells run,
+prefilled with what the repository already runs (`[defaults].agent`, or the
+repository's own override). So the flow is unchanged for anyone who does not
+care — name, `Enter` — and one `Tab` for anyone who does.
+
 || Key | Meaning | Rule satisfied |
 |---|---|---|
-| any printable | append to the input | printable keys belong to text input |
-| `Enter` | submit | confirm |
+| any printable | append to the focused field | printable keys belong to text input |
+| `Tab` / `shift-Tab` | move between the name and agent fields | the field the keys go to is the one thing two fields add |
+| `↑` / `↓` (agent field) | walk the configured `[[agents]]` presets | a short known list is picked, not typed |
+| `Enter` | submit, from either field | confirm |
 | `Esc` | cancel (back to Normal) | leave innermost first |
-| `Backspace` | delete a character | accessibility |
+| `Backspace` | delete a character from the focused field | accessibility |
 | `ctrl-c` | quit, even here | ctrl layer over input |
+
+The agent field takes a `[[agents]]` preset name, and anything that is not
+one is taken as the command itself — the same two readings `[[repositories]]`
+gives `agent` and `agent_command`, in one field. Emptied, it means "whatever
+the repository runs" and the worktree records no agent of its own.
+
+The arrows are the picker the field deserves without being a picker: an
+overlay over an overlay to choose between two names would cost more than it
+saves, and typing `codex` is three keys either way.
 
 ## Quick-send textarea (multiline prompt editor)
 
@@ -344,7 +361,10 @@ An inert key is a decision, not an omission.
 - `Tab` / `Shift-Tab` — no panel cycling: the two focusable panels (the tree
   and the todo pad below it) are each reached by name — `t` into the pad,
   `Esc` back — and the detail/preview panes are display-only. In the
-  quick-send textarea and in the pad, `Tab` inserts a tab (see above).
+  quick-send textarea and in the pad, `Tab` inserts a tab (see above); in
+  the New Worktree prompt it moves between that dialog's two fields, which
+  is the one place `Tab` means focus and the only place there is a second
+  field to move to.
 - `1` / `2` / `3` — no numbered panels. LazyGit numbers its panel stack
   because it has five of them; here the left column holds two and one of
   them is reached by what it is (`t` for todo), which is a name rather than

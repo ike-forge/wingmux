@@ -131,6 +131,10 @@ pub enum Mode {
     Input {
         kind: InputKind,
         text: String,
+        /// The second field, when the prompt has one (new worktree: which
+        /// agent its first shell runs). `None` for single-field prompts —
+        /// `Tab` then has nothing to move to and stays inert.
+        agent: Option<AgentField>,
     },
     /// Multiline prompt editor (quick-send). Owns all editing keys:
     /// Enter = newline, Tab = tab, arrows/Home/End move the cursor,
@@ -604,6 +608,16 @@ pub enum BarAction {
 pub enum InputKind {
     NewWorktree,
     QuickSend,
+}
+
+/// The new-worktree popup's agent field: a `[[agents]]` preset name (or a
+/// command typed verbatim), prefilled with what the repository already
+/// runs so the common case is still `n`, a name, `Enter`. `focused` is
+/// which of the two fields the keys go to — `Tab` flips it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentField {
+    pub text: String,
+    pub focused: bool,
 }
 
 /// What a new shell runs. The add-shell picker (`a`) offers one of these
@@ -1562,6 +1576,7 @@ impl App {
                 path: info.path,
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: Vec::new(),
             });
             added += 1;
@@ -2072,7 +2087,10 @@ impl App {
         Ok((name, id, Some(w)))
     }
 
-    pub fn create_worktree(&mut self, ri: usize, name: &str) -> Result<()> {
+    /// Create a worktree and its first agent shell. `agent` is what the
+    /// popup's agent field held: a `[[agents]]` preset name, a command
+    /// typed verbatim, or empty for "whatever the repository runs".
+    pub fn create_worktree(&mut self, ri: usize, name: &str, agent: &str) -> Result<()> {
         let repo = self
             .state
             .repositories
@@ -2139,7 +2157,17 @@ impl App {
                 self.holder_width(&tmux),
             )?,
         };
-        let spawn_cmd = self.agent_command_for_spawn(&repo.agent_command);
+        // The worktree's own agent, resolved once here: what its first
+        // shell runs, what its later shells default to, and what the
+        // poll picks status patterns by.
+        let agent_command = match self.cfg.command_for_agent(agent) {
+            c if c.is_empty() => None,
+            c => Some(c),
+        };
+        let command = agent_command
+            .clone()
+            .unwrap_or_else(|| repo.agent_command.clone());
+        let spawn_cmd = self.agent_command_for_spawn(&command);
         self.queue_launch(&w.pane_id, spawn_cmd);
 
         self.state.repositories[ri].session_name = Some(session_name.clone());
@@ -2149,6 +2177,7 @@ impl App {
             path: root,
             created_at: now_str(),
             base_commit,
+            agent_command,
             shells: vec![Shell {
                 index: 0,
                 window_name: wname,
@@ -2226,7 +2255,10 @@ impl App {
             // when the choice carried nothing.
             ShellSpawn::Agent(c) => {
                 let command = match c.trim() {
-                    "" => repo.agent_command.clone(),
+                    "" => wt
+                        .agent_command
+                        .clone()
+                        .unwrap_or_else(|| repo.agent_command.clone()),
                     c => c.to_string(),
                 };
                 // The command the user chose (or the repository default) is
@@ -3018,15 +3050,21 @@ impl App {
     /// normal `zsh`/`bash` in a worktree used to mean typing over an
     /// agent-command prompt.
     pub fn add_shell_choices(&self) -> Vec<ShellChoice> {
-        let ri = match self.sel {
-            Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, _, _) => ri,
+        let (ri, wi) = match self.sel {
+            Sel::Repository(ri) => (ri, None),
+            Sel::Worktree(ri, wi) | Sel::Shell(ri, wi, _) => (ri, Some(wi)),
         };
-        let default = self
-            .state
-            .repositories
-            .get(ri)
-            .map(|p| p.agent_command.trim().to_string())
-            .unwrap_or_default();
+        let repo = self.state.repositories.get(ri);
+        // The worktree's own agent leads when it chose one at creation —
+        // "one more of what is already running here" is the reason the
+        // first row exists, and that is the worktree's agent, not the
+        // repository's.
+        let default = wi
+            .and_then(|wi| repo?.worktrees.get(wi)?.agent_command.clone())
+            .or_else(|| repo.map(|p| p.agent_command.clone()))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         let mut out: Vec<ShellChoice> = Vec::new();
         let push = |cmd: &str, out: &mut Vec<ShellChoice>| {
             if cmd.is_empty() || out.iter().any(|c| c.label == cmd) {
@@ -3093,9 +3131,19 @@ impl App {
             }
         };
         self.new_worktree_base = self.base_hint(ri);
+        let agent = self
+            .state
+            .repositories
+            .get(ri)
+            .map(|p| self.cfg.agent_name_for_command(&p.agent_command))
+            .unwrap_or_else(|| self.cfg.defaults.agent.clone());
         self.mode = Mode::Input {
             kind: InputKind::NewWorktree,
             text: String::new(),
+            agent: Some(AgentField {
+                text: agent,
+                focused: false,
+            }),
         };
     }
 
@@ -3252,9 +3300,10 @@ impl App {
                 shells.push((path.clone(), cmd.clone(), pid));
             }
             for wt in &repo.worktrees {
+                let wt_cmd = wt.agent_command.clone().unwrap_or_else(|| cmd.clone());
                 for sh in &wt.shells {
                     if let Some(pid) = &sh.pane_id {
-                        shells.push((path.clone(), cmd.clone(), pid.clone()));
+                        shells.push((path.clone(), wt_cmd.clone(), pid.clone()));
                     }
                 }
             }
@@ -3400,18 +3449,52 @@ impl App {
             _ => 0,
         };
         match &mut self.mode {
-            Mode::Input { kind, text } => match key.code {
+            Mode::Input { kind, text, agent } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
                     let text = std::mem::take(text);
+                    let agent = agent.as_ref().map(|a| a.text.clone()).unwrap_or_default();
                     let kind = *kind;
                     self.mode = Mode::Normal;
-                    self.submit_input(kind, text);
+                    self.submit_input(kind, text, &agent);
+                }
+                // Tab moves between the two fields; with only one there is
+                // nowhere to go and the key does nothing.
+                KeyCode::Tab | KeyCode::BackTab => {
+                    if let Some(a) = agent {
+                        a.focused = !a.focused;
+                    }
+                }
+                // The agent field is a short list in practice, so the
+                // arrows walk the configured presets rather than asking
+                // for the name to be typed out.
+                KeyCode::Up | KeyCode::Down if agent.as_ref().is_some_and(|a| a.focused) => {
+                    let step: isize = if key.code == KeyCode::Up { -1 } else { 1 };
+                    let names: Vec<String> =
+                        self.cfg.agents.iter().map(|a| a.name.clone()).collect();
+                    if let Mode::Input { agent: Some(a), .. } = &mut self.mode
+                        && !names.is_empty()
+                    {
+                        let at = names.iter().position(|n| *n == a.text);
+                        let next = match at {
+                            Some(i) => {
+                                (i as isize + step).rem_euclid(names.len() as isize) as usize
+                            }
+                            None => 0,
+                        };
+                        a.text = names[next].clone();
+                    }
                 }
                 KeyCode::Backspace => {
-                    text.pop();
+                    match agent {
+                        Some(a) if a.focused => a.text.pop(),
+                        _ => text.pop(),
+                    };
                 }
-                KeyCode::Char(c) => text.push(c),
+                KeyCode::Char(c) => match agent {
+                    Some(a) if a.focused => a.text.push(c),
+                    _ => text.push(c),
+                },
                 _ => {}
             },
             Mode::Textarea { buf } => {
@@ -3436,7 +3519,7 @@ impl App {
                     // toasts and swallows the error, so a send that never
                     // reached the pane must not take the text with it.
                     self.park_draft(parked);
-                    if self.submit_input(InputKind::QuickSend, text)
+                    if self.submit_input(InputKind::QuickSend, text, "")
                         && let Some(pid) = self.selected_shell_pane()
                     {
                         self.drafts.remove(&pid);
@@ -4469,11 +4552,11 @@ impl App {
     /// Run a submitted input. Returns whether it succeeded — the quick-send
     /// path needs to know, to tell a delivered message from a draft it must
     /// keep. Failures are toasted here either way.
-    fn submit_input(&mut self, kind: InputKind, text: String) -> bool {
+    fn submit_input(&mut self, kind: InputKind, text: String, agent: &str) -> bool {
         let res = match kind {
             InputKind::NewWorktree => match self.sel {
-                Sel::Repository(ri) => self.create_worktree(ri, &text),
-                Sel::Worktree(ri, _) => self.create_worktree(ri, &text),
+                Sel::Repository(ri) => self.create_worktree(ri, &text, agent),
+                Sel::Worktree(ri, _) => self.create_worktree(ri, &text, agent),
                 _ => Err(Error::State("select a repository first".into())),
             },
             InputKind::QuickSend => match self.selected_shell() {
@@ -4744,6 +4827,7 @@ mod tests {
                 path: PathBuf::from("/tmp/p-wt"),
                 created_at: "2026-08-16".into(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![Shell {
                     index: 0,
                     window_name: "lw:wt/0".into(),
@@ -5024,6 +5108,7 @@ mod tests {
                 path: PathBuf::from("/tmp/p/f"),
                 created_at: "".into(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![],
             }],
         });
@@ -5072,6 +5157,7 @@ mod tests {
                     path: PathBuf::from(format!("/tmp/p{i}/f")),
                     created_at: String::new(),
                     base_commit: None,
+                    agent_command: None,
                     shells: vec![],
                 }],
             });
@@ -5286,10 +5372,11 @@ mod tests {
                 path: PathBuf::from("/definitely/not/here/wt"),
                 created_at: "".into(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![],
             }],
         });
-        let err = app.create_worktree(0, "new-wt").unwrap_err();
+        let err = app.create_worktree(0, "new-wt", "").unwrap_err();
         assert!(err.to_string().contains("missing"), "err: {err}");
         let err = app
             .add_shell(0, 0, &ShellSpawn::Agent(String::new()))
@@ -5324,7 +5411,7 @@ mod tests {
                 app.build_tree_flags();
                 app.repo_expanded[0] = false; // collapsed, as >30 repos or `h` leaves it
 
-                app.create_worktree(0, "feature-x").unwrap();
+                app.create_worktree(0, "feature-x", "").unwrap();
 
                 assert!(
                     app.repo_expanded[0],
@@ -5346,6 +5433,91 @@ mod tests {
                 assert!(
                     app.visible_nodes().contains(&Sel::Shell(0, 0, 1)),
                     "a created worktree unfolds like a discovered one"
+                );
+            });
+        });
+    }
+
+    /// The agent picked in the popup sticks to the worktree: its first
+    /// shell runs it, the add-shell picker offers it first, and the poll
+    /// classifies that pane with that agent's patterns — a codex worktree
+    /// under a claude repository stays a codex worktree.
+    #[test]
+    fn a_worktree_keeps_the_agent_it_was_created_with() {
+        with_tmux_server(|sock, _tmux| {
+            crate::util::testutil::with_fresh_xdg(|| {
+                let root = tempfile::TempDir::new().unwrap();
+                let path = repo_with_commit(root.path(), "p");
+                let mut app = app_with(tmux_inside(sock));
+                app.state.repositories.push(Repository {
+                    name: "p".into(),
+                    path,
+                    base_branch: "main".into(),
+                    agent_command: "claude".into(),
+                    agent_shell: "bash".into(),
+                    session_name: None,
+                    missing: false,
+                    shell: None,
+                    worktrees: vec![],
+                });
+                app.build_tree_flags();
+
+                app.create_worktree(0, "feature-x", "codex").unwrap();
+
+                assert_eq!(
+                    app.state.repositories[0].worktrees[0]
+                        .agent_command
+                        .as_deref(),
+                    Some("codex"),
+                    "the preset name is stored resolved to its command"
+                );
+                app.sel = Sel::Worktree(0, 0);
+                assert_eq!(
+                    app.add_shell_choices()[0].spawn,
+                    ShellSpawn::Agent("codex".into()),
+                    "one more of what is already running here is codex"
+                );
+                assert_eq!(
+                    app.state.repositories[0].agent_command, "claude",
+                    "the repository is untouched by one worktree's choice"
+                );
+            });
+        });
+    }
+
+    /// An empty agent field means "whatever the repository runs" — the
+    /// worktree records no agent of its own and keeps following the repo.
+    #[test]
+    fn an_empty_agent_field_leaves_the_worktree_on_the_repository_agent() {
+        with_tmux_server(|sock, _tmux| {
+            crate::util::testutil::with_fresh_xdg(|| {
+                let root = tempfile::TempDir::new().unwrap();
+                let path = repo_with_commit(root.path(), "p");
+                let mut app = app_with(tmux_inside(sock));
+                app.state.repositories.push(Repository {
+                    name: "p".into(),
+                    path,
+                    base_branch: "main".into(),
+                    agent_command: "true".into(),
+                    agent_shell: "bash".into(),
+                    session_name: None,
+                    missing: false,
+                    shell: None,
+                    worktrees: vec![],
+                });
+                app.build_tree_flags();
+
+                app.create_worktree(0, "feature-x", "  ").unwrap();
+
+                assert!(
+                    app.state.repositories[0].worktrees[0]
+                        .agent_command
+                        .is_none()
+                );
+                app.sel = Sel::Worktree(0, 0);
+                assert_eq!(
+                    app.add_shell_choices()[0].spawn,
+                    ShellSpawn::Agent("true".into())
                 );
             });
         });
@@ -5424,6 +5596,7 @@ mod tests {
                     path: wt,
                     created_at: String::new(),
                     base_commit: Some(fork),
+                    agent_command: None,
                     shells: vec![],
                 }],
             });
@@ -5495,6 +5668,7 @@ mod tests {
                     path: wt,
                     created_at: String::new(),
                     base_commit: Some(fork.clone()),
+                    agent_command: None,
                     shells: vec![],
                 });
             }
@@ -5528,6 +5702,7 @@ mod tests {
                     path: PathBuf::from("/definitely/not/here/wt"),
                     created_at: String::new(),
                     base_commit: None,
+                    agent_command: None,
                     shells: vec![],
                 }],
             });
@@ -5641,6 +5816,7 @@ mod tests {
                 path: PathBuf::from("/tmp/p/.lazywingman-worktrees/p/wt"),
                 created_at: String::new(),
                 base_commit: None,
+                agent_command: None,
                 shells: vec![Shell {
                     index: 0,
                     window_name: "lw:wt/0".into(),
@@ -7681,7 +7857,7 @@ mod tests {
             // selection — "select a shell first" would mean the row did not
             // resolve.
             app.mode = Mode::Normal;
-            app.submit_input(InputKind::QuickSend, "hi".into());
+            app.submit_input(InputKind::QuickSend, "hi".into(), "");
             let msg = app.toast().map(|t| t.text.clone()).unwrap_or_default();
             assert!(
                 !msg.contains("select a shell"),
@@ -7737,6 +7913,94 @@ mod tests {
         assert_eq!(app.sel, Sel::Repository(0));
     }
 
+    /// `n` opens the popup with the repository's own agent already in the
+    /// agent field: the common case stays "name, Enter", and the field
+    /// says what that Enter will start.
+    #[test]
+    fn the_new_worktree_popup_prefills_the_repository_agent() {
+        let mut app = app_with_repositories(1);
+        app.open_new_worktree();
+        let Mode::Input {
+            agent: Some(a),
+            text,
+            ..
+        } = &app.mode
+        else {
+            panic!("the new-worktree popup carries an agent field");
+        };
+        assert_eq!(a.text, "claude", "prefilled with what the repository runs");
+        assert!(!a.focused, "the name field has the keys first");
+        assert!(text.is_empty());
+    }
+
+    /// The two-field flow: type the name, Tab, override the agent. What is
+    /// typed after Tab must land in the agent field, not in the name.
+    #[test]
+    fn tab_moves_the_typing_to_the_agent_field() {
+        let mut app = app_with_repositories(1);
+        app.open_new_worktree();
+        for c in "wt".chars() {
+            app.on_key(key(KeyCode::Char(c), false));
+        }
+        app.on_key(key(KeyCode::Tab, false));
+        // the prefill is replaced, not appended to
+        for _ in 0..6 {
+            app.on_key(key(KeyCode::Backspace, false));
+        }
+        for c in "codex".chars() {
+            app.on_key(key(KeyCode::Char(c), false));
+        }
+        let Mode::Input {
+            text,
+            agent: Some(a),
+            ..
+        } = &app.mode
+        else {
+            panic!("popup stays open");
+        };
+        assert_eq!(text, "wt", "the name keeps what was typed before Tab");
+        assert!(a.focused);
+        assert_eq!(a.text, "codex");
+        // ...and Tab goes back
+        app.on_key(key(KeyCode::Tab, false));
+        let Mode::Input { agent: Some(a), .. } = &app.mode else {
+            panic!("popup stays open");
+        };
+        assert!(!a.focused, "Tab moves between the two fields, both ways");
+    }
+
+    /// The agent field is a short list, so the arrows walk the configured
+    /// presets instead of asking for the name to be typed out.
+    #[test]
+    fn the_arrows_cycle_the_configured_agents_in_the_agent_field() {
+        let mut app = app_with_repositories(1);
+        app.open_new_worktree();
+        app.on_key(key(KeyCode::Tab, false));
+        app.on_key(key(KeyCode::Down, false));
+        let Mode::Input { agent: Some(a), .. } = &app.mode else {
+            panic!("popup stays open");
+        };
+        assert_eq!(a.text, "codex", "down walks claude → codex");
+        app.on_key(key(KeyCode::Down, false));
+        let Mode::Input { agent: Some(a), .. } = &app.mode else {
+            panic!("popup stays open");
+        };
+        assert_eq!(a.text, "claude", "and wraps around");
+    }
+
+    /// Cycling belongs to the agent field alone: on the name field the
+    /// arrows stay as inert as they were before there was a second field.
+    #[test]
+    fn the_arrows_leave_the_agent_alone_from_the_name_field() {
+        let mut app = app_with_repositories(1);
+        app.open_new_worktree();
+        app.on_key(key(KeyCode::Down, false));
+        let Mode::Input { agent: Some(a), .. } = &app.mode else {
+            panic!("popup stays open");
+        };
+        assert_eq!(a.text, "claude", "the unfocused field is not cycled");
+    }
+
     /// The ctrl/accessibility layer dispatches ABOVE text input, so
     /// ctrl-d / PageDown still move the tree while a popup is open — and
     /// ctrl-c quits from any state (it used to type a 'c' into the input).
@@ -7747,6 +8011,7 @@ mod tests {
         app.mode = Mode::Input {
             kind: InputKind::NewWorktree,
             text: "abc".into(),
+            agent: None,
         };
         app.on_key(key(KeyCode::Char('d'), true));
         assert_eq!(

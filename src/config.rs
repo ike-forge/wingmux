@@ -104,7 +104,12 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
 
 [defaults]
-# Agent command spawned in a worktree shell unless a repository overrides it.
+# Agent preset (a `[[agents]]` name) new worktrees start with. It is what
+# the `n` popup's agent field is prefilled with, and what a repository
+# without its own `agent` runs.
+#agent = "claude"
+# Agent command spawned in a worktree shell unless a repository, a preset
+# or a worktree overrides it. Only reached when `agent` names no preset.
 #agent_command = "claude"
 # Shell used for agent windows.
 #agent_shell = "bash"
@@ -306,6 +311,9 @@ pub struct DiscoveryConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct DefaultsConfig {
+    /// Preset name from `[[agents]]`: the agent a repository without its
+    /// own `agent` runs, and what the new-worktree popup prefills.
+    pub agent: String,
     pub agent_command: String,
     pub agent_shell: String,
     /// Inject Claude Code hooks into recognised `claude` commands for
@@ -685,6 +693,7 @@ impl Default for Config {
                 ],
             },
             defaults: DefaultsConfig {
+                agent: "claude".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
                 agent_hooks: true,
@@ -740,6 +749,7 @@ impl Default for DiscoveryConfig {
 impl Default for DefaultsConfig {
     fn default() -> Self {
         DefaultsConfig {
+            agent: "claude".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
             agent_hooks: true,
@@ -900,7 +910,7 @@ const PREVIEW_KEYS: &[&str] = &["colors"];
 const TMUX_KEYS: &[&str] = &[];
 const WORKTREES_KEYS: &[&str] = &["root", "base_branch", "delete_branch"];
 const DISCOVERY_KEYS: &[&str] = &["scan_root", "max_depth", "skip_dirs"];
-const DEFAULTS_KEYS: &[&str] = &["agent_command", "agent_shell", "agent_hooks"];
+const DEFAULTS_KEYS: &[&str] = &["agent", "agent_command", "agent_shell", "agent_hooks"];
 const ICONS_KEYS: &[&str] = &[
     "preset",
     "repository",
@@ -1133,6 +1143,7 @@ impl Config {
                     .join(", ")
             ),
         );
+        line("defaults.agent", format!("\"{}\"", self.defaults.agent));
         line(
             "defaults.agent_command",
             format!("\"{}\"", self.defaults.agent_command),
@@ -1264,11 +1275,10 @@ impl Config {
 
     /// Effective agent (command, shell, status patterns) for a repository.
     pub fn agent_for(&self, repository: &RepositoryConfig) -> EffectiveAgent {
-        // Resolve preset by name first.
-        let preset = repository
-            .agent
-            .as_deref()
-            .and_then(|n| self.agents.iter().find(|a| a.name == n));
+        // Resolve preset by name first, falling back to the default
+        // agent — `[defaults].agent` is what a repository that names none
+        // runs, so the fallback is a named preset, not a bare command.
+        let preset = self.agent_named(repository.agent.as_deref().unwrap_or(&self.defaults.agent));
 
         let command = repository
             .agent_command
@@ -1299,6 +1309,33 @@ impl Config {
             shell,
             patterns,
         }
+    }
+
+    /// The `[[agents]]` preset of that name, if there is one.
+    pub fn agent_named(&self, name: &str) -> Option<&AgentConfig> {
+        self.agents.iter().find(|a| a.name == name)
+    }
+
+    /// What a typed agent name runs: a `[[agents]]` name resolves to its
+    /// command, anything else is taken as the command itself — the same
+    /// two readings `[[repositories]]` gives `agent` and `agent_command`,
+    /// in one field. Empty stays empty (the caller's default wins).
+    pub fn command_for_agent(&self, name: &str) -> String {
+        let name = name.trim();
+        self.agent_named(name)
+            .map(|a| a.command.clone())
+            .unwrap_or_else(|| name.to_string())
+    }
+
+    /// The reverse reading, for prefilling a field with what a repository
+    /// already runs: the preset whose command this is, else the command.
+    pub fn agent_name_for_command(&self, command: &str) -> String {
+        let command = command.trim();
+        self.agents
+            .iter()
+            .find(|a| a.command.trim() == command)
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| command.to_string())
     }
 
     /// Status patterns for a raw command string: matches the preset whose
@@ -1761,6 +1798,7 @@ impl SectionSalvage for DiscoveryConfig {
 impl SectionSalvage for DefaultsConfig {
     fn salvage(t: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self {
         DefaultsConfig {
+            agent: salvage_field(t, "agent", "claude".to_string(), file, diags),
             agent_command: salvage_field(t, "agent_command", "claude".to_string(), file, diags),
             agent_shell: salvage_field(t, "agent_shell", "bash".to_string(), file, diags),
             agent_hooks: salvage_field(t, "agent_hooks", true, file, diags),
@@ -2486,6 +2524,44 @@ mod tests {
         let a = cfg.agent_for(&cfg.repositories[0]);
         assert_eq!(a.command, "claude");
         assert!(a.patterns.waiting.iter().any(|w| w.contains("❯")));
+    }
+
+    /// `[defaults].agent` names the preset a repository runs when it names
+    /// none — command AND patterns, not just the command word.
+    #[test]
+    fn default_agent_names_the_preset_a_repository_falls_back_to() {
+        let cfg = Config::from_str("[defaults]\nagent = \"codex\"\n").unwrap();
+        let a = cfg.agent_for(&RepositoryConfig::default());
+        assert_eq!(a.command, "codex");
+        assert!(a.patterns.waiting.iter().any(|w| w.contains("codex>")));
+    }
+
+    /// A default naming no preset leaves `agent_command` as the last word.
+    #[test]
+    fn an_unknown_default_agent_falls_back_to_the_default_command() {
+        let cfg = Config::from_str("[defaults]\nagent = \"nope\"\nagent_command = \"mistral\"\n")
+            .unwrap();
+        assert_eq!(
+            cfg.agent_for(&RepositoryConfig::default()).command,
+            "mistral"
+        );
+    }
+
+    /// The two readings of the popup's one agent field: a preset name
+    /// resolves to its command, anything else is the command itself.
+    #[test]
+    fn an_agent_field_reads_as_a_preset_name_then_as_a_command() {
+        let cfg = Config::default();
+        assert_eq!(cfg.command_for_agent("codex"), "codex");
+        assert_eq!(cfg.command_for_agent(" claude "), "claude");
+        assert_eq!(
+            cfg.command_for_agent("codex exec --yolo"),
+            "codex exec --yolo"
+        );
+        assert_eq!(cfg.command_for_agent(""), "");
+        // ...and back, for prefilling the field with what already runs
+        assert_eq!(cfg.agent_name_for_command("codex"), "codex");
+        assert_eq!(cfg.agent_name_for_command("codex exec"), "codex exec");
     }
 
     #[test]
