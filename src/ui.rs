@@ -307,7 +307,7 @@ fn status_color(theme: &ResolvedColors, st: Status) -> Color {
 /// How long one spinner frame is shown. The event loop redraws at least
 /// every 100 ms (`app::event_loop` caps its poll timeout), so a frame must
 /// last longer than that or the animation stutters at the redraw floor.
-const SPINNER_FRAME_MS: u128 = 120;
+const SPINNER_FRAME_MS: u128 = 240;
 
 /// The frame of the working spinner at `elapsed`. Empty when the icon set
 /// defines no spinner (the `none` preset), which is also why this cannot
