@@ -47,7 +47,7 @@ struct Cli {
     /// `--config-dump`: print the effective config + layer provenance and
     /// exit without starting the TUI.
     dump: bool,
-    /// `hook <Event>`: apply one Claude hook event to our own pane and exit.
+    /// `hook <Event>`: apply one agent hook event to our own pane and exit.
     hook_event: Option<String>,
     /// `--socket <name>`: tmux socket for the hook subcommand, matching the
     /// dashboard's `$LAZYWINGMAN_TMUX_SOCKET`.
@@ -105,9 +105,9 @@ fn print_usage() {
                            env var is the same override, --config wins)\n\
          --config-dump      print the effective config with the layer each\n\
                            key came from, then exit (no TUI)\n\
-         hook <Event>       internal: apply one Claude Code hook event to\n\
-                           this pane's status (used by the generated\n\
-                           lazywingman-activity-hooks.json; not for manual use)\n\
+         hook <Event>       internal: apply one agent hook event (Claude\n\
+                           Code or Codex) to this pane's status; not for\n\
+                           manual use\n\
          --socket <name>    tmux socket name for `hook <Event>` to talk to,\n\
                            matching the dashboard's own socket; set\n\
                            automatically in the generated hook commands via\n\
@@ -120,7 +120,7 @@ fn print_usage() {
 fn real_main() -> Result<()> {
     // Argv is parsed, and the `hook` subcommand dispatched, before logging
     // is ever initialised: `PostToolUse` fires once per tool call, so a
-    // normal Claude session runs `lazywingman hook <Event>` hundreds of
+    // normal agent session runs `lazywingman hook <Event>` hundreds of
     // times. Initialising the file logger on that path would append a
     // session banner plus a "starting" line to the single unrotated
     // `lazywingman.log` on every one of those invocations, spamming the one
@@ -319,9 +319,10 @@ fn wrap_into_tmux(tmux: &tmux::Tmux, cfg: &config::Config, cwd: &std::path::Path
 /// dashboard out of reach of its own agent panes.
 const WRAPPER_SESSION: &str = "lazywingman";
 
-/// `lazywingman hook <Event>`: called by Claude Code, once per lifecycle
-/// event, in the agent's own pane. Must be fast and must never write to
-/// stdout — Claude reads hook stdout as protocol. Any failure is swallowed:
+/// `lazywingman hook <Event>`: called by Claude Code or Codex, once per
+/// lifecycle event, in the agent's own pane. Must be fast and must never
+/// write to stdout — both read hook stdout as protocol. Any failure is
+/// swallowed:
 /// a hook that errors loudly interrupts the agent it observes.
 fn run_hook_subcommand(event: &str, socket: Option<String>) -> Result<()> {
     if let Some(s) = socket {
@@ -338,8 +339,8 @@ fn run_hook_subcommand(event: &str, socket: Option<String>) -> Result<()> {
         // Not inside tmux: nothing to report to. Not an error.
         return Ok(());
     };
-    // A hook is never legitimately fed JSON from a terminal — Claude always
-    // pipes the payload and closes the pipe. Reading stdin when it is a tty
+    // A hook is never legitimately fed JSON from a terminal — both agents
+    // pipe the payload and close the pipe. Reading stdin when it is a tty
     // would block forever waiting for an EOF nobody sends, stalling the
     // agent this subcommand exists to observe. So skip the read entirely in
     // that case rather than trust an invocation contract this crate cannot

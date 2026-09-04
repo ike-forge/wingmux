@@ -598,7 +598,7 @@ duplication docking exists to end.
   refreshed on the poll tick at most every 3s (and immediately after a
   worktree is created or deleted).
 
-## Agent instrumentation (Claude hooks)
+## Agent instrumentation (Claude Code and Codex hooks)
 
 - **A tmux pane user option carries the agent's self-reported state, not a
   per-shell state file or a Unix socket.** Both alternatives were considered
@@ -634,9 +634,42 @@ duplication docking exists to end.
   `claude --settings <file>` takes per-invocation settings that merge
   additively with the user's own and persist nothing, so instrumenting a
   shell changes no file the user owns.
+- **Codex is instrumented the same way, in the shape its CLI takes.** Both
+  agents run a command per lifecycle event with the same JSON on stdin and
+  the pane's own `TMUX_PANE` in the environment, so `lazywingman hook
+  <Event>` and the whole overlay path are shared and only the installation
+  differs: Codex has no settings-file flag, so the hooks go on the command
+  line as `-c hooks.<Event>=…` overrides (`hooks::codex_overrides`),
+  verified against codex-cli 0.147. Two consequences shaped the code:
+  - **One override per event, never `-c hooks=…`.** The whole-table form
+    would also replace `hooks.state`, which is where Codex records the
+    hooks the user has trusted — every session would then ask again.
+    Per-event overrides are their own hook *source* as far as Codex is
+    concerned, so they are added to whatever `~/.codex/config.toml` defines
+    for that event instead of replacing it, and a user's own `Stop` hook
+    keeps running beside ours.
+  - **The first Codex shell asks to trust the hooks** ("Hooks need review",
+    `t` = trust all). Codex refuses to run an untrusted hook and says so
+    only on that screen — a silently skipped hook would have looked like
+    broken status. Trust is keyed by the hook command's hash, which is
+    constant per install, so it is asked once and every later worktree is
+    silent. Nothing is written to the user's config by us; the answer to
+    that prompt is.
+- **The event sets differ by one, and it is Codex's that is better.**
+  Claude: `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Notification`,
+  `Stop`, `SessionEnd`. Codex: the same minus `Notification`, plus
+  `PermissionRequest` — a dedicated "blocked on the user" event, where
+  Claude's has to be recognised by reading the notification's wording. Both
+  map through one `action_for`: the names that overlap mean the same thing
+  in both CLIs, so nothing in the hook subcommand needs to know which agent
+  called it. `PreToolUse` stays unsubscribed for both (highest-frequency
+  event, no state the other five do not already express), and Codex's hook
+  timeout is 3s because it clamps `SessionEnd` there and prints the
+  clamping warning into the user's own pane.
 - **Two limitations are known and accepted.** `failed` stays heuristic —
-  Claude fires no error event, so there is nothing for a hook to report and
-  the regex ladder remains the only signal. And the `Notification` handler
+  neither agent fires an error event, so there is nothing for a hook to
+  report and the regex ladder remains the only signal. And the `Notification`
+  handler
   matches `BLOCKING_NOTIFICATIONS` substrings against the message text, which
   is the one place the app is coupled to Claude's wording — it distinguishes
   "blocked on the user" from the 60-second idle nudge. Wording that stops

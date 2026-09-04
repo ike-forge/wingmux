@@ -146,7 +146,7 @@ skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
 agent = "claude"             # `[[agents]]` preset new worktrees start with; the `n` popup's prefill
 agent_command = "claude"     # command behind it, when `agent` names no preset
 agent_shell = "bash"       # shell agent windows run under; a plain shell uses your $SHELL instead
-agent_hooks = true           # instrument recognised `claude` commands for accurate status
+agent_hooks = true           # instrument recognised `claude`/`codex` commands for accurate status
 
 [icons]                      # full key reference under "Layout" below
 preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "none"
@@ -335,16 +335,26 @@ overlay and that shell check, classification is per-agent regex patterns
 over the pane's captured text — heuristics only, and the live preview
 panel lets you confirm what's really happening.
 
-**Claude Code shells report their own state.** `[defaults] agent_hooks`
-(default `true`) injects `--settings <state_dir>/lazywingman-activity-hooks.json`
-into any spawned command recognised as `claude` (the first token's file
-name must be exactly `claude`; wrapper scripts and aliases stay on the
-regex heuristics above, like any other agent). That settings file is
-merged **additively** on top of your own Claude settings — nothing is
-written there, nothing persists — and registers hooks that report
-Claude's real state onto the pane as it happens, ahead of the regex
-guess. Instrumentation is disclosed, not hidden: an instrumented pane's
-command line literally shows `--settings '…/lazywingman-activity-hooks.json'`.
+**Claude Code and Codex shells report their own state.** `[defaults]
+agent_hooks` (default `true`) registers lifecycle hooks in any spawned
+command recognised as one of the two — the first token's file name must be
+exactly `claude` or `codex`; wrapper scripts and aliases stay on the regex
+heuristics above, like any other agent. Each gets the shape its CLI takes:
+
+- **Claude**: `--settings <state_dir>/lazywingman-activity-hooks.json`, a
+  file merged **additively** on top of your own Claude settings — nothing
+  is written there, nothing persists.
+- **Codex**: one `-c hooks.<Event>=…` override per event, which Codex adds
+  to whatever your own `~/.codex/config.toml` defines rather than replacing
+  it, so your own hooks keep running. The **first** Codex shell asks you to
+  trust them (*"Hooks need review"* → `t` for trust all); trust is keyed to
+  the command, so it is asked once, not once per worktree. Until you answer,
+  Codex declines to run them and the pane falls back to the regex guess.
+
+Either way the hooks report the agent's real state onto the pane as it
+happens, ahead of the regex guess, and instrumentation is disclosed rather
+than hidden: an instrumented pane's command line shows the flags it was
+given.
 A hook-reported state is trusted for up to 60 seconds past its own
 timestamp unconditionally; past that, it is only overridden if the pane's
 own tail *also* looks like a prompt — a mid-turn agent, however long its
@@ -353,13 +363,16 @@ regex ladder alone cannot express:
 
 - **`blocked`** — the agent needs **you**, right now (a permission
   prompt). Distinct from `waiting`, which means the agent finished its
-  turn and is idle at the prompt with nothing owed.
+  turn and is idle at the prompt with nothing owed. Codex reports this
+  with an event of its own (`PermissionRequest`); for Claude it is read
+  out of the notification's wording, so a phrasing we do not recognise
+  costs a `blocked`, never invents one.
 
 Set `agent_hooks = false` to disable injection entirely; every agent,
-Claude included, then classifies purely from `capture-pane`, exactly as
-before this worktree existed. `failed` stays regex-based either way —
-Claude has no "I failed" hook event — so a failing turn only surfaces
-once the session ends and the overlay clears.
+Claude and Codex included, then classifies purely from `capture-pane`.
+`failed` stays regex-based either way — neither has an "I failed" hook
+event — so a failing turn only surfaces once the session ends and the
+overlay clears.
 
 **Every state draws its own icon** in front of the status word — the glyph
 is the fast scan across a full tree, the word is what settles it:

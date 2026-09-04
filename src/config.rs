@@ -113,11 +113,14 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #agent_command = "claude"
 # Shell used for agent windows.
 #agent_shell = "bash"
-# Inject Claude Code hooks (--settings <generated file>) into recognised
-# `claude` commands, so status is read from the agent's own hook events
-# instead of guessed from regex patterns on the pane's output. Nothing is
-# written to your own Claude config; the flag is visible in the pane's
-# command line. Set to false to disable and always use the regex heuristics.
+# Inject lifecycle hooks into recognised `claude` and `codex` commands, so
+# status is read from the agent's own events instead of guessed from regex
+# patterns on the pane's output. Claude gets `--settings <generated file>`,
+# Codex `-c hooks.<Event>=...` overrides; both are visible in the pane's
+# command line and neither writes to your own agent config. Codex asks you
+# to trust the hooks the first time ("Hooks need review" -> t); it is asked
+# once, not once per worktree. Set to false to disable and always use the
+# regex heuristics.
 #agent_hooks = true
 
 [icons]
@@ -316,9 +319,10 @@ pub struct DefaultsConfig {
     pub agent: String,
     pub agent_command: String,
     pub agent_shell: String,
-    /// Inject Claude Code hooks into recognised `claude` commands for
-    /// accurate status (M17). Nothing is written to the user's config;
-    /// the flag is visible in the pane's own command line.
+    /// Inject lifecycle hooks into recognised `claude` and `codex`
+    /// commands for accurate status (M17). Nothing is written to the
+    /// user's agent config; the flags are visible in the pane's own
+    /// command line.
     pub agent_hooks: bool,
 }
 

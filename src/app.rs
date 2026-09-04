@@ -714,10 +714,9 @@ pub struct App {
     /// delivering the message drops it.
     pub drafts: HashMap<String, TextBuf>,
     pub statuses: HashMap<String, Status>,
-    /// Path to the generated Claude hook settings file, when
-    /// instrumentation is enabled (`[defaults] agent_hooks`). `None`
-    /// disables injection entirely.
-    pub hook_settings: Option<std::path::PathBuf>,
+    /// How spawn commands are instrumented, when it is enabled
+    /// (`[defaults] agent_hooks`). `None` disables injection entirely.
+    pub instrumentation: Option<crate::hooks::Instrumentation>,
     pattern_cache: HashMap<String, Compiled>,
     pub last_poll: Instant,
     /// When the dashboard started. Only the working spinner reads it: its
@@ -876,7 +875,7 @@ impl App {
             preview_pane: None,
             drafts: HashMap::new(),
             statuses: HashMap::new(),
-            hook_settings: None,
+            instrumentation: None,
             pattern_cache: HashMap::new(),
             last_poll: Instant::now(),
             started: Instant::now(),
@@ -2022,11 +2021,12 @@ impl App {
     }
 
     /// The command actually typed into a fresh pane: the user's
-    /// `agent_command`, plus `--settings` when it is a recognised `claude`
-    /// and instrumentation is on. The stored command is never rewritten.
+    /// `agent_command`, plus the hook flags when it is a recognised
+    /// `claude` or `codex` and instrumentation is on. The stored command is
+    /// never rewritten.
     pub fn agent_command_for_spawn(&self, command: &str) -> String {
-        match &self.hook_settings {
-            Some(p) => crate::hooks::instrument(command, p),
+        match &self.instrumentation {
+            Some(i) => i.apply(command),
             None => command.to_string(),
         }
     }
@@ -4634,10 +4634,10 @@ pub fn run(cfg: Config, theme: Theme, tmux: Tmux) -> Result<()> {
     let mut app = App::new(cfg, theme, Some(tmux));
     app.interactive_boot = true;
     if app.cfg.defaults.agent_hooks {
-        match crate::hooks::write_settings_file() {
-            Ok(p) => {
-                log::info!("agent hooks enabled: {}", p.display());
-                app.hook_settings = Some(p);
+        match crate::hooks::Instrumentation::prepare() {
+            Ok(i) => {
+                log::info!("agent hooks enabled: {}", i.settings().display());
+                app.instrumentation = Some(i);
             }
             // Never fatal: without the file we simply fall back to the
             // regex heuristics, which is exactly pre-M17 behaviour.
@@ -4772,24 +4772,34 @@ mod tests {
         app
     }
 
+    /// Both agents are instrumented, each the way its CLI takes hooks —
+    /// and a command that is neither is handed to the pane untouched.
     #[test]
     fn spawn_command_is_instrumented_when_hooks_are_on() {
         let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
-        app.hook_settings = Some(std::path::PathBuf::from(
+        app.instrumentation = Some(crate::hooks::Instrumentation::for_test(
             "/s/lazywingman-activity-hooks.json",
+            "/bin/lazywingman",
+            None,
         ));
         assert_eq!(
             app.agent_command_for_spawn("claude"),
             "claude --settings '/s/lazywingman-activity-hooks.json'"
         );
-        assert_eq!(app.agent_command_for_spawn("codex exec"), "codex exec");
+        let codex = app.agent_command_for_spawn("codex exec");
+        assert!(
+            codex.starts_with("codex -c 'hooks.SessionStart=") && codex.ends_with(" exec"),
+            "the overrides go after the binary, before its own arguments: {codex}"
+        );
+        assert_eq!(app.agent_command_for_spawn("bash"), "bash");
     }
 
     #[test]
     fn spawn_command_is_untouched_when_hooks_are_off() {
         let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
-        app.hook_settings = None;
+        app.instrumentation = None;
         assert_eq!(app.agent_command_for_spawn("claude"), "claude");
+        assert_eq!(app.agent_command_for_spawn("codex"), "codex");
     }
 
     /// Seed state with one repository whose agent session and first shell
