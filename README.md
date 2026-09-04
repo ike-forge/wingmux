@@ -28,7 +28,10 @@ RepositoryB
 - **Worktree** = a git worktree (created automatically) + at least one spawned
   shell running the default agent command.
 - **Shell** = a tmux window running a command inside the worktree —
-  usually an agent, but useful for any long-running command.
+  usually an agent, but useful for any long-running command. The tree names
+  a shell row by that command (`claude`, `zsh`); shells running the same
+  program keep their index (`zsh #1`, `zsh #2`) so two rows still read
+  apart.
 - A repository also gets **one shell of its own**, in its main checkout on
   the base branch, for the commands you run by hand: `make`, `mise run …`,
   `cat config.toml`. It starts the first time you press `Enter` on the
@@ -470,8 +473,8 @@ is happening, the bar says what you can press:
 │󰝰 repo-a                  ││ live tail of the selected shell,    │
 │  ├─  login  ⏸ waiting   ││ refreshed every poll                │
 │  └─  search             ││                                     │
-│     ├─ ● #0 ⠹ working    ││     ╭────────────────────────╮      │
-│     └─ ● #1 ⏸ waiting    ││     │ worktree 'search' cre… │      │
+│     ├─ ● claude ⠹ working││     ╭────────────────────────╮      │
+│     └─ ● zsh ⏸ waiting   ││     │ worktree 'search' cre… │      │
 │󰉖 repo-b                  ││     ╰────────────────────────╯      │
 ╰──────────────────────────╯╰─────────────────────────────────────╯
  n worktree · a shell · d delete · ? help

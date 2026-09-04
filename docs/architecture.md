@@ -655,6 +655,20 @@ duplication docking exists to end.
   `App::solo_shell`, and is enforced in `visible_nodes()` so navigation, mouse
   hits and `clamp_sel` cannot disagree with what is drawn. `a` (add shell) is
   the way out: two shells bring the subtree back.
+- **A shell row is named by what it runs, not by its number.** `#0`/`#1`
+  said nothing about the row; `claude` and `zsh` say what is in it. The
+  command is recorded on the shell at spawn (`Shell::command`, serialised)
+  rather than read live from `#{pane_current_command}`: that format reports
+  `node` for a Claude Code session and `zsh` again the moment an agent
+  exits, so a live reading would rename rows behind the user's back.
+  `Shell::label` takes the first token, basenamed — a row shares its line
+  with the status, and `codex exec --yolo` would push the status off the
+  panel. The index returns only where it earns its place: as a suffix when
+  two shells of a worktree run the same program (`zsh #1`, `zsh #2`), and
+  as the whole label for a shell adopted from tmux or written by an older
+  build, where no command was ever recorded (the field is
+  `Option<String>`, `#[serde(default)]`, so an old `state.json` still
+  loads).
 - **Creating something reveals it.** `create_worktree` unfolds the
   repository it just added to, and gives the new worktree the same unfolded
   flag discovery gives the rows it finds. A collapsed repository emits no
