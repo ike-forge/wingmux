@@ -112,6 +112,18 @@ impl Worktree {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Shell {
     pub index: usize,
+    /// The command this shell was started with (`claude`, `zsh`, …) — what
+    /// the tree names the row by. It is what was *launched*, not what is
+    /// running now: `#{pane_current_command}` reads `node` for a Claude
+    /// Code session and `zsh` again the moment an agent exits, so a live
+    /// reading would rename rows behind the user's back.
+    ///
+    /// `None` for a shell adopted from tmux rather than spawned here (state
+    /// file deleted, another instance's shell) and for one written by an
+    /// older build: nothing recorded the command, and the pane cannot be
+    /// asked. Those rows fall back to `#<index>`.
+    #[serde(default)]
+    pub command: Option<String>,
     /// Human-facing label (`lw:<worktree>/<index>`). A label, not an
     /// identity: the pane's options are the identity, and the window may be
     /// renamed by hand without costing the shell anything.
@@ -124,6 +136,27 @@ pub struct Shell {
     pub window_id: Option<String>,
     #[serde(skip)]
     pub pane_id: Option<String>,
+}
+
+impl Shell {
+    /// How the tree names this shell: the program it was started with
+    /// (`claude`, `zsh`), falling back to `#<index>` when no command was
+    /// recorded.
+    ///
+    /// The first token, basenamed — arguments and the path are dropped.
+    /// A row has one line to share with the status, so a label that grew
+    /// with `codex exec --yolo` would push what the agent is waiting for
+    /// off the panel; the program is what tells two rows apart, the flags
+    /// are not.
+    pub fn label(&self) -> String {
+        self.command
+            .as_deref()
+            .and_then(|c| c.split_whitespace().next())
+            .and_then(|c| c.rsplit('/').next())
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("#{}", self.index))
+    }
 }
 
 impl State {
@@ -244,6 +277,7 @@ impl State {
                     // there is nothing to reconstruct from the pane's cwd.
                     none => {
                         *none = Some(Shell {
+                            command: None,
                             index: crate::dock::REPO_INDEX,
                             window_name: crate::tmux::Tmux::window_name(
                                 crate::dock::REPO_WORKTREE,
@@ -275,6 +309,7 @@ impl State {
                 shell.pane_id = Some(pane.pane_id.clone());
             } else {
                 wt.shells.push(Shell {
+                    command: None,
                     index: id.index,
                     window_name: crate::tmux::Tmux::window_name(&id.worktree, id.index),
                     window_id: Some(pane.window_id.clone()),
@@ -347,6 +382,7 @@ impl State {
             created_at: String::new(),
             base_commit: None,
             shells: vec![Shell {
+                command: None,
                 index: idx,
                 window_name: crate::tmux::Tmux::window_name(fname, idx),
                 window_id: None,
@@ -550,6 +586,7 @@ mod tests {
         assert_eq!(wt.next_shell_index(), 0);
         for idx in 0..3 {
             wt.shells.push(Shell {
+                command: None,
                 index: idx,
                 window_name: format!("lw:wt/{idx}"),
                 window_id: None,
@@ -589,6 +626,7 @@ mod tests {
                 created_at: "now".into(),
                 base_commit: None,
                 shells: vec![Shell {
+                    command: None,
                     index: 0,
                     window_name: "lw:wt/0".into(),
                     window_id: Some("@5".into()),
@@ -727,6 +765,7 @@ mod tests {
                 created_at: "2026-08-16".into(),
                 base_commit: None,
                 shells: vec![Shell {
+                    command: None,
                     index: 0,
                     window_name: "lw:wt/0".into(),
                     window_id: Some("@9".into()),
@@ -748,6 +787,7 @@ mod tests {
             created_at: "".into(),
             base_commit: None,
             shells: vec![Shell {
+                command: None,
                 index: 0,
                 window_name: "lw:feat2/0".into(),
                 window_id: Some("@10".into()),

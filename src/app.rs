@@ -2170,6 +2170,7 @@ impl App {
             created_at: now_str(),
             base_commit,
             shells: vec![Shell {
+                command: Some(repo.agent_command.clone()),
                 index: 0,
                 window_name: wname,
                 window_id: Some(w.window_id),
@@ -2263,6 +2264,7 @@ impl App {
         self.state.repositories[ri].worktrees[wi]
             .shells
             .push(Shell {
+                command: Some(what.clone()),
                 index: idx,
                 window_name: wname,
                 window_id: Some(w.window_id),
@@ -2398,6 +2400,7 @@ impl App {
         };
         self.state.repositories[ri].session_name = Some(session_name);
         self.state.repositories[ri].shell = Some(Shell {
+            command: Some(crate::util::shell_name(&shell)),
             index: crate::dock::REPO_INDEX,
             window_name: wname,
             window_id: Some(w.window_id),
@@ -4765,6 +4768,7 @@ mod tests {
                 created_at: "2026-08-16".into(),
                 base_commit: None,
                 shells: vec![Shell {
+                    command: None,
                     index: 0,
                     window_name: "lw:wt/0".into(),
                     window_id: Some(w.window_id.clone()),
@@ -5662,6 +5666,7 @@ mod tests {
                 created_at: String::new(),
                 base_commit: None,
                 shells: vec![Shell {
+                    command: None,
                     index: 0,
                     window_name: "lw:wt/0".into(),
                     window_id: Some("@1".into()),
@@ -5886,6 +5891,7 @@ mod tests {
             let mut app = app_with_shell();
             app.viewport = (120, 40);
             app.state.repositories[0].worktrees[0].shells.push(Shell {
+                command: None,
                 index: 1,
                 window_name: "lw:wt/1".into(),
                 window_id: Some("@2".into()),
@@ -6187,6 +6193,7 @@ mod tests {
 
         // a second shell brings the subtree back
         app.state.repositories[0].worktrees[0].shells.push(Shell {
+            command: None,
             index: 1,
             window_name: "lw:wt/1".into(),
             window_id: Some("@2".into()),
@@ -6209,6 +6216,7 @@ mod tests {
     fn d_on_a_shell_confirms_closing_only_that_shell() {
         let mut app = app_with_shell();
         app.state.repositories[0].worktrees[0].shells.push(Shell {
+            command: None,
             index: 1,
             window_name: "lw:wt/1".into(),
             window_id: Some("@2".into()),
@@ -6553,6 +6561,7 @@ mod tests {
             )
             .unwrap();
         app.state.repositories[0].worktrees[0].shells.push(Shell {
+            command: None,
             index: 1,
             window_name: "lw:wt/1".into(),
             window_id: Some(w.window_id.clone()),
@@ -7102,6 +7111,7 @@ mod tests {
             )
             .expect("second shell");
         app.state.repositories[0].worktrees[0].shells.push(Shell {
+            command: None,
             index: 1,
             window_name: "lw:wt/1".into(),
             window_id: Some(w.window_id.clone()),
@@ -7606,6 +7616,7 @@ mod tests {
                 )
                 .unwrap();
             app.state.repositories[0].worktrees[0].shells.push(Shell {
+                command: None,
                 index: 1,
                 window_name: "lw:wt/1".into(),
                 window_id: Some(w2.window_id.clone()),
@@ -7655,6 +7666,7 @@ mod tests {
                 )
                 .unwrap();
             app.state.repositories[0].worktrees[0].shells.push(Shell {
+                command: None,
                 index: 1,
                 window_name: "lw:wt/1".into(),
                 window_id: Some(w2.window_id.clone()),
