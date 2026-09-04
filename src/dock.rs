@@ -15,7 +15,8 @@
 //! a **slot**: two sleeping panes of matching size, so that docking is one
 //! `swap-pane` that changes no window's pane count and no pane's dimensions.
 //! Agent sessions are set to `window-size manual` and their windows are held
-//! at the dashboard window's size, which is what keeps the two sides equal.
+//! at the size of the dashboard's *strip* — its own pane plus the slot beside
+//! it — which is what keeps the two sides equal.
 //!
 //! Two degradations are accepted rather than fixed:
 //!
@@ -147,18 +148,22 @@ pub const DASH_MAX_WIDTH: u16 = 54;
 /// the same width, the agent pane and the slot are too, and the swap costs
 /// no resize and no repaint. The proportion is the Wide tier's 32%, so the
 /// docked layout looks like the split layout it replaces.
-pub fn dash_width(window_width: u16) -> u16 {
-    let want = (window_width as u32 * 32 / 100) as u16;
+///
+/// The argument is the **strip** — the dashboard's pane plus the slot, which
+/// is the window only while the dashboard has the window to itself. Anything
+/// wider than the strip cannot be split off it.
+pub fn dash_width(strip_width: u16) -> u16 {
+    let want = (strip_width as u32 * 32 / 100) as u16;
     want.clamp(DASH_MIN_WIDTH, DASH_MAX_WIDTH)
-        // Never wider than the window can hold: one column for the divider,
+        // Never wider than the strip can hold: one column for the divider,
         // one for whatever sits beside it.
-        .min(window_width.saturating_sub(2))
+        .min(strip_width.saturating_sub(2))
 }
 
 /// Width left for the agent, opposite a [`dash_width`] pane (the divider
 /// costs one column).
-pub fn agent_width(window_width: u16) -> u16 {
-    window_width.saturating_sub(dash_width(window_width) + 1)
+pub fn agent_width(strip_width: u16) -> u16 {
+    strip_width.saturating_sub(dash_width(strip_width) + 1)
 }
 
 /// Wrap `s` in single quotes for `/bin/sh`.

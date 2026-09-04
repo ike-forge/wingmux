@@ -616,7 +616,10 @@ impl Tmux {
 
     // ------------------------------------------------------- geometry
 
-    /// A window's size, in cells.
+    /// A window's size, in cells. Test-only: the layout is laid out
+    /// against the dashboard's own pane ([`Self::pane_geometry`]), never
+    /// against the window it happens to share with panes of the user's.
+    #[cfg(test)]
     pub fn window_size(&self, window_id: &str) -> Result<(u16, u16)> {
         let out = self.run(&[
             "display-message",
@@ -631,6 +634,34 @@ impl Tmux {
         match (x, y) {
             (Some(x), Some(y)) => Ok((x, y)),
             _ => Err(Error::Tmux(format!("cannot read the size of {window_id}"))),
+        }
+    }
+
+    /// A pane's size in cells, and the window it is in.
+    ///
+    /// The dashboard lays its furniture out against its own pane rather
+    /// than against the window: a window may hold panes that are none of
+    /// our business, and a split can only ever divide the pane it is aimed
+    /// at. The window id comes back with the size because the only other
+    /// pane the layout may count — the one beside us — counts only while it
+    /// really is beside us.
+    pub fn pane_geometry(&self, pane_id: &str) -> Result<(u16, u16, String)> {
+        let out = self.run(&[
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{pane_width}|#{pane_height}|#{window_id}",
+        ])?;
+        let mut it = out.trim().splitn(3, '|');
+        let x = it.next().unwrap_or("").parse::<u16>().ok();
+        let y = it.next().unwrap_or("").parse::<u16>().ok();
+        let w = it.next().unwrap_or("").trim().to_string();
+        match (x, y) {
+            (Some(x), Some(y)) if !w.is_empty() => Ok((x, y, w)),
+            _ => Err(Error::Tmux(format!(
+                "cannot read the geometry of {pane_id}"
+            ))),
         }
     }
 
