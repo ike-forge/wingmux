@@ -307,7 +307,7 @@ fn status_color(theme: &ResolvedColors, st: Status) -> Color {
 /// How long one spinner frame is shown. The event loop redraws at least
 /// every 100 ms (`app::event_loop` caps its poll timeout), so a frame must
 /// last longer than that or the animation stutters at the redraw floor.
-const SPINNER_FRAME_MS: u128 = 120;
+const SPINNER_FRAME_MS: u128 = 240;
 
 /// The frame of the working spinner at `elapsed`. Empty when the icon set
 /// defines no spinner (the `none` preset), which is also why this cannot
@@ -971,14 +971,17 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             // A repository with an inline shell says so, and names the
             // checkout it runs in — the base branch, which is the one thing
             // that distinguishes it from the worktrees hanging below it.
-            if let Some(sh) = &repo.shell {
+            // A dead shell drops the marker altogether: the row is back to
+            // what it was before the shell existed, and there is nothing
+            // left to dim.
+            if let Some(sh) = repo
+                .shell
+                .as_ref()
+                .filter(|sh| shell_status(app, sh) != Status::Dead)
+            {
                 spans.push(Span::styled(
                     format!("  {}{}", ic.shell, repo.base_branch),
-                    fg(row_color(
-                        theme,
-                        shell_status(app, sh) == Status::Dead,
-                        theme.tree_shell,
-                    )),
+                    fg(theme.tree_shell),
                 ));
                 if shell_leased(app, sh).is_some() {
                     mark_leased(theme, &mut spans);
@@ -1098,9 +1101,16 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 } else {
                     &grandchild
                 };
+                // The row is named by what it runs. Two shells running the
+                // same program are told apart by their index — a number
+                // nobody needs when the names already differ.
+                let mut label = sh.label();
+                if wt.shells.iter().filter(|o| o.label() == label).count() > 1 {
+                    label = format!("{label} #{}", sh.index);
+                }
                 let mut sh_spans = vec![
                     Span::styled(
-                        format!("{guide}{}#{}", ic.shell, sh.index),
+                        format!("{guide}{}{label}", ic.shell),
                         fg(row_color(theme, st == Status::Dead, theme.tree_shell)),
                     ),
                     Span::raw(" "),
@@ -3058,6 +3068,7 @@ mod tests {
                 base_commit: None,
                 agent_command: None,
                 shells: vec![crate::state::Shell {
+                    command: None,
                     index: 0,
                     window_name: "lw:wt/0".into(),
                     window_id: Some("@1".into()),
@@ -3312,6 +3323,7 @@ mod tests {
             agent_command: None,
             shells: (0..n)
                 .map(|index| crate::state::Shell {
+                    command: None,
                     index,
                     window_name: format!("lw:{name}/{index}"),
                     window_id: Some(format!("@{index}")),
@@ -3319,6 +3331,36 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// A shell row is named by the command it was started with, not by a
+    /// number: `claude` says what the row is, `#1` never did. Shells
+    /// running the same program keep an index so two rows can still be
+    /// told apart, and a shell with no recorded command (adopted from
+    /// tmux, or written by an older build) falls back to `#<index>`.
+    #[test]
+    fn shell_rows_are_named_by_their_command() {
+        let mut wt = worktree_with_shells("wt", 4);
+        for (i, cmd) in [Some("claude"), Some("/bin/zsh"), Some("zsh -l"), None]
+            .into_iter()
+            .enumerate()
+        {
+            wt.shells[i].command = cmd.map(str::to_string);
+        }
+        let text = render_wide(&mut bare_app(vec![wt]));
+        assert!(text.contains("claude"), "the agent names itself: {text:?}");
+        assert!(
+            text.contains("zsh #1") && text.contains("zsh #2"),
+            "two shells of the same program keep their index: {text:?}"
+        );
+        assert!(
+            !text.contains("claude #0"),
+            "a unique name needs no number: {text:?}"
+        );
+        assert!(
+            text.contains("#3"),
+            "no command recorded, so the index stands in: {text:?}"
+        );
     }
 
     /// The foreground colour the row holding `needle` is drawn in (read
@@ -3456,6 +3498,7 @@ mod tests {
         // A multi-shell, expanded worktree so the deeper guides (the
         // vertical bar carried down a column) render too.
         let shell = |i: usize| crate::state::Shell {
+            command: None,
             index: i,
             window_name: format!("lw:f/{i}"),
             window_id: Some(format!("@{}", i + 1)),
@@ -3965,6 +4008,7 @@ mod tests {
         // worktrees (the pre-fix fixture) would pass this assertion even if
         // every worktree/shell row were miscounted.
         let shell = |i: usize| crate::state::Shell {
+            command: None,
             index: i,
             window_name: format!("lw:f/{i}"),
             window_id: Some(format!("@{}", i + 1)),
@@ -4028,6 +4072,7 @@ mod tests {
     fn solo_worktree_row_carries_the_status_and_no_child_row() {
         let mut app = seeded_app();
         let shell = |i: usize| crate::state::Shell {
+            command: None,
             index: i,
             window_name: format!("lw:f/{i}"),
             window_id: Some(format!("@{}", i + 7)),
@@ -4113,6 +4158,7 @@ mod tests {
                 base_commit: None,
                 agent_command: None,
                 shells: vec![crate::state::Shell {
+                    command: None,
                     index: 0,
                     window_name: "lw:f/0".into(),
                     window_id: Some("@7".into()),
@@ -4196,6 +4242,7 @@ mod tests {
     fn a_dead_entry_is_muted_across_the_whole_row() {
         let mut app = seeded_app();
         let shell = |i: usize| crate::state::Shell {
+            command: None,
             index: i,
             window_name: format!("lw:f/{i}"),
             window_id: Some(format!("@{}", i + 7)),
@@ -4469,6 +4516,7 @@ mod tests {
                     base_commit: None,
                     agent_command: None,
                     shells: vec![crate::state::Shell {
+                        command: None,
                         index: 0,
                         window_name: format!("lw:{name}/0"),
                         window_id: Some("@1".into()),
@@ -4520,6 +4568,7 @@ mod tests {
                     base_commit: None,
                     agent_command: None,
                     shells: vec![crate::state::Shell {
+                        command: None,
                         index: 0,
                         window_name: format!("lw:{name}/0"),
                         window_id: Some("@1".into()),
@@ -4748,6 +4797,7 @@ mod tests {
                 base_commit: None,
                 agent_command: None,
                 shells: vec![crate::state::Shell {
+                    command: None,
                     index: 1,
                     window_name: "wt-1".into(),
                     window_id: Some("@1".into()),
@@ -5110,6 +5160,7 @@ mod tests {
     fn a_repository_row_names_the_checkout_its_shell_runs_in() {
         let mut app = seeded_app();
         app.state.repositories[0].shell = Some(crate::state::Shell {
+            command: None,
             index: 0,
             window_name: "lw:.repo/0".into(),
             window_id: Some("@9".into()),
@@ -5122,6 +5173,29 @@ mod tests {
         assert!(
             text.contains("● main"),
             "the row carries the base branch its shell sits on: {text}"
+        );
+    }
+
+    /// And loses it again when that shell dies: a killed repository shell
+    /// leaves the row as bare as one that never had a shell.
+    #[test]
+    fn a_dead_repository_shell_leaves_no_mark_on_the_row() {
+        let mut app = seeded_app();
+        app.state.repositories[0].shell = Some(crate::state::Shell {
+            command: None,
+            index: 0,
+            window_name: "lw:.repo/0".into(),
+            window_id: Some("@9".into()),
+            pane_id: Some("%9".into()),
+        });
+        app.statuses.insert("%9".into(), Status::Dead);
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            !text.contains("● main"),
+            "a dead repository shell draws nothing: {text}"
         );
     }
 
@@ -5146,6 +5220,7 @@ mod tests {
         );
 
         app.state.repositories[0].shell = Some(crate::state::Shell {
+            command: None,
             index: 0,
             window_name: "lw:.repo/0".into(),
             window_id: Some("@9".into()),
@@ -5222,6 +5297,7 @@ mod tests {
                 base_commit: None,
                 agent_command: None,
                 shells: vec![crate::state::Shell {
+                    command: None,
                     index: 0,
                     window_name: "lw:needs-me/0".into(),
                     window_id: Some("@7".into()),

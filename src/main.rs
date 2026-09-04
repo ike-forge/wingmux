@@ -41,8 +41,8 @@ fn main() {
 /// Command-line options parsed on startup.
 #[derive(Debug, Default)]
 struct Cli {
-    /// `--config <path>`: explicit user-config override (higher than
-    /// `LW_CONFIG`, highest of the *files* for the user layer).
+    /// `--config <path>`: an extra config layer on top of every other one
+    /// (higher than `LW_CONFIG`, which names the same layer).
     config: Option<PathBuf>,
     /// `--config-dump`: print the effective config + layer provenance and
     /// exit without starting the TUI.
@@ -94,26 +94,33 @@ fn parse_cli() -> Result<Cli> {
 }
 
 fn print_usage() {
+    // Every line ends `\n<indent>\`: the continuation eats the NEXT line's
+    // indentation, so the one the reader sees has to be spelled out before
+    // the backslash.
     eprintln!(
         "lazywingman — a control centre for supervising coding agents\n\
          \n\
          usage: lazywingman [--config <path>] [--config-dump] [--help]\n\
-                          | lazywingman hook <Event> [--socket <name>]\n\
+         \x20      | lazywingman hook <Event> [--socket <name>]\n\
          \n\
-           --config <path>   use this file as the user config (default:\n\
-                           $XDG_CONFIG_HOME/lazywingman/config.toml; LW_CONFIG\n\
-                           env var is the same override, --config wins)\n\
-         --config-dump      print the effective config with the layer each\n\
-                           key came from, then exit (no TUI)\n\
-         hook <Event>       internal: apply one agent hook event (Claude\n\
-                           Code or Codex) to this pane's status; not for\n\
-                           manual use\n\
-         --socket <name>    tmux socket name for `hook <Event>` to talk to,\n\
-                           matching the dashboard's own socket; set\n\
-                           automatically in the generated hook commands via\n\
-                           $LAZYWINGMAN_TMUX_SOCKET, not meant to be passed\n\
-                           by hand\n\
-         -h, --help         show this help"
+         \x20 --config <path>  read this file last, on top of the config\n\
+         \x20                  layers found by convention ($XDG_CONFIG_HOME/\n\
+         \x20                  lazywingman/config.toml, then the repository's\n\
+         \x20                  .lazywingman.toml and .lazywingman.local.toml),\n\
+         \x20                  so it need only carry the keys it changes; the\n\
+         \x20                  LW_CONFIG env var names the same layer and\n\
+         \x20                  --config wins over it\n\
+         \x20 --config-dump    print the effective config with the layer each\n\
+         \x20                  key came from, then exit (no TUI)\n\
+         \x20 hook <Event>     internal: apply one agent hook event (Claude\n\
+         \x20                  Code or Codex) to this pane's status; not for\n\
+         \x20                  manual use\n\
+         \x20 --socket <name>  tmux socket name for `hook <Event>` to talk to,\n\
+         \x20                  matching the dashboard's own socket; set\n\
+         \x20                  automatically in the generated hook commands\n\
+         \x20                  via $LAZYWINGMAN_TMUX_SOCKET, not meant to be\n\
+         \x20                  passed by hand\n\
+         \x20 -h, --help       show this help"
     );
 }
 
@@ -138,12 +145,12 @@ fn real_main() -> Result<()> {
     log::info!("lazywingman starting (pid {})", std::process::id());
 
     if let Some(ref p) = cli.config {
-        log::info!("user config override: {}", p.display());
+        log::info!("config argument (top layer): {}", p.display());
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    // `--config` overrides the user file; without it `load()` honours
-    // `LW_CONFIG` and the XDG default.
+    // `--config` is the top layer; without it `load()` reads `LW_CONFIG`
+    // into the same slot.
     let mut cfg = match cli.config {
         Some(ref p) => config::Config::load_from(&cwd, Some(p))?,
         None => config::Config::load()?,

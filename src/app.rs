@@ -750,12 +750,12 @@ pub struct App {
     pub worktrees_loaded: Vec<bool>,
     /// Last frame size — drives page-sized motions and mouse hit-testing.
     pub viewport: (u16, u16),
-    /// Size of the dashboard's own tmux WINDOW, not of its pane: the
-    /// furniture is laid out against the window, so that a holder and the
-    /// dashboard pane — and therefore an agent pane and the slot — come out
-    /// the same size. Refreshed by [`App::refresh_dash_window`]; `None`
-    /// until tmux has been asked once.
-    pub dash_window: Option<(u16, u16)>,
+    /// Size of the dashboard's **strip** — its own pane plus the slot
+    /// beside it ([`App::strip_size`]). The furniture is laid out against
+    /// the strip, so that a holder and the dashboard pane — and therefore
+    /// an agent pane and the slot — come out the same size. Refreshed by
+    /// [`App::refresh_strip`]; `None` until tmux has been asked once.
+    pub strip: Option<(u16, u16)>,
     /// The dashboard's slot pane, once one has been split off
     /// ([`App::ensure_slot`]). Re-derived from `@lw_slot` rather than
     /// trusted: the user may close it by hand.
@@ -885,7 +885,7 @@ impl App {
             interactive_boot: false,
             quit: false,
             viewport: (0, 0),
-            dash_window: None,
+            strip: None,
             slot: None,
             leases: HashMap::new(),
             auto_dock_seen: None,
@@ -931,10 +931,7 @@ impl App {
             self.announce_scope(tmux);
             // A server started by an older build has agent windows with no
             // holder in them; so has one whose holder the user closed.
-            crate::dock::ensure_holders(
-                tmux,
-                crate::dock::dash_width(self.dash_window_size(tmux).0),
-            );
+            crate::dock::ensure_holders(tmux, crate::dock::dash_width(self.strip_size(tmux).0));
         }
         self.build_tree_flags();
         self.clamp_sel();
@@ -983,39 +980,62 @@ impl App {
 
     // ---------------------------------------------------- furniture
 
-    /// The dashboard's own tmux window size, cached. Falls back to the
-    /// viewport — the dashboard's *pane* — which is the same thing until a
-    /// slot sits beside it, and never worse than nothing.
-    fn dash_window_size(&self, tmux: &Tmux) -> (u16, u16) {
+    /// The **strip** the dashboard lays its furniture out against: its own
+    /// pane, plus the pane beside it that is also ours — the slot, or the
+    /// agent standing in the slot's place.
+    ///
+    /// The pane and not the window, because the window is not ours: a user
+    /// who splits a pane of their own off to the right leaves the dashboard
+    /// a strip narrower than the window, and furniture cut to the window's
+    /// width no longer fits in it. A split feels it first — `split-window`
+    /// divides the pane it is aimed at, so a slot asked for at the window's
+    /// proportions squeezes the dashboard down to a couple of columns.
+    ///
+    /// With the dashboard alone in its window the strip *is* the window,
+    /// which is the ordinary case and the one the proportions are tuned
+    /// for. Falls back to the viewport — the dashboard's pane as it was
+    /// last drawn — which is never worse than nothing.
+    fn strip_size(&self, tmux: &Tmux) -> (u16, u16) {
         if let Some(inside) = &tmux.inside
-            && let Ok(size) = tmux.window_size(&inside.window_id)
+            && let Ok((w, h, window)) = tmux.pane_geometry(&inside.pane_id)
+            && w > 0
         {
-            return size;
+            // Only a neighbour that really is beside us counts: `docked`
+            // may name a pane another dashboard has since taken away.
+            let beside = self
+                .docked
+                .as_deref()
+                .or(self.slot.as_deref())
+                .and_then(|p| tmux.pane_geometry(p).ok())
+                .filter(|(_, _, wid)| *wid == window)
+                .map_or(0, |(sw, _, _)| sw + 1);
+            return (w + beside, h);
         }
-        self.dash_window.unwrap_or(self.viewport)
+        self.strip.unwrap_or(self.viewport)
     }
 
     /// Width every holder — and the dashboard's own pane, once a slot
     /// exists — is cut to.
     fn holder_width(&self, tmux: &Tmux) -> u16 {
-        crate::dock::dash_width(self.dash_window_size(tmux).0)
+        crate::dock::dash_width(self.strip_size(tmux).0)
     }
 
-    /// Re-read the dashboard's window size and, when it has changed, put
-    /// every agent window back in step with it.
+    /// Re-read the dashboard's strip and, when it has changed, put every
+    /// agent window back in step with it.
     ///
     /// Agent sessions carry `window-size manual`, so nothing else moves
     /// them: their windows keep whatever size we last gave them. Keeping
-    /// them equal to the dashboard's window is what makes a dock a
-    /// same-size swap, and a same-size swap is what spares the agent a
-    /// repaint.
-    fn refresh_dash_window(&mut self, tmux: &Tmux) {
-        let size = self.dash_window_size(tmux);
-        if size == (0, 0) || self.dash_window == Some(size) {
+    /// them equal to the strip is what makes a dock a same-size swap, and a
+    /// same-size swap is what spares the agent a repaint. It is also the
+    /// self-repair for a strip the user has just taken space away from —
+    /// the next poll cuts the furniture down to what is left.
+    fn refresh_strip(&mut self, tmux: &Tmux) {
+        let size = self.strip_size(tmux);
+        if size == (0, 0) || self.strip == Some(size) {
             return;
         }
-        log::info!("dashboard window is now {}x{}", size.0, size.1);
-        self.dash_window = Some(size);
+        log::info!("dashboard strip is now {}x{}", size.0, size.1);
+        self.strip = Some(size);
         self.resize_agent_windows(tmux, size);
         // The dashboard's own pane owes the slot the rest of the row.
         if self.slot.is_some()
@@ -1064,7 +1084,7 @@ impl App {
     /// to match, and any missing holder backfilled.
     ///
     /// It exists because the sizes are only re-cut when the *window* size
-    /// changes ([`App::refresh_dash_window`]): a strip the user dragged, or
+    /// changes ([`App::refresh_strip`]): a strip the user dragged, or
     /// a stray `resize-pane`, stays dragged until something asks for it
     /// back. Nothing here moves a shell — the furniture is repaired, what
     /// is docked stays docked.
@@ -1073,12 +1093,12 @@ impl App {
             self.notify_err("no tmux session");
             return;
         };
-        let size = self.dash_window_size(&tmux);
+        let size = self.strip_size(&tmux);
         if size == (0, 0) {
-            self.notify_err("cannot read the dashboard window size");
+            self.notify_err("cannot read the dashboard pane size");
             return;
         }
-        self.dash_window = Some(size);
+        self.strip = Some(size);
         let width = crate::dock::dash_width(size.0);
         // Our own strip first, and only when something of ours sits beside
         // it: the neighbour takes the rest of the row, so one resize
@@ -1113,8 +1133,8 @@ impl App {
             self.slot = Some(pane.clone());
             return Ok(pane);
         }
-        let (x, y) = self.dash_window_size(&tmux);
-        self.dash_window = Some((x, y));
+        let (x, y) = self.strip_size(&tmux);
+        self.strip = Some((x, y));
         let pane = tmux.split_slot(&inside.pane_id, crate::dock::agent_width(x))?;
         log::info!("slot {pane} split into window {}", inside.window_id);
         // The agent windows must match the window the slot now lives in.
@@ -2179,6 +2199,9 @@ impl App {
             base_commit,
             agent_command,
             shells: vec![Shell {
+                // What this shell was actually launched with — the
+                // worktree's own agent, not the repository's fallback.
+                command: Some(command.clone()),
                 index: 0,
                 window_name: wname,
                 window_id: Some(w.window_id),
@@ -2275,6 +2298,7 @@ impl App {
         self.state.repositories[ri].worktrees[wi]
             .shells
             .push(Shell {
+                command: Some(what.clone()),
                 index: idx,
                 window_name: wname,
                 window_id: Some(w.window_id),
@@ -2410,6 +2434,7 @@ impl App {
         };
         self.state.repositories[ri].session_name = Some(session_name);
         self.state.repositories[ri].shell = Some(Shell {
+            command: Some(crate::util::shell_name(&shell)),
             index: crate::dock::REPO_INDEX,
             window_name: wname,
             window_id: Some(w.window_id),
@@ -3264,9 +3289,9 @@ impl App {
         let Ok(tmux) = self.require_tmux() else {
             return;
         };
-        // Before anything reads a pane size: a dashboard window that has
+        // Before anything reads a pane size: a dashboard strip that has
         // been resized takes every agent window with it.
-        self.refresh_dash_window(&tmux);
+        self.refresh_strip(&tmux);
         let panes = match tmux.list_panes() {
             Ok(p) => p,
             Err(e) => {
@@ -4527,7 +4552,7 @@ impl App {
                 ok = false;
             }
             if ok {
-                let width = crate::dock::dash_width(self.dash_window_size(tmux).0);
+                let width = crate::dock::dash_width(self.strip_size(tmux).0);
                 crate::dock::ensure_holders(tmux, width);
                 self.build_tree_flags();
                 self.clamp_sel();
@@ -4839,6 +4864,7 @@ mod tests {
                 base_commit: None,
                 agent_command: None,
                 shells: vec![Shell {
+                    command: None,
                     index: 0,
                     window_name: "lw:wt/0".into(),
                     window_id: Some(w.window_id.clone()),
@@ -5491,6 +5517,13 @@ mod tests {
                     app.state.repositories[0].agent_command, "claude",
                     "the repository is untouched by one worktree's choice"
                 );
+                assert_eq!(
+                    app.state.repositories[0].worktrees[0].shells[0]
+                        .command
+                        .as_deref(),
+                    Some("codex"),
+                    "the shell row is named by what it runs, not by the repository's agent"
+                );
             });
         });
     }
@@ -5828,6 +5861,7 @@ mod tests {
                 base_commit: None,
                 agent_command: None,
                 shells: vec![Shell {
+                    command: None,
                     index: 0,
                     window_name: "lw:wt/0".into(),
                     window_id: Some("@1".into()),
@@ -6052,6 +6086,7 @@ mod tests {
             let mut app = app_with_shell();
             app.viewport = (120, 40);
             app.state.repositories[0].worktrees[0].shells.push(Shell {
+                command: None,
                 index: 1,
                 window_name: "lw:wt/1".into(),
                 window_id: Some("@2".into()),
@@ -6353,6 +6388,7 @@ mod tests {
 
         // a second shell brings the subtree back
         app.state.repositories[0].worktrees[0].shells.push(Shell {
+            command: None,
             index: 1,
             window_name: "lw:wt/1".into(),
             window_id: Some("@2".into()),
@@ -6375,6 +6411,7 @@ mod tests {
     fn d_on_a_shell_confirms_closing_only_that_shell() {
         let mut app = app_with_shell();
         app.state.repositories[0].worktrees[0].shells.push(Shell {
+            command: None,
             index: 1,
             window_name: "lw:wt/1".into(),
             window_id: Some("@2".into()),
@@ -6719,6 +6756,7 @@ mod tests {
             )
             .unwrap();
         app.state.repositories[0].worktrees[0].shells.push(Shell {
+            command: None,
             index: 1,
             window_name: "lw:wt/1".into(),
             window_id: Some(w.window_id.clone()),
@@ -7268,6 +7306,7 @@ mod tests {
             )
             .expect("second shell");
         app.state.repositories[0].worktrees[0].shells.push(Shell {
+            command: None,
             index: 1,
             window_name: "lw:wt/1".into(),
             window_id: Some(w.window_id.clone()),
@@ -7602,7 +7641,7 @@ mod tests {
             let mut app = app_with(tmux.clone());
             let (agent_window, _pane) = seed_repository_with_shell(&tmux, &mut app);
             app.poll();
-            assert_eq!(app.dash_window, Some((200, 50)));
+            assert_eq!(app.strip, Some((200, 50)));
             assert_eq!(tmux.window_size(&agent_window).unwrap(), (200, 50));
 
             // The user drags their terminal narrower; tmux resizes the
@@ -7613,7 +7652,7 @@ mod tests {
                 .unwrap();
             app.poll();
 
-            assert_eq!(app.dash_window, Some((140, 40)));
+            assert_eq!(app.strip, Some((140, 40)));
             assert_eq!(
                 tmux.window_size(&agent_window).unwrap(),
                 (140, 40),
@@ -7642,6 +7681,61 @@ mod tests {
                 crate::dock::dash_width(140),
                 "and its holder was re-cut to the dashboard pane's width"
             );
+        });
+    }
+
+    /// The dashboard is a guest in the user's own window, and the user may
+    /// keep a pane of their own beside it. The slot is then split out of a
+    /// strip narrower than the window — so it must be asked for at the
+    /// strip's proportions, not the window's, or `split-window` gives the
+    /// slot everything and leaves the tree a couple of columns.
+    #[test]
+    fn a_foreign_pane_beside_the_dashboard_does_not_squeeze_the_tree() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            seed_repository_with_shell(&tmux, &mut app);
+            let dash = tmux.inside.as_ref().unwrap().pane_id.clone();
+            // The user opens a pane of their own on the right.
+            let theirs = tmux
+                .run_raw(&[
+                    "split-window",
+                    "-h",
+                    "-d",
+                    "-l",
+                    "120",
+                    "-t",
+                    &dash,
+                    "-P",
+                    "-F",
+                    "#{pane_id}",
+                    "bash",
+                ])
+                .unwrap()
+                .trim()
+                .to_string();
+            let width = |pane: &str| tmux.pane_geometry(pane).unwrap().0;
+            let strip = width(&dash);
+            assert_eq!(strip, 79, "the dashboard keeps what the split left it");
+
+            // Unfocusing and refocusing a shell drops the slot and splits a
+            // new one — the cycle that used to squeeze the tree away.
+            for _ in 0..3 {
+                app.ensure_slot().expect("slot");
+                let slot = app.slot.clone().expect("slot id");
+                assert_eq!(
+                    width(&dash),
+                    crate::dock::dash_width(strip),
+                    "the tree keeps its share of the strip"
+                );
+                assert_eq!(
+                    width(&slot),
+                    crate::dock::agent_width(strip),
+                    "and the slot takes the rest of it"
+                );
+                assert_eq!(width(&theirs), 120, "the user's own pane is left alone");
+                app.drop_slot();
+            }
         });
     }
 
@@ -7717,6 +7811,7 @@ mod tests {
                 )
                 .unwrap();
             app.state.repositories[0].worktrees[0].shells.push(Shell {
+                command: None,
                 index: 1,
                 window_name: "lw:wt/1".into(),
                 window_id: Some(w2.window_id.clone()),
@@ -7766,6 +7861,7 @@ mod tests {
                 )
                 .unwrap();
             app.state.repositories[0].worktrees[0].shells.push(Shell {
+                command: None,
                 index: 1,
                 window_name: "lw:wt/1".into(),
                 window_id: Some(w2.window_id.clone()),

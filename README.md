@@ -28,7 +28,10 @@ RepositoryB
 - **Worktree** = a git worktree (created automatically) + at least one spawned
   shell running the default agent command.
 - **Shell** = a tmux window running a command inside the worktree —
-  usually an agent, but useful for any long-running command.
+  usually an agent, but useful for any long-running command. The tree names
+  a shell row by that command (`claude`, `zsh`); shells running the same
+  program keep their index (`zsh #1`, `zsh #2`) so two rows still read
+  apart.
 - A repository also gets **one shell of its own**, in its main checkout on
   the base branch, for the commands you run by hand: `make`, `mise run …`,
   `cat config.toml`. It starts the first time you press `Enter` on the
@@ -185,18 +188,27 @@ Configuration is layered, lowest to highest (closer wins key by key — maps
 merge deeply, lists are replaced outright):
 
 1. Built-in defaults
-2. Your config — `$XDG_CONFIG_HOME/lazywingman/config.toml` (or
-   `--config <path>` / `LW_CONFIG` for the same file elsewhere)
+2. Your config — `$XDG_CONFIG_HOME/lazywingman/config.toml`
 3. Repository-local — `.lazywingman.toml` in the working directory or the
    nearest ancestor holding one (the search stops at a git repository root)
 4. Repository-local overrides — `.lazywingman.local.toml` next to it
    (gitignore this one; it wins over the committed repository file)
+5. The file you name — `lazywingman --config <path>` (or `LW_CONFIG=<path>`;
+   the flag wins over the env var)
 
 A repository-local file is meant to be committed — a teammate clones the repo
 and is already configured. A few keys belong to the user, not the repository,
 and are **ignored in repository files with a diagnostic**: `worktrees.root`
 and `discovery.scan_root` (machine-specific paths). Set those in your user
-config.
+config — or in the file you pass to `--config`, which is you speaking too.
+
+`--config` is a layer, not a replacement: it is read last, so it wins, but the
+keys it leaves alone keep whatever the layers below resolved to. A file with
+one line in it is a valid `--config`:
+
+```
+lazywingman --config ~/configs/slow-poll.toml
+```
 
 Inspect the resolved config any time:
 
@@ -475,8 +487,8 @@ is happening, the bar says what you can press:
 │󰝰 repo-a                  ││ live tail of the selected shell,    │
 │  ├─  login  ⏸ waiting   ││ refreshed every poll                │
 │  └─  search             ││                                     │
-│     ├─ ● #0 ⠹ working    ││     ╭────────────────────────╮      │
-│     └─ ● #1 ⏸ waiting    ││     │ worktree 'search' cre… │      │
+│     ├─ ● claude ⠹ working││     ╭────────────────────────╮      │
+│     └─ ● zsh ⏸ waiting   ││     │ worktree 'search' cre… │      │
 │󰉖 repo-b                  ││     ╰────────────────────────╯      │
 ╰──────────────────────────╯╰─────────────────────────────────────╯
  n worktree · a shell · d delete · ? help

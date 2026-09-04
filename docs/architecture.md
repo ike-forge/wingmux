@@ -344,6 +344,11 @@ and `cat config.toml` belong. So the row got a shell of its own.
   disclosure and additionally ensures the shell: the disclosure is about
   the rows below, the shell about the panel beside them, and the two do not
   compete for the key.
+- **A dead one draws nothing.** Elsewhere a dead shell is muted whole so
+  the eye skips it; here the marker is the only thing the row would carry,
+  and a dimmed base branch reads as a shell still there. The row drops the
+  marker instead, back to what it looked like before the shell existed —
+  the state file catches up when the next prune sees the pane gone.
 - **It is `$SHELL`, and nothing is sent to it.** `[defaults].agent_shell`
   (`bash`, chosen for agents) is not the shell anyone wants to type `make`
   in — the same reasoning that made a plain worktree shell use
@@ -415,8 +420,8 @@ class does not exist.
 That is why every agent window carries a **holder** and the dashboard window
 carries a **slot**: two sleeping panes so that docking is one `swap-pane`
 between panes that already exist. Agent sessions are set to `window-size
-manual` and their windows held at the dashboard window's size, so the two
-panes are the same size and tmux redraws from its own buffer — no `SIGWINCH`,
+manual` and their windows held at the size of the dashboard's *strip*, so the
+two panes are the same size and tmux redraws from its own buffer — no `SIGWINCH`,
 no repaint. The holder also does UX work: someone who attaches to an agent
 session directly finds a pane saying where their agent went.
 
@@ -425,12 +430,23 @@ directly resizes its windows, so the next dock costs one repaint. And a holder
 is one sleeping process per shell, visible in `list-panes` and in the user's
 own pane navigation — marked once and filtered once.
 
-Those sizes are only re-cut when the dashboard's *window* size changes
-(`App::refresh_dash_window`), so a pane the user dragged — or a stray
-`resize-pane` — stays dragged: nothing in a steady-state poll disagrees with
-it. `R` (`App::reset_layout`) is the explicit way back: it re-cuts the
-dashboard's own strip to `dock::dash_width`, puts every agent window at the
-dashboard window's size, re-cuts every holder and backfills a missing one.
+The **strip** is what all of this is measured against (`App::strip_size`): the
+dashboard's own pane, plus the pane beside it that is ours — the slot, or the
+agent standing in the slot's place. The pane and not the window, because the
+window is not ours. A user who keeps a pane of their own to the right leaves
+the dashboard a strip narrower than the window, and furniture cut to the
+window's proportions no longer fits in it; the split feels it first, since
+`split-window` divides the pane it is aimed at, so a slot asked for at the
+window's width leaves the tree a column or two. With the dashboard alone in
+its window the strip *is* the window, which is the ordinary case and the one
+the proportions are tuned for.
+
+Those sizes are only re-cut when the strip changes size
+(`App::refresh_strip`), so a pane the user dragged — or a stray `resize-pane`
+— stays dragged: nothing in a steady-state poll disagrees with it. `R`
+(`App::reset_layout`) is the explicit way back: it re-cuts the dashboard's own
+strip to `dock::dash_width`, puts every agent window at the strip's size,
+re-cuts every holder and backfills a missing one.
 It is a repair of the furniture only — what is docked stays docked — and it
 leaves the dashboard's pane alone when nothing of ours sits beside it, since
 an undocked dashboard is a guest in the user's own window and its width is
@@ -699,6 +715,20 @@ duplication docking exists to end.
   `App::solo_shell`, and is enforced in `visible_nodes()` so navigation, mouse
   hits and `clamp_sel` cannot disagree with what is drawn. `a` (add shell) is
   the way out: two shells bring the subtree back.
+- **A shell row is named by what it runs, not by its number.** `#0`/`#1`
+  said nothing about the row; `claude` and `zsh` say what is in it. The
+  command is recorded on the shell at spawn (`Shell::command`, serialised)
+  rather than read live from `#{pane_current_command}`: that format reports
+  `node` for a Claude Code session and `zsh` again the moment an agent
+  exits, so a live reading would rename rows behind the user's back.
+  `Shell::label` takes the first token, basenamed — a row shares its line
+  with the status, and `codex exec --yolo` would push the status off the
+  panel. The index returns only where it earns its place: as a suffix when
+  two shells of a worktree run the same program (`zsh #1`, `zsh #2`), and
+  as the whole label for a shell adopted from tmux or written by an older
+  build, where no command was ever recorded (the field is
+  `Option<String>`, `#[serde(default)]`, so an old `state.json` still
+  loads).
 - **Creating something reveals it.** `create_worktree` unfolds the
   repository it just added to, and gives the new worktree the same unfolded
   flag discovery gives the rows it finds. A collapsed repository emits no
@@ -1330,15 +1360,26 @@ duplication docking exists to end.
 
 ## Configuration
 
-- **Config layering**: defaults ← user config (config.toml / `--config` /
-  `LW_CONFIG`) ← `.lazywingman.toml` ← `.lazywingman.local.toml` (gitignored
-  sibling, highest of the file layers). Merge is key by key: maps merge deeply
-  per subkey, lists/scalars replace outright. The repository file is found
-  walking upward from cwd, stopping at the first hit *and* at a repository
-  root (`.git`) so a sibling repo's config is never inherited. Per the
-  configuration rules, some keys are user-only and are rejected in repository
-  files with a diagnostic (never silently applied): `worktrees.root` and
-  `discovery.scan_root` (machine paths).
+- **Config layering**: defaults ← user config (config.toml) ←
+  `.lazywingman.toml` ← `.lazywingman.local.toml` (gitignored sibling) ← the
+  file named by `--config <path>` / `LW_CONFIG`. Merge is key by key: maps
+  merge deeply per subkey, lists/scalars replace outright. The repository file
+  is found walking upward from cwd, stopping at the first hit *and* at a
+  repository root (`.git`) so a sibling repo's config is never inherited. Per
+  the configuration rules, some keys are user-only and are rejected in the
+  repository layers with a diagnostic (never silently applied):
+  `worktrees.root` and `discovery.scan_root` (machine paths).
+- **`--config` is a layer on top, not a substitute for the user file**: it was
+  asked for by hand, on this run, so it outranks every file found by
+  convention — including the repository's, which is the reason to reach for it
+  (a repository config you cannot edit is exactly what one wants to override).
+  Making it *replace* the user layer instead, as it once did, meant a one-key
+  override had to restate a whole config to avoid being beaten by the
+  repository file underneath it. `LW_CONFIG` names the same layer; `--config`
+  wins where both are given. A named file that does not exist is a diagnostic,
+  not a failure — the layers below it are already a working config. First-run
+  bootstrap still writes the default user file, because that layer is read
+  either way now.
 - **The written config is exhaustive and inert**: on first run — and only when
   the file is absent — `DEFAULT_CONFIG` is written out with *every* key the
   loader recognises, each commented at its built-in default. Defaults
