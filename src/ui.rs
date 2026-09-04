@@ -971,14 +971,17 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             // A repository with an inline shell says so, and names the
             // checkout it runs in — the base branch, which is the one thing
             // that distinguishes it from the worktrees hanging below it.
-            if let Some(sh) = &repo.shell {
+            // A dead shell drops the marker altogether: the row is back to
+            // what it was before the shell existed, and there is nothing
+            // left to dim.
+            if let Some(sh) = repo
+                .shell
+                .as_ref()
+                .filter(|sh| shell_status(app, sh) != Status::Dead)
+            {
                 spans.push(Span::styled(
                     format!("  {}{}", ic.shell, repo.base_branch),
-                    fg(row_color(
-                        theme,
-                        shell_status(app, sh) == Status::Dead,
-                        theme.tree_shell,
-                    )),
+                    fg(theme.tree_shell),
                 ));
                 if shell_leased(app, sh).is_some() {
                     mark_leased(theme, &mut spans);
@@ -5025,6 +5028,28 @@ mod tests {
         assert!(
             text.contains("● main"),
             "the row carries the base branch its shell sits on: {text}"
+        );
+    }
+
+    /// And loses it again when that shell dies: a killed repository shell
+    /// leaves the row as bare as one that never had a shell.
+    #[test]
+    fn a_dead_repository_shell_leaves_no_mark_on_the_row() {
+        let mut app = seeded_app();
+        app.state.repositories[0].shell = Some(crate::state::Shell {
+            index: 0,
+            window_name: "lw:.repo/0".into(),
+            window_id: Some("@9".into()),
+            pane_id: Some("%9".into()),
+        });
+        app.statuses.insert("%9".into(), Status::Dead);
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            !text.contains("● main"),
+            "a dead repository shell draws nothing: {text}"
         );
     }
 

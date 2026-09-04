@@ -317,6 +317,11 @@ and `cat config.toml` belong. So the row got a shell of its own.
   disclosure and additionally ensures the shell: the disclosure is about
   the rows below, the shell about the panel beside them, and the two do not
   compete for the key.
+- **A dead one draws nothing.** Elsewhere a dead shell is muted whole so
+  the eye skips it; here the marker is the only thing the row would carry,
+  and a dimmed base branch reads as a shell still there. The row drops the
+  marker instead, back to what it looked like before the shell existed —
+  the state file catches up when the next prune sees the pane gone.
 - **It is `$SHELL`, and nothing is sent to it.** `[defaults].agent_shell`
   (`bash`, chosen for agents) is not the shell anyone wants to type `make`
   in — the same reasoning that made a plain worktree shell use
