@@ -184,18 +184,27 @@ Configuration is layered, lowest to highest (closer wins key by key — maps
 merge deeply, lists are replaced outright):
 
 1. Built-in defaults
-2. Your config — `$XDG_CONFIG_HOME/lazywingman/config.toml` (or
-   `--config <path>` / `LW_CONFIG` for the same file elsewhere)
+2. Your config — `$XDG_CONFIG_HOME/lazywingman/config.toml`
 3. Repository-local — `.lazywingman.toml` in the working directory or the
    nearest ancestor holding one (the search stops at a git repository root)
 4. Repository-local overrides — `.lazywingman.local.toml` next to it
    (gitignore this one; it wins over the committed repository file)
+5. The file you name — `lazywingman --config <path>` (or `LW_CONFIG=<path>`;
+   the flag wins over the env var)
 
 A repository-local file is meant to be committed — a teammate clones the repo
 and is already configured. A few keys belong to the user, not the repository,
 and are **ignored in repository files with a diagnostic**: `worktrees.root`
 and `discovery.scan_root` (machine-specific paths). Set those in your user
-config.
+config — or in the file you pass to `--config`, which is you speaking too.
+
+`--config` is a layer, not a replacement: it is read last, so it wins, but the
+keys it leaves alone keep whatever the layers below resolved to. A file with
+one line in it is a valid `--config`:
+
+```
+lazywingman --config ~/configs/slow-poll.toml
+```
 
 Inspect the resolved config any time:
 

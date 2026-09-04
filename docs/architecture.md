@@ -1275,15 +1275,26 @@ duplication docking exists to end.
 
 ## Configuration
 
-- **Config layering**: defaults ← user config (config.toml / `--config` /
-  `LW_CONFIG`) ← `.lazywingman.toml` ← `.lazywingman.local.toml` (gitignored
-  sibling, highest of the file layers). Merge is key by key: maps merge deeply
-  per subkey, lists/scalars replace outright. The repository file is found
-  walking upward from cwd, stopping at the first hit *and* at a repository
-  root (`.git`) so a sibling repo's config is never inherited. Per the
-  configuration rules, some keys are user-only and are rejected in repository
-  files with a diagnostic (never silently applied): `worktrees.root` and
-  `discovery.scan_root` (machine paths).
+- **Config layering**: defaults ← user config (config.toml) ←
+  `.lazywingman.toml` ← `.lazywingman.local.toml` (gitignored sibling) ← the
+  file named by `--config <path>` / `LW_CONFIG`. Merge is key by key: maps
+  merge deeply per subkey, lists/scalars replace outright. The repository file
+  is found walking upward from cwd, stopping at the first hit *and* at a
+  repository root (`.git`) so a sibling repo's config is never inherited. Per
+  the configuration rules, some keys are user-only and are rejected in the
+  repository layers with a diagnostic (never silently applied):
+  `worktrees.root` and `discovery.scan_root` (machine paths).
+- **`--config` is a layer on top, not a substitute for the user file**: it was
+  asked for by hand, on this run, so it outranks every file found by
+  convention — including the repository's, which is the reason to reach for it
+  (a repository config you cannot edit is exactly what one wants to override).
+  Making it *replace* the user layer instead, as it once did, meant a one-key
+  override had to restate a whole config to avoid being beaten by the
+  repository file underneath it. `LW_CONFIG` names the same layer; `--config`
+  wins where both are given. A named file that does not exist is a diagnostic,
+  not a failure — the layers below it are already a working config. First-run
+  bootstrap still writes the default user file, because that layer is read
+  either way now.
 - **The written config is exhaustive and inert**: on first run — and only when
   the file is absent — `DEFAULT_CONFIG` is written out with *every* key the
   loader recognises, each commented at its built-in default. Defaults

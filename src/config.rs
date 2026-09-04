@@ -2,9 +2,11 @@
 //!
 //! Config lives at `$XDG_CONFIG_HOME/lazywingman/config.toml`, layered with
 //! a repository-local `.lazywingman.toml` (searched upward from the working
-//! directory, stopping at the first hit / repository root) and its ignored
-//! sibling `.lazywingman.local.toml`. On first run a fully commented default
-//! config is written (and built-in themes are copied into `themes/`).
+//! directory, stopping at the first hit / repository root), its ignored
+//! sibling `.lazywingman.local.toml`, and — on top of all of them — the file
+//! named by `--config <path>` (or `LW_CONFIG`). On first run a fully
+//! commented default config is written (and built-in themes are copied into
+//! `themes/`).
 //!
 //! Loading is lenient per the configuration guidelines (drop the smallest
 //! addressable unit, never prevent startup): one bad agent/repository entry,
@@ -25,6 +27,9 @@ pub const LAYER_DEFAULTS: &str = "defaults";
 pub const LAYER_USER: &str = "user";
 pub const LAYER_REPOSITORY: &str = "repository";
 pub const LAYER_LOCAL: &str = "local";
+/// The file named by `--config <path>` / `LW_CONFIG`: asked for by hand, on
+/// this run, so it outranks every file found by convention.
+pub const LAYER_ARGUMENT: &str = "argument";
 
 /// Fully commented default config, written on first run.
 pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on first run, edit freely.
@@ -41,12 +46,14 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 # This file is the USER layer. A repository can also carry a committed
 # .lazywingman.toml (searched upward from the working directory, stopping at
 # the repository root) and a gitignored .lazywingman.local.toml next to it;
-# those layers override keys here. Some keys are user-only and are ignored
-# in repository files with a diagnostic: worktrees.root and
-# discovery.scan_root. Inspect the effective config with `lazywingman
-# --config-dump`; use --config <path> or LW_CONFIG to point at a different
-# user file. A malformed config never prevents startup — the smallest bad
-# unit is dropped and reported once in a startup diagnostics overlay.
+# those layers override keys here. Above all of them sits the file named by
+# `lazywingman --config <path>` (or LW_CONFIG) — an extra top layer for this
+# run, not a replacement for this file, so it need only carry the keys it
+# changes. Some keys are user-only and are ignored in repository files with a
+# diagnostic: worktrees.root and discovery.scan_root. Inspect the effective
+# config with `lazywingman --config-dump`. A malformed config never prevents
+# startup — the smallest bad unit is dropped and reported once in a startup
+# diagnostics overlay.
 
 # Theme to use. Built-ins: "catppuccin-mocha", "catppuccin-macchiato",
 # "catppuccin-frappe", "catppuccin-latte", "dracula", "gruvbox", "ansi".
@@ -936,37 +943,36 @@ const MESSAGE_KEYS: &[&str] = &["text"];
 impl Config {
     /// Load config, writing defaults (and built-in themes) on first run.
     /// Layered per the configuration rules: built-in defaults ← user config
-    /// (`$XDG_CONFIG_HOME/lazywingman/config.toml`, or `LW_CONFIG`) ←
-    /// repository-local `.lazywingman.toml` (searched upward from the working
-    /// directory, stopping at the first hit / repository root) ← its
-    /// gitignored sibling `.lazywingman.local.toml`. Higher layers win key
-    /// by key (maps merge deeply, lists replace). A malformed file never
-    /// prevents startup — the smallest addressable unit is dropped and
-    /// reported in `Config.diagnostics`.
+    /// (`$XDG_CONFIG_HOME/lazywingman/config.toml`) ← repository-local
+    /// `.lazywingman.toml` (searched upward from the working directory,
+    /// stopping at the first hit / repository root) ← its gitignored sibling
+    /// `.lazywingman.local.toml` ← the file named by `--config <path>` /
+    /// `LW_CONFIG`. Higher layers win key by key (maps merge deeply, lists
+    /// replace). A malformed file never prevents startup — the smallest
+    /// addressable unit is dropped and reported in `Config.diagnostics`.
     pub fn load() -> Result<Config> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let override_path = std::env::var_os("LW_CONFIG").map(PathBuf::from);
-        Self::load_from(&cwd, override_path.as_deref())
+        let argument = std::env::var_os("LW_CONFIG").map(PathBuf::from);
+        Self::load_from(&cwd, argument.as_deref())
     }
 
-    /// [`Self::load`] with an explicit working directory + optional user
-    /// config override (`--config <path>`); the cwd is injected so tests
-    /// don't have to `chdir`.
-    pub fn load_from(cwd: &Path, user_override: Option<&Path>) -> Result<Config> {
+    /// [`Self::load`] with an explicit working directory + the optional
+    /// `--config <path>` file; the cwd is injected so tests don't have to
+    /// `chdir`. That file is a layer of its own on TOP of the conventional
+    /// ones, not a replacement for the user file: it was asked for by hand,
+    /// on this run, so it wins — but a key it leaves alone still comes from
+    /// wherever it came from before, which is what makes `--config` usable
+    /// for a one-off tweak instead of a whole config to restate.
+    pub fn load_from(cwd: &Path, argument: Option<&Path>) -> Result<Config> {
         // First-run bootstrap: write the commented default config + built-in
-        // themes — only for the default location, never for an override.
-        let default_path = crate::util::config_path();
-        let user_path = user_override
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| default_path.clone());
-        if user_override.is_none() && !default_path.exists() {
+        // themes. It runs with `--config` too — the user layer is read either
+        // way now, so an absent one is still a first run.
+        let user_path = crate::util::config_path();
+        if !user_path.exists() {
             std::fs::create_dir_all(crate::util::config_dir())?;
-            std::fs::write(&default_path, DEFAULT_CONFIG)?;
-            log::info!("wrote default config to {}", default_path.display());
+            std::fs::write(&user_path, DEFAULT_CONFIG)?;
+            log::info!("wrote default config to {}", user_path.display());
             crate::theme::ensure_builtin_themes()?;
-            if user_path == default_path {
-                // fresh first run: the file we just wrote is the user layer
-            }
         }
 
         let mut diags: Vec<String> = Vec::new();
@@ -981,77 +987,78 @@ impl Config {
         let mut merged = toml::Table::new();
         let mut layer_paths: Vec<(&'static str, PathBuf)> = Vec::new();
 
-        // --- user layer -------------------------------------------------
-        if user_path.exists() {
-            match parse_layer(&user_path) {
+        // Lowest first; each file that exists overrides the ones before it.
+        let layer = |path: &Path,
+                     name: &'static str,
+                     merged: &mut toml::Table,
+                     sources: &mut Vec<(String, &'static str)>,
+                     diags: &mut Vec<String>,
+                     layer_paths: &mut Vec<(&'static str, PathBuf)>| {
+            if !path.exists() {
+                return;
+            }
+            match parse_layer(path) {
                 Ok(table) => {
-                    report_unknown_keys(&table, &user_path, &mut diags);
-                    merge_layer(
-                        &mut merged,
-                        table,
-                        LAYER_USER,
-                        &user_path,
-                        &mut sources,
-                        &mut diags,
-                    );
+                    report_unknown_keys(&table, path, diags);
+                    merge_layer(merged, table, name, path, sources, diags);
                 }
                 Err(e) => diags.push(format!(
                     "{}: {e} — using defaults for this file",
-                    user_path.display()
+                    path.display()
                 )),
             }
-            layer_paths.push((LAYER_USER, user_path.clone()));
-        } else if user_override.is_some() {
-            diags.push(format!(
-                "{}: config file not found — using defaults (remove --config / LW_CONFIG to use the default location)",
-                user_path.display()
-            ));
-        }
+            layer_paths.push((name, path.to_path_buf()));
+        };
+
+        // --- user layer -------------------------------------------------
+        layer(
+            &user_path,
+            LAYER_USER,
+            &mut merged,
+            &mut sources,
+            &mut diags,
+            &mut layer_paths,
+        );
 
         // --- repository layers ---------------------------------------------
         if let Some(dir) = find_repository_dir(cwd) {
-            let repo_file = dir.join(".lazywingman.toml");
-            if repo_file.exists() {
-                match parse_layer(&repo_file) {
-                    Ok(table) => {
-                        report_unknown_keys(&table, &repo_file, &mut diags);
-                        merge_layer(
-                            &mut merged,
-                            table,
-                            LAYER_REPOSITORY,
-                            &repo_file,
-                            &mut sources,
-                            &mut diags,
-                        );
-                    }
-                    Err(e) => diags.push(format!(
-                        "{}: {e} — using defaults for this file",
-                        repo_file.display()
-                    )),
-                }
-                layer_paths.push((LAYER_REPOSITORY, repo_file.clone()));
-            }
-            // gitignored sibling: highest of the file layers
-            let local = dir.join(".lazywingman.local.toml");
-            if local.exists() {
-                match parse_layer(&local) {
-                    Ok(table) => {
-                        report_unknown_keys(&table, &local, &mut diags);
-                        merge_layer(
-                            &mut merged,
-                            table,
-                            LAYER_LOCAL,
-                            &local,
-                            &mut sources,
-                            &mut diags,
-                        );
-                    }
-                    Err(e) => diags.push(format!(
-                        "{}: {e} — using defaults for this file",
-                        local.display()
-                    )),
-                }
-                layer_paths.push((LAYER_LOCAL, local.clone()));
+            layer(
+                &dir.join(".lazywingman.toml"),
+                LAYER_REPOSITORY,
+                &mut merged,
+                &mut sources,
+                &mut diags,
+                &mut layer_paths,
+            );
+            // gitignored sibling: highest of the files found by convention
+            layer(
+                &dir.join(".lazywingman.local.toml"),
+                LAYER_LOCAL,
+                &mut merged,
+                &mut sources,
+                &mut diags,
+                &mut layer_paths,
+            );
+        }
+
+        // --- argument layer: `--config <path>` / `LW_CONFIG` ---------------
+        if let Some(path) = argument {
+            if path.exists() {
+                layer(
+                    path,
+                    LAYER_ARGUMENT,
+                    &mut merged,
+                    &mut sources,
+                    &mut diags,
+                    &mut layer_paths,
+                );
+            } else {
+                // Named by hand and not there: say so, but the layers below
+                // it are a working config, so this never stops the start.
+                diags.push(format!(
+                    "{}: config file not found — the other layers are used as they are",
+                    path.display()
+                ));
             }
         }
 
@@ -1393,8 +1400,8 @@ fn find_repository_dir(cwd: &Path) -> Option<PathBuf> {
 /// Merge `layer` into `merged` key by key: maps merge deeply (per subkey),
 /// lists and scalars replace (the higher layer wins). Records the winning
 /// layer per dotted key for `--config-dump`. User-only keys
-/// (`worktrees.root`, `discovery.scan_root`) are rejected
-/// outside the user layer with a diagnostic — never silently applied.
+/// (`worktrees.root`, `discovery.scan_root`) are rejected in the repository
+/// layers with a diagnostic — never silently applied.
 fn merge_layer(
     merged: &mut toml::Table,
     layer: toml::Table,
@@ -1421,7 +1428,10 @@ fn merge_layer(
                 };
                 for (subkey, subval) in over {
                     let dotted = format!("{key}.{subkey}");
-                    if layer_name != LAYER_USER
+                    // The argument file is the user speaking too, so a
+                    // machine path is theirs to set there; only the files a
+                    // repository carries are held to the rule.
+                    if !matches!(layer_name, LAYER_USER | LAYER_ARGUMENT)
                         && USER_ONLY_KEYS
                             .iter()
                             .any(|(s, k)| *s == key && *k == subkey)
@@ -2556,13 +2566,11 @@ mod tests {
         Config::load_from(cwd, None).unwrap()
     }
 
-    fn load_user_from(cwd: &Path, text: &str, override_path: Option<&Path>) -> Config {
-        let path = override_path
-            .map(Path::to_path_buf)
-            .unwrap_or_else(crate::util::config_path);
+    /// Write `text` as the `--config <path>` file and load it from `cwd`.
+    fn load_argument(cwd: &Path, text: &str, path: &Path) -> Config {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, text).unwrap();
-        Config::load_from(cwd, override_path).unwrap()
+        std::fs::write(path, text).unwrap();
+        Config::load_from(cwd, Some(path)).unwrap()
     }
 
     #[test]
@@ -2958,18 +2966,75 @@ mod tests {
         });
     }
 
+    /// `--config <path>` is the top layer: it beats the user file AND the
+    /// repository files, which is the whole point of naming it by hand.
     #[test]
-    fn config_override_flag_and_env_take_precedence() {
+    fn the_config_argument_wins_over_every_other_layer() {
         with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
-            // default XDG config exists with one theme
-            load_user(root.path(), "theme = \"dracula\"\n");
-            // --config points elsewhere
-            let override_path = root.path().join("custom.toml");
-            let cfg = load_user_from(root.path(), "theme = \"ansi\"\n", Some(&override_path));
-            assert_eq!(cfg.theme, "ansi");
-            // sources reflect the override file
-            assert!(cfg.diagnostics.is_empty());
+            std::fs::create_dir_all(root.path().join(".git")).unwrap();
+            load_user(root.path(), "theme = \"dracula\"\npoll_interval_ms = 100\n");
+            std::fs::write(
+                root.path().join(".lazywingman.toml"),
+                "theme = \"gruvbox\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.path().join(".lazywingman.local.toml"),
+                "theme = \"ansi\"\n",
+            )
+            .unwrap();
+            let cfg = load_argument(
+                root.path(),
+                "theme = \"catppuccin-latte\"\n",
+                &root.path().join("custom.toml"),
+            );
+            assert_eq!(cfg.theme, "catppuccin-latte");
+            assert_eq!(
+                cfg.sources
+                    .iter()
+                    .find(|(k, _)| k == "theme")
+                    .map(|(_, l)| *l),
+                Some(LAYER_ARGUMENT)
+            );
+            assert!(cfg.diagnostics.is_empty(), "{:?}", cfg.diagnostics);
+        });
+    }
+
+    /// It is a LAYER, not a replacement: a key it stays silent about keeps
+    /// the value the layers underneath it resolved to.
+    #[test]
+    fn keys_the_config_argument_omits_still_come_from_below() {
+        with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            load_user(root.path(), "theme = \"dracula\"\npoll_interval_ms = 100\n");
+            let cfg = load_argument(
+                root.path(),
+                "poll_interval_ms = 250\n",
+                &root.path().join("custom.toml"),
+            );
+            assert_eq!(
+                cfg.poll_interval_ms, 250,
+                "the argument wins where it speaks"
+            );
+            assert_eq!(cfg.theme, "dracula", "and is silent everywhere else");
+        });
+    }
+
+    /// A machine path is the user's to set, and the argument file is the
+    /// user speaking — unlike a repository file, which gets a diagnostic.
+    #[test]
+    fn the_config_argument_may_set_user_only_keys() {
+        with_fresh_xdg(|| {
+            let root = tempfile::TempDir::new().unwrap();
+            load_user(root.path(), "");
+            let cfg = load_argument(
+                root.path(),
+                "[worktrees]\nroot = \"/work/trees\"\n",
+                &root.path().join("custom.toml"),
+            );
+            assert_eq!(cfg.worktrees.root, "/work/trees");
+            assert!(cfg.diagnostics.is_empty(), "{:?}", cfg.diagnostics);
         });
     }
 
@@ -2977,16 +3042,17 @@ mod tests {
     fn missing_override_is_reported_not_fatal() {
         with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
+            load_user(root.path(), "theme = \"dracula\"\n");
             let cfg = Config::load_from(root.path(), Some(&root.path().join("nope.toml"))).unwrap();
-            assert_eq!(cfg.theme, crate::theme::DEFAULT_THEME);
+            assert_eq!(cfg.theme, "dracula", "the layers below it still stand");
             assert!(cfg.diagnostics.iter().any(|d| d.contains("not found")));
         });
     }
 
-    /// `LW_CONFIG` env var points the USER layer at another file (same
-    /// override as `--config`, read by the no-arg `load()`).
+    /// `LW_CONFIG` names the same top layer as `--config`, read by the
+    /// no-arg `load()`.
     #[test]
-    fn lw_config_env_overrides_user_layer() {
+    fn lw_config_env_is_the_argument_layer() {
         with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             // the default XDG config exists with one theme
