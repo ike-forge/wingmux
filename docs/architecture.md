@@ -393,8 +393,8 @@ class does not exist.
 That is why every agent window carries a **holder** and the dashboard window
 carries a **slot**: two sleeping panes so that docking is one `swap-pane`
 between panes that already exist. Agent sessions are set to `window-size
-manual` and their windows held at the dashboard window's size, so the two
-panes are the same size and tmux redraws from its own buffer — no `SIGWINCH`,
+manual` and their windows held at the size of the dashboard's *strip*, so the
+two panes are the same size and tmux redraws from its own buffer — no `SIGWINCH`,
 no repaint. The holder also does UX work: someone who attaches to an agent
 session directly finds a pane saying where their agent went.
 
@@ -403,12 +403,23 @@ directly resizes its windows, so the next dock costs one repaint. And a holder
 is one sleeping process per shell, visible in `list-panes` and in the user's
 own pane navigation — marked once and filtered once.
 
-Those sizes are only re-cut when the dashboard's *window* size changes
-(`App::refresh_dash_window`), so a pane the user dragged — or a stray
-`resize-pane` — stays dragged: nothing in a steady-state poll disagrees with
-it. `R` (`App::reset_layout`) is the explicit way back: it re-cuts the
-dashboard's own strip to `dock::dash_width`, puts every agent window at the
-dashboard window's size, re-cuts every holder and backfills a missing one.
+The **strip** is what all of this is measured against (`App::strip_size`): the
+dashboard's own pane, plus the pane beside it that is ours — the slot, or the
+agent standing in the slot's place. The pane and not the window, because the
+window is not ours. A user who keeps a pane of their own to the right leaves
+the dashboard a strip narrower than the window, and furniture cut to the
+window's proportions no longer fits in it; the split feels it first, since
+`split-window` divides the pane it is aimed at, so a slot asked for at the
+window's width leaves the tree a column or two. With the dashboard alone in
+its window the strip *is* the window, which is the ordinary case and the one
+the proportions are tuned for.
+
+Those sizes are only re-cut when the strip changes size
+(`App::refresh_strip`), so a pane the user dragged — or a stray `resize-pane`
+— stays dragged: nothing in a steady-state poll disagrees with it. `R`
+(`App::reset_layout`) is the explicit way back: it re-cuts the dashboard's own
+strip to `dock::dash_width`, puts every agent window at the strip's size,
+re-cuts every holder and backfills a missing one.
 It is a repair of the furniture only — what is docked stays docked — and it
 leaves the dashboard's pane alone when nothing of ours sits beside it, since
 an undocked dashboard is a guest in the user's own window and its width is
