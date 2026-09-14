@@ -130,7 +130,8 @@ pub(crate) fn main_h(app: &App) -> u16 {
 /// the open half, so a long note cannot push the tree off the screen.
 pub(crate) fn todo_panel_h(app: &App, main_h: u16) -> u16 {
     let open = matches!(app.mode, Mode::Todo { .. });
-    if !open && app.todo.text().trim().is_empty() {
+    let parked = app.parked_todo().map(|(_, buf)| buf);
+    if !open && parked.is_none_or(|b| b.text().trim().is_empty()) {
         return 0;
     }
     let cap = (main_h / 2).min(main_h.saturating_sub(TREE_MIN_ROWS));
@@ -143,7 +144,7 @@ pub(crate) fn todo_panel_h(app: &App, main_h: u16) -> u16 {
     if open {
         return cap;
     }
-    let rows = app.todo.visual_len(crate::app::todo_wrap_width(app)) as u16;
+    let rows = parked.map_or(0, |b| b.visual_len(crate::app::todo_wrap_width(app))) as u16;
     rows.saturating_add(2).clamp(TREE_MIN_ROWS, cap)
 }
 
@@ -1169,9 +1170,28 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
 /// the title says how many rows are below the fold.
 fn draw_todo(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
-    let (buf, focused) = match &app.mode {
-        Mode::Todo { buf } => (buf, true),
-        _ => (&app.todo, false),
+    let (pad, buf, focused) = match &app.mode {
+        Mode::Todo { buf, pad } => (pad.clone(), buf, true),
+        _ => match app.parked_todo() {
+            Some((pad, buf)) => (pad, buf, false),
+            None => return,
+        },
+    };
+    let (name, ghost) = match &pad {
+        crate::todo::Pad::Global => (
+            "global".to_string(),
+            "the next steps you cannot start yet — kept for every repository".to_string(),
+        ),
+        crate::todo::Pad::Repo(path) => {
+            let name = app
+                .state
+                .repositories
+                .iter()
+                .find(|r| &r.path == path)
+                .map_or_else(|| path.display().to_string(), |r| r.name.clone());
+            let ghost = format!("the next steps for {name} you cannot start yet");
+            (name, ghost)
+        }
     };
     let wrap_width = crate::app::todo_wrap_width(app)
         .min(area.width.saturating_sub(3).max(1) as usize)
@@ -1183,9 +1203,9 @@ fn draw_todo(f: &mut Frame, area: Rect, app: &App) {
     let content_lines = (area.height.saturating_sub(2) as usize).max(1);
     let hidden = rows.len().saturating_sub(scroll + content_lines);
     let title = if hidden > 0 {
-        format!("Todo  {DOWN_ARROW}{hidden}")
+        format!("Todo · {name}  {DOWN_ARROW}{hidden}")
     } else {
-        "Todo".to_string()
+        format!("Todo · {name}")
     };
     let block = panel_block(theme, &app.cfg.icons, &title, focused);
     let inner = block.inner(area);
@@ -1194,10 +1214,7 @@ fn draw_todo(f: &mut Frame, area: Rect, app: &App) {
         // Ghost text: an empty panel with a bare caret in it says nothing
         // about what the panel is for. It is dim, and it is gone the moment
         // anything is typed, so it can never be mistaken for content.
-        for l in wrap(
-            "the next steps you cannot start yet — kept for every repository, not just this one",
-            inner.width as usize,
-        ) {
+        for l in wrap(&ghost, inner.width as usize) {
             lines.push(Line::from(Span::styled(l, fg(theme.dim))));
         }
     } else {
@@ -1756,12 +1773,12 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             (
                 &["t"],
                 &[
-                    "todo pad",
-                    "half the tree's column",
+                    "repository todo pad",
+                    "shared by its worktrees",
                     "esc saves; the note stays, collapsed",
-                    "one pad for every repository",
                 ],
             ),
+            (&["T"], &["global todo pad", "one pad for every repository"]),
             (&["r"], &["refresh", "reconcile state"]),
             (
                 &["R"],
@@ -3643,6 +3660,7 @@ mod tests {
         app.viewport = (120, 40);
         app.mode = crate::app::Mode::Todo {
             buf: crate::app::TextBuf::from_parked("ship the schema first", 0, 0),
+            pad: crate::todo::Pad::Global,
         };
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -3663,6 +3681,7 @@ mod tests {
         app.viewport = (120, 41);
         app.mode = crate::app::Mode::Todo {
             buf: crate::app::TextBuf::from_parked("a", 0, 0),
+            pad: crate::todo::Pad::Global,
         };
         let main = main_h(&app);
         assert_eq!(main, 40, "one statusbar row at this width");
@@ -3681,9 +3700,11 @@ mod tests {
         assert_eq!(todo_panel_h(&app, main), 0, "an empty pad draws nothing");
         assert_eq!(todo_panel_rows(&app), None);
         app.todo = crate::app::TextBuf::from_parked("a\nb\nc\nd\ne", 0, 0);
+        app.todo_global_parked = true;
         assert_eq!(todo_panel_h(&app, main), 7, "five lines plus two borders");
         // …and never past the half the open pad would take.
         app.todo = crate::app::TextBuf::from_parked(&"x\n".repeat(60), 0, 0);
+        app.todo_global_parked = true;
         assert_eq!(todo_panel_h(&app, main), 20, "capped at half the column");
     }
 
@@ -3694,6 +3715,7 @@ mod tests {
         let mut app = seeded_app();
         app.viewport = (120, 41);
         app.todo = crate::app::TextBuf::from_parked(&"note\n".repeat(60), 0, 0);
+        app.todo_global_parked = true;
         let backend = ratatui::backend::TestBackend::new(120, 41);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
@@ -3716,10 +3738,12 @@ mod tests {
         // The narrowest, shortest frame the dashboard still draws in.
         app.viewport = TREE_MIN;
         app.todo = crate::app::TextBuf::from_parked("later", 0, 0);
+        app.todo_global_parked = true;
         let main = main_h(&app);
         assert_eq!(todo_panel_h(&app, main), 0, "parked yields the column");
         app.mode = crate::app::Mode::Todo {
             buf: crate::app::TextBuf::from_parked("later", 0, 0),
+            pad: crate::todo::Pad::Global,
         };
         assert_eq!(todo_panel_h(&app, main), main, "open takes it whole");
     }
@@ -3732,6 +3756,7 @@ mod tests {
         app.viewport = (120, 40);
         app.mode = crate::app::Mode::Todo {
             buf: crate::app::TextBuf::new(),
+            pad: crate::todo::Pad::Global,
         };
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();

@@ -91,7 +91,8 @@ the help overlay (`?`).
 | `a` | add a shell to the selected worktree — a picker asks what it runs: the worktree's own agent command first (the one it was created with, else the repository's; `Enter` takes it), then the other configured `[[agents]]` presets, then a **plain shell** that just drops you at your own `$SHELL` prompt with nothing sent to it (`j`/`k` moves, `1`-`9` pick directly, `Esc` closes). Anything else you want to run, you type in that plain shell. On a **repository** row, `a` starts (or enters) the repository's own inline shell — no picker |
 | `s` | **quick-send** a line to the selected shell (or to a one-shell worktree's row). Any way out of the editor that is not a send (`Esc`, a click outside the popup, the `ctrl-t` theme chord) keeps the unsent text as that shell's draft; `s` on it again picks up where you left off, cursor included. A draft is dropped once the message is actually delivered. It otherwise survives quitting — parked in `$XDG_STATE_HOME/lazywingman/drafts.json` and kept until its shell is gone |
 | `p` | **predefined messages** for the selected shell (or a one-shell worktree's row) — a modal of configured presets, each listed in full with its `<base_branch>`-style tokens already resolved (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
-| `t` | **todo pad** — a scratch pad for the next steps you cannot start yet ("rebase the API worktree once the schema lands"). It splits off the bottom of the tree's column and takes half of it while you type, so neither the tree above nor the preview — or the docked agent — beside it is covered. `Esc` saves and hands the keyboard back to the tree, leaving the note on screen collapsed to its own height (five lines of text, a five-line panel; never more than the open half); an emptied pad takes the panel away with it. `ctrl-s` saves without leaving. One pad for the whole machine, not one per directory, parked as plain text in `$XDG_STATE_HOME/lazywingman/todo.md` (yours to edit with `$EDITOR` too) |
+| `t` | **repository todo pad** — a scratch pad for the next steps you cannot start yet ("rebase the API worktree once the schema lands"). One per repository, shared by its worktrees: on any row of a repository, `t` opens that repository's pad. It splits off the bottom of the tree's column and takes half of it while you type, so neither the tree above nor the preview — or the docked agent — beside it is covered. `Esc` saves and hands the keyboard back to the tree, leaving the note on screen collapsed to its own height (five lines of text, a five-line panel; never more than the open half) and following the selection from repository to repository; an emptied pad takes the panel away with it. `ctrl-s` saves without leaving. Parked as plain text in `$XDG_STATE_HOME/lazywingman/todos/<escaped repository path>.md` (yours to edit with `$EDITOR` too) |
+| `T` | **global todo pad** — the same panel, one pad for the whole machine, for notes written about one repository and needed while looking at another. Stored in `$XDG_STATE_HOME/lazywingman/todo.md`. The parked panel shows whichever pad was opened last |
 | `d` | on a worktree: delete it (kills windows, removes worktree; `f` = force when dirty). On a shell row: close that shell (kills its window only — the worktree and its other shells stay). On a repository row: close its inline shell |
 | `r` | refresh — reconcile state against reality |
 | `R` | **reset the layout** — the dashboard's strip, every agent window and every holder back to their default proportions, after a stray drag or `resize-pane` pulled them out of shape. Nothing is undocked |
@@ -493,9 +494,9 @@ is happening, the bar says what you can press:
  n worktree · a shell · d delete · ? help
 ```
 
-A third panel joins them at the foot of the tree's column once the todo pad
-(`t`) has something in it — as tall as the note is, and gone again when the
-note is:
+A third panel joins them at the foot of the tree's column once a todo pad
+(`t` for the selected repository, `T` global) has something in it — as tall
+as the note is, and gone again when the note is:
 
 ```
 ╭ Repositories (2) ────────╮╭ Preview ────────────────────────────╮
@@ -503,7 +504,7 @@ note is:
 │  ├─  login  ⏸ waiting   ││ refreshed every poll                │
 │  └─  search             ││                                     │
 ╰──────────────────────────╯│                                     │
-╭ Todo ────────────────────╮│                                     │
+╭ Todo · repo-a ───────────╮│                                     │
 │ rebase search once the   ││                                     │
 │ schema lands             ││                                     │
 ╰──────────────────────────╯╰─────────────────────────────────────╯
