@@ -1365,11 +1365,11 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         // says which.
         Text::from(format!(
             "no shell in this repository yet\n\n\
-             press `{}` to start one in the repository's own checkout\n\
+             press `a` to start one in the repository's own checkout\n\
              ({}), for the commands you would otherwise run by\n\
              hand: make, mise run …, cat config.\n\n\
              it starts on the first press and stays until `d` closes it.",
-            app.cfg.icons.enter, repo.base_branch,
+            repo.base_branch,
         ))
     } else if selected_worktree_has_no_shell(app) {
         // A worktree with no shell: there is no pane to capture, and the
@@ -1406,13 +1406,11 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         return vec![(h("save & back", "esc"), TodoBack)];
     }
     let mut entries = match app.sel {
-        // The repository row's `Enter` starts (or re-enters) its inline
-        // shell, so the bar names it — the one action on this row that is
-        // not otherwise discoverable. `d` closes it, and only appears once
-        // there is one to close.
+        // `a` starts (or re-enters) the repository's inline shell; `d`
+        // closes it, and only appears once there is one to close.
         Sel::Repository(ri) => {
             let mut v = vec![
-                (h("shell", "Enter"), RepoShell),
+                (h("shell", "a"), RepoShell),
                 (h("worktree", "n"), NewWorktree),
             ];
             if app.repo_shell_pane(ri).is_some() {
@@ -1460,9 +1458,12 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             .iter()
             .position(|(_, a)| matches!(a, Dock | RepoShell))
     {
-        // The word changes, the action does not: on a repository row it is
-        // still the inline shell that gets taken.
-        entries[slot] = (h("take", "Enter"), entries[slot].1);
+        // The word changes, the action and its key do not.
+        let key = match entries[slot].1 {
+            RepoShell => "a",
+            _ => "Enter",
+        };
+        entries[slot] = (h("take", key), entries[slot].1);
     }
     // A parked preview is a state you can be stuck in — the way out leads
     // the bar, where the eye lands first.
@@ -1716,7 +1717,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
         "repositories",
         &[
             (
-                &["Enter"],
+                &["a"],
                 &[
                     "shell in the checkout",
                     "for make, mise, cat",
@@ -5224,8 +5225,7 @@ mod tests {
         );
     }
 
-    /// The bar names `Enter` on a repository row — the one action there
-    /// that is not otherwise discoverable — and only offers `d` once there
+    /// The bar names `a` on a repository row and only offers `d` once there
     /// is a shell to close.
     #[test]
     fn the_repository_bar_names_the_shell_and_its_close() {
@@ -5235,8 +5235,8 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(h, a)| h.label() == "shell ↵" && *a == BarAction::RepoShell),
-            "Enter is named: {:?}",
+                .any(|(h, a)| h.label() == "shell a" && *a == BarAction::RepoShell),
+            "`a` is named: {:?}",
             entries.iter().map(|(h, _)| h.label()).collect::<Vec<_>>()
         );
         assert!(

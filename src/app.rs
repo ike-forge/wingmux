@@ -940,6 +940,9 @@ impl App {
             // A server started by an older build has agent windows with no
             // holder in them; so has one whose holder the user closed.
             crate::dock::ensure_holders(tmux, crate::dock::dash_width(self.strip_size(tmux).0));
+        } else {
+            // Shells read from the file have no pane to stand for.
+            self.state.sync_shells(&[]);
         }
         self.build_tree_flags();
         self.clamp_sel();
@@ -1717,13 +1720,6 @@ impl App {
                 if let Some(e) = self.repo_expanded.get_mut(ri) {
                     *e = !*e;
                 }
-                // A repository row does two things at once on `Enter`, and
-                // they do not compete: the tree opens (or closes), and the
-                // panel gets the repository's own shell. The disclosure is
-                // about the rows below; the shell is about the panel beside
-                // them — the same `Enter` that enters a worktree, entering
-                // the repository.
-                self.enter_repo_shell(ri);
             }
             Sel::Worktree(ri, wi) => {
                 // Folded worktree: there is nothing to expand into, so the
@@ -2256,6 +2252,7 @@ impl App {
             .unwrap_or_else(|| repo.agent_command.clone());
         let spawn_cmd = self.agent_command_for_spawn(&command);
         self.queue_launch(&w.pane_id, spawn_cmd);
+        tmux.stamp_command(&w.pane_id, &command);
 
         self.state.repositories[ri].session_name = Some(session_name.clone());
         self.state.repositories[ri].worktrees.push(Worktree {
@@ -2361,6 +2358,7 @@ impl App {
             // Nothing is sent: the window already *is* the shell.
             ShellSpawn::Plain => crate::util::shell_name(&shell),
         };
+        tmux.stamp_command(&w.pane_id, &what);
         self.state.repositories[ri].session_name = Some(session_name.clone());
         self.state.repositories[ri].worktrees[wi]
             .shells
@@ -2445,7 +2443,7 @@ impl App {
     ///
     /// Nothing is sent to it, for the reason a plain worktree shell gets
     /// nothing sent to it either: the window already *is* the shell. And
-    /// nothing starts it but an explicit `Enter` on the row — spawning one
+    /// nothing starts it but an explicit `a` on the row — spawning one
     /// per repository the cursor passed over would cost two or three
     /// seconds each for shells nobody asked for.
     pub fn ensure_repo_shell(&mut self, ri: usize) -> Result<()> {
@@ -2499,6 +2497,7 @@ impl App {
                 self.holder_width(&tmux),
             )?,
         };
+        tmux.stamp_command(&w.pane_id, &crate::util::shell_name(&shell));
         self.state.repositories[ri].session_name = Some(session_name);
         self.state.repositories[ri].shell = Some(Shell {
             command: Some(crate::util::shell_name(&shell)),
@@ -2517,7 +2516,7 @@ impl App {
         Ok(())
     }
 
-    /// `Enter` on a repository row: start the inline shell if there is
+    /// `a` on a repository row: start the inline shell if there is
     /// none, then dock it and put the cursor in it.
     fn enter_repo_shell(&mut self, ri: usize) {
         if let Err(e) = self.ensure_repo_shell(ri) {
@@ -3094,8 +3093,7 @@ impl App {
     }
 
     /// Close a repository's inline shell: kill its tmux window and drop it
-    /// from the repository. Pressing `Enter` on the row again starts a
-    /// fresh one.
+    /// from the repository. `a` on the row starts a fresh one.
     pub fn delete_repo_shell(&mut self, ri: usize) -> Result<()> {
         let tmux = self.require_tmux()?;
         let repo = self
@@ -3126,9 +3124,12 @@ impl App {
 
     /// Open the add-shell picker (`a`) on the selected worktree. The
     /// cursor starts on the first entry — the repository's own agent
-    /// command — so the common case is still `a` then Enter.
+    /// command — so the common case is still `a` then Enter. A repository
+    /// has one plain shell and no picker.
     fn open_add_shell(&mut self) {
-        if self.selected_worktree_ctx().is_some() {
+        if let Sel::Repository(ri) = self.sel {
+            self.enter_repo_shell(ri);
+        } else if self.selected_worktree_ctx().is_some() {
             self.mode = Mode::AddShell { index: 0 };
         } else {
             self.notify("select a worktree to add a shell");
@@ -3371,6 +3372,8 @@ impl App {
             .iter()
             .map(|p| (p.pane_id.clone(), p.clone()))
             .collect();
+        self.state.sync_shells(&panes);
+        self.clamp_sel();
         // Straight after the pane map is refreshed: a shell spawned since
         // the last poll may have finished starting up and be owed its
         // first command.
@@ -5113,9 +5116,6 @@ mod tests {
                 repos.push(repo_with_commit(r, &format!("repo-{i}")));
             }
 
-            // Expanding a repository row also starts its inline shell, so
-            // this test really does talk to tmux — on a socket of its own,
-            // killed at the end rather than left running.
             let tmux = tmux_nowhere();
             let mut app = app_with(tmux.clone());
             app.boot_discovery_from(r).unwrap();
@@ -7473,25 +7473,27 @@ mod tests {
         app.clamp_sel();
     }
 
-    /// A repository row is a place to run commands: `Enter` starts a shell
-    /// in the repository's own checkout and docks it, and a second `Enter`
-    /// re-enters that same shell rather than starting another.
+    /// `a` on a repository row starts a shell in the repository's own
+    /// checkout and docks it, and a second `a` re-enters that same shell.
+    /// `Enter` only toggles the row.
     #[test]
-    fn enter_on_a_repository_row_starts_and_docks_its_inline_shell() {
+    fn a_on_a_repository_row_starts_and_docks_its_inline_shell() {
         crate::util::testutil::with_fresh_xdg(|| {
             with_tmux_server(|sock, _tmux| {
                 let dir = tempfile::TempDir::new().unwrap();
                 let tmux = tmux_inside(sock);
                 let mut app = app_with(tmux.clone());
                 seed_bare_repository(&mut app, dir.path());
-                assert!(
-                    app.selected_shell_pane().is_none(),
-                    "nothing runs in a repository nobody has entered"
-                );
 
                 app.on_key(key(KeyCode::Enter, false));
+                assert!(
+                    app.repo_shell_pane(0).is_none(),
+                    "Enter expands, it starts nothing"
+                );
 
-                let pane = app.repo_shell_pane(0).expect("Enter starts the shell");
+                app.on_key(key(KeyCode::Char('a'), false));
+
+                let pane = app.repo_shell_pane(0).expect("`a` starts the shell");
                 assert_eq!(
                     app.selected_shell_pane().as_deref(),
                     Some(pane.as_str()),
@@ -7514,11 +7516,11 @@ mod tests {
                     "stamped as the repository's shell, not a worktree's"
                 );
 
-                app.on_key(key(KeyCode::Enter, false));
+                app.on_key(key(KeyCode::Char('a'), false));
                 assert_eq!(
                     app.repo_shell_pane(0).as_deref(),
                     Some(pane.as_str()),
-                    "a second Enter re-enters the shell it started"
+                    "a second `a` re-enters the shell it started"
                 );
             });
         });

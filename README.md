@@ -34,7 +34,7 @@ RepositoryB
   apart.
 - A repository also gets **one shell of its own**, in its main checkout on
   the base branch, for the commands you run by hand: `make`, `mise run …`,
-  `cat config.toml`. It starts the first time you press `Enter` on the
+  `cat config.toml`. It starts the first time you press `a` on the
   repository row and is docked beside the tree like any other shell.
 
 Non-goals (deliberate): no orchestration, no MCP/skill management, no web UI,
@@ -86,9 +86,9 @@ the help overlay (`?`).
 | `PgUp` / `PgDn`, `ctrl-u` / `ctrl-d` | half page up / down |
 | `ctrl-f` / `ctrl-b` | full page up / down |
 | `h` | collapse / jump to parent |
-| `l` / `Enter` | expand, or **enter** the selected shell's docked pane (a one-shell worktree goes straight in — see the folded row below). Simply moving onto a shell already docks it; `Enter` is what puts the cursor there. On a **repository** row it also opens that repository's own inline shell — see below |
+| `l` / `Enter` | expand, or **enter** the selected shell's docked pane (a one-shell worktree goes straight in — see the folded row below). Simply moving onto a shell already docks it; `Enter` is what puts the cursor there. On a **repository** row it only expands or collapses |
 | `n` | new worktree (git worktree + branch + agent shell) — a prompt asks for the name and names the branch it will be cut from: the repository's **base branch** (`worktrees.base_branch`, per-repository override), never the branch the repo has checked out. A second field says which **agent** the worktree's shells run, prefilled with the repository's own (`[defaults].agent`, unless the repository overrides it): `Tab` moves onto it, `↑`/`↓` walk the configured `[[agents]]` presets, and anything else typed there is taken as the command itself. So a name and `Enter` is still the whole flow, and `codex` beside a `claude` repository costs one `Tab` |
-| `a` | add a shell to the selected worktree — a picker asks what it runs: the worktree's own agent command first (the one it was created with, else the repository's; `Enter` takes it), then the other configured `[[agents]]` presets, then a **plain shell** that just drops you at your own `$SHELL` prompt with nothing sent to it (`j`/`k` moves, `1`-`9` pick directly, `Esc` closes). Anything else you want to run, you type in that plain shell |
+| `a` | add a shell to the selected worktree — a picker asks what it runs: the worktree's own agent command first (the one it was created with, else the repository's; `Enter` takes it), then the other configured `[[agents]]` presets, then a **plain shell** that just drops you at your own `$SHELL` prompt with nothing sent to it (`j`/`k` moves, `1`-`9` pick directly, `Esc` closes). Anything else you want to run, you type in that plain shell. On a **repository** row, `a` starts (or enters) the repository's own inline shell — no picker |
 | `s` | **quick-send** a line to the selected shell (or to a one-shell worktree's row). Any way out of the editor that is not a send (`Esc`, a click outside the popup, the `ctrl-t` theme chord) keeps the unsent text as that shell's draft; `s` on it again picks up where you left off, cursor included. A draft is dropped once the message is actually delivered. It otherwise survives quitting — parked in `$XDG_STATE_HOME/lazywingman/drafts.json` and kept until its shell is gone |
 | `p` | **predefined messages** for the selected shell (or a one-shell worktree's row) — a modal of configured presets, each listed in full with its `<base_branch>`-style tokens already resolved (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
 | `t` | **repository todo pad** — a scratch pad for the next steps you cannot start yet ("rebase the API worktree once the schema lands"). One per repository, shared by its worktrees: on any row of a repository, `t` opens that repository's pad. It splits off the bottom of the tree's column and takes half of it while you type, so neither the tree above nor the preview — or the docked agent — beside it is covered. `Esc` saves and hands the keyboard back to the tree, leaving the note on screen collapsed to its own height (five lines of text, a five-line panel; never more than the open half) and following the selection from repository to repository; an emptied pad takes the panel away with it. `ctrl-s` saves without leaving. Parked as plain text in `$XDG_STATE_HOME/lazywingman/todos/<escaped repository path>.md` (yours to edit with `$EDITOR` too) |
@@ -454,12 +454,11 @@ without hunting for the status word at the end of the row.
 - Unsent quick-send drafts (`$XDG_STATE_HOME/lazywingman/drafts.json`) are
   keyed by repository + branch + shell index, so they are restored onto the
   right shell after a restart even though tmux gives it a new pane id.
-- State (`$XDG_STATE_HOME/lazywingman/state.json`) is reconciled against
-  reality on startup: worktrees are checked against `git worktree list`,
-  agent sessions and their windows against `tmux list-sessions` /
-  `list-windows`; stale entries self-heal and running shells are
-  rediscovered (even with a deleted state file, from the pane's cwd + git
-  metadata).
+- State (`$XDG_STATE_HOME/lazywingman/state.json`) keeps repositories and
+  worktrees; worktrees are checked against `git worktree list`. Shells are
+  never written: every poll rebuilds them from `tmux list-panes`, so a shell
+  is on screen exactly while its pane exists (and a worktree whose state was
+  lost is rebuilt from its pane's cwd + git metadata).
 - Worktree deletion kills the worktree's windows — a session whose last shell
   window is killed destroys itself — then `git worktree remove` (with
   `--force` offered when the worktree is dirty). The worktree branch goes

@@ -89,19 +89,18 @@ tail — `help ?`, the way to everything that did not fit, sits at that end.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `Enter` / `l` | expand the repository **and** enter its inline shell: a plain `$SHELL` in the repository's own checkout (the base branch), started on the first press and docked beside the tree | domain convention (open the thing the row stands for); no dead keys |
+| `Enter` / `l` | expand / collapse the repository — nothing else | "open / drill into" |
+| `a` | start (or enter) the repository's inline shell: a plain `$SHELL` in its own checkout (the base branch), docked beside the tree | `a` = attach; the same key that gives a worktree a shell |
 | `n` | new worktree (git worktree + branch cut from the repository's base branch, + a shell running the agent its second field names) | create action |
 | `d` | close the inline shell (kills its window; the repository, its worktrees and their agents stay). Absent until there is one to close | vim `d` destructive, confirms; an answer that cannot succeed is not offered |
 
-`Enter` on a repository row does two things at once, and they do not
-compete: the **tree** opens or closes (the rows below), and the **panel**
-gets the repository's own shell (the space beside them). It is the same
-`Enter` that enters a worktree — entering the repository.
+`Enter` does not start the shell. It used to, and since `Enter`, `l` and
+`→` all expand, every repository opened to look at its worktrees left a
+shell running in tmux.
 
 The shell is **lazy**: moving the cursor onto a repository row starts
-nothing. It costs two or three seconds, and most repository rows are only
-ever expanded to look at what hangs below them. Once it exists, looking at
-the row docks it like any other shell, and `d` is how it goes away.
+nothing. It costs two or three seconds. Once it exists, looking at the row
+docks it like any other shell, and `d` is how it goes away.
 
 It is a plain `$SHELL`, not `[defaults].agent_shell`: the point is running
 the commands you would otherwise type by hand — `make`, `mise run …`,
