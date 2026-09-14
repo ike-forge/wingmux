@@ -33,7 +33,8 @@ subtracted), recomputed every frame from the stored viewport.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `t` | open the todo pad, split off the bottom of the tree's column | mnemonic; a panel, not an overlay |
+| `t` | open the selected repository's todo pad (worktree and shell rows count as their repository's), split off the bottom of the tree's column | mnemonic; a panel, not an overlay |
+| `T` | open the global todo pad, in the same panel | shifted pair of `t`: the same subject, the wider scope |
 | `r` | refresh — reconcile state against tmux reality | LazyGit/Docker `r` = refresh |
 | `R` | reset the layout — dashboard strip, agent windows and holders back to their default proportions | shifted pair of `r`: the same subject (put reality back in step), the heavier repair on the shifted key. `r` stays refresh because that is the tradition's binding |
 | `ctrl-t` | live theme picker (preview on move, Enter keeps, Esc restores) | ctrl layer; picker lists built-ins first |
@@ -181,7 +182,12 @@ Sending uses tmux's paste-buffer with bracketed paste, so multi-line prompts
 arrive as ONE paste (embedded newlines are content, not Enter presses) and
 the trailing Enter submits.
 
-## Todo pad (opened with `t`)
+## Todo pads (opened with `t` / `T`)
+
+`t` opens the pad of the selected repository, `T` the global one. Both use
+the same panel; parked, it shows the pad opened last, and a repository pad
+follows the selection. The title names the pad (`Todo · repo-a`,
+`Todo · global`).
 
 The pad is a panel of its own, split off the **bottom of the tree's column**
 — not an overlay, so neither the tree above it nor the preview (or the docked
@@ -191,13 +197,13 @@ navigation layer underneath it; `Esc` is the way back to the tree.
 
 It has two heights, and no third state:
 
-- **Open** (`t`): **half the column**, which is what writing in it needs.
+- **Open** (`t` / `T`): **half the column**, which is what writing in it needs.
 - **Parked** (after `Esc`, with something in it): as many rows as the note
   has lines — five lines of text is a five-line panel — capped at the open
   half, so a long note cannot push the tree off the screen. The border is
   unfocused and there is no caret. The note stays on screen because a
   reminder you have to press a key to see is not one; when the cap cuts it
-  off, the title says how many rows are below the fold (`Todo ↓12`).
+  off, the title says how many rows are below the fold (`Todo · repo-a ↓12`).
 - **Empty and parked**: no panel at all. A framed box with nothing in it is
   worse than the row it costs.
 
@@ -254,7 +260,7 @@ too and the footer drops them: `git worktree remove` refuses without
 | Action | Meaning | Rule satisfied |
 |---|---|---|
 | click a tree row | select | click to select |
-| click the parked todo panel | open the pad (`t`) | click to focus the panel you clicked |
+| click the parked todo panel | open the pad it shows | click to focus the panel you clicked |
 | double-click a row | same as `Enter` | click on row = `Enter` where unambiguous |
 | wheel | scroll the preview 3 lines through the selected pane's scrollback; the tree selection never moves | the wheel belongs to the panel that has something to scroll |
 | wheel below the split tier | scroll the tree (the preview is not drawn there) | no dead keys |
@@ -359,7 +365,7 @@ An inert key is a decision, not an omission.
 - `/` — no search/filter panel exists yet (the tree is small; statuses are
   classified automatically). When a filter lands it takes `/` per the rules.
 - `Tab` / `Shift-Tab` — no panel cycling: the two focusable panels (the tree
-  and the todo pad below it) are each reached by name — `t` into the pad,
+  and the todo pad below it) are each reached by name — `t`/`T` into the pad,
   `Esc` back — and the detail/preview panes are display-only. In the
   quick-send textarea and in the pad, `Tab` inserts a tab (see above); in
   the New Worktree prompt it moves between that dialog's two fields, which

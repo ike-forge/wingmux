@@ -172,7 +172,7 @@ pub enum Mode {
     /// dropped at load — see the configuration guidelines). Scrollable list
     /// of diagnostics, dismissed with Esc/q/Enter.
     Diagnostics,
-    /// The todo pad (`t`), edited **in place** in the tree's own panel
+    /// A todo pad (`t` repository, `T` global), edited **in place** in the tree's own panel
     /// rather than in an overlay: a scratch pad you keep open while
     /// reading the tree beside it is not a dialog, and a dialog would
     /// cover the preview it is written about.
@@ -183,6 +183,7 @@ pub enum Mode {
     /// ctrl-c (quit) and ctrl-t (theme) global.
     Todo {
         buf: TextBuf,
+        pad: crate::todo::Pad,
     },
 }
 
@@ -584,7 +585,7 @@ pub(crate) fn todo_wrap_width(app: &App) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarAction {
     Help,
-    /// Open the todo pad (`t`).
+    /// Open the selected repository's todo pad (`t`).
     Todo,
     /// Leave the pad, keeping what is in it (`Esc`).
     TodoBack,
@@ -814,16 +815,21 @@ pub struct App {
     /// re-resolved every time the popup opens (a `git` call per keystroke
     /// is not on). `None` when the repository could not be read.
     new_worktree_base: Option<BaseHint>,
-    /// The todo pad at rest — where [`Mode::Todo`] hands its buffer back
+    /// The global pad at rest — where [`Mode::Todo`] hands its buffer back
     /// when the panel closes, so reopening lands on the line the typing
-    /// stopped at. The text (never the cursor) is what reaches
-    /// `todo.md`; see [`crate::todo`].
+    /// stopped at. Only the text reaches disk; see [`crate::todo`].
     pub todo: TextBuf,
-    /// Has the pad changed since it was last written? The panel saves on
-    /// the way out, but a dashboard killed with its terminal never gets an
-    /// exit: the flag is flushed by [`App::poll`] as well, so the worst a
-    /// crash costs is one poll interval of typing.
-    todo_dirty: bool,
+    /// Per-repository pads at rest, keyed by repository path. Loaded for
+    /// every known repository so the parked panel can follow the selection
+    /// without touching the disk per frame.
+    pub repo_todos: HashMap<PathBuf, TextBuf>,
+    /// Which kind of pad the parked panel shows: the one opened last. A
+    /// repository pad follows the selection.
+    pub todo_global_parked: bool,
+    /// The pad changed since it was last written. Also flushed by
+    /// [`App::poll`], so a dashboard killed with its terminal loses at most
+    /// one poll interval of typing.
+    todo_dirty: Option<crate::todo::Pad>,
 }
 
 /// The base branch a new worktree would branch from, as shown in the New
@@ -903,7 +909,9 @@ impl App {
             last_click: None,
             new_worktree_base: None,
             todo: TextBuf::new(),
-            todo_dirty: false,
+            repo_todos: HashMap::new(),
+            todo_global_parked: false,
+            todo_dirty: None,
         }
     }
 
@@ -1891,67 +1899,99 @@ impl App {
 
     // ------------------------------------------------------------- todo
 
-    /// Open the todo pad in the tree's panel (`t`).
-    ///
-    /// The text is re-read from disk, not taken from the copy this run
-    /// started with: the pad is global, so another dashboard — or the
-    /// user's own `$EDITOR` on `todo.md` — may have moved it on since. The
-    /// cursor is the one part that stays in memory, which is why an
-    /// unchanged file reopens exactly where the typing stopped.
-    fn open_todo(&mut self) {
-        let text = crate::todo::load();
-        if text != self.todo.text() {
-            let (row, col) = (self.todo.cursor_row(), self.todo.cursor_col());
-            self.todo = TextBuf::from_parked(&text, row, col);
-        }
-        // The mode goes up first: the panel is half the column while it is
-        // open and collapsed while it is not, so the window the caret is
-        // scrolled into only exists once the pad *is* open.
-        self.mode = Mode::Todo {
-            buf: self.todo.clone(),
+    /// Path of the repository the selected row belongs to — a worktree or
+    /// shell row counts as its repository's.
+    fn selected_repo_path(&self) -> Option<PathBuf> {
+        let ri = match self.sel {
+            Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, ..) => ri,
         };
+        self.state.repositories.get(ri).map(|r| r.path.clone())
+    }
+
+    /// The pad the parked panel shows, and its buffer. `None` when the
+    /// selection has no repository or that repository's pad is not loaded.
+    pub(crate) fn parked_todo(&self) -> Option<(crate::todo::Pad, &TextBuf)> {
+        if self.todo_global_parked {
+            return Some((crate::todo::Pad::Global, &self.todo));
+        }
+        let path = self.selected_repo_path()?;
+        let buf = self.repo_todos.get(&path)?;
+        Some((crate::todo::Pad::Repo(path), buf))
+    }
+
+    fn todo_buf_mut(&mut self, pad: &crate::todo::Pad) -> &mut TextBuf {
+        match pad {
+            crate::todo::Pad::Global => &mut self.todo,
+            crate::todo::Pad::Repo(path) => self.repo_todos.entry(path.clone()).or_default(),
+        }
+    }
+
+    /// `t`: the pad of the selected row's repository.
+    fn open_repo_todo(&mut self) {
+        match self.selected_repo_path() {
+            Some(path) => self.open_todo(crate::todo::Pad::Repo(path)),
+            None => self.notify("select a repository for its todo"),
+        }
+    }
+
+    /// Open a pad in the tree's panel.
+    ///
+    /// The text is re-read from disk: another dashboard, or `$EDITOR`, may
+    /// have moved it on since. The cursor stays in memory, so an unchanged
+    /// file reopens where the typing stopped.
+    fn open_todo(&mut self, pad: crate::todo::Pad) {
+        // A failed save of the previous pad must not be forgotten by the
+        // dirty flag moving on to this one.
+        self.save_todo();
+        let text = crate::todo::load(&pad);
+        let parked = self.todo_buf_mut(&pad);
+        if text != parked.text() {
+            let (row, col) = (parked.cursor_row(), parked.cursor_col());
+            *parked = TextBuf::from_parked(&text, row, col);
+        }
+        let buf = parked.clone();
+        self.todo_global_parked = pad == crate::todo::Pad::Global;
+        // The mode goes up first: the caret's window is the open panel's.
+        self.mode = Mode::Todo { buf, pad };
         let (visible, wrap) = (todo_visible_lines(self), todo_wrap_width(self));
-        if let Mode::Todo { buf } = &mut self.mode {
+        if let Mode::Todo { buf, .. } = &mut self.mode {
             buf.ensure_visible(visible, wrap);
         }
     }
 
     /// Leave the pad, keeping what is in it. Every exit goes through here —
-    /// `Esc`, a theme switch, a click outside the panel — because a scratch
-    /// pad that can lose a note is not one.
+    /// `Esc`, a theme switch, a click outside the panel.
     fn close_todo(&mut self) {
-        if let Mode::Todo { buf } = &self.mode {
-            let parked = buf.clone();
+        if let Mode::Todo { buf, pad } = &self.mode {
+            let (buf, pad) = (buf.clone(), pad.clone());
             self.mode = Mode::Normal;
-            self.park_todo(parked);
+            self.park_todo(pad, buf);
         }
     }
 
     /// Park an edited pad and write it out.
-    fn park_todo(&mut self, buf: TextBuf) {
-        self.todo = buf;
-        self.todo_dirty = true;
+    fn park_todo(&mut self, pad: crate::todo::Pad, buf: TextBuf) {
+        *self.todo_buf_mut(&pad) = buf;
+        self.todo_dirty = Some(pad);
         self.save_todo();
     }
 
-    /// Write the pad to `todo.md` when it has changed.
+    /// Write the dirty pad out, if any.
     ///
-    /// Failures are logged, never toasted — the text is still in memory and
-    /// there is nothing the user could do about it — except that the flag
-    /// stays up, so the next poll tries again.
+    /// Failures are logged, never toasted — the text is still in memory —
+    /// and the flag stays up so the next poll retries.
     fn save_todo(&mut self) {
-        if !self.todo_dirty {
+        let Some(pad) = self.todo_dirty.clone() else {
             return;
-        }
-        // Read through the open panel when there is one: a pad being
-        // typed into is the live buffer, and `self.todo` only catches up
-        // when the panel closes.
-        let text = match &self.mode {
-            Mode::Todo { buf } => buf.text(),
-            _ => self.todo.text(),
         };
-        match crate::todo::save(&text) {
-            Ok(()) => self.todo_dirty = false,
+        // The open panel is the live buffer; the parked one only catches up
+        // when it closes.
+        let text = match &self.mode {
+            Mode::Todo { buf, pad: open } if *open == pad => buf.text(),
+            _ => self.todo_buf_mut(&pad).text(),
+        };
+        match crate::todo::save(&pad, &text) {
+            Ok(()) => self.todo_dirty = None,
             Err(e) => log::warn!("cannot save todo: {e}"),
         }
     }
@@ -1963,7 +2003,7 @@ impl App {
     fn todo_scroll_by(&mut self, lines: isize) {
         let visible = todo_visible_lines(self);
         let wrap = todo_wrap_width(self);
-        if let Mode::Todo { buf } = &mut self.mode {
+        if let Mode::Todo { buf, .. } = &mut self.mode {
             for _ in 0..lines.unsigned_abs() {
                 if lines < 0 {
                     buf.move_up();
@@ -1975,14 +2015,41 @@ impl App {
         }
     }
 
-    /// Restore the pad parked by an earlier run (or written by hand).
+    /// Restore the pads parked by an earlier run (or written by hand).
     fn load_todo(&mut self) {
-        let text = crate::todo::load();
-        if text.len() > TEXTBUF_MAX_BYTES {
-            log::warn!("todo.md exceeds the buffer cap — not loaded");
-            return;
+        if let Some(buf) = Self::read_pad(&crate::todo::Pad::Global) {
+            self.todo = buf;
         }
-        self.todo = TextBuf::from_parked(&text, 0, 0);
+        self.load_repo_todos();
+    }
+
+    /// Load the pad of every repository not loaded yet — including ones
+    /// added since startup, so their parked pad shows without a `t` first.
+    fn load_repo_todos(&mut self) {
+        let missing: Vec<PathBuf> = self
+            .state
+            .repositories
+            .iter()
+            .filter(|r| !self.repo_todos.contains_key(&r.path))
+            .map(|r| r.path.clone())
+            .collect();
+        for path in missing {
+            let pad = crate::todo::Pad::Repo(path.clone());
+            let buf = Self::read_pad(&pad).unwrap_or_default();
+            self.repo_todos.insert(path, buf);
+        }
+    }
+
+    fn read_pad(pad: &crate::todo::Pad) -> Option<TextBuf> {
+        let text = crate::todo::load(pad);
+        if text.len() > TEXTBUF_MAX_BYTES {
+            log::warn!(
+                "{} exceeds the buffer cap — not loaded",
+                crate::util::todo_path(pad).display()
+            );
+            return None;
+        }
+        Some(TextBuf::from_parked(&text, 0, 0))
     }
 
     /// Leave the quick-send textarea without sending, parking whatever is
@@ -3286,6 +3353,7 @@ impl App {
         // reason: a pad typed on a server that has gone away must still
         // reach the disk.
         self.save_todo();
+        self.load_repo_todos();
         let Ok(tmux) = self.require_tmux() else {
             return;
         };
@@ -3601,7 +3669,7 @@ impl App {
                     buf.ensure_visible(visible_lines, wrap_width);
                 }
             }
-            Mode::Todo { buf } => {
+            Mode::Todo { buf, pad } => {
                 // The panel *is* the editor, so every printable key is
                 // text and there is no navigation layer underneath: `Esc`
                 // is the way back to the tree, and it saves. ctrl-s saves
@@ -3610,8 +3678,8 @@ impl App {
                 if key.code == KeyCode::Esc {
                     self.close_todo();
                 } else if key.code == KeyCode::Char('s') && ctrl {
-                    let parked = buf.clone();
-                    self.park_todo(parked);
+                    let (parked, pad) = (buf.clone(), pad.clone());
+                    self.park_todo(pad, parked);
                     self.notify("todo saved");
                 } else {
                     // Same editing keys as the quick-send textarea — one
@@ -3690,7 +3758,7 @@ impl App {
                         // The text itself is not copied out on every
                         // keystroke — `save_todo` reads the open buffer.
                         // This only says there is something to write.
-                        self.todo_dirty = true;
+                        self.todo_dirty = Some(pad.clone());
                     }
                 }
             }
@@ -3839,7 +3907,8 @@ impl App {
                 }
             }
             KeyCode::Char('p') => self.open_messages(),
-            KeyCode::Char('t') => self.open_todo(),
+            KeyCode::Char('t') => self.open_repo_todo(),
+            KeyCode::Char('T') => self.open_todo(crate::todo::Pad::Global),
             KeyCode::Char('d') => match self.sel {
                 Sel::Shell(..) => self.confirm_delete_shell(),
                 // `d` stays "close the thing this row stands for": on a
@@ -4378,8 +4447,9 @@ impl App {
         if let Some((top, bot)) = crate::ui::todo_panel_rows(self)
             && y >= top
             && y < bot
+            && let Some((pad, _)) = self.parked_todo()
         {
-            self.open_todo();
+            self.open_todo(pad);
             return;
         }
         let row = y.saturating_sub(1) as usize; // below the top border
@@ -4421,7 +4491,7 @@ impl App {
                     self.dock_shell(ri, wi, si);
                 }
             }
-            BarAction::Todo => self.open_todo(),
+            BarAction::Todo => self.open_repo_todo(),
             BarAction::TodoBack => self.close_todo(),
         }
     }
@@ -5915,7 +5985,64 @@ mod tests {
                 matches!(app.mode, Mode::Normal),
                 "esc goes back to the tree"
             );
-            assert_eq!(app.todo.text(), "rebase wt2");
+            assert_eq!(
+                app.repo_todos[&PathBuf::from("/tmp/p")].text(),
+                "rebase wt2"
+            );
+        });
+    }
+
+    fn p_pad() -> crate::todo::Pad {
+        crate::todo::Pad::Repo(PathBuf::from("/tmp/p"))
+    }
+
+    /// `T` opens the global pad, `t` the repository's — separate buffers,
+    /// separate files.
+    #[test]
+    fn shift_t_opens_the_global_pad_apart_from_the_repository_one() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.on_key(key(KeyCode::Char('T'), false));
+            typed(&mut app, "global note");
+            app.on_key(key(KeyCode::Esc, false));
+            app.on_key(key(KeyCode::Char('t'), false));
+            typed(&mut app, "repo note");
+            app.on_key(key(KeyCode::Esc, false));
+            assert_eq!(crate::todo::load(&crate::todo::Pad::Global), "global note");
+            assert_eq!(crate::todo::load(&p_pad()), "repo note");
+        });
+    }
+
+    /// A parked repository pad follows the selection: another repository
+    /// shows its own pad, or none. A parked global pad stays put.
+    #[test]
+    fn the_parked_repository_pad_follows_the_selection() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 41);
+            let mut other = app.state.repositories[0].clone();
+            other.name = "q".into();
+            other.path = PathBuf::from("/tmp/q");
+            other.worktrees.clear();
+            app.state.repositories.push(other);
+            app.build_tree_flags();
+            app.load_repo_todos();
+
+            app.on_key(key(KeyCode::Char('t'), false));
+            typed(&mut app, "for p");
+            app.on_key(key(KeyCode::Esc, false));
+            assert!(crate::ui::todo_panel_rows(&app).is_some());
+
+            app.sel = Sel::Repository(1);
+            assert_eq!(crate::ui::todo_panel_rows(&app), None, "q has no notes");
+            app.on_key(key(KeyCode::Char('T'), false));
+            typed(&mut app, "global");
+            app.on_key(key(KeyCode::Esc, false));
+            app.sel = Sel::Worktree(0, 0);
+            let (pad, buf) = app.parked_todo().unwrap();
+            assert_eq!(pad, crate::todo::Pad::Global);
+            assert_eq!(buf.text(), "global");
         });
     }
 
@@ -5930,7 +6057,7 @@ mod tests {
             let before = app.sel;
             app.on_key(key(KeyCode::Char('t'), false));
             typed(&mut app, "djkq? gG");
-            let Mode::Todo { buf } = &app.mode else {
+            let Mode::Todo { buf, .. } = &app.mode else {
                 panic!("still the pad");
             };
             assert_eq!(buf.text(), "djkq? gG");
@@ -5939,20 +6066,20 @@ mod tests {
         });
     }
 
-    /// The pad outlives the process: it is one plain file for the whole
+    /// The global pad outlives the process: one plain file for the whole
     /// machine, so a dashboard started anywhere else finds the same notes.
     #[test]
-    fn the_pad_survives_a_restart_and_is_not_per_scope() {
+    fn the_global_pad_survives_a_restart_and_is_not_per_scope() {
         crate::util::testutil::with_fresh_xdg(|| {
             let mut app = app_with_shell();
             app.viewport = (120, 40);
-            app.on_key(key(KeyCode::Char('t'), false));
+            app.on_key(key(KeyCode::Char('T'), false));
             typed(&mut app, "wait for the schema");
             app.on_key(key(KeyCode::Enter, false));
             typed(&mut app, "then rebase");
             app.on_key(key(KeyCode::Esc, false));
             assert_eq!(
-                std::fs::read_to_string(crate::util::todo_path()).unwrap(),
+                std::fs::read_to_string(crate::util::todo_path(&crate::todo::Pad::Global)).unwrap(),
                 "wait for the schema\nthen rebase",
                 "written as plain text, editable without the dashboard"
             );
@@ -5962,8 +6089,8 @@ mod tests {
             next.viewport = (120, 40);
             next.scope_root = PathBuf::from("/somewhere/else");
             next.load_todo();
-            next.on_key(key(KeyCode::Char('t'), false));
-            let Mode::Todo { buf } = &next.mode else {
+            next.on_key(key(KeyCode::Char('T'), false));
+            let Mode::Todo { buf, .. } = &next.mode else {
                 panic!("the pad opens");
             };
             assert_eq!(buf.text(), "wait for the schema\nthen rebase");
@@ -5983,7 +6110,7 @@ mod tests {
             app.on_key(key(KeyCode::Char('c'), true));
             assert!(app.quit, "ctrl-c quits from the pad too");
             app.save_todo();
-            assert_eq!(crate::todo::load(), "unsaved note");
+            assert_eq!(crate::todo::load(&p_pad()), "unsaved note");
         });
     }
 
@@ -5999,7 +6126,7 @@ mod tests {
             typed(&mut app, "keep me");
             app.on_key(key(KeyCode::Char('t'), true));
             assert!(matches!(app.mode, Mode::ThemePicker { .. }));
-            assert_eq!(crate::todo::load(), "keep me");
+            assert_eq!(crate::todo::load(&p_pad()), "keep me");
         });
     }
 
@@ -6016,7 +6143,7 @@ mod tests {
             let tree_w = crate::ui::tree_width_for(&app).unwrap();
             app.mouse_click(tree_w + 5, 3, false);
             assert!(matches!(app.mode, Mode::Normal), "back to the tree");
-            assert_eq!(crate::todo::load(), "still here");
+            assert_eq!(crate::todo::load(&p_pad()), "still here");
         });
     }
 
@@ -6071,7 +6198,7 @@ mod tests {
             // The tree is above the open pad now, so clicking it leaves.
             app.mouse_click(3, 2, false);
             assert!(matches!(app.mode, Mode::Normal), "back to the tree");
-            assert_eq!(crate::todo::load(), "later");
+            assert_eq!(crate::todo::load(&p_pad()), "later");
         });
     }
 
