@@ -1,13 +1,13 @@
-//! Persistent state: repositories and worktrees.
+//! Persistent state: what LazyWingman records about the worktrees it creates.
 //!
-//! Stored as JSON in `$XDG_STATE_HOME/lazywingman/state.json`. The file holds
-//! only what no other system records: the repositories in scope and the
-//! metadata of their worktrees. Everything tmux owns — shells, their commands,
-//! agent sessions — lives on tmux options and is rebuilt by
-//! [`State::reconcile`], so the file cannot disagree with the server.
-//!
-//! A file of any other version is discarded and rediscovered.
+//! `$XDG_STATE_HOME/lazywingman/state.json` holds only facts no other system
+//! keeps: per worktree path, the name typed in the popup, when it was created,
+//! the fork point and the agent picked. Everything else is rebuilt each run —
+//! repositories from the scan and `[[repositories]]`, their base branch and
+//! agent from config and git, worktrees from `git worktree list`, shells and
+//! sessions from tmux (see [`State::reconcile`]).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -16,45 +16,29 @@ use crate::error::{Error, Result};
 use crate::git::Git;
 use crate::tmux::{SESSION_PREFIX, SessionInfo, Tmux};
 
-pub const STATE_VERSION: u32 = 4;
+pub const STATE_VERSION: u32 = 5;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The tree for this run, plus the records that are persisted.
+#[derive(Debug, Clone, Default)]
 pub struct State {
-    #[serde(default)]
-    pub version: u32,
     pub repositories: Vec<Repository>,
+    records: BTreeMap<PathBuf, WorktreeRecord>,
 }
 
-impl Default for State {
-    fn default() -> State {
-        State {
-            version: STATE_VERSION,
-            repositories: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A repository in scope. Nothing here is persisted.
+#[derive(Debug, Clone)]
 pub struct Repository {
     pub name: String,
     pub path: PathBuf,
-    /// Base branch resolved at import time.
-    pub base_branch: String,
-    /// Resolved agent command/shell (from config or defaults).
-    pub agent_command: String,
-    pub agent_shell: String,
-    /// The path is currently not a git repo. Kept rather than pruned; flips
-    /// back when the path is a repo again.
-    #[serde(default)]
+    /// The path stopped being a git repo during this run.
     pub missing: bool,
-    /// The repository's inline shell (a login shell in the main checkout),
-    /// spawned lazily on the first `Enter` on the row. Rebuilt from tmux.
-    #[serde(skip)]
+    /// The inline shell (a login shell in the main checkout), spawned lazily
+    /// on the first `Enter` on the row.
     pub shell: Option<Shell>,
     pub worktrees: Vec<Worktree>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Worktree {
     pub name: String,
     /// Slugified name == git branch == worktree directory.
@@ -64,15 +48,22 @@ pub struct Worktree {
     /// The base-branch commit this worktree was cut from. A merged branch and
     /// a fresh cut both have an empty `base..HEAD`; only the fork point tells
     /// them apart. `None` for worktrees LazyWingman did not create.
-    #[serde(default)]
     pub base_commit: Option<String>,
     /// The agent command picked in the new-worktree popup; `None` means
     /// "whatever the repository runs".
-    #[serde(default)]
     pub agent_command: Option<String>,
-    /// Rebuilt from tmux.
-    #[serde(skip)]
     pub shells: Vec<Shell>,
+}
+
+/// The persisted part of a [`Worktree`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorktreeRecord {
+    name: String,
+    created_at: String,
+    #[serde(default)]
+    base_commit: Option<String>,
+    #[serde(default)]
+    agent_command: Option<String>,
 }
 
 impl Worktree {
@@ -83,7 +74,7 @@ impl Worktree {
     }
 }
 
-/// A live shell, as read back from its pane. Never persisted.
+/// A live shell, as read back from its pane.
 #[derive(Debug, Clone)]
 pub struct Shell {
     pub index: usize,
@@ -114,35 +105,41 @@ impl Shell {
 }
 
 impl State {
-    /// Load from disk; missing file → empty state.
+    /// Load the records; missing file → none. Records of worktrees whose
+    /// directory is gone are dropped here, since nothing else would ever
+    /// prune a worktree outside this run's scope.
     pub fn load() -> Result<State> {
         let path = crate::util::state_path();
-        match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                // Version first: an older schema may not deserialise at all.
-                // A well-formed file of another version is discarded and
-                // rediscovered; malformed JSON is an error so the user is told
-                // instead of silently losing the tree.
-                let raw: serde_json::Value = serde_json::from_str(&text)
-                    .map_err(|e| Error::State(format!("{}: {e}", path.display())))?;
-                let version = raw.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                if version != STATE_VERSION {
-                    log::warn!(
-                        "state v{version} is not v{STATE_VERSION} — discarding {} and starting empty",
-                        path.display()
-                    );
-                    return Ok(State::default());
-                }
-                let state: State = serde_json::from_value(raw)
-                    .map_err(|e| Error::State(format!("{}: {e}", path.display())))?;
-                Ok(state)
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(State::default()),
+            Err(e) => return Err(Error::Io(e)),
+        };
+        // Malformed JSON is an error so the user is told rather than silently
+        // losing the records; a well-formed file of an unknown version is not.
+        let raw: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| Error::State(format!("{}: {e}", path.display())))?;
+        let version = raw.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let mut records = match version {
+            STATE_VERSION => serde_json::from_value(raw["worktrees"].clone())
+                .map_err(|e| Error::State(format!("{}: {e}", path.display())))?,
+            4 => records_from_v4(&raw),
+            _ => {
+                log::warn!(
+                    "state v{version} is not v{STATE_VERSION} — discarding {}",
+                    path.display()
+                );
+                BTreeMap::new()
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
-            Err(e) => Err(Error::Io(e)),
-        }
+        };
+        records.retain(|p, _| p.is_dir());
+        Ok(State {
+            repositories: Vec::new(),
+            records,
+        })
     }
 
-    /// Persist to disk, atomically.
+    /// Persist the records, atomically.
     ///
     /// Two dashboards share this file: last-writer-wins is survivable, a
     /// half-written file is not (`load` fails on it for every instance). So
@@ -152,15 +149,56 @@ impl State {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let text = serde_json::to_string_pretty(self).map_err(|e| Error::State(e.to_string()))?;
+        let stored = serde_json::json!({
+            "version": STATE_VERSION,
+            "worktrees": &self.records,
+        });
+        let text =
+            serde_json::to_string_pretty(&stored).map_err(|e| Error::State(e.to_string()))?;
         let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
         std::fs::write(&tmp, text)?;
         if let Err(e) = std::fs::rename(&tmp, &path) {
             let _ = std::fs::remove_file(&tmp);
             return Err(Error::Io(e));
         }
-        log::info!("state saved: {} repositories", self.repositories.len());
+        log::info!("state saved: {} worktree records", self.records.len());
         Ok(())
+    }
+
+    /// A worktree git lists at `path`, with what was recorded about it.
+    /// `name` is used when nothing was.
+    pub fn restore_worktree(&self, path: PathBuf, branch: String, name: String) -> Worktree {
+        let record = self.records.get(&path).cloned();
+        Worktree {
+            name: record.as_ref().map_or(name, |r| r.name.clone()),
+            branch,
+            created_at: record
+                .as_ref()
+                .map(|r| r.created_at.clone())
+                .unwrap_or_default(),
+            base_commit: record.as_ref().and_then(|r| r.base_commit.clone()),
+            agent_command: record.and_then(|r| r.agent_command),
+            path,
+            shells: Vec::new(),
+        }
+    }
+
+    /// Record a worktree LazyWingman created.
+    pub fn record(&mut self, wt: &Worktree) {
+        self.records.insert(
+            wt.path.clone(),
+            WorktreeRecord {
+                name: wt.name.clone(),
+                created_at: wt.created_at.clone(),
+                base_commit: wt.base_commit.clone(),
+                agent_command: wt.agent_command.clone(),
+            },
+        );
+    }
+
+    /// Drop the record of a worktree that no longer exists.
+    pub fn forget(&mut self, path: &Path) {
+        self.records.remove(path);
     }
 
     /// Rebuild every shell from the panes, and reconstruct worktrees that
@@ -273,8 +311,11 @@ impl State {
             log::info!("worktree {fname} belongs to unknown repository, skipping reconstruction");
             return None;
         };
-        let worktrees = &mut self.repositories[ri].worktrees;
-        if let Some(wi) = worktrees.iter().position(|w| w.path == path) {
+        if let Some(wi) = self.repositories[ri]
+            .worktrees
+            .iter()
+            .position(|w| w.path == path)
+        {
             return Some((ri, wi));
         }
         let Ok(branch) = Git.current_branch(path) else {
@@ -282,22 +323,16 @@ impl State {
             return None;
         };
         log::info!("reconstructing worktree {fname} (branch {branch})");
-        worktrees.push(Worktree {
-            name: fname.to_string(),
-            branch,
-            path: path.to_path_buf(),
-            created_at: String::new(),
-            base_commit: None,
-            agent_command: None,
-            shells: Vec::new(),
-        });
+        let wt = self.restore_worktree(path.to_path_buf(), branch, fname.to_string());
+        let worktrees = &mut self.repositories[ri].worktrees;
+        worktrees.push(wt);
         Some((ri, worktrees.len() - 1))
     }
 
-    /// Prune worktrees that no longer match reality.
+    /// Prune worktrees that no longer match reality, and their records.
     ///
-    /// Repositories are never dropped: one whose path is not a repo is marked
-    /// `missing` and keeps its worktrees, which cannot be verified while gone.
+    /// A repository whose path stopped being a repo is marked `missing` and
+    /// keeps its worktrees, which cannot be verified while it is gone.
     ///
     /// `verify_worktrees` is index-parallel to `repositories`: only
     /// repositories whose worktrees were loaded this run are checked against
@@ -305,28 +340,23 @@ impl State {
     /// loading exists to avoid.
     pub fn prune(&mut self, verify_worktrees: &[bool]) {
         let git = Git;
-        let mut removed = 0;
+        let mut gone = Vec::new();
         for (idx, repo) in self.repositories.iter_mut().enumerate() {
-            if !git.is_repo(&repo.path) {
-                if !repo.missing {
-                    repo.missing = true;
-                    log::info!(
-                        "repository '{}' marked missing ({} is not a git repo)",
-                        repo.name,
-                        repo.path.display()
-                    );
-                }
-                continue;
-            }
-            if repo.missing {
-                repo.missing = false;
+            let is_repo = git.is_repo(&repo.path);
+            if is_repo != !repo.missing {
+                repo.missing = !is_repo;
                 log::info!(
-                    "repository '{}' re-activated ({} is a git repo again)",
+                    "repository '{}' {} ({})",
                     repo.name,
+                    if is_repo {
+                        "re-activated"
+                    } else {
+                        "marked missing"
+                    },
                     repo.path.display()
                 );
             }
-            if !verify_worktrees.get(idx).copied().unwrap_or(true) {
+            if !is_repo || !verify_worktrees.get(idx).copied().unwrap_or(true) {
                 continue;
             }
             let Ok(worktrees) = git.worktree_list(&repo.path) else {
@@ -341,19 +371,34 @@ impl State {
                 let keep = wt_paths.contains(&f.path);
                 if !keep {
                     log::info!(
-                        "pruning stale worktree '{}' (worktree {} gone)",
+                        "pruning stale worktree '{}' ({} gone)",
                         f.name,
                         f.path.display()
                     );
-                    removed += 1;
+                    gone.push(f.path.clone());
                 }
                 keep
             });
         }
-        if removed > 0 {
-            log::info!("pruned {removed} worktrees");
+        for path in &gone {
+            self.forget(path);
         }
     }
+}
+
+/// The worktree records of a v4 file, which nested them under repositories
+/// that are no longer persisted.
+fn records_from_v4(raw: &serde_json::Value) -> BTreeMap<PathBuf, WorktreeRecord> {
+    raw["repositories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|r| r["worktrees"].as_array().into_iter().flatten())
+        .filter_map(|w| {
+            let path = PathBuf::from(w["path"].as_str()?);
+            Some((path, serde_json::from_value(w.clone()).ok()?))
+        })
+        .collect()
 }
 
 /// Sanitise a name the same way session/window names are built.
@@ -399,9 +444,6 @@ mod tests {
         Repository {
             name: name.into(),
             path: PathBuf::from(path),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -443,53 +485,84 @@ mod tests {
         assert_eq!(crate::tmux::Tmux::window_name("wt-one", 2), "lw:wt-one/2");
     }
 
-    /// Nothing tmux owns reaches the file.
+    /// The file holds worktree records and nothing derivable.
     #[test]
-    fn state_json_holds_no_tmux_state() {
-        let mut s = State::default();
-        let mut repo = repository("repo", "/tmp/repo");
-        repo.shell = Some(shell(0));
-        let mut wt = worktree("wt", "/tmp/wt/wt");
-        wt.shells = vec![shell(5)];
-        repo.worktrees.push(wt);
-        s.repositories.push(repo);
-        let json = serde_json::to_string_pretty(&s).unwrap();
-        for leak in ["\"shell\"", "shells", "session", "theme", "@5", "%5", "lw:"] {
-            assert!(!json.contains(leak), "{leak} must not be written: {json}");
-        }
-        let back: State = serde_json::from_str(&json).unwrap();
-        assert!(back.repositories[0].shell.is_none());
-        assert!(back.repositories[0].worktrees[0].shells.is_empty());
-    }
-
-    /// A file written by an older build still loads; its tmux fields are ignored.
-    #[test]
-    fn a_file_with_retired_fields_still_loads() {
-        let old = r#"{"version":4,"theme":"dracula","repositories":[{"name":"p","path":"/tmp/p","base_branch":"main","agent_command":"claude","agent_shell":"bash","session_name":"wingman-session-p","shell":{"index":0,"window_name":"lw:.repo/0"},"worktrees":[{"name":"wt","branch":"wt","path":"/tmp/wt","created_at":"","shells":[{"index":0,"window_name":"lw:wt/0"}]}]}]}"#;
-        let s: State = serde_json::from_str(old).unwrap();
-        assert!(s.repositories[0].shell.is_none());
-        assert!(s.repositories[0].worktrees[0].shells.is_empty());
-    }
-
-    #[test]
-    fn a_v3_file_is_discarded_rather_than_loaded() {
+    fn only_worktree_records_are_saved() {
         crate::util::testutil::with_fresh_xdg(|| {
-            std::fs::create_dir_all(crate::util::state_dir()).unwrap();
-            let v3 = r#"{"version":3,"repositories":[{"name":"p","path":"/tmp/p","base_branch":"main","agent_command":"claude","agent_shell":"bash","worktrees":[]}],"theme":null}"#;
-            std::fs::write(crate::util::state_path(), v3).unwrap();
-            let s = State::load().unwrap();
-            assert!(s.repositories.is_empty(), "v3 is not loaded");
-            assert_eq!(s.version, STATE_VERSION);
+            let dir = tempfile::TempDir::new().unwrap();
+            let mut s = State::default();
+            let mut repo = repository("repo", "/tmp/repo");
+            repo.shell = Some(shell(0));
+            let mut wt = worktree("Feature X", dir.path().to_str().unwrap());
+            wt.created_at = "2026-09-14".into();
+            wt.base_commit = Some("abc".into());
+            wt.shells = vec![shell(5)];
+            s.record(&wt);
+            repo.worktrees.push(wt);
+            s.repositories.push(repo);
+            s.save().unwrap();
+
+            let json = std::fs::read_to_string(crate::util::state_path()).unwrap();
+            for leak in ["repositor", "shell", "session", "theme", "branch", "%5"] {
+                assert!(!json.contains(leak), "{leak} must not be written: {json}");
+            }
+            let back = State::load().unwrap();
+            let wt =
+                back.restore_worktree(dir.path().to_path_buf(), "feature-x".into(), "x".into());
+            assert_eq!(wt.name, "Feature X");
+            assert_eq!(wt.created_at, "2026-09-14");
+            assert_eq!(wt.base_commit.as_deref(), Some("abc"));
+            assert_eq!(wt.branch, "feature-x", "the branch comes from git");
         });
     }
 
     #[test]
-    fn missing_optional_fields_default() {
-        let v1 = r#"{"repositories":[{"name":"p","path":"/tmp/p","base_branch":"main","agent_command":"claude","agent_shell":"bash","worktrees":[]}]}"#;
-        let s: State = serde_json::from_str(v1).unwrap();
-        assert_eq!(s.version, 0);
-        assert!(!s.repositories[0].missing);
-        assert!(s.repositories[0].worktrees.is_empty());
+    fn a_worktree_without_a_record_takes_the_given_name() {
+        let wt = State::default().restore_worktree("/tmp/wt".into(), "b".into(), "b".into());
+        assert_eq!(wt.name, "b");
+        assert_eq!(wt.base_commit, None);
+    }
+
+    /// A v4 file nested the records under repositories; they carry over.
+    #[test]
+    fn v4_worktree_records_carry_over() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let v4 = serde_json::json!({
+                "version": 4,
+                "theme": "dracula",
+                "repositories": [{
+                    "name": "p", "path": "/tmp/p", "base_branch": "main",
+                    "agent_command": "claude", "agent_shell": "bash",
+                    "session_name": "wingman-session-p",
+                    "worktrees": [
+                        {"name": "Kept", "branch": "kept", "path": dir.path(),
+                         "created_at": "then", "base_commit": "f00", "agent_command": "codex",
+                         "shells": [{"index": 0, "window_name": "lw:kept/0"}]},
+                        {"name": "Gone", "branch": "gone", "path": "/nonexistent/lw-gone",
+                         "created_at": "", "shells": []}
+                    ]
+                }]
+            });
+            std::fs::create_dir_all(crate::util::state_dir()).unwrap();
+            std::fs::write(crate::util::state_path(), v4.to_string()).unwrap();
+            let s = State::load().unwrap();
+            assert!(s.repositories.is_empty(), "repositories are rediscovered");
+            assert_eq!(s.records.len(), 1, "the vanished worktree is dropped");
+            let wt = s.restore_worktree(dir.path().to_path_buf(), "kept".into(), "kept".into());
+            assert_eq!(wt.name, "Kept");
+            assert_eq!(wt.base_commit.as_deref(), Some("f00"));
+            assert_eq!(wt.agent_command.as_deref(), Some("codex"));
+        });
+    }
+
+    #[test]
+    fn an_unknown_version_is_discarded_rather_than_loaded() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            std::fs::create_dir_all(crate::util::state_dir()).unwrap();
+            std::fs::write(crate::util::state_path(), r#"{"version":3,"projects":[]}"#).unwrap();
+            assert!(State::load().unwrap().records.is_empty());
+        });
     }
 
     #[test]
@@ -511,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn prune_keeps_missing_repositories_and_reactivates_them() {
+    fn prune_marks_a_vanished_repository_missing_and_reactivates_it() {
         let root = tempfile::TempDir::new().unwrap();
         let repo = git_repo(root.path());
         let mut s = State::default();
@@ -522,43 +595,30 @@ mod tests {
 
         std::fs::remove_dir_all(&repo).unwrap();
         s.prune(&[true]);
-        assert_eq!(
-            s.repositories.len(),
-            1,
-            "missing repository is never pruned"
-        );
         assert!(s.repositories[0].missing);
 
         std::fs::create_dir_all(&repo).unwrap();
         run_git(&repo, &["init", "-b", "main"]);
         s.prune(&[true]);
-        assert_eq!(s.repositories.len(), 1);
         assert!(!s.repositories[0].missing, "re-activated");
     }
 
     #[test]
-    fn prune_drops_gone_worktrees_but_keeps_those_of_missing_repositories() {
+    fn prune_drops_a_gone_worktree_and_its_record() {
         let root = tempfile::TempDir::new().unwrap();
         let repo = git_repo(root.path());
         let mut s = State::default();
         let mut r = repository("repo", repo.to_str().unwrap());
-        r.worktrees
-            .push(worktree("wt", repo.join("../wt-wt").to_str().unwrap()));
+        let wt = worktree("wt", repo.join("../wt-wt").to_str().unwrap());
+        s.record(&wt);
+        r.worktrees.push(wt);
         s.repositories.push(r);
         s.prune(&[true]);
         assert!(
             s.repositories[0].worktrees.is_empty(),
             "gone worktree pruned"
         );
-
-        s.repositories[0].worktrees.push(worktree(
-            "feat2",
-            repo.join("../wt-feat2").to_str().unwrap(),
-        ));
-        std::fs::remove_dir_all(&repo).unwrap();
-        s.prune(&[true]);
-        assert!(s.repositories[0].missing);
-        assert_eq!(s.repositories[0].worktrees.len(), 1, "kept while missing");
+        assert!(s.records.is_empty(), "and its record");
     }
 
     #[test]
@@ -695,19 +755,6 @@ mod tests {
         assert!(status.success(), "git {} failed", args.join(" "));
     }
 
-    #[test]
-    fn save_load_roundtrip() {
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut s = State::default();
-            s.repositories.push(repository("p", "/tmp/p"));
-            s.save().unwrap();
-            let loaded = State::load().unwrap();
-            assert_eq!(loaded.repositories.len(), 1);
-            assert_eq!(loaded.repositories[0].name, "p");
-            assert_eq!(loaded.version, STATE_VERSION);
-        });
-    }
-
     /// Identity lives on the pane, so renaming every agent window costs the
     /// tree nothing.
     #[test]
@@ -798,8 +845,9 @@ mod tests {
     #[test]
     fn save_is_atomic_so_a_torn_file_is_impossible() {
         crate::util::testutil::with_fresh_xdg(|| {
+            let dir = tempfile::TempDir::new().unwrap();
             let mut s = State::default();
-            s.repositories.push(repository("p", "/tmp/p"));
+            s.record(&worktree("wt", dir.path().to_str().unwrap()));
             s.save().expect("save");
 
             let path = crate::util::state_path();
@@ -814,18 +862,16 @@ mod tests {
                 .collect();
             assert!(strays.is_empty(), "temporaries left behind: {strays:?}");
 
-            s.repositories[0].name = "renamed".into();
+            s.forget(dir.path());
             s.save().expect("save again");
-            let back = State::load().expect("still parses");
-            assert_eq!(back.repositories[0].name, "renamed");
+            assert!(State::load().expect("still parses").records.is_empty());
         });
     }
 
     #[test]
     fn missing_state_file_is_empty() {
         crate::util::testutil::with_fresh_xdg(|| {
-            let s = State::load().unwrap();
-            assert!(s.repositories.is_empty());
+            assert!(State::load().unwrap().records.is_empty());
         });
     }
 

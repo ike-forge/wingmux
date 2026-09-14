@@ -33,15 +33,20 @@ the same commit as the change.
   worktrees. Malformed JSON is still an error — the user is told rather than
   silently losing the tree. (v3 introduced that rule, renaming the on-disk
   keys with no migration path; v4 keeps it.)
-- **`state.json` holds nothing tmux owns.** It keeps the repositories and
-  their worktrees' metadata (`base_commit`, `agent_command`, `created_at`) —
-  facts recorded nowhere else. Shells (`Worktree.shells`,
-  `Repository.shell`) are `#[serde(skip)]` and rebuilt from scratch by
-  `reconcile`, and the agent session name is not stored at all. A copy of
-  tmux on disk goes stale the moment the server restarts or another
-  dashboard spawns a shell, so there is none. Files written by older builds
-  still load: the retired fields are ignored rather than bumping the version,
-  which would have discarded every repository.
+- **`state.json` holds only what nothing else records** (schema v5): per
+  worktree path, the name typed in the popup, `created_at`, the fork point
+  (`base_commit`) and the agent picked. Everything else is rebuilt every run,
+  because any copy goes stale the moment its source changes:
+  - repositories (name, path) from the scope scan and `[[repositories]]`;
+  - base branch and agent from config on every use (`Config::base_branch_at`,
+    `Config::agent_at`), resolved by git where a real branch is needed;
+  - worktrees from `git worktree list`, joined with their record by path
+    (`State::restore_worktree`);
+  - shells and agent sessions from tmux (`reconcile`).
+- A record is written on create and dropped on delete or prune; records whose
+  directory is gone are dropped on load, since a worktree outside this run's
+  scope is never pruned. A v4 file's worktree records carry over; anything
+  older is discarded.
 - **A pane carries its own identity.** `dock::ShellId` (repository slug,
   worktree, shell index) is written onto the pane's `@lw_repo` /
   `@lw_worktree` / `@lw_index` options at spawn, and pane options travel with
@@ -70,7 +75,7 @@ the same commit as the change.
 - **Discovery is scope-based, live, and lazy.** The tree does not list every
   repository ever discovered — that mixed scopes. The scope is the startup
   directory (or `[discovery].scan_root`): only repositories inside it get
-  rows; repositories from other scopes stay in state but are hidden. When you
+  rows. Nothing about repositories is persisted, so the scan is the list. When you
   start INSIDE a git repo, that repo is the scope and its worktrees are shown
   flat at the top level (no repository row — `flatten`); a lone MISSING
   repository still shows its row. Everything unfolds by default up to
@@ -93,12 +98,11 @@ the same commit as the change.
   resolves to the MAIN repo (`git worktree list` first entry) even when
   booting from inside a linked worktree. Config-declared repositories that are
   not repos are skipped with a warning (explicit config entries are the user's
-  statement; the missing-flag is for repositories that WERE imported and later
-  vanished). A repository whose path vanished is kept in state and marked
-  `missing` (shown "(missing)" in the tree) instead of being pruned; it
-  re-activates when the path is a repo again, and keeps its worktrees and
-  shells untouched while gone (they cannot be verified). Pruning only removes
-  worktrees/shells of present repositories. Startup discovery is gated behind
+  statement). Import is filesystem only — no git process per repository.
+  A repository whose path vanishes while the dashboard runs is marked
+  `missing` (shown "(missing)" in the tree) on the next prune and
+  re-activates when the path is a repo again; at the next start the scan
+  simply no longer finds it. Startup discovery is gated behind
   an `interactive_boot` flag (`run()` sets it; tests boot headless without
   it), so tests never import the crate's own repo by accident.
 - **No `i import` / `I scan`: discovery is the only way in.** Both keys
@@ -413,8 +417,7 @@ with nothing re-implemented. Four invariants hold the whole thing up.
   and off-screen, and the nominal case is many hidden agents. What M18 retired
   is the window *name* as an identity mechanism, not the window.
 - **No tmux state in `state.json`.** Shells, their commands and the agent
-  session are re-derived from `list-panes -a` / `list-sessions`; the file
-  keeps repositories and worktrees.
+  session are re-derived from `list-panes -a` / `list-sessions`.
 - **Anything shared between instances lives in tmux, and is re-read every
   poll.** Two dashboards have no channel to each other except the tmux server.
   So the lease is a pane option (`@lw_docked`), never a field in the state
@@ -1047,8 +1050,8 @@ duplication docking exists to end.
   `App::expand_message` substitutes `<base_branch>`, `<branch>`, `<worktree>`,
   `<repository>` and `<worktree_path>` from the selected shell's repository
   and worktree, and both `draw_messages` and `send_predefined` call it — which
-  is what makes the list honest. It reads state only (the base branch was resolved at import
-  time), so it is safe to call every frame. Unknown tokens pass through as
+  is what makes the list honest. It reads state and config only (the
+  configured base branch, no git), so it is safe to call every frame. Unknown tokens pass through as
   written, and so does everything when no shell is selected: there is no
   context to resolve against, and blanks would be worse than the template.
 - **The merge preset names the LOCAL base**: `merge to LOCAL <base_branch>`.

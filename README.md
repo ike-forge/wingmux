@@ -228,9 +228,10 @@ everything else is kept. Unknown keys are reported, not fatal (an older
 binary runs a newer config). Every drop is shown once, at startup, in a
 **diagnostics overlay** (`Esc`/`q` dismisses, `j`/`k` scrolls) and logged.
 
-Repositories found by discovery live in the state file, not in the config;
-config `[[repositories]]` entries are merged in at startup and consulted for
-per-repository agent settings.
+Repositories are not stored: each start scans the scope and merges in
+config `[[repositories]]` entries. A repository's base branch and agent are
+read from config whenever they are used, so a config edit applies at the
+next start without touching any state.
 
 ## Repository discovery
 
@@ -261,11 +262,10 @@ stats per directory, done live.
   refreshes tmux state (windows, panes, worktrees), not the repo list. To add
   a repository that is not in the scope, declare it under `[[repositories]]`
   in `config.toml`.
-- **Missing repositories** are kept, not pruned: a repository whose path is
-  currently not a git repo shows `(missing)` dimmed in the tree and
-  re-activates automatically when the path is a repo again. If it is gone
-  for good, drop it from `state.json` (and from `[[repositories]]` in
-  `config.toml` if it was declared there).
+- **Missing repositories**: a repository whose path stops being a git repo
+  while the dashboard runs shows `(missing)` dimmed after `r` and
+  re-activates when the path is a repo again. The next start does not list
+  it.
 
 ### Themes
 
@@ -454,8 +454,9 @@ without hunting for the status word at the end of the row.
 - Unsent quick-send drafts (`$XDG_STATE_HOME/lazywingman/drafts.json`) are
   keyed by repository + branch + shell index, so they are restored onto the
   right shell after a restart even though tmux gives it a new pane id.
-- State (`$XDG_STATE_HOME/lazywingman/state.json`) holds only repositories
-  and worktree metadata. Worktrees are checked against `git worktree list`;
+- State (`$XDG_STATE_HOME/lazywingman/state.json`) holds only what
+  LazyWingman recorded about the worktrees it created (name, creation time,
+  fork point, agent), keyed by path. Worktrees come from `git worktree list`;
   shells are never stored and are rebuilt from tmux on startup and on `r`
   (a worktree with a live shell but no entry is reconstructed from the
   pane's cwd + git metadata).

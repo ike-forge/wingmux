@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
 
-use crate::config::{Config, RepositoryConfig};
+use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::git::{Git, WorktreeState};
 use crate::state::{Repository, Shell, State, Worktree};
@@ -1323,7 +1323,7 @@ impl App {
                 );
                 continue;
             }
-            self.add_repository(path)?;
+            self.add_repository(path);
             imported += 1;
         }
         if imported > 0 {
@@ -1332,29 +1332,16 @@ impl App {
         Ok(())
     }
 
-    /// Push a new repository for a verified repo path, resolving base branch
-    /// and agent settings from the config (per-repository overrides by path).
-    fn add_repository(&mut self, path: PathBuf) -> Result<()> {
-        let name = Git.repo_name(&path);
-        let repo_cfg = RepositoryConfig {
-            path: path.to_string_lossy().into_owned(),
-            base_branch: None,
-            agent: None,
-            agent_command: None,
-        };
-        let base = Git.resolve_base_branch(&path, &self.cfg.base_branch_for(&repo_cfg))?;
-        let agent = self.cfg.agent_for(&repo_cfg);
+    /// Push a repository for a repo path. Its base branch and agent are read
+    /// from config on use ([`Config::agent_at`], [`Config::base_branch_at`]).
+    fn add_repository(&mut self, path: PathBuf) {
         self.state.repositories.push(Repository {
-            name,
+            name: Git.repo_name(&path),
             path,
-            base_branch: base,
-            agent_command: agent.command,
-            agent_shell: agent.shell,
             missing: false,
             shell: None,
             worktrees: Vec::new(),
         });
-        Ok(())
     }
 
     // ---------------------------------------------------------- discovery
@@ -1434,8 +1421,6 @@ impl App {
             self.flatten = true;
             self.build_tree_flags();
         }
-        // Imports must survive a restart — persist what discovery found.
-        self.save_state()?;
         Ok(())
     }
 
@@ -1447,10 +1432,7 @@ impl App {
         let path = main_repo.to_path_buf();
         let mut ri = self.state.repositories.iter().position(|x| x.path == path);
         if ri.is_none() {
-            if !Git.is_repo(&path) {
-                return Ok(()); // vanished between detect and import
-            }
-            self.add_repository(path.clone())?;
+            self.add_repository(path.clone());
             ri = Some(self.state.repositories.len() - 1);
         }
         let ri = ri.unwrap();
@@ -1459,9 +1441,8 @@ impl App {
         Ok(())
     }
 
-    /// Scan `root` for git repos and import every new one (repositories already
-    /// in state are skipped). No cache — the scan is live. Returns the
-    /// number of repositories added.
+    /// Scan `root` for git repos and add every one not listed yet. Filesystem
+    /// only — no git process per repository. Returns the number added.
     fn discover_and_import(&mut self, root: &std::path::Path) -> Result<usize> {
         let root = crate::util::normalize_path(root);
         let paths = crate::discovery::scan(
@@ -1470,17 +1451,12 @@ impl App {
             &self.cfg.discovery.skip_dirs,
         );
         let mut added = 0;
-        for p in &paths {
-            if self.state.repositories.iter().any(|x| x.path == *p) {
+        for p in paths {
+            if self.state.repositories.iter().any(|x| x.path == p) {
                 continue;
             }
-            if !Git.is_repo(p) {
-                continue; // raced (removed mid-scan)
-            }
-            match self.add_repository(p.clone()) {
-                Ok(()) => added += 1,
-                Err(e) => log::warn!("importing {} failed: {e}", p.display()),
-            }
+            self.add_repository(p);
+            added += 1;
         }
         if added > 0 {
             log::info!(
@@ -1596,15 +1572,8 @@ impl App {
             } else {
                 branch.clone()
             };
-            self.state.repositories[ri].worktrees.push(Worktree {
-                name,
-                branch,
-                path: info.path,
-                created_at: String::new(),
-                base_commit: None,
-                agent_command: None,
-                shells: Vec::new(),
-            });
+            let wt = self.state.restore_worktree(info.path, branch, name);
+            self.state.repositories[ri].worktrees.push(wt);
             added += 1;
         }
         if let Some(flag) = self.worktrees_loaded.get_mut(ri) {
@@ -2195,7 +2164,8 @@ impl App {
                 repo.path.display()
             )));
         }
-        let base = Git.resolve_base_branch(&repo.path, &repo.base_branch)?;
+        let base = Git.resolve_base_branch(&repo.path, &self.cfg.base_branch_at(&repo.path))?;
+        let repo_agent = self.cfg.agent_at(&repo.path);
         let root = self
             .cfg
             .worktree_root_for(&repo.path)
@@ -2218,14 +2188,14 @@ impl App {
         // on demand; never touches the dashboard's own session)
         let wname = Tmux::window_name(&slug, 0);
         let (session_name, id, window) =
-            self.ensure_agent_session(&tmux, ri, &slug, 0, &root, &repo.agent_shell)?;
+            self.ensure_agent_session(&tmux, ri, &slug, 0, &root, &repo_agent.shell)?;
         let w = match window {
             Some(w) => w,
             None => tmux.new_window(
                 &session_name,
                 &wname,
                 &root,
-                &repo.agent_shell,
+                &repo_agent.shell,
                 &id,
                 self.holder_width(&tmux),
             )?,
@@ -2237,14 +2207,12 @@ impl App {
             c if c.is_empty() => None,
             c => Some(c),
         };
-        let command = agent_command
-            .clone()
-            .unwrap_or_else(|| repo.agent_command.clone());
+        let command = agent_command.clone().unwrap_or(repo_agent.command);
         let spawn_cmd = self.agent_command_for_spawn(&command);
         self.queue_launch(&w.pane_id, spawn_cmd);
         Self::stamp_command(&tmux, &w.pane_id, &command);
 
-        self.state.repositories[ri].worktrees.push(Worktree {
+        let wt = Worktree {
             name: name.to_string(),
             branch: slug,
             path: root,
@@ -2258,7 +2226,9 @@ impl App {
                 window_id: w.window_id,
                 pane_id: w.pane_id,
             }],
-        });
+        };
+        self.state.record(&wt);
+        self.state.repositories[ri].worktrees.push(wt);
         if let Some(v) = self.wt_expanded.get_mut(ri) {
             v.push(true); // new rows unfold, like the ones discovery finds
         }
@@ -2308,7 +2278,7 @@ impl App {
         // user's interactive shell happens to be.
         let shell = match spawn {
             ShellSpawn::Plain => crate::util::login_shell(),
-            ShellSpawn::Agent(_) => repo.agent_shell.clone(),
+            ShellSpawn::Agent(_) => self.cfg.agent_at(&repo.path).shell,
         };
         let (session_name, id, window) =
             self.ensure_agent_session(&tmux, ri, &wt.branch, idx, &wt.path, &shell)?;
@@ -2332,7 +2302,7 @@ impl App {
                     "" => wt
                         .agent_command
                         .clone()
-                        .unwrap_or_else(|| repo.agent_command.clone()),
+                        .unwrap_or_else(|| self.cfg.agent_at(&repo.path).command),
                     c => c.to_string(),
                 };
                 // The command the user chose (or the repository default) is
@@ -2487,7 +2457,7 @@ impl App {
             "shell started in {} ({} on {})",
             repo.name,
             crate::util::shell_name(&shell),
-            repo.base_branch
+            self.cfg.base_branch_at(&repo.path)
         ));
         Ok(())
     }
@@ -2739,6 +2709,7 @@ impl App {
             }
         }
         self.state.repositories[ri].worktrees.remove(wi);
+        self.state.forget(&wt.path);
         if let Some(v) = self.wt_expanded.get_mut(ri) {
             v.remove(wi);
         }
@@ -2884,13 +2855,16 @@ impl App {
             return;
         }
         self.last_wt_state_poll = Some(Instant::now());
+        let cfg = &self.cfg;
         let work: Vec<(PathBuf, String, String)> = self
             .state
             .repositories
             .iter()
             .filter(|p| !p.missing && !p.worktrees.is_empty())
             .filter_map(|p| {
-                let base = Git.resolve_base_branch(&p.path, &p.base_branch).ok()?;
+                let base = Git
+                    .resolve_base_branch(&p.path, &cfg.base_branch_at(&p.path))
+                    .ok()?;
                 Some(p.worktrees.iter().map(move |f| {
                     // No recorded fork point (reconciled worktree, or an
                     // older state file): measure against the base branch and
@@ -2933,7 +2907,8 @@ impl App {
         let Some(wt) = repo.worktrees.get(wi) else {
             return false;
         };
-        let Ok(base) = Git.resolve_base_branch(&repo.path, &repo.base_branch) else {
+        let Ok(base) = Git.resolve_base_branch(&repo.path, &self.cfg.base_branch_at(&repo.path))
+        else {
             return false;
         };
         let fork = wt.base_commit.clone().unwrap_or_else(|| base.clone());
@@ -3117,7 +3092,7 @@ impl App {
         // repository's.
         let default = wi
             .and_then(|wi| repo?.worktrees.get(wi)?.agent_command.clone())
-            .or_else(|| repo.map(|p| p.agent_command.clone()))
+            .or_else(|| repo.map(|p| self.cfg.agent_at(&p.path).command))
             .unwrap_or_default()
             .trim()
             .to_string();
@@ -3191,7 +3166,10 @@ impl App {
             .state
             .repositories
             .get(ri)
-            .map(|p| self.cfg.agent_name_for_command(&p.agent_command))
+            .map(|p| {
+                self.cfg
+                    .agent_name_for_command(&self.cfg.agent_at(&p.path).command)
+            })
             .unwrap_or_else(|| self.cfg.defaults.agent.clone());
         self.mode = Mode::Input {
             kind: InputKind::NewWorktree,
@@ -3211,7 +3189,7 @@ impl App {
         if repo.missing {
             return None;
         }
-        let configured = repo.base_branch.trim().to_string();
+        let configured = self.cfg.base_branch_at(&repo.path).trim().to_string();
         let branch = Git.resolve_base_branch(&repo.path, &configured).ok()?;
         // `resolve_base_branch` returns the configured branch when it
         // exists, so anything else means it fell back to the checkout.
@@ -3349,7 +3327,7 @@ impl App {
         let mut shells: Vec<(String, String, String)> = Vec::new();
         for repo in &self.state.repositories {
             let path = repo.path.to_string_lossy().into_owned();
-            let cmd = repo.agent_command.clone();
+            let cmd = self.cfg.agent_at(&repo.path).command;
             // The inline shell is polled like any other: the preview needs
             // its capture, and `Status::Dead` is how a row learns that the
             // shell behind it exited.
@@ -3916,8 +3894,8 @@ impl App {
     /// Resolve a message template against the selected shell's context.
     /// Every call site — the modal that lists the presets and the send
     /// that pastes one — goes through here, so what the list shows is
-    /// exactly what the agent receives. Reads state only (the base branch
-    /// was resolved at import time), which is what makes it safe on the
+    /// exactly what the agent receives. Reads state and config only (the
+    /// configured base branch, not git), which is what makes it safe on the
     /// render path. Unknown tokens are left as written, and so is
     /// everything when no shell is selected: there is no context to
     /// resolve against, and blanks would be worse than the template.
@@ -3931,7 +3909,7 @@ impl App {
         let Some(wt) = repo.worktrees.get(wi) else {
             return text.to_string();
         };
-        text.replace("<base_branch>", &repo.base_branch)
+        text.replace("<base_branch>", &self.cfg.base_branch_at(&repo.path))
             .replace("<branch>", &wt.branch)
             .replace("<worktree_path>", &wt.path.display().to_string())
             .replace("<worktree>", &wt.name)
@@ -4835,6 +4813,8 @@ mod tests {
         // Tests seed repositories under /tmp without going through
         // boot_discovery — make the whole filesystem the scope.
         app.scope_root = PathBuf::from("/");
+        // Fixture repos are `git init -b main`.
+        app.cfg.worktrees.base_branch = "main".into();
         app
     }
 
@@ -4891,9 +4871,6 @@ mod tests {
         app.state.repositories.push(Repository {
             name: "p".into(),
             path: PathBuf::from("/tmp/p"),
-            base_branch: "master".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
             missing: false,
             shell: None,
             worktrees: vec![Worktree {
@@ -5065,9 +5042,6 @@ mod tests {
                 app.worktrees_loaded.iter().all(|f| *f),
                 "draining the queue loads every unfolded repository"
             );
-            // the import is persisted — a restart must not lose it
-            let loaded = State::load().unwrap();
-            assert_eq!(loaded.repositories.len(), 2, "scan imports must be saved");
         });
     }
 
@@ -5133,9 +5107,6 @@ mod tests {
             app.state.repositories.push(Repository {
                 name: format!("p{i}"),
                 path: PathBuf::from(format!("/tmp/p{i}")),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -5152,9 +5123,6 @@ mod tests {
             few.state.repositories.push(Repository {
                 name: format!("p{i}"),
                 path: PathBuf::from(format!("/tmp/p{i}")),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -5170,9 +5138,6 @@ mod tests {
         one.state.repositories.push(Repository {
             name: "p".into(),
             path: PathBuf::from("/tmp/p"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
             missing: false,
             shell: None,
             worktrees: vec![Worktree {
@@ -5195,9 +5160,6 @@ mod tests {
         empty.state.repositories.push(Repository {
             name: "p".into(),
             path: PathBuf::from("/tmp/p"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -5217,9 +5179,6 @@ mod tests {
             app.state.repositories.push(Repository {
                 name: format!("p{i}"),
                 path: PathBuf::from(format!("/tmp/p{i}")),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
                 missing: false,
                 shell: None,
                 worktrees: vec![Worktree {
@@ -5324,9 +5283,6 @@ mod tests {
         app.state.repositories.push(Repository {
             name: "in-a".into(),
             path: PathBuf::from("/work/scope-a/repo-x"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -5334,9 +5290,6 @@ mod tests {
         app.state.repositories.push(Repository {
             name: "in-b".into(),
             path: PathBuf::from("/work/scope-b/repo-y"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -5429,9 +5382,6 @@ mod tests {
         app.state.repositories.push(Repository {
             name: "gone".into(),
             path: PathBuf::from("/definitely/not/here"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
             missing: true,
             shell: None,
             worktrees: vec![Worktree {
@@ -5468,12 +5418,17 @@ mod tests {
                 app.state.repositories.push(Repository {
                     name: "p".into(),
                     path,
-                    base_branch: "main".into(),
-                    agent_command: "true".into(),
-                    agent_shell: "bash".into(),
                     missing: false,
                     shell: None,
                     worktrees: vec![],
+                });
+                app.cfg.repositories.push(crate::config::RepositoryConfig {
+                    path: app.state.repositories[0]
+                        .path
+                        .to_string_lossy()
+                        .into_owned(),
+                    agent_command: Some("true".into()),
+                    ..Default::default()
                 });
                 app.build_tree_flags();
                 app.repo_expanded[0] = false; // collapsed, as >30 repos or `h` leaves it
@@ -5519,9 +5474,6 @@ mod tests {
                 app.state.repositories.push(Repository {
                     name: "p".into(),
                     path,
-                    base_branch: "main".into(),
-                    agent_command: "claude".into(),
-                    agent_shell: "bash".into(),
                     missing: false,
                     shell: None,
                     worktrees: vec![],
@@ -5544,7 +5496,8 @@ mod tests {
                     "one more of what is already running here is codex"
                 );
                 assert_eq!(
-                    app.state.repositories[0].agent_command, "claude",
+                    app.cfg.agent_at(&app.state.repositories[0].path).command,
+                    "claude",
                     "the repository is untouched by one worktree's choice"
                 );
                 assert_eq!(
@@ -5570,12 +5523,17 @@ mod tests {
                 app.state.repositories.push(Repository {
                     name: "p".into(),
                     path,
-                    base_branch: "main".into(),
-                    agent_command: "true".into(),
-                    agent_shell: "bash".into(),
                     missing: false,
                     shell: None,
                     worktrees: vec![],
+                });
+                app.cfg.repositories.push(crate::config::RepositoryConfig {
+                    path: app.state.repositories[0]
+                        .path
+                        .to_string_lossy()
+                        .into_owned(),
+                    agent_command: Some("true".into()),
+                    ..Default::default()
                 });
                 app.build_tree_flags();
 
@@ -5611,9 +5569,6 @@ mod tests {
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path: path.clone(),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -5655,9 +5610,6 @@ mod tests {
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path,
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
                 missing: false,
                 shell: None,
                 worktrees: vec![Worktree {
@@ -5748,9 +5700,6 @@ mod tests {
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path: path.clone(),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
                 missing: false,
                 shell: None,
                 worktrees: wts,
@@ -5759,9 +5708,6 @@ mod tests {
             app.state.repositories.push(Repository {
                 name: "gone".into(),
                 path: PathBuf::from("/definitely/not/here"),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
                 missing: true,
                 shell: None,
                 worktrees: vec![Worktree {
@@ -5796,12 +5742,14 @@ mod tests {
             let path = repo_with_commit(root.path(), "repo");
 
             let mut app = app_with(tmux_nowhere());
+            app.cfg.repositories.push(crate::config::RepositoryConfig {
+                path: path.to_string_lossy().into_owned(),
+                base_branch: Some("master".into()),
+                ..Default::default()
+            });
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path: path.clone(),
-                base_branch: "master".into(), // repo only has `main`
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -5825,9 +5773,6 @@ mod tests {
             app.state.repositories.push(Repository {
                 name: "gone".into(),
                 path: PathBuf::from("/definitely/not/here"),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
                 missing: true,
                 shell: None,
                 worktrees: vec![],
@@ -5850,9 +5795,6 @@ mod tests {
             app.state.repositories.push(Repository {
                 name: format!("p{i}"),
                 path: PathBuf::from(format!("/tmp/p{i}")),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -5869,9 +5811,6 @@ mod tests {
         app.state.repositories.push(Repository {
             name: "p".into(),
             path: PathBuf::from("/tmp/p"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
             missing: false,
             shell: None,
             worktrees: vec![Worktree {
@@ -7011,9 +6950,6 @@ mod tests {
             app.state.repositories.push(Repository {
                 name: "q".into(),
                 path: PathBuf::from("/tmp/q"),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -7410,9 +7346,6 @@ mod tests {
         app.state.repositories.push(Repository {
             name: "p".into(),
             path: dir.to_path_buf(),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -8615,9 +8548,6 @@ mod tests {
         app.state.repositories.push(Repository {
             name: "p2".into(),
             path: PathBuf::from("/tmp/p2"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -9466,7 +9396,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(300));
             let capture = tmux.capture_pane(&pid, 50).unwrap();
             assert!(
-                capture.contains("lw-merge to master now"),
+                capture.contains("lw-merge to main now"),
                 "the token is resolved before the paste, capture: {capture}"
             );
             assert!(
@@ -9567,7 +9497,14 @@ mod tests {
     #[test]
     fn picker_offers_the_repository_agent_first_and_a_plain_shell_last() {
         let mut app = app_with_shell();
-        app.state.repositories[0].agent_command = "my-agent".into();
+        app.cfg.repositories.push(crate::config::RepositoryConfig {
+            path: app.state.repositories[0]
+                .path
+                .to_string_lossy()
+                .into_owned(),
+            agent_command: Some("my-agent".into()),
+            ..Default::default()
+        });
         let choices = app.add_shell_choices();
         assert_eq!(
             choices.first().map(|c| &c.spawn),
@@ -9590,7 +9527,14 @@ mod tests {
     #[test]
     fn picker_lists_configured_agents_without_duplicating_the_default() {
         let mut app = app_with_shell();
-        app.state.repositories[0].agent_command = "claude".into();
+        app.cfg.repositories.push(crate::config::RepositoryConfig {
+            path: app.state.repositories[0]
+                .path
+                .to_string_lossy()
+                .into_owned(),
+            agent_command: Some("claude".into()),
+            ..Default::default()
+        });
         app.cfg.agents = vec![
             crate::config::AgentConfig {
                 name: "claude".into(),
@@ -9688,7 +9632,14 @@ mod tests {
                 let tmux = tmux_inside(sock);
                 let mut app = app_with(tmux.clone());
                 seed_repository_with_shell(&tmux, &mut app);
-                app.state.repositories[0].agent_command = "echo lw-default-marker".into();
+                app.cfg.repositories.push(crate::config::RepositoryConfig {
+                    path: app.state.repositories[0]
+                        .path
+                        .to_string_lossy()
+                        .into_owned(),
+                    agent_command: Some("echo lw-default-marker".into()),
+                    ..Default::default()
+                });
                 app.state.repositories[0].worktrees[0].path = PathBuf::from("/tmp");
                 app.build_tree_flags();
                 app.sel = Sel::Worktree(0, 0);
@@ -9720,7 +9671,14 @@ mod tests {
                 let tmux = tmux_inside(sock);
                 let mut app = app_with(tmux.clone());
                 seed_repository_with_shell(&tmux, &mut app);
-                app.state.repositories[0].agent_command = "echo lw-default-marker".into();
+                app.cfg.repositories.push(crate::config::RepositoryConfig {
+                    path: app.state.repositories[0]
+                        .path
+                        .to_string_lossy()
+                        .into_owned(),
+                    agent_command: Some("echo lw-default-marker".into()),
+                    ..Default::default()
+                });
                 app.state.repositories[0].worktrees[0].path = PathBuf::from("/tmp");
                 app.build_tree_flags();
                 app.sel = Sel::Worktree(0, 0);

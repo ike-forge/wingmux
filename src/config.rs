@@ -1459,6 +1459,31 @@ impl Config {
             .clone()
             .unwrap_or_else(|| self.worktrees.base_branch.clone())
     }
+
+    /// The `[[repositories]]` entry for `path`, or an empty one. Looked up on
+    /// every use rather than copied into the tree, so nothing can go stale.
+    pub fn repository_at(&self, path: &Path) -> RepositoryConfig {
+        let path = crate::util::normalize_path(path);
+        self.usable_repositories()
+            .into_iter()
+            .find(|r| crate::util::normalize_path(Path::new(&r.path)) == path)
+            .cloned()
+            .unwrap_or_else(|| RepositoryConfig {
+                path: path.to_string_lossy().into_owned(),
+                ..Default::default()
+            })
+    }
+
+    /// Effective agent for the repository at `path`.
+    pub fn agent_at(&self, path: &Path) -> EffectiveAgent {
+        self.agent_for(&self.repository_at(path))
+    }
+
+    /// Configured base branch for the repository at `path`; git resolves it
+    /// (`Git::resolve_base_branch`).
+    pub fn base_branch_at(&self, path: &Path) -> String {
+        self.base_branch_for(&self.repository_at(path))
+    }
 }
 
 // ---------------------------------------------------------------- layering
@@ -3411,6 +3436,23 @@ mod tests {
                 cfg.dump_string()
             );
         });
+    }
+
+    /// Per-repository overrides are looked up by path on use, so an edited
+    /// `[[repositories]]` entry applies without anything to refresh.
+    #[test]
+    fn repository_settings_are_read_by_path() {
+        let mut cfg = Config::from_str(
+            "[[repositories]]\npath = \"/work/app/\"\nbase_branch = \"trunk\"\nagent_command = \"codex\"\n",
+        )
+        .unwrap();
+        let app = Path::new("/work/app");
+        assert_eq!(cfg.base_branch_at(app), "trunk");
+        assert_eq!(cfg.agent_at(app).command, "codex");
+        assert_eq!(cfg.base_branch_at(Path::new("/work/other")), "master");
+
+        cfg.repositories[0].agent_command = Some("claude --resume".into());
+        assert_eq!(cfg.agent_at(app).command, "claude --resume");
     }
 
     #[test]
