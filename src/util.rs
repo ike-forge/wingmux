@@ -64,10 +64,15 @@ pub fn drafts_path() -> PathBuf {
     state_dir().join("drafts.json")
 }
 
-/// The parked todo buffer: `$XDG_STATE_HOME/lazywingman/todo.md`.
-/// One file for the whole machine, not one per scope — see [`crate::todo`].
-pub fn todo_path() -> PathBuf {
-    state_dir().join("todo.md")
+/// A todo pad: `$XDG_STATE_HOME/lazywingman/todo.md` for the global one,
+/// `…/todos/<escaped repository path>.md` per repository — see [`crate::todo`].
+pub fn todo_path(pad: &crate::todo::Pad) -> PathBuf {
+    match pad {
+        crate::todo::Pad::Global => state_dir().join("todo.md"),
+        crate::todo::Pad::Repo(repo) => state_dir()
+            .join("todos")
+            .join(crate::todo::repo_file_name(repo)),
+    }
 }
 
 /// Log file path: `$XDG_STATE_HOME/lazywingman/lazywingman.log`.

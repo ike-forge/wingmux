@@ -23,9 +23,10 @@ the same commit as the change.
 - Drafts file: JSON at `$XDG_STATE_HOME/lazywingman/drafts.json` — unsent
   quick-send prompts (`src/drafts.rs`). State, not cache: a half-written
   prompt cannot be regenerated.
-- Todo file: **plain text** at `$XDG_STATE_HOME/lazywingman/todo.md` — the
-  todo pad (`src/todo.rs`). Not JSON, and not keyed to anything: see "The
-  todo pad" below.
+- Todo files: **plain text** — the global pad at
+  `$XDG_STATE_HOME/lazywingman/todo.md`, one per repository at
+  `$XDG_STATE_HOME/lazywingman/todos/<escaped repository path>.md`
+  (`src/todo.rs`). Not JSON: see "The todo pads" below.
 - **State schema v4**: `State.version = 4`. `load` reads `version` first and
   discards a well-formed file of any other version, starting empty and
   letting `reconcile` rediscover the repositories and reconstruct their
@@ -1053,24 +1054,34 @@ duplication docking exists to end.
   keeps reading `Ahead` until someone pulls. The preset asks for the thing
   the tree can actually see, and shouts the word the agent has to notice.
 
-## The todo pad
+## The todo pads
 
-- **What it is for.** Supervising several agents means constantly noticing
+- **What they are for.** Supervising several agents means constantly noticing
   work that cannot start yet — "rebase the API worktree once the schema
   lands", "delete wt3 after the release". That note has nowhere to go: it is
   not a message to an agent (nothing can act on it), and it is not state the
-  tree can derive. `t` opens a scratch pad for exactly it.
-- **It is global, deliberately.** One file for the machine, not one per
-  scope. A note is written while looking at one repository and needed while
-  looking at another; a per-directory pad would hide it exactly then. This is
-  the opposite call from `drafts.json`, and for the opposite reason: a draft
-  belongs to the shell it was typed at and dies with it, while a todo belongs
-  to the user.
-- **Plain text, no schema.** `todo.md` holds the buffer and nothing else — no
-  cursor, no version. A file with no schema cannot have the wrong one, and
-  the point of a global pad is that it is also reachable without the
-  dashboard (`$EDITOR ~/.local/state/lazywingman/todo.md`); the next `t`
-  re-reads it, so an edit made outside is picked up rather than clobbered.
+  tree can derive. The pads are scratch pads for exactly it.
+- **Two scopes: repository (`t`) and global (`T`).** Most notes are about
+  one repository and only matter while looking at it, so `t` opens that
+  repository's pad. Some are written about one repository and needed while
+  looking at another; the global pad keeps those. There is no per-worktree
+  pad: a note like "delete wt3 after the release" must outlive wt3, so a
+  worktree or shell row opens its repository's pad. A draft is the opposite
+  call (`drafts.json`): it belongs to the shell it was typed at and dies with
+  it.
+- **Stored in the state dir, keyed by repository path.** Not in the
+  repository, so nothing shows in `git status` or gets committed by accident.
+  The key is the path, not the name: names are not unique. `%` and `/` are
+  escaped into the file name so it stays unique and readable.
+- **The parked panel shows the pad opened last.** Two parked panels would
+  crowd the column. A parked repository pad follows the selection, so every
+  repository's pad is loaded into `App::repo_todos` (at startup and, for
+  repositories added later, on the poll) — drawing never reads the disk.
+- **Plain text, no schema.** Each file holds the buffer and nothing else — no
+  cursor, no version. A file with no schema cannot have the wrong one, and a
+  pad is also reachable without the dashboard (`$EDITOR`); opening it
+  re-reads the file, so an edit made outside is picked up rather than
+  clobbered.
   The cursor is a within-run convenience kept in `App::todo`. Written the way
   state is (temp file, rename over) — two dashboards share it, so
   last-writer-wins is the rule, but a half-written pad is not something the
@@ -1109,8 +1120,9 @@ duplication docking exists to end.
 - **`t`, not `2`.** The LazyGit-style numbered panel stack (`[1]` files,
   `[2]` branches, …) buys nothing with two panels: a number is a position,
   which goes stale the moment a third thing wants the panel, while `t` names
-  what it opens. The statusbar carries `todo t` from every row, since the pad
-  is not about the selection.
+  what it opens. `T` is its shifted pair, not `g`, which stays the vim
+  first-item motion. The statusbar carries `todo t` from every row; `T` is
+  in the help overlay.
 
 ## Layout, wording and rendering
 
