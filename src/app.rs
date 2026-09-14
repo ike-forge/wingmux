@@ -935,7 +935,7 @@ impl App {
                 log::warn!("cannot adopt stray agent panes: {e}");
             }
             self.state.reconcile(tmux)?;
-            self.state.prune(Some(tmux), &self.worktrees_loaded)?;
+            self.state.prune(&self.worktrees_loaded);
             self.announce_scope(tmux);
             // A server started by an older build has agent windows with no
             // holder in them; so has one whose holder the user closed.
@@ -1350,7 +1350,6 @@ impl App {
             base_branch: base,
             agent_command: agent.command,
             agent_shell: agent.shell,
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: Vec::new(),
@@ -1824,13 +1823,10 @@ impl App {
         for repo in &self.state.repositories {
             for wt in &repo.worktrees {
                 for sh in &wt.shells {
-                    let Some(pid) = sh.pane_id.as_deref() else {
-                        continue;
-                    };
                     // Walking the tree (not the map) is the prune: a draft
                     // whose shell or worktree is gone has no row to be
                     // written under, so it dies with the shell.
-                    let Some(buf) = self.drafts.get(pid) else {
+                    let Some(buf) = self.drafts.get(&sh.pane_id) else {
                         continue;
                     };
                     entries.push(crate::drafts::Draft {
@@ -1883,11 +1879,8 @@ impl App {
             let Some(sh) = wt.shells.iter().find(|s| s.index == d.shell) else {
                 continue;
             };
-            let Some(pid) = sh.pane_id.clone() else {
-                continue;
-            };
             self.drafts.insert(
-                pid,
+                sh.pane_id.clone(),
                 TextBuf::from_parked(&d.text, d.cursor_row, d.cursor_col),
             );
             restored += 1;
@@ -2078,25 +2071,18 @@ impl App {
     /// to run is a command you type in it.
     pub fn selected_shell_pane(&self) -> Option<String> {
         if let Sel::Repository(ri) = self.sel {
-            return self
-                .state
-                .repositories
-                .get(ri)?
-                .shell
-                .as_ref()?
-                .pane_id
-                .clone();
+            return self.repo_shell_pane(ri);
         }
         let (ri, wi, si) = self.selected_shell()?;
-        self.state
+        let sh = self
+            .state
             .repositories
             .get(ri)?
             .worktrees
             .get(wi)?
             .shells
-            .get(si)?
-            .pane_id
-            .clone()
+            .get(si)?;
+        Some(sh.pane_id.clone())
     }
 
     // ---------------------------------------------------------- actions
@@ -2118,47 +2104,36 @@ impl App {
         }
     }
 
-    /// The dedicated agent-session name for a repository. Deterministic:
-    /// `wingman-session-<slug>`, suffixed with a stable hash of the path
-    /// when another repository already owns that name or a foreign session
-    /// occupies it.
-    fn agent_session_name(&self, tmux: &Tmux, repo: &crate::state::Repository) -> String {
-        let base = Tmux::session_name(&repo.name);
-        let taken_by_other = self
-            .state
-            .repositories
-            .iter()
-            .any(|p| p.path != repo.path && p.session_name.as_deref() == Some(&base));
-        if taken_by_other || tmux.session_exists(&base) {
-            format!("{base}-{}", Tmux::hash_suffix(&repo.path))
-        } else {
-            base
-        }
-    }
-
-    /// Make sure the repository's agent session exists, creating it if needed.
-    /// Returns the session name and, when a NEW session was created, its
-    /// first window (already running `shell` in `cwd`).
+    /// Make sure repository `ri`'s agent session exists, creating it if
+    /// needed. Returns the session name and, when a NEW session was created,
+    /// its first window (already running `shell` in `cwd`).
+    ///
+    /// A new session is `wingman-session-<slug>`, suffixed with a stable hash
+    /// of the path when that name is taken; the path is stamped on it, so the
+    /// name never has to be remembered.
     fn ensure_agent_session(
         &mut self,
         tmux: &Tmux,
-        repo: &crate::state::Repository,
+        ri: usize,
         worktree: &str,
         index: usize,
         cwd: &std::path::Path,
         shell: &str,
     ) -> Result<(String, crate::dock::ShellId, Option<crate::tmux::WindowRef>)> {
-        let name = match &repo.session_name {
-            Some(n) if tmux.session_exists(n) => n.clone(),
-            _ => self.agent_session_name(tmux, repo),
-        };
-        // The identity is minted from the session that will hold the shell,
-        // so it is the same whether the session already existed or is
-        // created below.
-        let id = crate::dock::ShellId::for_session(&name, worktree, index);
-        if tmux.session_exists(&name) {
+        let repo = &self.state.repositories[ri];
+        let sessions = tmux.list_sessions()?;
+        if let Some(name) = self.state.session_of(&sessions, ri) {
+            let id = crate::dock::ShellId::for_session(&name, worktree, index);
             return Ok((name, id, None));
         }
+        let base = Tmux::session_name(&repo.name);
+        let name = if sessions.iter().any(|s| s.name == base) {
+            format!("{base}-{}", Tmux::hash_suffix(&repo.path))
+        } else {
+            base
+        };
+        let path = repo.path.clone();
+        let id = crate::dock::ShellId::for_session(&name, worktree, index);
         let w = tmux.new_session(
             &name,
             &Tmux::window_name(worktree, index),
@@ -2167,11 +2142,22 @@ impl App {
             &id,
             self.holder_width(tmux),
         )?;
+        if let Err(e) = tmux.stamp_session_repo(&name, &path) {
+            log::warn!("cannot stamp {name} with its repository: {e}");
+        }
         log::info!(
             "created agent session {name} (first window {})",
             w.window_id
         );
         Ok((name, id, Some(w)))
+    }
+
+    /// Record a new shell's command on its pane; without it the row falls back
+    /// to `#<index>`, so a failure is only logged.
+    fn stamp_command(tmux: &Tmux, pane: &str, command: &str) {
+        if let Err(e) = tmux.stamp_command(pane, command) {
+            log::warn!("cannot stamp {pane} with its command: {e}");
+        }
     }
 
     /// Create a worktree and its first agent shell. `agent` is what the
@@ -2232,7 +2218,7 @@ impl App {
         // on demand; never touches the dashboard's own session)
         let wname = Tmux::window_name(&slug, 0);
         let (session_name, id, window) =
-            self.ensure_agent_session(&tmux, &repo, &slug, 0, &root, &repo.agent_shell)?;
+            self.ensure_agent_session(&tmux, ri, &slug, 0, &root, &repo.agent_shell)?;
         let w = match window {
             Some(w) => w,
             None => tmux.new_window(
@@ -2256,8 +2242,8 @@ impl App {
             .unwrap_or_else(|| repo.agent_command.clone());
         let spawn_cmd = self.agent_command_for_spawn(&command);
         self.queue_launch(&w.pane_id, spawn_cmd);
+        Self::stamp_command(&tmux, &w.pane_id, &command);
 
-        self.state.repositories[ri].session_name = Some(session_name.clone());
         self.state.repositories[ri].worktrees.push(Worktree {
             name: name.to_string(),
             branch: slug,
@@ -2266,13 +2252,11 @@ impl App {
             base_commit,
             agent_command,
             shells: vec![Shell {
-                // What this shell was actually launched with — the
-                // worktree's own agent, not the repository's fallback.
                 command: Some(command.clone()),
                 index: 0,
                 window_name: wname,
-                window_id: Some(w.window_id),
-                pane_id: Some(w.pane_id),
+                window_id: w.window_id,
+                pane_id: w.pane_id,
             }],
         });
         if let Some(v) = self.wt_expanded.get_mut(ri) {
@@ -2327,7 +2311,7 @@ impl App {
             ShellSpawn::Agent(_) => repo.agent_shell.clone(),
         };
         let (session_name, id, window) =
-            self.ensure_agent_session(&tmux, &repo, &wt.branch, idx, &wt.path, &shell)?;
+            self.ensure_agent_session(&tmux, ri, &wt.branch, idx, &wt.path, &shell)?;
         let w = match window {
             Some(w) => w,
             None => tmux.new_window(
@@ -2361,15 +2345,15 @@ impl App {
             // Nothing is sent: the window already *is* the shell.
             ShellSpawn::Plain => crate::util::shell_name(&shell),
         };
-        self.state.repositories[ri].session_name = Some(session_name.clone());
+        Self::stamp_command(&tmux, &w.pane_id, &what);
         self.state.repositories[ri].worktrees[wi]
             .shells
             .push(Shell {
                 command: Some(what.clone()),
                 index: idx,
                 window_name: wname,
-                window_id: Some(w.window_id),
-                pane_id: Some(w.pane_id),
+                window_id: w.window_id,
+                pane_id: w.pane_id,
             });
         self.save_state()?;
         self.notify(format!("shell #{idx} added ({what})"));
@@ -2399,10 +2383,6 @@ impl App {
             return;
         };
         let (pane, name) = (sh.pane_id.clone(), sh.window_name.clone());
-        let Some(pane) = pane else {
-            self.notify("shell has no live pane");
-            return;
-        };
         self.enter_pane(&pane, &name);
     }
 
@@ -2427,16 +2407,10 @@ impl App {
         }
     }
 
-    /// The repository's own inline shell, if it has one and tmux still
-    /// holds its pane.
+    /// The pane of the repository's own inline shell, if it has one.
     pub fn repo_shell_pane(&self, ri: usize) -> Option<String> {
-        self.state
-            .repositories
-            .get(ri)?
-            .shell
-            .as_ref()?
-            .pane_id
-            .clone()
+        let sh = self.state.repositories.get(ri)?.shell.as_ref()?;
+        Some(sh.pane_id.clone())
     }
 
     /// Start the repository's inline shell if it has none yet: a plain
@@ -2482,7 +2456,7 @@ impl App {
         let wname = Tmux::window_name(crate::dock::REPO_WORKTREE, crate::dock::REPO_INDEX);
         let (session_name, id, window) = self.ensure_agent_session(
             &tmux,
-            &repo,
+            ri,
             crate::dock::REPO_WORKTREE,
             crate::dock::REPO_INDEX,
             &repo.path,
@@ -2499,13 +2473,14 @@ impl App {
                 self.holder_width(&tmux),
             )?,
         };
-        self.state.repositories[ri].session_name = Some(session_name);
+        let command = crate::util::shell_name(&shell);
+        Self::stamp_command(&tmux, &w.pane_id, &command);
         self.state.repositories[ri].shell = Some(Shell {
-            command: Some(crate::util::shell_name(&shell)),
+            command: Some(command),
             index: crate::dock::REPO_INDEX,
             window_name: wname,
-            window_id: Some(w.window_id),
-            pane_id: Some(w.pane_id),
+            window_id: w.window_id,
+            pane_id: w.pane_id,
         });
         self.save_state()?;
         self.notify(format!(
@@ -2542,7 +2517,7 @@ impl App {
                     .iter()
                     .chain(r.worktrees.iter().flat_map(|w| w.shells.iter()))
             })
-            .find(|s| s.pane_id.as_deref() == Some(pane))
+            .find(|s| s.pane_id == pane)
             .map(|s| s.window_name.clone())
     }
 
@@ -2715,13 +2690,10 @@ impl App {
             .and_then(|f| f.shells.get(si))
             .cloned()
             .ok_or_else(|| Error::State("shell out of range".into()))?;
-        let Some(pid) = &sh.pane_id else {
-            return Err(Error::Tmux("shell has no live pane".into()));
-        };
         if text.trim().is_empty() {
             return Ok(());
         }
-        tmux.paste_keys(pid, text, true)?;
+        tmux.paste_keys(&sh.pane_id, text, true)?;
         log::info!("quick-send to {}: {text}", sh.window_name);
         Ok(())
     }
@@ -2756,15 +2728,9 @@ impl App {
             .cloned()
             .ok_or_else(|| Error::State(format!("worktree index {wi} out of range")))?;
         for sh in &wt.shells {
-            if let Some(wid) = &sh.window_id {
-                self.release_dock_before_kill(wid, sh.pane_id.as_deref());
-                match tmux.kill_window(wid) {
-                    Ok(()) => log::info!("killed window {wid} ({})", sh.window_name),
-                    Err(e) => log::warn!("kill-window {wid}: {e}"),
-                }
-            }
+            self.kill_shell_window(&tmux, sh);
         }
-        Self::kill_session_if_empty(&tmux, &repo);
+        self.kill_session_if_empty(&tmux, ri);
         Git.worktree_remove(&repo.path, &wt.path, force)?;
         if self.cfg.worktrees.delete_branch {
             match Git.branch_delete(&repo.path, &wt.branch) {
@@ -2804,15 +2770,9 @@ impl App {
             .get(si)
             .cloned()
             .ok_or_else(|| Error::State(format!("shell index {si} out of range")))?;
-        if let Some(wid) = &sh.window_id {
-            self.release_dock_before_kill(wid, sh.pane_id.as_deref());
-            match tmux.kill_window(wid) {
-                Ok(()) => log::info!("killed window {wid} ({})", sh.window_name),
-                Err(e) => log::warn!("kill-window {wid}: {e}"),
-            }
-        }
-        Self::kill_session_if_empty(&tmux, &repo);
+        self.kill_shell_window(&tmux, &sh);
         self.state.repositories[ri].worktrees[wi].shells.remove(si);
+        self.kill_session_if_empty(&tmux, ri);
         self.clamp_sel();
         self.save_state()?;
         self.poll_worktree_state(true);
@@ -2826,9 +2786,11 @@ impl App {
     /// "No shells left" is asked of the identities, not of the session's
     /// windows: a shell belongs to its session wherever its pane currently
     /// sits, and a window that merely looks like ours is not one.
-    fn kill_session_if_empty(tmux: &Tmux, repo: &crate::state::Repository) {
-        if let Some(sess) = &repo.session_name
-            && tmux.session_exists(sess)
+    fn kill_session_if_empty(&self, tmux: &Tmux, ri: usize) {
+        if let Some(sess) = tmux
+            .list_sessions()
+            .ok()
+            .and_then(|ss| self.state.session_of(&ss, ri))
             && let Some(slug) = sess.strip_prefix(crate::tmux::SESSION_PREFIX)
             && tmux
                 .list_panes()
@@ -2839,7 +2801,15 @@ impl App {
                 .unwrap_or(false)
         {
             log::info!("agent session {sess} has no shells left, killing it");
-            let _ = tmux.kill_session(sess);
+            let _ = tmux.kill_session(&sess);
+        }
+    }
+
+    fn kill_shell_window(&mut self, tmux: &Tmux, sh: &Shell) {
+        self.release_dock_before_kill(&sh.window_id, Some(&sh.pane_id));
+        match tmux.kill_window(&sh.window_id) {
+            Ok(()) => log::info!("killed window {} ({})", sh.window_id, sh.window_name),
+            Err(e) => log::warn!("kill-window {}: {e}", sh.window_id),
         }
     }
 
@@ -3110,15 +3080,9 @@ impl App {
                 repo.name
             )));
         };
-        if let Some(wid) = &sh.window_id {
-            self.release_dock_before_kill(wid, sh.pane_id.as_deref());
-            match tmux.kill_window(wid) {
-                Ok(()) => log::info!("killed window {wid} ({})", sh.window_name),
-                Err(e) => log::warn!("kill-window {wid}: {e}"),
-            }
-        }
-        Self::kill_session_if_empty(&tmux, &repo);
+        self.kill_shell_window(&tmux, &sh);
         self.state.repositories[ri].shell = None;
+        self.kill_session_if_empty(&tmux, ri);
         self.save_state()?;
         self.notify(format!("shell of '{}' closed", repo.name));
         Ok(())
@@ -3389,15 +3353,13 @@ impl App {
             // The inline shell is polled like any other: the preview needs
             // its capture, and `Status::Dead` is how a row learns that the
             // shell behind it exited.
-            if let Some(pid) = repo.shell.as_ref().and_then(|s| s.pane_id.clone()) {
-                shells.push((path.clone(), cmd.clone(), pid));
+            if let Some(sh) = &repo.shell {
+                shells.push((path.clone(), cmd.clone(), sh.pane_id.clone()));
             }
             for wt in &repo.worktrees {
                 let wt_cmd = wt.agent_command.clone().unwrap_or_else(|| cmd.clone());
                 for sh in &wt.shells {
-                    if let Some(pid) = &sh.pane_id {
-                        shells.push((path.clone(), wt_cmd.clone(), pid.clone()));
-                    }
+                    shells.push((path.clone(), wt_cmd.clone(), sh.pane_id.clone()));
                 }
             }
         }
@@ -4084,9 +4046,7 @@ impl App {
         self.preview_picker_theme();
     }
 
-    /// Keep the previewed theme and close. Persist to STATE (per the
-    /// configuration rules the app never rewrites the user's config file);
-    /// startup honours `state.theme` over the config line.
+    /// Keep the previewed theme and close, writing it to the user config.
     fn keep_picked_theme(&mut self) {
         let Mode::ThemePicker { index } = &self.mode else {
             return;
@@ -4097,12 +4057,26 @@ impl App {
             .cloned()
             .unwrap_or_else(|| self.picker_original.clone());
         self.theme.name = name.clone();
-        self.state.theme = Some(name.clone());
-        if let Err(e) = self.save_state() {
-            log::warn!("save theme '{}': {e}", name);
-            self.notify_err(format!("theme '{name}' (not saved: {e})"));
-        } else {
-            self.notify(format!("theme: {name}"));
+        self.cfg.theme = name.clone();
+        // A layer above the user file still wins at the next start.
+        let shadowed_by = self
+            .cfg
+            .sources
+            .iter()
+            .find(|(k, _)| k == "theme")
+            .map(|(_, layer)| *layer)
+            .filter(|l| ![crate::config::LAYER_DEFAULTS, crate::config::LAYER_USER].contains(l));
+        match crate::config::save_theme(&name) {
+            Err(e) => {
+                log::warn!("save theme '{name}': {e}");
+                self.notify_err(format!("theme '{name}' (not saved: {e})"));
+            }
+            Ok(()) => match shadowed_by {
+                Some(layer) => self.notify(format!(
+                    "theme: {name} (saved, but the {layer} config overrides it)"
+                )),
+                None => self.notify(format!("theme: {name}")),
+            },
         }
         self.mode = Mode::Normal;
     }
@@ -4617,10 +4591,7 @@ impl App {
                 log::warn!("reconcile: {e}");
                 ok = false;
             }
-            if let Err(e) = self.state.prune(Some(tmux), &self.worktrees_loaded) {
-                log::warn!("prune: {e}");
-                ok = false;
-            }
+            self.state.prune(&self.worktrees_loaded);
             if ok {
                 let width = crate::dock::dash_width(self.strip_size(tmux).0);
                 crate::dock::ensure_holders(tmux, width);
@@ -4923,7 +4894,6 @@ mod tests {
             base_branch: "master".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: Some("wingman-session-p".into()),
             missing: false,
             shell: None,
             worktrees: vec![Worktree {
@@ -4937,8 +4907,8 @@ mod tests {
                     command: None,
                     index: 0,
                     window_name: "lw:wt/0".into(),
-                    window_id: Some(w.window_id.clone()),
-                    pane_id: Some(w.pane_id.clone()),
+                    window_id: w.window_id.clone(),
+                    pane_id: w.pane_id.clone(),
                 }],
             }],
         });
@@ -5166,7 +5136,6 @@ mod tests {
                 base_branch: "main".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
-                session_name: None,
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -5186,7 +5155,6 @@ mod tests {
                 base_branch: "main".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
-                session_name: None,
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -5205,7 +5173,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![Worktree {
@@ -5231,7 +5198,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -5254,7 +5220,6 @@ mod tests {
                 base_branch: "main".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
-                session_name: None,
                 missing: false,
                 shell: None,
                 worktrees: vec![Worktree {
@@ -5362,7 +5327,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -5373,7 +5337,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -5469,7 +5432,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: true,
             shell: None,
             worktrees: vec![Worktree {
@@ -5509,7 +5471,6 @@ mod tests {
                     base_branch: "main".into(),
                     agent_command: "true".into(),
                     agent_shell: "bash".into(),
-                    session_name: None,
                     missing: false,
                     shell: None,
                     worktrees: vec![],
@@ -5561,7 +5522,6 @@ mod tests {
                     base_branch: "main".into(),
                     agent_command: "claude".into(),
                     agent_shell: "bash".into(),
-                    session_name: None,
                     missing: false,
                     shell: None,
                     worktrees: vec![],
@@ -5613,7 +5573,6 @@ mod tests {
                     base_branch: "main".into(),
                     agent_command: "true".into(),
                     agent_shell: "bash".into(),
-                    session_name: None,
                     missing: false,
                     shell: None,
                     worktrees: vec![],
@@ -5655,7 +5614,6 @@ mod tests {
                 base_branch: "main".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
-                session_name: None,
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -5700,7 +5658,6 @@ mod tests {
                 base_branch: "main".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
-                session_name: None,
                 missing: false,
                 shell: None,
                 worktrees: vec![Worktree {
@@ -5794,7 +5751,6 @@ mod tests {
                 base_branch: "main".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
-                session_name: None,
                 missing: false,
                 shell: None,
                 worktrees: wts,
@@ -5806,7 +5762,6 @@ mod tests {
                 base_branch: "main".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
-                session_name: None,
                 missing: true,
                 shell: None,
                 worktrees: vec![Worktree {
@@ -5847,7 +5802,6 @@ mod tests {
                 base_branch: "master".into(), // repo only has `main`
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
-                session_name: None,
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -5874,7 +5828,6 @@ mod tests {
                 base_branch: "main".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
-                session_name: None,
                 missing: true,
                 shell: None,
                 worktrees: vec![],
@@ -5900,7 +5853,6 @@ mod tests {
                 base_branch: "main".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
-                session_name: None,
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -5920,7 +5872,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![Worktree {
@@ -5934,8 +5885,8 @@ mod tests {
                     command: None,
                     index: 0,
                     window_name: "lw:wt/0".into(),
-                    window_id: Some("@1".into()),
-                    pane_id: Some("%1".into()),
+                    window_id: "@1".into(),
+                    pane_id: "%1".into(),
                 }],
             }],
         });
@@ -6216,8 +6167,8 @@ mod tests {
                 command: None,
                 index: 1,
                 window_name: "lw:wt/1".into(),
-                window_id: Some("@2".into()),
-                pane_id: Some("%2".into()),
+                window_id: "@2".into(),
+                pane_id: "%2".into(),
             });
             app.build_tree_flags();
 
@@ -6284,7 +6235,7 @@ mod tests {
             // Next run: same shell, rediscovered by window name, new pane id.
             let mut next = app_with_shell();
             next.viewport = (120, 40);
-            next.state.repositories[0].worktrees[0].shells[0].pane_id = Some("%7".into());
+            next.state.repositories[0].worktrees[0].shells[0].pane_id = "%7".into();
             next.load_drafts();
 
             next.on_key(key(KeyCode::Char('s'), false));
@@ -6518,8 +6469,8 @@ mod tests {
             command: None,
             index: 1,
             window_name: "lw:wt/1".into(),
-            window_id: Some("@2".into()),
-            pane_id: Some("%2".into()),
+            window_id: "@2".into(),
+            pane_id: "%2".into(),
         });
         assert_eq!(app.solo_shell(0, 0), None);
         let nodes = app.visible_nodes();
@@ -6541,8 +6492,8 @@ mod tests {
             command: None,
             index: 1,
             window_name: "lw:wt/1".into(),
-            window_id: Some("@2".into()),
-            pane_id: Some("%2".into()),
+            window_id: "@2".into(),
+            pane_id: "%2".into(),
         });
         app.build_tree_flags();
         app.sel = Sel::Shell(0, 0, 1);
@@ -6886,8 +6837,8 @@ mod tests {
             command: None,
             index: 1,
             window_name: "lw:wt/1".into(),
-            window_id: Some(w.window_id.clone()),
-            pane_id: Some(w.pane_id.clone()),
+            window_id: w.window_id.clone(),
+            pane_id: w.pane_id.clone(),
         });
         app.build_tree_flags();
         w.pane_id
@@ -7063,7 +7014,6 @@ mod tests {
                 base_branch: "main".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
-                session_name: None,
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -7436,8 +7386,8 @@ mod tests {
             command: None,
             index: 1,
             window_name: "lw:wt/1".into(),
-            window_id: Some(w.window_id.clone()),
-            pane_id: Some(w.pane_id.clone()),
+            window_id: w.window_id.clone(),
+            pane_id: w.pane_id.clone(),
         });
         app.build_tree_flags();
         w.pane_id
@@ -7463,7 +7413,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -7941,8 +7890,8 @@ mod tests {
                 command: None,
                 index: 1,
                 window_name: "lw:wt/1".into(),
-                window_id: Some(w2.window_id.clone()),
-                pane_id: Some(w2.pane_id.clone()),
+                window_id: w2.window_id.clone(),
+                pane_id: w2.pane_id.clone(),
             });
             app.build_tree_flags();
             app.sel = Sel::Shell(0, 0, 1);
@@ -7991,8 +7940,8 @@ mod tests {
                 command: None,
                 index: 1,
                 window_name: "lw:wt/1".into(),
-                window_id: Some(w2.window_id.clone()),
-                pane_id: Some(w2.pane_id.clone()),
+                window_id: w2.window_id.clone(),
+                pane_id: w2.pane_id.clone(),
             });
             app.build_tree_flags();
             app.sel = Sel::Shell(0, 0, 1);
@@ -8669,7 +8618,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -9032,9 +8980,8 @@ mod tests {
         assert_eq!(index, n - 1, "no overflow past the last theme");
     }
 
-    /// Enter keeps the previewed theme: it becomes the app theme and the
-    /// pick persists to STATE (never rewrites the user's config file);
-    /// reopening the app honours it.
+    /// Enter keeps the previewed theme and writes it to the user config,
+    /// which the next start reads.
     #[test]
     fn picker_enter_keeps_and_persists_theme() {
         crate::util::testutil::with_fresh_xdg(|| {
@@ -9044,10 +8991,10 @@ mod tests {
             app.on_key(key(KeyCode::Enter, false));
             assert!(matches!(app.mode, Mode::Normal), "picker closes on Enter");
             assert_eq!(app.theme.name, picked);
-            assert_eq!(app.state.theme.as_deref(), Some(picked.as_str()));
-            // persisted state file carries the pick (state dir is fresh XDG)
-            let loaded = crate::state::State::load().unwrap();
-            assert_eq!(loaded.theme.as_deref(), Some(picked.as_str()));
+            assert_eq!(app.cfg.theme, picked);
+            let cwd = tempfile::TempDir::new().unwrap();
+            let loaded = crate::config::Config::load_from(cwd.path(), None).unwrap();
+            assert_eq!(loaded.theme, picked);
         });
     }
 
@@ -9055,14 +9002,21 @@ mod tests {
     /// and does not persist anything.
     #[test]
     fn picker_esc_restores_original() {
-        let mut app = app_with_picker("catppuccin-mocha");
-        app.on_key(key(KeyCode::Char('j'), false));
-        assert_ne!(app.theme.name, "catppuccin-mocha");
-        app.on_key(key(KeyCode::Esc, false));
-        assert_eq!(app.theme.name, "catppuccin-mocha", "Esc restores the theme");
-        assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(app.state.theme, None, "nothing persisted on cancel");
-        assert!(app.picker_original.is_empty(), "restore consumed the name");
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_picker("catppuccin-mocha");
+            let configured = app.cfg.theme.clone();
+            app.on_key(key(KeyCode::Char('j'), false));
+            assert_ne!(app.theme.name, "catppuccin-mocha");
+            app.on_key(key(KeyCode::Esc, false));
+            assert_eq!(app.theme.name, "catppuccin-mocha", "Esc restores the theme");
+            assert!(matches!(app.mode, Mode::Normal));
+            assert_eq!(app.cfg.theme, configured, "nothing kept on cancel");
+            assert!(
+                !crate::util::config_path().exists(),
+                "nothing written on cancel"
+            );
+            assert!(app.picker_original.is_empty(), "restore consumed the name");
+        });
     }
 
     /// PageDown/ctrl-d move the picker by a page (5), g/G jump to
@@ -9094,24 +9048,24 @@ mod tests {
     /// keeps it, click outside restores the original (Esc semantics).
     #[test]
     fn picker_mouse_selects_and_double_click_keeps() {
-        let mut app = app_with_picker("catppuccin-mocha");
-        let rect = Rect::new(20, 5, 40, app.theme_names.len() as u16 + 3);
-        app.popup_area = Some(rect);
-        // single click row 1 → select + preview (not kept)
-        app.on_mouse(click(rect.x + 5, rect.y + 1 + 1));
-        let Mode::ThemePicker { index } = app.mode else {
-            panic!("picker must still be open after a single click");
-        };
-        assert_eq!(index, 1);
-        assert_eq!(app.theme.name, app.theme_names[1]);
-        // double-click the same row keeps it
-        app.on_mouse(click(rect.x + 5, rect.y + 1 + 1));
-        assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(app.theme.name, app.theme_names[1]);
-        assert_eq!(
-            app.state.theme.as_deref(),
-            Some(app.theme_names[1].as_str())
-        );
+        // Keeping writes the user config.
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_picker("catppuccin-mocha");
+            let rect = Rect::new(20, 5, 40, app.theme_names.len() as u16 + 3);
+            app.popup_area = Some(rect);
+            // single click row 1 → select + preview (not kept)
+            app.on_mouse(click(rect.x + 5, rect.y + 1 + 1));
+            let Mode::ThemePicker { index } = app.mode else {
+                panic!("picker must still be open after a single click");
+            };
+            assert_eq!(index, 1);
+            assert_eq!(app.theme.name, app.theme_names[1]);
+            // double-click the same row keeps it
+            app.on_mouse(click(rect.x + 5, rect.y + 1 + 1));
+            assert!(matches!(app.mode, Mode::Normal));
+            assert_eq!(app.theme.name, app.theme_names[1]);
+            assert_eq!(app.cfg.theme, app.theme_names[1]);
+        });
     }
 
     /// Click outside the picker = Esc: restores the original theme.
@@ -9745,7 +9699,7 @@ mod tests {
 
                 let shells = &app.state.repositories[0].worktrees[0].shells;
                 assert_eq!(shells.len(), 2, "the shell was created");
-                let pid = shells[1].pane_id.clone().unwrap();
+                let pid = shells[1].pane_id.clone();
                 settle_launches(&mut app);
                 std::thread::sleep(std::time::Duration::from_millis(300));
                 let capture = tmux.capture_pane(&pid, 50).unwrap();
@@ -9786,7 +9740,7 @@ mod tests {
 
                 let shells = &app.state.repositories[0].worktrees[0].shells;
                 assert_eq!(shells.len(), 2, "the shell was created");
-                let pid = shells[1].pane_id.clone().unwrap();
+                let pid = shells[1].pane_id.clone();
                 std::thread::sleep(std::time::Duration::from_millis(300));
                 let capture = tmux.capture_pane(&pid, 50).unwrap();
                 assert!(

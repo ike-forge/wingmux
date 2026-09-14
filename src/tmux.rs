@@ -61,6 +61,8 @@ pub struct PaneInfo {
     /// `hooks::Overlay::parse`; kept as a string here so tmux stays
     /// ignorant of what the value means.
     pub overlay_raw: String,
+    /// The launched command (`@lw_command`), unescaped.
+    pub command: Option<String>,
     /// Is the cursor still at the home position, with nothing drawn yet?
     /// A shell that has not finished reading its rc files has printed no
     /// prompt, and typing into it lands in the tty's line buffer instead
@@ -90,6 +92,8 @@ pub struct FurniturePane {
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
     pub name: String,
+    /// `@lw_repo_path`; `None` for a foreign session or one made by an older build.
+    pub repo_path: Option<std::path::PathBuf>,
 }
 
 /// Result of spawning / listing a window.
@@ -260,18 +264,39 @@ impl Tmux {
 
     /// All sessions on the server.
     pub fn list_sessions(&self) -> Result<Vec<SessionInfo>> {
-        let out = self.run(&["list-sessions", "-F", "#{session_name}"])?;
+        // The path is last: taken as the remainder, so a '|' in it is harmless.
+        let fmt = format!("#{{session_name}}|#{{{}}}", dock::REPO_PATH_KEY);
+        let out = match self.run(&["list-sessions", "-F", &fmt]) {
+            Ok(o) => o,
+            Err(e) if is_no_server_error(&e) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
         Ok(out
             .lines()
             .filter_map(|line| {
-                let name = line.trim().to_string();
+                let (name, path) = line.split_once('|').unwrap_or((line, ""));
+                let name = name.trim().to_string();
                 if name.is_empty() {
-                    None
-                } else {
-                    Some(SessionInfo { name })
+                    return None;
                 }
+                Some(SessionInfo {
+                    name,
+                    repo_path: (!path.is_empty()).then(|| std::path::PathBuf::from(path)),
+                })
             })
             .collect())
+    }
+
+    /// Record which repository owns an agent session.
+    pub fn stamp_session_repo(&self, session: &str, path: &Path) -> Result<()> {
+        self.run(&[
+            "set-option",
+            "-t",
+            session,
+            dock::REPO_PATH_KEY,
+            &path.to_string_lossy(),
+        ])?;
+        Ok(())
     }
 
     /// Does a session with this exact name exist?
@@ -473,13 +498,14 @@ impl Tmux {
         let fmt = format!(
             "#{{pane_id}}|#{{window_id}}|#{{pane_current_command}}|#{{pane_dead}}|#{{session_name}}\
              |#{{{repo}}}|#{{{worktree}}}|#{{{index}}}|#{{pane_active}}|#{{{docked}}}\
-             |#{{{holder}}}#{{{slot}}}|#{{cursor_x}}|#{{cursor_y}}|#{{{overlay}}}",
+             |#{{{holder}}}#{{{slot}}}|#{{cursor_x}}|#{{cursor_y}}|#{{{command}}}|#{{{overlay}}}",
             repo = dock::REPO_KEY,
             worktree = dock::WORKTREE_KEY,
             index = dock::INDEX_KEY,
             docked = dock::DOCKED_KEY,
             holder = dock::HOLDER_KEY,
             slot = dock::SLOT_KEY,
+            command = dock::COMMAND_KEY,
             overlay = crate::hooks::OVERLAY_KEY,
         );
         let out = match self.run(&["list-panes", "-a", "-F", &fmt]) {
@@ -513,6 +539,11 @@ impl Tmux {
         self.set_pane_option(pane_id, dock::WORKTREE_KEY, &id.worktree)?;
         self.set_pane_option(pane_id, dock::INDEX_KEY, &id.index_value())?;
         Ok(())
+    }
+
+    /// Record the command a shell was launched with; the tree names the row by it.
+    pub fn stamp_command(&self, pane_id: &str, command: &str) -> Result<()> {
+        self.set_pane_option(pane_id, dock::COMMAND_KEY, &escape_field(command))
     }
 
     // ----------------------------------------------------- furniture
@@ -956,15 +987,29 @@ impl Tmux {
     }
 }
 
+/// `list-panes -F` output is one `|`-separated line per pane, so a free-form
+/// value in a middle field cannot carry either character.
+fn escape_field(s: &str) -> String {
+    s.replace('%', "%25")
+        .replace('|', "%7C")
+        .replace('\n', "%0A")
+}
+
+fn unescape_field(s: &str) -> String {
+    s.replace("%7C", "|")
+        .replace("%0A", "\n")
+        .replace("%25", "%")
+}
+
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
     // Field order: pane | window | command | dead | session | repo |
     // worktree | index | active | docked | furniture | cursor_x | cursor_y
-    // | overlay. Every new field goes BEFORE the overlay: the overlay is
-    // taken verbatim as the remainder, so a '|' inside it cannot desync
-    // parsing, and only a last field can afford that. `furniture` is the
-    // holder and slot marks concatenated — neither has a value worth
-    // telling apart here, only whether either is set.
-    let mut it = line.splitn(14, '|');
+    // | command | overlay. Every new field goes BEFORE the overlay: the overlay
+    // is taken verbatim as the remainder, so a '|' inside it cannot desync
+    // parsing, and only a last field can afford that (the command is escaped
+    // instead). `furniture` is the holder and slot marks concatenated —
+    // neither has a value worth telling apart here, only whether either is set.
+    let mut it = line.splitn(15, '|');
     let pane_id = it.next()?.to_string();
     let window_id = it.next()?.to_string();
     let current_command = it.next()?.to_string();
@@ -983,7 +1028,10 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
     let home_x = it.next().unwrap_or("0").trim() == "0";
     let home_y = it.next().unwrap_or("0").trim() == "0";
     let blank = home_x && home_y;
+    let command = it.next().unwrap_or("");
+    let command = (!command.is_empty()).then(|| unescape_field(command));
     Some(PaneInfo {
+        command,
         pane_id,
         window_id,
         current_command,
@@ -1103,12 +1151,27 @@ mod tests {
     #[test]
     fn pane_line_parsing_keeps_the_overlay_verbatim() {
         let p =
-            parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||0|0|blocked:1755600000")
+            parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||0|0||blocked:1755600000")
                 .expect("parses");
         assert_eq!(p.pane_id, "%3");
         assert_eq!(p.current_command, "claude");
         assert!(!p.dead);
+        assert_eq!(p.command, None);
         assert_eq!(p.overlay_raw, "blocked:1755600000");
+    }
+
+    /// The command sits in a middle field, so it is escaped rather than taken
+    /// as a remainder.
+    #[test]
+    fn an_escaped_command_cannot_desync_the_overlay() {
+        let command = "codex | tee 100%\nlog";
+        let line = format!(
+            "%3|@1|node|0|wingman-session-x|x|f|0|1|||0|0|{}|a|b",
+            escape_field(command)
+        );
+        let p = parse_pane_line(&line).expect("parses");
+        assert_eq!(p.command.as_deref(), Some(command));
+        assert_eq!(p.overlay_raw, "a|b");
     }
 
     /// The overlay is last and taken as the remainder, so a `|` inside it
@@ -1116,7 +1179,7 @@ mod tests {
     #[test]
     fn overlay_may_contain_the_field_separator() {
         let p =
-            parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||0|0|a|b").expect("parses");
+            parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||0|0||a|b").expect("parses");
         assert_eq!(p.overlay_raw, "a|b");
         assert_eq!(
             p.shell,

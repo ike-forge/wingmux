@@ -33,11 +33,15 @@ the same commit as the change.
   worktrees. Malformed JSON is still an error — the user is told rather than
   silently losing the tree. (v3 introduced that rule, renaming the on-disk
   keys with no migration path; v4 keeps it.)
-- **No live tmux coordinates in `state.json`.** v4 drops the persisted
-  `window_id` / `pane_id`: they are `#[serde(skip)]` runtime fields that
-  `reconcile` fills in from one `list-panes`. A coordinate that survived a
-  restart names a window that no longer holds the shell — or holds someone
-  else's — and the file is a recipe for the tree, never a restore of tmux.
+- **`state.json` holds nothing tmux owns.** It keeps the repositories and
+  their worktrees' metadata (`base_commit`, `agent_command`, `created_at`) —
+  facts recorded nowhere else. Shells (`Worktree.shells`,
+  `Repository.shell`) are `#[serde(skip)]` and rebuilt from scratch by
+  `reconcile`, and the agent session name is not stored at all. A copy of
+  tmux on disk goes stale the moment the server restarts or another
+  dashboard spawns a shell, so there is none. Files written by older builds
+  still load: the retired fields are ignored rather than bumping the version,
+  which would have discarded every repository.
 - **A pane carries its own identity.** `dock::ShellId` (repository slug,
   worktree, shell index) is written onto the pane's `@lw_repo` /
   `@lw_worktree` / `@lw_index` options at spawn, and pane options travel with
@@ -45,14 +49,21 @@ the same commit as the change.
   identity rather than walking window names, and a window renamed by hand —
   or a pane sitting in a session that is not its own — costs the tree
   nothing. `Tmux::window_name` stays, purely as the human-facing label.
-- **`Repository.shell` is additive, not a schema bump.** The repository's
-  inline shell is a `#[serde(default)]` field, so a v4 file written before
-  it loads unchanged and simply has none — and the pane, if it is still
-  alive, is adopted back by the next `reconcile`. A version bump would have
-  thrown away every discovered repository to add one optional field.
-- Shell indices are never reused: `Worktree::next_shell_index` counts past
-  the highest index in use, because the index is part of a shell's identity
-  and is what `reconcile` matches a live pane back to.
+- **The launched command is `@lw_command` on the pane**, escaped because
+  `list-panes -F` output is `|`-separated lines.
+- **A session names its repository with `@lw_repo_path`.** Two repositories
+  with one name get `wingman-session-<slug>` and `…-<hash of path>` in
+  whichever order they spawned, so the name alone cannot be mapped back.
+  `State::session_of` matches the stamped path; a session from an older
+  build falls back to the slug, hash-suffixed form first.
+- `Worktree::next_shell_index` counts past the highest live index, so a new
+  shell cannot collide with a pane already stamped with it.
+- **The picked theme is config, not state.** `ctrl-t` writes `theme = …`
+  into the user `config.toml` (`config::save_theme`), editing that one line
+  so comments and layout survive: the active line is replaced, else the
+  documented `#theme = …` is uncommented in place. A higher layer
+  (`.lazywingman.toml`, `--config`) still wins at startup, and the toast says
+  so.
 
 ## Discovery
 
@@ -349,7 +360,7 @@ and `cat config.toml` belong. So the row got a shell of its own.
   the eye skips it; here the marker is the only thing the row would carry,
   and a dimmed base branch reads as a shell still there. The row drops the
   marker instead, back to what it looked like before the shell existed —
-  the state file catches up when the next prune sees the pane gone.
+  the next reconcile (`r`, or a restart) drops it.
 - **It is `$SHELL`, and nothing is sent to it.** `[defaults].agent_shell`
   (`bash`, chosen for agents) is not the shell anyone wants to type `make`
   in — the same reasoning that made a plain worktree shell use
@@ -401,10 +412,9 @@ with nothing re-implemented. Four invariants hold the whole thing up.
 - **Windows are storage.** A tmux window is the only place a pane can be alive
   and off-screen, and the nominal case is many hidden agents. What M18 retired
   is the window *name* as an identity mechanism, not the window.
-- **No live tmux coordinates in `state.json`.** Panes, window ids and indices
-  are re-derived from one `list-panes -a` per poll; the file keeps
-  repositories and worktrees. A coordinate that survived a restart would name
-  a window that no longer holds this shell — or holds someone else's.
+- **No tmux state in `state.json`.** Shells, their commands and the agent
+  session are re-derived from `list-panes -a` / `list-sessions`; the file
+  keeps repositories and worktrees.
 - **Anything shared between instances lives in tmux, and is re-read every
   poll.** Two dashboards have no channel to each other except the tmux server.
   So the lease is a pane option (`@lw_docked`), never a field in the state
@@ -726,10 +736,8 @@ duplication docking exists to end.
   with the status, and `codex exec --yolo` would push the status off the
   panel. The index returns only where it earns its place: as a suffix when
   two shells of a worktree run the same program (`zsh #1`, `zsh #2`), and
-  as the whole label for a shell adopted from tmux or written by an older
-  build, where no command was ever recorded (the field is
-  `Option<String>`, `#[serde(default)]`, so an old `state.json` still
-  loads).
+  as the whole label for a pane spawned by an older build, which carries no
+  `@lw_command`.
 - **Creating something reveals it.** `create_worktree` unfolds the
   repository it just added to, and gives the new worktree the same unfolded
   flag discovery gives the rows it finds. A collapsed repository emits no
@@ -881,8 +889,8 @@ duplication docking exists to end.
   worktrees LazyWingman never created. The row state worth showing is not *who
   made it* but *whether there is a tmux window for it*: with no window there
   is nothing to dock, send to or capture, whoever made the worktree. So
-  the predicate is derived — `shells.is_empty()`, which `prune` keeps honest
-  by dropping shells whose window vanished — and NOT a persisted
+  the predicate is derived — `shells.is_empty()`, rebuilt from the live panes
+  by `reconcile` — and NOT a persisted
   `created_by_wingman` flag. A flag would have needed a schema field, a
   migration for existing state files, and would still have lied about a
   wingman-made worktree whose last shell was closed: same inertness, different
@@ -896,8 +904,7 @@ duplication docking exists to end.
   common case.
 - **The tmux window id left the tree**: `@5` next to every shell was the only
   thing on that row the user cannot act on — a handle for our own
-  `select-window` calls. It is no longer in `state.json` either (v4 keeps no
-  live tmux coordinates); the log is where a debugging session should look
+  `select-window` calls. The log is where a debugging session should look
   for it.
 
 ## Preview panel
@@ -1359,9 +1366,8 @@ duplication docking exists to end.
 - **`ctrl-t` is a live theme picker**: it previews as the cursor moves (the
   whole screen repaints via the same load path), Enter keeps, Esc restores the
   theme it opened with. Built-ins list first (stable order), then user themes.
-  The pick persists to `state.json` (configuration guideline: the app never
-  rewrites the user's config file; `state.theme` wins over the config line at
-  startup, and the config line stays the documented startup default).
+  The pick is written to the user `config.toml` (see "State and
+  persistence").
 - **Picker motions**: j/k/arrows step by one theme, g/G and Home/End jump to
   first/last, PgUp/PgDn + ctrl-d/u move 5, the wheel moves 3, and a mouse click
   on a row selects + previews while a double-click keeps — all through the one

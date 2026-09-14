@@ -163,10 +163,8 @@ fn real_main() -> Result<()> {
     }
 
     let truecolor = theme::supports_truecolor();
-    // A theme picked in the TUI (ctrl-t) is persisted to state.json and
-    // wins over the config line; the config file is never rewritten.
-    let picked = state::State::load()?.theme;
-    let theme_name = picked.as_deref().unwrap_or(&cfg.theme);
+    let theme_name = cfg.theme.clone();
+    let theme_name = theme_name.as_str();
     // One bad theme never prevents startup: fall back to the default theme
     // and record a diagnostic for the startup diagnostics overlay.
     let theme = match theme::load(theme_name, truecolor) {

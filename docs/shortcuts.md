@@ -50,13 +50,13 @@ subtracted), recomputed every frame from the stored viewport.
 | `j` / `k` (or `↓` / `↑`) | move the cursor one theme, previewing live | same motions as the tree/help |
 | `PgDn` / `PgUp`, `ctrl-d`/`ctrl-u` | move 5 themes | accessibility, same code path |
 | `Home` / `End`, `g` / `G` | first / last theme | vim + accessibility spellings |
-| `Enter` | keep the previewed theme (persisted to the state file) | keeps; app never rewrites config.toml |
+| `Enter` | keep the previewed theme (written to `theme` in config.toml) | keeps |
 | `Esc` / `q` | restore the theme the picker opened with | cancel |
 | mouse | click a row selects + previews; double-click keeps; click outside = Esc | clickable palette rows; click outside dismisses |
 
 Built-in themes (the four Catppuccin flavours first, then dracula/gruvbox/ansi)
 list before user themes from the themes dir — the first rows are the same in
-every project. The picked theme survives restarts via `state.json`.
+every project. The picked theme survives restarts via `config.toml`.
 
 ### Add-shell picker (opened with `a` on a worktree)
 

@@ -294,9 +294,9 @@ close to `text` on a dark background for a one-character key to stand out).
 Press **`ctrl-t`** inside the TUI for a live theme picker: move with
 `j`/`k` (or `PgUp`/`PgDn`, `Home`/`End`) and the whole screen repaints with
 the new palette; `Enter` keeps the previewed theme, `Esc` restores the one
-you opened with. The pick is saved to the state file (the config file is
-never rewritten behind your back) and honoured on the next start; the
-config's `theme = ...` line is the startup default.
+you opened with. The pick is written to the `theme = ...` line of
+`~/.config/lazywingman/config.toml`, leaving the rest of the file as it was.
+A repository `.lazywingman.toml` or `--config` that sets `theme` still wins.
 
 `NO_COLOR` (present and non-empty) switches to a monochrome render — every
 role resolves to the terminal default; the UI stays readable because meaning
@@ -424,9 +424,9 @@ without hunting for the status word at the end of the row.
   showing it (its window is stamped with the scope) rather than starting a
   rival one. Agent shells live in **dedicated sessions**, one per repository, named
   deterministically `wingman-session-<repository>` — your own session is never
-  touched. Shell windows are named `lw:<worktree>/<n>` inside that session, so
-  everything is rediscoverable after a restart (`tmux list-sessions` →
-  per-session `list-windows`), even if the state file is lost.
+  touched. Each shell's identity and launch command live on its tmux pane
+  (`@lw_*` options), so shells are rediscovered after a restart even if the
+  state file is lost.
 - All interaction goes through the tmux CLI (`new-session`, `new-window`,
   `send-keys`, `capture-pane`, `swap-pane`, `select-pane`, `kill-window`,
   `list-panes -a`); nothing is shell-interpreted.
@@ -454,12 +454,11 @@ without hunting for the status word at the end of the row.
 - Unsent quick-send drafts (`$XDG_STATE_HOME/lazywingman/drafts.json`) are
   keyed by repository + branch + shell index, so they are restored onto the
   right shell after a restart even though tmux gives it a new pane id.
-- State (`$XDG_STATE_HOME/lazywingman/state.json`) is reconciled against
-  reality on startup: worktrees are checked against `git worktree list`,
-  agent sessions and their windows against `tmux list-sessions` /
-  `list-windows`; stale entries self-heal and running shells are
-  rediscovered (even with a deleted state file, from the pane's cwd + git
-  metadata).
+- State (`$XDG_STATE_HOME/lazywingman/state.json`) holds only repositories
+  and worktree metadata. Worktrees are checked against `git worktree list`;
+  shells are never stored and are rebuilt from tmux on startup and on `r`
+  (a worktree with a live shell but no entry is reconstructed from the
+  pane's cwd + git metadata).
 - Worktree deletion kills the worktree's windows — a session whose last shell
   window is killed destroys itself — then `git worktree remove` (with
   `--force` offered when the worktree is dirty). The worktree branch goes

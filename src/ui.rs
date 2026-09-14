@@ -378,19 +378,17 @@ fn worktree_state_settles_row(st: WorktreeState) -> bool {
     matches!(st, WorktreeState::Merged | WorktreeState::Deleted)
 }
 
-/// The polled status of a shell, keyed by its live pane; a shell with no
-/// pane (or none polled yet) reads as idle.
+/// The polled status of a shell; one not polled yet reads as idle.
 fn shell_status(app: &App, sh: &crate::state::Shell) -> Status {
-    sh.pane_id
-        .as_ref()
-        .and_then(|p| app.statuses.get(p))
+    app.statuses
+        .get(&sh.pane_id)
         .copied()
         .unwrap_or(Status::Idle)
 }
 
 /// Is this shell docked in another dashboard right now?
 fn shell_leased<'a>(app: &'a App, sh: &crate::state::Shell) -> Option<&'a crate::app::Lease> {
-    app.leased_by(sh.pane_id.as_deref()?)
+    app.leased_by(&sh.pane_id)
 }
 
 /// Mute a row whole and say why: a shell another dashboard holds is not
@@ -2689,7 +2687,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: true,
             shell: None,
             worktrees: vec![],
@@ -2993,7 +2990,6 @@ mod tests {
                 base_branch: "main".into(),
                 agent_command: "claude".into(),
                 agent_shell: "bash".into(),
-                session_name: None,
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -3045,7 +3041,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -3059,7 +3054,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -3088,8 +3082,8 @@ mod tests {
                     command: None,
                     index: 0,
                     window_name: "lw:wt/0".into(),
-                    window_id: Some("@1".into()),
-                    pane_id: Some("%1".into()),
+                    window_id: "@1".into(),
+                    pane_id: "%1".into(),
                 }],
             });
         app.build_tree_flags();
@@ -3246,7 +3240,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees,
@@ -3343,8 +3336,8 @@ mod tests {
                     command: None,
                     index,
                     window_name: format!("lw:{name}/{index}"),
-                    window_id: Some(format!("@{index}")),
-                    pane_id: Some(format!("%{index}")),
+                    window_id: format!("@{index}"),
+                    pane_id: format!("%{index}"),
                 })
                 .collect(),
         }
@@ -3518,8 +3511,8 @@ mod tests {
             command: None,
             index: i,
             window_name: format!("lw:f/{i}"),
-            window_id: Some(format!("@{}", i + 1)),
-            pane_id: Some(format!("%{i}")),
+            window_id: format!("@{}", i + 1),
+            pane_id: format!("%{i}"),
         };
         app.state.repositories[0]
             .worktrees
@@ -4036,8 +4029,8 @@ mod tests {
             command: None,
             index: i,
             window_name: format!("lw:f/{i}"),
-            window_id: Some(format!("@{}", i + 1)),
-            pane_id: Some(format!("%{i}")),
+            window_id: format!("@{}", i + 1),
+            pane_id: format!("%{i}"),
         };
         app.state.repositories[0]
             .worktrees
@@ -4100,8 +4093,8 @@ mod tests {
             command: None,
             index: i,
             window_name: format!("lw:f/{i}"),
-            window_id: Some(format!("@{}", i + 7)),
-            pane_id: Some(format!("%{i}")),
+            window_id: format!("@{}", i + 7),
+            pane_id: format!("%{i}"),
         };
         app.state.repositories[0]
             .worktrees
@@ -4186,8 +4179,8 @@ mod tests {
                     command: None,
                     index: 0,
                     window_name: "lw:f/0".into(),
-                    window_id: Some("@7".into()),
-                    pane_id: Some("%0".into()),
+                    window_id: "@7".into(),
+                    pane_id: "%0".into(),
                 }],
             });
         app.build_tree_flags();
@@ -4270,8 +4263,8 @@ mod tests {
             command: None,
             index: i,
             window_name: format!("lw:f/{i}"),
-            window_id: Some(format!("@{}", i + 7)),
-            pane_id: Some(format!("%{i}")),
+            window_id: format!("@{}", i + 7),
+            pane_id: format!("%{i}"),
         };
         app.state.repositories[0]
             .worktrees
@@ -4544,8 +4537,8 @@ mod tests {
                         command: None,
                         index: 0,
                         window_name: format!("lw:{name}/0"),
-                        window_id: Some("@1".into()),
-                        pane_id: Some(pane.into()),
+                        window_id: "@1".into(),
+                        pane_id: pane.into(),
                     }],
                 });
             app.statuses.insert(pane.into(), st);
@@ -4596,8 +4589,8 @@ mod tests {
                         command: None,
                         index: 0,
                         window_name: format!("lw:{name}/0"),
-                        window_id: Some("@1".into()),
-                        pane_id: Some(pane.into()),
+                        window_id: "@1".into(),
+                        pane_id: pane.into(),
                     }],
                 });
             app.statuses.insert(pane.into(), st);
@@ -4807,7 +4800,6 @@ mod tests {
             base_branch: "main".into(),
             agent_command: "claude".into(),
             agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -4825,8 +4817,8 @@ mod tests {
                     command: None,
                     index: 1,
                     window_name: "wt-1".into(),
-                    window_id: Some("@1".into()),
-                    pane_id: Some("%1".into()),
+                    window_id: "@1".into(),
+                    pane_id: "%1".into(),
                 }],
             });
         app.build_tree_flags();
@@ -5188,8 +5180,8 @@ mod tests {
             command: None,
             index: 0,
             window_name: "lw:.repo/0".into(),
-            window_id: Some("@9".into()),
-            pane_id: Some("%9".into()),
+            window_id: "@9".into(),
+            pane_id: "%9".into(),
         });
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -5210,8 +5202,8 @@ mod tests {
             command: None,
             index: 0,
             window_name: "lw:.repo/0".into(),
-            window_id: Some("@9".into()),
-            pane_id: Some("%9".into()),
+            window_id: "@9".into(),
+            pane_id: "%9".into(),
         });
         app.statuses.insert("%9".into(), Status::Dead);
         let backend = ratatui::backend::TestBackend::new(120, 40);
@@ -5248,8 +5240,8 @@ mod tests {
             command: None,
             index: 0,
             window_name: "lw:.repo/0".into(),
-            window_id: Some("@9".into()),
-            pane_id: Some("%9".into()),
+            window_id: "@9".into(),
+            pane_id: "%9".into(),
         });
         assert!(
             bar_entries(&app)
@@ -5325,8 +5317,8 @@ mod tests {
                     command: None,
                     index: 0,
                     window_name: "lw:needs-me/0".into(),
-                    window_id: Some("@7".into()),
-                    pane_id: Some("%0".into()),
+                    window_id: "@7".into(),
+                    pane_id: "%0".into(),
                 }],
             });
         app.statuses.insert("%0".into(), Status::Blocked);
