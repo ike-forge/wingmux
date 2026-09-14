@@ -32,23 +32,27 @@ the same commit as the change.
   worktrees. Malformed JSON is still an error — the user is told rather than
   silently losing the tree. (v3 introduced that rule, renaming the on-disk
   keys with no migration path; v4 keeps it.)
-- **No live tmux coordinates in `state.json`.** v4 drops the persisted
-  `window_id` / `pane_id`: they are `#[serde(skip)]` runtime fields that
-  `reconcile` fills in from one `list-panes`. A coordinate that survived a
-  restart names a window that no longer holds the shell — or holds someone
-  else's — and the file is a recipe for the tree, never a restore of tmux.
+- **No shells in `state.json`.** `Worktree.shells` and `Repository.shell`
+  are `skip_serializing`; `State::sync_shells` rebuilds both from one
+  `list-panes` on every poll. A persisted shell outlived its pane: after a
+  tmux restart a repository row kept its `● main` marker for a shell that
+  did not exist, and `a` found "a shell" and started nothing. Prune could
+  not tell such an entry from one not matched *yet*, so it kept it. With
+  tmux as the only source there is nothing to reconcile. They are still
+  *read*, which is why this is not a schema bump: a v4 file's recorded
+  commands seed panes spawned before `@lw_command`, and `reconcile` writes
+  them onto those panes once.
 - **A pane carries its own identity.** `dock::ShellId` (repository slug,
   worktree, shell index) is written onto the pane's `@lw_repo` /
-  `@lw_worktree` / `@lw_index` options at spawn, and pane options travel with
-  the pane across windows and sessions. So `reconcile` groups panes by
-  identity rather than walking window names, and a window renamed by hand —
-  or a pane sitting in a session that is not its own — costs the tree
-  nothing. `Tmux::window_name` stays, purely as the human-facing label.
-- **`Repository.shell` is additive, not a schema bump.** The repository's
-  inline shell is a `#[serde(default)]` field, so a v4 file written before
-  it loads unchanged and simply has none — and the pane, if it is still
-  alive, is adopted back by the next `reconcile`. A version bump would have
-  thrown away every discovered repository to add one optional field.
+  `@lw_worktree` / `@lw_index` options at spawn, and the launch command onto
+  `@lw_command`; pane options travel with the pane across windows and
+  sessions. So shells are grouped by identity rather than by window name,
+  and a window renamed by hand — or a pane sitting in a session that is not
+  its own — costs the tree nothing. `Tmux::window_name` stays, purely as the
+  human-facing label.
+- **A closed shell's row goes at the next poll.** There is no dead row left
+  until a refresh: a pane tmux no longer lists is no shell. A pane kept by
+  `remain-on-exit` is still listed and still reads as dead.
 - Shell indices are never reused: `Worktree::next_shell_index` counts past
   the highest index in use, because the index is part of a shell's identity
   and is what `reconcile` matches a live pane back to.
@@ -336,19 +340,19 @@ and `cat config.toml` belong. So the row got a shell of its own.
   collide with it. Reconcile, prune, the leases, the holder/slot furniture
   and `swap-pane` therefore all work on it unchanged — there is no second
   mechanism beside the first.
-- **Lazy, and only on `Enter`.** A shell costs two or three seconds, and
-  most repository rows are only ever expanded to look at what hangs below
-  them. Docking on *look* would pay that for every row the cursor passes
-  over, so `App::auto_dock` docks an inline shell that already exists and
-  never starts one. `Enter` on a repository row keeps toggling the
-  disclosure and additionally ensures the shell: the disclosure is about
-  the rows below, the shell about the panel beside them, and the two do not
-  compete for the key.
+- **Lazy, and only on `a`.** A shell costs two or three seconds, and most
+  repository rows are only ever expanded to look at what hangs below them.
+  Docking on *look* would pay that for every row the cursor passes over, so
+  `App::auto_dock` docks an inline shell that already exists and never
+  starts one. `Enter` used to toggle the disclosure *and* start the shell;
+  since `Enter`, `l` and `→` all expand, there was no way to open a
+  repository without leaving a shell behind in tmux. `a` is the worktree
+  row's shell key (the global rules' add/attach), and a repository has one
+  plain shell, so it needs no picker.
 - **A dead one draws nothing.** Elsewhere a dead shell is muted whole so
   the eye skips it; here the marker is the only thing the row would carry,
   and a dimmed base branch reads as a shell still there. The row drops the
-  marker instead, back to what it looked like before the shell existed —
-  the state file catches up when the next prune sees the pane gone.
+  marker instead, back to what it looked like before the shell existed.
 - **It is `$SHELL`, and nothing is sent to it.** `[defaults].agent_shell`
   (`bash`, chosen for agents) is not the shell anyone wants to type `make`
   in — the same reasoning that made a plain worktree shell use
@@ -369,7 +373,7 @@ and `cat config.toml` belong. So the row got a shell of its own.
 - **`d` closes it, and only appears when there is one.** The bar offers
   `close d` on a repository row exactly while `repo.shell` is live; with
   none, `d` falls through to the worktree path, which says what to select
-  instead. `Enter` afterwards starts a fresh one — closing is not a state
+  instead. `a` afterwards starts a fresh one — closing is not a state
   you can get stuck in.
 - **The empty panel is where the feature is discoverable.** A repository
   row with no shell yet is the one row whose panel is blank because nothing
@@ -880,8 +884,8 @@ duplication docking exists to end.
   worktrees LazyWingman never created. The row state worth showing is not *who
   made it* but *whether there is a tmux window for it*: with no window there
   is nothing to dock, send to or capture, whoever made the worktree. So
-  the predicate is derived — `shells.is_empty()`, which `prune` keeps honest
-  by dropping shells whose window vanished — and NOT a persisted
+  the predicate is derived — `shells.is_empty()`, honest because shells
+  come from `list-panes` every poll — and NOT a persisted
   `created_by_wingman` flag. A flag would have needed a schema field, a
   migration for existing state files, and would still have lied about a
   wingman-made worktree whose last shell was closed: same inertness, different

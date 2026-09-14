@@ -51,6 +51,8 @@ pub struct PaneInfo {
     pub session_name: String,
     /// The shell this pane is, read back from its `@lw_*` options.
     pub shell: Option<ShellId>,
+    /// `@lw_command`, empty when the pane carries none.
+    pub command: String,
     /// Is this the active pane of its window?
     #[allow(dead_code)] // the focus guard reads it (Phase 4)
     pub active: bool,
@@ -473,10 +475,11 @@ impl Tmux {
         let fmt = format!(
             "#{{pane_id}}|#{{window_id}}|#{{pane_current_command}}|#{{pane_dead}}|#{{session_name}}\
              |#{{{repo}}}|#{{{worktree}}}|#{{{index}}}|#{{pane_active}}|#{{{docked}}}\
-             |#{{{holder}}}#{{{slot}}}|#{{cursor_x}}|#{{cursor_y}}|#{{{overlay}}}",
+             |#{{{holder}}}#{{{slot}}}|#{{cursor_x}}|#{{cursor_y}}|#{{{command}}}|#{{{overlay}}}",
             repo = dock::REPO_KEY,
             worktree = dock::WORKTREE_KEY,
             index = dock::INDEX_KEY,
+            command = dock::COMMAND_KEY,
             docked = dock::DOCKED_KEY,
             holder = dock::HOLDER_KEY,
             slot = dock::SLOT_KEY,
@@ -513,6 +516,15 @@ impl Tmux {
         self.set_pane_option(pane_id, dock::WORKTREE_KEY, &id.worktree)?;
         self.set_pane_option(pane_id, dock::INDEX_KEY, &id.index_value())?;
         Ok(())
+    }
+
+    /// Record the command a shell was launched with on its pane. Never
+    /// fatal: a pane without one is labelled by its index.
+    pub fn stamp_command(&self, pane_id: &str, command: &str) {
+        let value = command.replace('|', " ");
+        if let Err(e) = self.set_pane_option(pane_id, dock::COMMAND_KEY, &value) {
+            log::warn!("cannot record the command of {pane_id}: {e}");
+        }
     }
 
     // ----------------------------------------------------- furniture
@@ -959,12 +971,13 @@ impl Tmux {
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
     // Field order: pane | window | command | dead | session | repo |
     // worktree | index | active | docked | furniture | cursor_x | cursor_y
-    // | overlay. Every new field goes BEFORE the overlay: the overlay is
-    // taken verbatim as the remainder, so a '|' inside it cannot desync
-    // parsing, and only a last field can afford that. `furniture` is the
-    // holder and slot marks concatenated — neither has a value worth
-    // telling apart here, only whether either is set.
-    let mut it = line.splitn(14, '|');
+    // | command | overlay. Every new field goes BEFORE the overlay: the
+    // overlay is taken verbatim as the remainder, so a '|' inside it cannot
+    // desync parsing, and only a last field can afford that. `furniture` is
+    // the holder and slot marks concatenated — neither has a value worth
+    // telling apart here, only whether either is set. `stamp_command` strips
+    // '|' so the command cannot desync the overlay.
+    let mut it = line.splitn(15, '|');
     let pane_id = it.next()?.to_string();
     let window_id = it.next()?.to_string();
     let current_command = it.next()?.to_string();
@@ -983,6 +996,7 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
     let home_x = it.next().unwrap_or("0").trim() == "0";
     let home_y = it.next().unwrap_or("0").trim() == "0";
     let blank = home_x && home_y;
+    let command = it.next().unwrap_or("").trim().to_string();
     Some(PaneInfo {
         pane_id,
         window_id,
@@ -996,6 +1010,7 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
         } else {
             ShellId::from_fields(repo, worktree, index)
         },
+        command,
         active,
         docked_by: (!docked_by.is_empty()).then_some(docked_by),
         overlay_raw: it.next().unwrap_or("").to_string(),
@@ -1102,11 +1117,13 @@ mod tests {
 
     #[test]
     fn pane_line_parsing_keeps_the_overlay_verbatim() {
-        let p =
-            parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||0|0|blocked:1755600000")
-                .expect("parses");
+        let p = parse_pane_line(
+            "%3|@1|node|0|wingman-session-x|x|f|0|1|||0|0|claude|blocked:1755600000",
+        )
+        .expect("parses");
         assert_eq!(p.pane_id, "%3");
-        assert_eq!(p.current_command, "claude");
+        assert_eq!(p.current_command, "node");
+        assert_eq!(p.command, "claude");
         assert!(!p.dead);
         assert_eq!(p.overlay_raw, "blocked:1755600000");
     }
@@ -1115,8 +1132,8 @@ mod tests {
     /// can never desync the parser.
     #[test]
     fn overlay_may_contain_the_field_separator() {
-        let p =
-            parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||0|0|a|b").expect("parses");
+        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||0|0|claude|a|b")
+            .expect("parses");
         assert_eq!(p.overlay_raw, "a|b");
         assert_eq!(
             p.shell,
