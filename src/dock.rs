@@ -37,9 +37,13 @@ pub const REPO_KEY: &str = "@lw_repo";
 pub const WORKTREE_KEY: &str = "@lw_worktree";
 /// Shell index (decimal), on an agent pane.
 pub const INDEX_KEY: &str = "@lw_index";
-/// The command the shell was launched with, on an agent pane. The tree names
-/// the row by it; `pane_current_command` reads `node` for Claude Code.
+/// The command the shell was launched with, escaped by `tmux::escape_field`,
+/// on an agent pane. The tree names the row by it; `pane_current_command`
+/// reads `node` for Claude Code.
 pub const COMMAND_KEY: &str = "@lw_command";
+/// Absolute repository path, escaped, on an agent pane: what maps a shell to
+/// its repository when two repositories share a name.
+pub const REPO_PATH_KEY: &str = "@lw_repo_path";
 /// `1` on a holder pane — the placeholder that keeps an agent window alive
 /// while its agent pane is docked elsewhere.
 pub const HOLDER_KEY: &str = "@lw_holder";

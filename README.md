@@ -228,9 +228,10 @@ everything else is kept. Unknown keys are reported, not fatal (an older
 binary runs a newer config). Every drop is shown once, at startup, in a
 **diagnostics overlay** (`Esc`/`q` dismisses, `j`/`k` scrolls) and logged.
 
-Repositories found by discovery live in the state file, not in the config;
-config `[[repositories]]` entries are merged in at startup and consulted for
-per-repository agent settings.
+Repositories are not stored: each start scans the scope and merges in
+config `[[repositories]]` entries. A repository's base branch and agent are
+read from config whenever they are used, so a config edit applies at the
+next start without touching any state.
 
 ## Repository discovery
 
@@ -261,11 +262,10 @@ stats per directory, done live.
   refreshes tmux state (windows, panes, worktrees), not the repo list. To add
   a repository that is not in the scope, declare it under `[[repositories]]`
   in `config.toml`.
-- **Missing repositories** are kept, not pruned: a repository whose path is
-  currently not a git repo shows `(missing)` dimmed in the tree and
-  re-activates automatically when the path is a repo again. If it is gone
-  for good, drop it from `state.json` (and from `[[repositories]]` in
-  `config.toml` if it was declared there).
+- **Missing repositories**: a repository whose path stops being a git repo
+  while the dashboard runs shows `(missing)` dimmed after `r` and
+  re-activates when the path is a repo again. The next start does not list
+  it.
 
 ### Themes
 
@@ -294,9 +294,9 @@ close to `text` on a dark background for a one-character key to stand out).
 Press **`ctrl-t`** inside the TUI for a live theme picker: move with
 `j`/`k` (or `PgUp`/`PgDn`, `Home`/`End`) and the whole screen repaints with
 the new palette; `Enter` keeps the previewed theme, `Esc` restores the one
-you opened with. The pick is saved to the state file (the config file is
-never rewritten behind your back) and honoured on the next start; the
-config's `theme = ...` line is the startup default.
+you opened with. The pick is written to the `theme = ...` line of
+`~/.config/lazywingman/config.toml`, leaving the rest of the file as it was.
+A repository `.lazywingman.toml` or `--config` that sets `theme` still wins.
 
 `NO_COLOR` (present and non-empty) switches to a monochrome render — every
 role resolves to the terminal default; the UI stays readable because meaning
@@ -424,9 +424,9 @@ without hunting for the status word at the end of the row.
   showing it (its window is stamped with the scope) rather than starting a
   rival one. Agent shells live in **dedicated sessions**, one per repository, named
   deterministically `wingman-session-<repository>` — your own session is never
-  touched. Shell windows are named `lw:<worktree>/<n>` inside that session, so
-  everything is rediscoverable after a restart (`tmux list-sessions` →
-  per-session `list-windows`), even if the state file is lost.
+  touched. Each shell's identity and launch command live on its tmux pane
+  (`@lw_*` options), so shells are rediscovered after a restart even if the
+  state file is lost.
 - All interaction goes through the tmux CLI (`new-session`, `new-window`,
   `send-keys`, `capture-pane`, `swap-pane`, `select-pane`, `kill-window`,
   `list-panes -a`); nothing is shell-interpreted.
@@ -454,11 +454,12 @@ without hunting for the status word at the end of the row.
 - Unsent quick-send drafts (`$XDG_STATE_HOME/lazywingman/drafts.json`) are
   keyed by repository + branch + shell index, so they are restored onto the
   right shell after a restart even though tmux gives it a new pane id.
-- State (`$XDG_STATE_HOME/lazywingman/state.json`) keeps repositories and
-  worktrees; worktrees are checked against `git worktree list`. Shells are
-  never written: every poll rebuilds them from `tmux list-panes`, so a shell
-  is on screen exactly while its pane exists (and a worktree whose state was
-  lost is rebuilt from its pane's cwd + git metadata).
+- State (`$XDG_STATE_HOME/lazywingman/state.json`) holds only what
+  LazyWingman recorded about the worktrees it created (name, creation time,
+  fork point, agent), keyed by path. Worktrees come from `git worktree list`.
+  Shells are never written: every poll rebuilds them from `tmux list-panes`,
+  so a shell is on screen exactly while its pane exists (and a worktree with
+  a live shell but no entry is rebuilt from its pane's cwd + git metadata).
 - Worktree deletion kills the worktree's windows — a session whose last shell
   window is killed destroys itself — then `git worktree remove` (with
   `--force` offered when the worktree is dirty). The worktree branch goes

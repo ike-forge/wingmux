@@ -1,153 +1,103 @@
-//! Persistent state: repositories and worktrees.
+//! Persistent state: what LazyWingman records about the worktrees it creates.
 //!
-//! Stored as JSON in `$XDG_STATE_HOME/lazywingman/state.json`. Shells are not
-//! written: tmux owns them, and [`State::sync_shells`] rebuilds every shell
-//! list from `list-panes`, reading identity and launch command off the pane's
-//! `@lw_*` options. A persisted shell outlives its pane and draws a row for
-//! nothing.
-//!
-//! A file of any older version is discarded and rediscovered, the treatment
-//! v3 gave v2.
+//! `$XDG_STATE_HOME/lazywingman/state.json` holds only facts no other system
+//! keeps: per worktree path, the name typed in the popup, when it was created,
+//! the fork point and the agent picked. Everything else is rebuilt — repositories
+//! from the scan and `[[repositories]]`, their base branch and agent from config
+//! and git, worktrees from `git worktree list`, and shells from `list-panes` on
+//! every poll ([`State::sync_shells`]).
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::dock::ShellId;
 use crate::error::{Error, Result};
 use crate::git::Git;
 use crate::tmux::{PaneInfo, SESSION_PREFIX, Tmux};
 
-pub const STATE_VERSION: u32 = 4;
+pub const STATE_VERSION: u32 = 5;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The tree for this run, plus the records that are persisted.
+#[derive(Debug, Clone, Default)]
 pub struct State {
-    #[serde(default)]
-    pub version: u32,
     pub repositories: Vec<Repository>,
-    /// Theme picked in the TUI (ctrl-t). Wins over the config's `theme`
-    /// line at startup — config is never rewritten behind the user's back;
-    /// in-app changes persist to state per the configuration guidelines.
-    #[serde(default)]
-    pub theme: Option<String>,
+    records: BTreeMap<PathBuf, WorktreeRecord>,
+    /// Shell commands a v4 file recorded, keyed by (worktree or repository
+    /// path, shell index): written onto panes spawned before `@lw_command`
+    /// by the first [`State::reconcile`].
+    legacy_commands: HashMap<(PathBuf, usize), String>,
 }
 
-impl Default for State {
-    fn default() -> State {
-        State {
-            version: STATE_VERSION,
-            repositories: Vec::new(),
-            theme: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A repository in scope. Nothing here is persisted.
+#[derive(Debug, Clone)]
 pub struct Repository {
     pub name: String,
     pub path: PathBuf,
-    /// Base branch resolved at import time.
-    pub base_branch: String,
-    /// Resolved agent command/shell (from config or defaults).
-    pub agent_command: String,
-    pub agent_shell: String,
-    /// The dedicated tmux session holding this repository's shells
-    /// (`wingman-session-<slug>`), if any has been created.
-    #[serde(default)]
-    pub session_name: Option<String>,
-    /// The repository's path is currently not a git repo (moved, unmounted,
-    /// deleted). Kept in state (never pruned) and shown "(missing)" in the
-    /// tree; flips back to `false` automatically when the path is a repo
-    /// again.
-    #[serde(default)]
+    /// The path stopped being a git repo during this run.
     pub missing: bool,
-    /// The repository's own inline shell: a plain login shell in the main
-    /// checkout (`path`, on the base branch), for the one-off commands a
-    /// repository row invites — `make`, `mise run …`, `cat config.toml`.
-    ///
-    /// Spawned only by `a` on the repository row. Derived like
-    /// [`Worktree::shells`].
-    #[serde(default, skip_serializing)]
+    /// The inline shell (a login shell in the main checkout), spawned only by
+    /// `a` on the row.
     pub shell: Option<Shell>,
     pub worktrees: Vec<Worktree>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Worktree {
     pub name: String,
     /// Slugified name == git branch == worktree directory.
     pub branch: String,
     pub path: PathBuf,
     pub created_at: String,
-    /// The base-branch commit this worktree was cut from, recorded at
-    /// creation. It is what makes "no commits of its own" answerable: once
-    /// a branch is merged, `base..HEAD` is empty exactly as it is for a
-    /// fresh cut, so the fork point is the only thing that tells the two
-    /// apart. `None` for worktrees LazyWingman did not create (reconciled
-    /// from `git worktree list`) or written by an older build — those fall
-    /// back to measuring against the base branch itself, which reads a
-    /// merged worktree as new.
-    #[serde(default)]
+    /// The base-branch commit this worktree was cut from. A merged branch and
+    /// a fresh cut both have an empty `base..HEAD`; only the fork point tells
+    /// them apart. `None` for worktrees LazyWingman did not create.
     pub base_commit: Option<String>,
-    /// The agent command this worktree runs, picked in the new-worktree
-    /// popup. `None` — every worktree written by an older build, and every
-    /// one reconciled from `git worktree list` — means "whatever the
-    /// repository runs", so the repository stays the single answer for
-    /// worktrees that never chose one.
-    #[serde(default)]
+    /// The agent command picked in the new-worktree popup; `None` means
+    /// "whatever the repository runs".
     pub agent_command: Option<String>,
-    /// Live shells, rebuilt from tmux by [`State::sync_shells`]. Still read
-    /// from older files, whose recorded commands seed panes spawned before
-    /// `@lw_command` existed.
-    #[serde(default, skip_serializing)]
     pub shells: Vec<Shell>,
 }
 
+/// The persisted part of a [`Worktree`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorktreeRecord {
+    name: String,
+    created_at: String,
+    #[serde(default)]
+    base_commit: Option<String>,
+    #[serde(default)]
+    agent_command: Option<String>,
+}
+
 impl Worktree {
-    /// Index for the next shell: one past the highest in use, never a
-    /// freed slot. The index names the tmux window and is what
-    /// [`State::reconcile`] matches a live window back to, so a closed
-    /// shell's number must not be handed out again while the worktree
-    /// lives.
+    /// Index for the next shell: one past the highest live one, so it cannot
+    /// collide with a pane already stamped with it.
     pub fn next_shell_index(&self) -> usize {
         self.shells.iter().map(|s| s.index + 1).max().unwrap_or(0)
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A live shell, as read back from its pane.
+#[derive(Debug, Clone)]
 pub struct Shell {
     pub index: usize,
-    /// The command this shell was started with (`claude`, `zsh`, …) — what
-    /// the tree names the row by. It is what was *launched*, not what is
-    /// running now: `#{pane_current_command}` reads `node` for a Claude
-    /// Code session and `zsh` again the moment an agent exits, so a live
-    /// reading would rename rows behind the user's back.
-    ///
-    /// Read from the pane's `@lw_command`. `None` for a pane spawned by an
-    /// older build with no recorded command; the row falls back to `#<index>`.
-    #[serde(default)]
+    /// The command the shell was started with (`@lw_command`). Launched, not
+    /// running: `#{pane_current_command}` reads `node` for Claude Code and
+    /// `zsh` once an agent exits. `None` for a pane spawned by an older build.
     pub command: Option<String>,
-    /// Human-facing label (`lw:<worktree>/<index>`). A label, not an
-    /// identity: the pane's options are the identity, and the window may be
-    /// renamed by hand without costing the shell anything.
+    /// Human-facing label (`lw:<worktree>/<index>`), not an identity.
     pub window_name: String,
-    /// Where the pane is right now, from `list-panes`.
-    #[serde(skip)]
-    pub window_id: Option<String>,
-    #[serde(skip)]
-    pub pane_id: Option<String>,
+    /// Where the pane is, as of the last poll.
+    pub window_id: String,
+    pub pane_id: String,
 }
 
 impl Shell {
-    /// How the tree names this shell: the program it was started with
-    /// (`claude`, `zsh`), falling back to `#<index>` when no command was
-    /// recorded.
-    ///
-    /// The first token, basenamed — arguments and the path are dropped.
-    /// A row has one line to share with the status, so a label that grew
-    /// with `codex exec --yolo` would push what the agent is waiting for
-    /// off the panel; the program is what tells two rows apart, the flags
-    /// are not.
+    /// How the tree names this shell: the program it was started with, or
+    /// `#<index>` when none was recorded. First token, basenamed — a row
+    /// shares its line with the status.
     pub fn label(&self) -> String {
         self.command
             .as_deref()
@@ -160,79 +110,137 @@ impl Shell {
 }
 
 impl State {
-    /// Load from disk; missing file → empty state.
+    /// Load the records; missing file → none. Records of worktrees whose
+    /// directory is gone are dropped here, since nothing else would ever
+    /// prune a worktree outside this run's scope.
     pub fn load() -> Result<State> {
         let path = crate::util::state_path();
-        match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                // Read the version before the state itself: v3 renamed the
-                // on-disk keys (`projects`/`features` → `repositories`/
-                // `worktrees`) with no migration path, so an older file
-                // cannot be deserialised at all. A well-formed file of the
-                // wrong version is discarded rather than treated as corrupt
-                // — reconcile rediscovers the repositories and reconstructs
-                // their worktrees from tmux and git. Malformed JSON is still
-                // an error: the user is told instead of silently losing the
-                // tree.
-                let raw: serde_json::Value = serde_json::from_str(&text)
-                    .map_err(|e| Error::State(format!("{}: {e}", path.display())))?;
-                let version = raw.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                if version != STATE_VERSION {
-                    log::warn!(
-                        "state v{version} is not v{STATE_VERSION} — discarding {} and starting empty",
-                        path.display()
-                    );
-                    return Ok(State::default());
-                }
-                let state: State = serde_json::from_value(raw)
-                    .map_err(|e| Error::State(format!("{}: {e}", path.display())))?;
-                Ok(state)
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(State::default()),
+            Err(e) => return Err(Error::Io(e)),
+        };
+        // Malformed JSON is an error so the user is told rather than silently
+        // losing the records; a well-formed file of an unknown version is not.
+        let raw: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| Error::State(format!("{}: {e}", path.display())))?;
+        let version = raw.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let mut state = State::default();
+        match version {
+            STATE_VERSION => {
+                state.records = serde_json::from_value(raw["worktrees"].clone())
+                    .map_err(|e| Error::State(format!("{}: {e}", path.display())))?
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
-            Err(e) => Err(Error::Io(e)),
+            4 => state.read_v4(&raw),
+            _ => log::warn!(
+                "state v{version} is not v{STATE_VERSION} — discarding {}",
+                path.display()
+            ),
         }
+        state.records.retain(|p, _| p.is_dir());
+        Ok(state)
     }
 
-    /// Persist to disk (pretty-printed), **atomically**.
+    /// A v4 file nested worktrees under repositories and recorded shells; keep
+    /// the worktree records and the shell commands.
+    fn read_v4(&mut self, raw: &serde_json::Value) {
+        let mut remember = |path: &Path, shell: &serde_json::Value| {
+            if let (Some(index), Some(command)) =
+                (shell["index"].as_u64(), shell["command"].as_str())
+            {
+                self.legacy_commands
+                    .insert((path.to_path_buf(), index as usize), command.to_string());
+            }
+        };
+        let mut records = BTreeMap::new();
+        for repo in raw["repositories"].as_array().into_iter().flatten() {
+            if let Some(path) = repo["path"].as_str() {
+                remember(Path::new(path), &repo["shell"]);
+            }
+            for wt in repo["worktrees"].as_array().into_iter().flatten() {
+                let Some(path) = wt["path"].as_str().map(PathBuf::from) else {
+                    continue;
+                };
+                for shell in wt["shells"].as_array().into_iter().flatten() {
+                    remember(&path, shell);
+                }
+                if let Ok(record) = serde_json::from_value(wt.clone()) {
+                    records.insert(path, record);
+                }
+            }
+        }
+        self.records = records;
+    }
+
+    /// Persist the records, atomically.
     ///
-    /// Two dashboards share this file and both write it, so last-writer-wins
-    /// is the rule. That is survivable: everything live is re-derived from
-    /// tmux on the next reconcile, so the loser loses nothing a poll does
-    /// not put back. A **half-written** file is not survivable — `load`
-    /// treats unparseable JSON as a hard error, so one badly-timed write
-    /// would take the tree down for every instance and stay broken across
-    /// restarts.
-    ///
-    /// So: write a temporary file beside the target, then `rename` over it.
-    /// Same directory, because a rename is only atomic within a filesystem;
-    /// the pid in the name, because two instances must not share the
-    /// temporary either. A failed write leaves the previous state intact
-    /// and the temporary behind, which is the right way round.
+    /// Two dashboards share this file: last-writer-wins is survivable, a
+    /// half-written file is not (`load` fails on it for every instance). So
+    /// write a pid-named temporary beside the target and rename over it.
     pub fn save(&self) -> Result<()> {
         let path = crate::util::state_path();
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let text = serde_json::to_string_pretty(self).map_err(|e| Error::State(e.to_string()))?;
+        let stored = serde_json::json!({
+            "version": STATE_VERSION,
+            "worktrees": &self.records,
+        });
+        let text =
+            serde_json::to_string_pretty(&stored).map_err(|e| Error::State(e.to_string()))?;
         let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
         std::fs::write(&tmp, text)?;
         if let Err(e) = std::fs::rename(&tmp, &path) {
-            // Do not leave the temporary lying around when the swap is the
-            // thing that failed.
             let _ = std::fs::remove_file(&tmp);
             return Err(Error::Io(e));
         }
-        log::info!("state saved: {} repositories", self.repositories.len());
+        log::info!("state saved: {} worktree records", self.records.len());
         Ok(())
+    }
+
+    /// A worktree git lists at `path`, with what was recorded about it.
+    /// `name` is used when nothing was.
+    pub fn restore_worktree(&self, path: PathBuf, branch: String, name: String) -> Worktree {
+        let record = self.records.get(&path).cloned();
+        Worktree {
+            name: record.as_ref().map_or(name, |r| r.name.clone()),
+            branch,
+            created_at: record
+                .as_ref()
+                .map(|r| r.created_at.clone())
+                .unwrap_or_default(),
+            base_commit: record.as_ref().and_then(|r| r.base_commit.clone()),
+            agent_command: record.and_then(|r| r.agent_command),
+            path,
+            shells: Vec::new(),
+        }
+    }
+
+    /// Record a worktree LazyWingman created.
+    pub fn record(&mut self, wt: &Worktree) {
+        self.records.insert(
+            wt.path.clone(),
+            WorktreeRecord {
+                name: wt.name.clone(),
+                created_at: wt.created_at.clone(),
+                base_commit: wt.base_commit.clone(),
+                agent_command: wt.agent_command.clone(),
+            },
+        );
+    }
+
+    /// Drop the record of a worktree that no longer exists.
+    pub fn forget(&mut self, path: &Path) {
+        self.records.remove(path);
     }
 
     /// Rebuild every shell list from `panes`: a shell exists exactly while
     /// tmux lists its pane, wherever that pane sits.
     ///
-    /// Returns the panes naming a worktree state does not know, for
+    /// Returns the panes naming a worktree the tree does not know, for
     /// [`Self::reconcile`] to reconstruct.
     pub fn sync_shells(&mut self, panes: &[PaneInfo]) -> Vec<PaneInfo> {
-        // Keyed by tree position; the fallback for panes with no `@lw_command`.
+        // Keyed by tree position: keeps a row's label when a stamp failed.
         let mut old: HashMap<(usize, Option<usize>, usize), Option<String>> = HashMap::new();
         for (ri, repo) in self.repositories.iter_mut().enumerate() {
             if let Some(s) = repo.shell.take() {
@@ -249,10 +257,7 @@ impl State {
             let Some(id) = &pane.shell else {
                 continue;
             };
-            // The identity names the session that owns the shell, which is
-            // not necessarily the session the pane is sitting in now.
-            let session = format!("{SESSION_PREFIX}{}", id.repo);
-            let Some(ri) = self.repo_index_for_session(&session, &id.repo) else {
+            let Some(ri) = self.repo_for_pane(pane, id) else {
                 // A main checkout is no worktree to reconstruct.
                 if !id.is_repo_shell() {
                     unknown.push(pane.clone());
@@ -260,10 +265,6 @@ impl State {
                 continue;
             };
             let repo = &mut self.repositories[ri];
-            if repo.session_name.as_deref() != Some(&session) {
-                repo.session_name = Some(session.clone());
-                log::info!("repository '{}' → agent session {session}", repo.name);
-            }
             // No branch sanitises to the `.repo` sentinel, so a worktree's
             // shell never lands on the repository.
             let wi = if id.is_repo_shell() {
@@ -282,13 +283,14 @@ impl State {
                 }
             };
             let shell = Shell {
-                command: Some(pane.command.clone())
-                    .filter(|c| !c.is_empty())
-                    .or_else(|| old.get(&(ri, wi, id.index)).cloned().flatten()),
                 index: id.index,
+                command: pane
+                    .command
+                    .clone()
+                    .or_else(|| old.get(&(ri, wi, id.index)).cloned().flatten()),
                 window_name: Tmux::window_name(&id.worktree, id.index),
-                window_id: Some(pane.window_id.clone()),
-                pane_id: Some(pane.pane_id.clone()),
+                window_id: pane.window_id.clone(),
+                pane_id: pane.pane_id.clone(),
             };
             match wi {
                 None => {
@@ -313,8 +315,8 @@ impl State {
     }
 
     /// [`Self::sync_shells`], plus what needs more than the pane list:
-    /// worktrees rebuilt from an unknown pane's cwd, and `@lw_command`
-    /// backfilled onto panes whose command only the state file recorded.
+    /// worktrees rebuilt from an unknown pane's cwd, and the commands a v4
+    /// file recorded written onto panes that carry none.
     pub fn reconcile(&mut self, tmux: &Tmux) -> Result<()> {
         let panes = tmux.list_panes()?;
         let mut rebuilt = false;
@@ -323,200 +325,149 @@ impl State {
                 continue;
             };
             if let Some(path) = pane_cwd(tmux, &pane.pane_id) {
-                rebuilt |= self.reconstruct_worktree(&path, &id.repo, &id.worktree);
+                rebuilt |= self.reconstruct_worktree(&path, &id.worktree);
             }
         }
         if rebuilt {
             self.sync_shells(&panes);
         }
-        let backfill: Vec<(String, String)> = self
-            .repositories
-            .iter()
-            .flat_map(|r| {
-                r.shell
-                    .iter()
-                    .chain(r.worktrees.iter().flat_map(|w| &w.shells))
-            })
-            .filter_map(|s| Some((s.pane_id.clone()?, s.command.clone()?)))
-            .filter(|(pid, _)| {
-                panes
-                    .iter()
-                    .any(|p| &p.pane_id == pid && p.command.is_empty())
-            })
-            .collect();
-        for (pid, command) in backfill {
-            tmux.stamp_command(&pid, &command);
+        let legacy = std::mem::take(&mut self.legacy_commands);
+        if !legacy.is_empty() {
+            let fill = |path: &Path, s: &mut Shell| {
+                if s.command.is_none()
+                    && let Some(command) = legacy.get(&(path.to_path_buf(), s.index))
+                {
+                    tmux.stamp_command(&s.pane_id, command);
+                    s.command = Some(command.clone());
+                }
+            };
+            for repo in &mut self.repositories {
+                if let Some(s) = &mut repo.shell {
+                    fill(&repo.path, s);
+                }
+                for wt in &mut repo.worktrees {
+                    for s in &mut wt.shells {
+                        fill(&wt.path, s);
+                    }
+                }
+            }
         }
         Ok(())
     }
 
-    /// Which repository owns the agent session `session` (slug `slug`)?
-    /// Exact session-name match first; else the slug matches the
-    /// repository's sanitised name; else a hash-suffixed session.
-    fn repo_index_for_session(&self, session: &str, slug: &str) -> Option<usize> {
+    /// The agent session of repository `ri`, read off its live panes.
+    pub fn session_of(&self, panes: &[PaneInfo], ri: usize) -> Option<String> {
+        panes
+            .iter()
+            .filter_map(|p| Some((p, p.shell.as_ref()?)))
+            .find(|(p, id)| self.repo_for_pane(p, id) == Some(ri))
+            .map(|(_, id)| format!("{SESSION_PREFIX}{}", id.repo))
+    }
+
+    /// Which repository a shell pane belongs to: by its `@lw_repo_path`, else
+    /// — a pane from an older build — by the session slug, hash-suffixed first
+    /// because that form is unambiguous.
+    fn repo_for_pane(&self, pane: &PaneInfo, id: &ShellId) -> Option<usize> {
+        if let Some(path) = &pane.repo_path {
+            return self.repositories.iter().position(|r| &r.path == path);
+        }
         self.repositories
             .iter()
-            .position(|p| p.session_name.as_deref() == Some(session))
+            .position(|r| {
+                format!("{}-{}", sanitize_name(&r.name), Tmux::hash_suffix(&r.path)) == id.repo
+            })
             .or_else(|| {
                 self.repositories
                     .iter()
-                    .position(|p| sanitize_name(&p.name) == slug)
-            })
-            .or_else(|| {
-                self.repositories.iter().position(|p| {
-                    n_contains_slug(p, slug)
-                        && p.session_name
-                            .as_deref()
-                            .map(|n| {
-                                n.ends_with(&format!(
-                                    "-{}",
-                                    crate::tmux::Tmux::hash_suffix(&p.path)
-                                ))
-                            })
-                            .unwrap_or(false)
-                })
+                    .position(|r| sanitize_name(&r.name) == id.repo)
             })
     }
 
-    /// Rebuild a worktree entry from a live window whose state was lost
-    /// (e.g. state file deleted). The worktree path is the pane's cwd; the
-    /// branch comes from git; the owning repository from the worktree's main
-    /// repo. The worktree name is the sanitised window-name component.
-    /// Returns whether a worktree was added.
-    fn reconstruct_worktree(&mut self, path: &std::path::Path, pname: &str, fname: &str) -> bool {
+    /// Rebuild the worktree at `path` (a live pane's cwd) under the repository
+    /// that owns it. `fname` is the pane's worktree component. Returns whether
+    /// a worktree was added.
+    fn reconstruct_worktree(&mut self, path: &Path, fname: &str) -> bool {
         let Some(main_repo) = crate::git::main_repo_of_worktree(path) else {
             log::warn!("cannot find main repo for worktree {}", path.display());
             return false;
         };
-        let Some(repo_idx) = self.repositories.iter().position(|p| p.path == main_repo) else {
-            log::info!(
-                "window {pname}/{fname} belongs to unknown repository, skipping reconstruction"
-            );
+        let Some(ri) = self.repositories.iter().position(|p| p.path == main_repo) else {
+            log::info!("worktree {fname} belongs to unknown repository, skipping reconstruction");
             return false;
         };
         // Two panes of one lost worktree must not rebuild it twice.
-        if self.repositories[repo_idx]
+        if self.repositories[ri]
             .worktrees
             .iter()
             .any(|w| w.path == path)
         {
             return false;
         }
-        let Some(branch) = Git.current_branch(path).ok() else {
+        let Ok(branch) = Git.current_branch(path) else {
             log::warn!("cannot resolve branch for {}", path.display());
             return false;
         };
         log::info!("reconstructing worktree {fname} (branch {branch})");
-        self.repositories[repo_idx].worktrees.push(Worktree {
-            name: fname.to_string(),
-            branch,
-            path: path.to_path_buf(),
-            created_at: String::new(),
-            base_commit: None,
-            agent_command: None,
-            shells: vec![],
-        });
+        let wt = self.restore_worktree(path.to_path_buf(), branch, fname.to_string());
+        self.repositories[ri].worktrees.push(wt);
         true
     }
 
-    /// Prune state entries that no longer match reality.
+    /// Prune worktrees that no longer match reality, and their records.
     ///
-    /// Repositories are NEVER dropped here: a repository whose path is not a repo
-    /// is kept and marked `missing` (shown "(missing)" in the tree); it
-    /// re-activates automatically when the path is a repo again. Only
-    /// worktrees gone from `git worktree list` are pruned; shells are
-    /// [`Self::sync_shells`]'s.
+    /// A repository whose path stopped being a repo is marked `missing` and
+    /// keeps its worktrees, which cannot be verified while it is gone.
     ///
-    /// `verify_worktrees` is index-parallel to `repositories`: `true` means
-    /// this repository's worktrees have been loaded this run (it is expanded
-    /// or the flattened single repository), so its worktrees can be verified
-    /// against `git worktree list`. Repositories with `false` keep their
-    /// worktrees untouched — verifying 200 repos at boot would be the very
-    /// cost the lazy loading exists to avoid.
-    pub fn prune(&mut self, tmux: Option<&Tmux>, verify_worktrees: &[bool]) -> Result<()> {
+    /// `verify_worktrees` is index-parallel to `repositories`: only
+    /// repositories whose worktrees were loaded this run are checked against
+    /// `git worktree list` — verifying 200 repos at boot is the cost lazy
+    /// loading exists to avoid.
+    pub fn prune(&mut self, verify_worktrees: &[bool]) {
         let git = Git;
-        let mut removed_worktrees = 0;
+        let mut gone = Vec::new();
         for (idx, repo) in self.repositories.iter_mut().enumerate() {
             let is_repo = git.is_repo(&repo.path);
-            if !is_repo {
-                // Keep the repository; mark it missing (re-activates when the
-                // path is a repo again).
-                if !repo.missing {
-                    repo.missing = true;
-                    log::info!(
-                        "repository '{}' marked missing ({} is not a git repo)",
-                        repo.name,
-                        repo.path.display()
-                    );
-                }
-                // Worktrees/shells cannot be verified while missing — keep
-                // them as they are (their windows may still be alive).
-            } else {
-                if repo.missing {
-                    repo.missing = false;
-                    log::info!(
-                        "repository '{}' re-activated ({} is a git repo again)",
-                        repo.name,
-                        repo.path.display()
-                    );
-                }
-                // Worktree verification is the expensive part — only run it
-                // for repositories whose worktrees were actually loaded this
-                // run (see `App::ensure_worktrees`).
-                let verify = verify_worktrees.get(idx).copied().unwrap_or(true);
-                if verify {
-                    if let Ok(worktrees) = git.worktree_list(&repo.path) {
-                        let wt_paths: Vec<PathBuf> =
-                            worktrees.into_iter().map(|w| w.path).collect();
-                        repo.worktrees.retain(|f| {
-                            let keep = wt_paths.contains(&f.path);
-                            if !keep {
-                                log::info!(
-                                    "pruning stale worktree '{}' (worktree {} gone)",
-                                    f.name,
-                                    f.path.display()
-                                );
-                                removed_worktrees += 1;
-                            }
-                            keep
-                        });
+            if is_repo == repo.missing {
+                repo.missing = !is_repo;
+                log::info!(
+                    "repository '{}' {} ({})",
+                    repo.name,
+                    if is_repo {
+                        "re-activated"
                     } else {
-                        log::warn!(
-                            "worktree list failed for {} — leaving worktrees untouched",
-                            repo.path.display()
-                        );
-                    }
-                }
-                // else: worktrees stay as-is until the repository is expanded —
-                // lazy loading owns verification then.
+                        "marked missing"
+                    },
+                    repo.path.display()
+                );
             }
-            // If the agent session vanished (crashed server, killed session)
-            // but the repository still exists, drop the stale name so a new
-            // session is created on demand.
-            if let Some(sess) = &repo.session_name {
-                let alive = tmux.map(|t| t.session_exists(sess)).unwrap_or(false);
-                if !alive {
+            if !is_repo || !verify_worktrees.get(idx).copied().unwrap_or(true) {
+                continue;
+            }
+            let Ok(worktrees) = git.worktree_list(&repo.path) else {
+                log::warn!(
+                    "worktree list failed for {} — leaving worktrees untouched",
+                    repo.path.display()
+                );
+                continue;
+            };
+            let wt_paths: Vec<PathBuf> = worktrees.into_iter().map(|w| w.path).collect();
+            repo.worktrees.retain(|f| {
+                let keep = wt_paths.contains(&f.path);
+                if !keep {
                     log::info!(
-                        "agent session {} gone for repository '{}', clearing",
-                        sess,
-                        repo.name
+                        "pruning stale worktree '{}' ({} gone)",
+                        f.name,
+                        f.path.display()
                     );
-                    repo.session_name = None;
+                    gone.push(f.path.clone());
                 }
-            }
+                keep
+            });
         }
-        if removed_worktrees > 0 {
-            log::info!("pruned {removed_worktrees} worktrees");
+        for path in &gone {
+            self.forget(path);
         }
-        Ok(())
     }
-}
-
-/// Does the repository's name match the session slug (for hash-suffixed
-/// session names)?
-fn n_contains_slug(p: &Repository, slug: &str) -> bool {
-    let n = sanitize_name(&p.name);
-    n == slug || n.starts_with(slug) || slug.starts_with(&n)
 }
 
 /// Sanitise a name the same way session/window names are built.
@@ -556,39 +507,66 @@ fn pane_cwd(tmux: &Tmux, pane_id: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dock::ShellId;
 
-    /// A closed shell's index is never handed out again: `next_shell_index`
-    /// counts past the highest in use, so the freed number cannot collide
-    /// with a live window on reconcile.
-    #[test]
-    fn next_shell_index_never_reuses_a_freed_slot() {
-        let mut wt = Worktree {
-            name: "wt".into(),
-            branch: "wt".into(),
-            path: PathBuf::from("/tmp/wt"),
+    fn repository(name: &str, path: &str) -> Repository {
+        Repository {
+            name: name.into(),
+            path: PathBuf::from(path),
+            missing: false,
+            shell: None,
+            worktrees: vec![],
+        }
+    }
+
+    fn worktree(name: &str, path: &str) -> Worktree {
+        Worktree {
+            name: name.into(),
+            branch: name.into(),
+            path: PathBuf::from(path),
             created_at: String::new(),
             base_commit: None,
             agent_command: None,
             shells: vec![],
-        };
-        assert_eq!(wt.next_shell_index(), 0);
-        for idx in 0..3 {
-            wt.shells.push(Shell {
-                command: None,
-                index: idx,
-                window_name: format!("lw:wt/{idx}"),
-                window_id: None,
-                pane_id: None,
-            });
         }
+    }
+
+    fn shell(index: usize, command: Option<&str>) -> Shell {
+        Shell {
+            index,
+            command: command.map(str::to_string),
+            window_name: format!("lw:wt/{index}"),
+            window_id: format!("@{index}"),
+            pane_id: format!("%{index}"),
+        }
+    }
+
+    fn pane(pane_id: &str, worktree: &str, index: usize, command: Option<&str>) -> PaneInfo {
+        PaneInfo {
+            pane_id: pane_id.into(),
+            window_id: format!("@{pane_id}"),
+            shell: Some(ShellId::for_session("wingman-session-p", worktree, index)),
+            command: command.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    fn repo_with_worktree(shells: Vec<Shell>, repo_shell: Option<Shell>) -> State {
+        let mut s = State::default();
+        let mut r = repository("p", "/tmp/p");
+        r.shell = repo_shell;
+        let mut wt = worktree("wt", "/tmp/p-wt");
+        wt.shells = shells;
+        r.worktrees.push(wt);
+        s.repositories.push(r);
+        s
+    }
+
+    #[test]
+    fn next_shell_index_counts_past_the_highest_live_shell() {
+        let mut wt = worktree("wt", "/tmp/wt");
+        assert_eq!(wt.next_shell_index(), 0);
+        wt.shells = vec![shell(0, None), shell(2, None)];
         assert_eq!(wt.next_shell_index(), 3);
-        wt.shells.remove(1); // shell 1 closed
-        assert_eq!(
-            wt.next_shell_index(),
-            3,
-            "a freed index must not be reused while shell 2 holds a window"
-        );
     }
 
     #[test]
@@ -596,123 +574,35 @@ mod tests {
         assert_eq!(crate::tmux::Tmux::window_name("wt-one", 2), "lw:wt-one/2");
     }
 
-    #[test]
-    fn state_json_roundtrip() {
-        let mut s = State::default();
-        s.repositories.push(Repository {
-            name: "repo".into(),
-            path: PathBuf::from("/tmp/repo"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
-            session_name: Some("wingman-session-repo".into()),
-            missing: false,
-            shell: None,
-            worktrees: vec![Worktree {
-                name: "wt".into(),
-                branch: "wt".into(),
-                path: PathBuf::from("/tmp/wt/wt"),
-                created_at: "now".into(),
-                base_commit: None,
-                agent_command: None,
-                shells: vec![Shell {
-                    command: None,
-                    index: 0,
-                    window_name: "lw:wt/0".into(),
-                    window_id: Some("@5".into()),
-                    pane_id: Some("%9".into()),
-                }],
-            }],
-        });
-        let json = serde_json::to_string_pretty(&s).unwrap();
-        let back: State = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.repositories.len(), 1);
-        // Shells are tmux's: a persisted one outlives its pane.
-        assert!(
-            !json.contains("shells"),
-            "shells must not be written: {json}"
-        );
-        assert!(!json.contains("%9"), "pane id must not be written: {json}");
-        assert!(back.repositories[0].worktrees[0].shells.is_empty());
-        assert_eq!(
-            back.repositories[0].session_name.as_deref(),
-            Some("wingman-session-repo")
-        );
-    }
-
-    fn pane(pane_id: &str, worktree: &str, index: usize, command: &str) -> PaneInfo {
-        PaneInfo {
-            pane_id: pane_id.into(),
-            window_id: format!("@{pane_id}"),
-            shell: Some(ShellId::for_session("wingman-session-p", worktree, index)),
-            command: command.into(),
-            ..Default::default()
-        }
-    }
-
-    fn repo_with_worktree(shells: Vec<Shell>, repo_shell: Option<Shell>) -> State {
-        let mut s = State::default();
-        s.repositories.push(Repository {
-            name: "p".into(),
-            path: PathBuf::from("/tmp/p"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
-            session_name: Some("wingman-session-p".into()),
-            missing: false,
-            shell: repo_shell,
-            worktrees: vec![Worktree {
-                name: "wt".into(),
-                branch: "wt".into(),
-                path: PathBuf::from("/tmp/p-wt"),
-                created_at: String::new(),
-                base_commit: None,
-                agent_command: None,
-                shells,
-            }],
-        });
-        s
-    }
-
-    fn file_shell(index: usize, command: &str) -> Shell {
-        Shell {
-            command: Some(command.into()),
-            index,
-            window_name: String::new(),
-            window_id: None,
-            pane_id: None,
-        }
-    }
-
-    /// A shell read from an older file whose pane is gone draws nothing:
-    /// the stale `● main` a repository row showed after a tmux restart.
+    /// A shell whose pane is gone draws nothing: the stale `● main` a
+    /// repository row showed after a tmux restart.
     #[test]
     fn sync_drops_shells_whose_pane_is_gone() {
-        let mut s = repo_with_worktree(vec![file_shell(0, "claude")], Some(file_shell(0, "zsh")));
+        let mut s = repo_with_worktree(vec![shell(0, Some("claude"))], Some(shell(0, None)));
         s.sync_shells(&[]);
         assert!(s.repositories[0].shell.is_none());
         assert!(s.repositories[0].worktrees[0].shells.is_empty());
     }
 
     /// Identity and command come off the pane; a pane with no `@lw_command`
-    /// keeps the command state recorded for that position.
+    /// keeps the command this run last saw at that position.
     #[test]
     fn sync_builds_shells_from_panes() {
-        let mut s = repo_with_worktree(vec![file_shell(1, "codex")], None);
+        let mut s = repo_with_worktree(vec![shell(1, Some("codex"))], None);
         let unknown = s.sync_shells(&[
-            pane("%2", "wt", 1, ""),
-            pane("%1", "wt", 0, "claude --resume"),
-            pane("%3", crate::dock::REPO_WORKTREE, 0, "zsh"),
-            pane("%4", "lost", 0, "claude"),
+            pane("%2", "wt", 1, None),
+            pane("%1", "wt", 0, Some("claude --resume")),
+            pane("%3", crate::dock::REPO_WORKTREE, 0, Some("zsh")),
+            pane("%4", "lost", 0, Some("claude")),
         ]);
         let shells = &s.repositories[0].worktrees[0].shells;
         assert_eq!(shells.len(), 2);
-        assert_eq!(shells[0].pane_id.as_deref(), Some("%1"));
+        assert_eq!(shells[0].pane_id, "%1");
         assert_eq!(shells[0].label(), "claude");
-        assert_eq!(shells[1].pane_id.as_deref(), Some("%2"));
+        assert_eq!(shells[1].pane_id, "%2");
         assert_eq!(shells[1].command.as_deref(), Some("codex"));
         let repo_shell = s.repositories[0].shell.as_ref().expect("repository shell");
-        assert_eq!(repo_shell.pane_id.as_deref(), Some("%3"));
+        assert_eq!(repo_shell.pane_id, "%3");
         assert_eq!(
             unknown.len(),
             1,
@@ -720,35 +610,137 @@ mod tests {
         );
         assert_eq!(unknown[0].pane_id, "%4");
 
-        s.sync_shells(&[pane("%1", "wt", 0, "claude")]);
+        s.sync_shells(&[pane("%1", "wt", 0, Some("claude"))]);
         assert_eq!(s.repositories[0].worktrees[0].shells.len(), 1);
         assert!(s.repositories[0].shell.is_none(), "closed panes go at once");
     }
 
-    /// A file of the previous schema is discarded and rediscovered — the
-    /// treatment v3 gave v2. Repositories come back from discovery, shells
-    /// from the panes; nothing is silently half-migrated.
+    /// Two repositories with one name: the path on each pane tells them apart,
+    /// whichever got the unsuffixed session.
     #[test]
-    fn a_v3_file_is_discarded_rather_than_loaded() {
+    fn panes_map_to_repositories_by_their_stamped_path() {
+        let mut s = State::default();
+        s.repositories.push(repository("app", "/work/a/app"));
+        s.repositories.push(repository("app", "/work/b/app"));
+        let stamped = |pane_id: &str, session: &str, path: &str| PaneInfo {
+            pane_id: pane_id.into(),
+            shell: Some(ShellId::for_session(
+                session,
+                crate::dock::REPO_WORKTREE,
+                crate::dock::REPO_INDEX,
+            )),
+            repo_path: Some(PathBuf::from(path)),
+            ..Default::default()
+        };
+        let panes = [
+            stamped("%1", "wingman-session-app", "/work/b/app"),
+            stamped("%2", "wingman-session-app-0000beef", "/work/a/app"),
+        ];
+        assert_eq!(
+            s.session_of(&panes, 0).as_deref(),
+            Some("wingman-session-app-0000beef")
+        );
+        assert_eq!(
+            s.session_of(&panes, 1).as_deref(),
+            Some("wingman-session-app")
+        );
+        s.sync_shells(&panes);
+        assert_eq!(s.repositories[0].shell.as_ref().unwrap().pane_id, "%2");
+        assert_eq!(s.repositories[1].shell.as_ref().unwrap().pane_id, "%1");
+    }
+
+    /// The file holds worktree records and nothing derivable.
+    #[test]
+    fn only_worktree_records_are_saved() {
         crate::util::testutil::with_fresh_xdg(|| {
-            std::fs::create_dir_all(crate::util::state_dir()).unwrap();
-            let v3 = r#"{"version":3,"repositories":[{"name":"p","path":"/tmp/p","base_branch":"main","agent_command":"claude","agent_shell":"bash","worktrees":[]}],"theme":null}"#;
-            std::fs::write(crate::util::state_path(), v3).unwrap();
-            let s = State::load().unwrap();
-            assert!(s.repositories.is_empty(), "v3 is not loaded");
-            assert_eq!(s.version, STATE_VERSION);
+            let dir = tempfile::TempDir::new().unwrap();
+            let mut s = State::default();
+            let mut repo = repository("repo", "/tmp/repo");
+            repo.shell = Some(shell(0, None));
+            let mut wt = worktree("Feature X", dir.path().to_str().unwrap());
+            wt.created_at = "2026-09-14".into();
+            wt.base_commit = Some("abc".into());
+            wt.shells = vec![shell(5, None)];
+            s.record(&wt);
+            repo.worktrees.push(wt);
+            s.repositories.push(repo);
+            s.save().unwrap();
+
+            let json = std::fs::read_to_string(crate::util::state_path()).unwrap();
+            for leak in ["repositor", "shell", "session", "theme", "branch", "%5"] {
+                assert!(!json.contains(leak), "{leak} must not be written: {json}");
+            }
+            let back = State::load().unwrap();
+            let wt =
+                back.restore_worktree(dir.path().to_path_buf(), "feature-x".into(), "x".into());
+            assert_eq!(wt.name, "Feature X");
+            assert_eq!(wt.created_at, "2026-09-14");
+            assert_eq!(wt.base_commit.as_deref(), Some("abc"));
+            assert_eq!(wt.branch, "feature-x", "the branch comes from git");
         });
     }
 
     #[test]
-    fn missing_optional_fields_default() {
-        // session_name and missing are optional on disk.
-        let v1 = r#"{"repositories":[{"name":"p","path":"/tmp/p","base_branch":"main","agent_command":"claude","agent_shell":"bash","worktrees":[]}]}"#;
-        let s: State = serde_json::from_str(v1).unwrap();
-        assert_eq!(s.version, 0);
-        assert!(s.repositories[0].session_name.is_none());
-        assert!(!s.repositories[0].missing);
-        assert!(s.repositories[0].worktrees.is_empty());
+    fn a_worktree_without_a_record_takes_the_given_name() {
+        let wt = State::default().restore_worktree("/tmp/wt".into(), "b".into(), "b".into());
+        assert_eq!(wt.name, "b");
+        assert_eq!(wt.base_commit, None);
+    }
+
+    /// A v4 file nested the records under repositories; they carry over, and
+    /// so do the shell commands it recorded.
+    #[test]
+    fn v4_worktree_records_and_shell_commands_carry_over() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let v4 = serde_json::json!({
+                "version": 4,
+                "theme": "dracula",
+                "repositories": [{
+                    "name": "p", "path": "/tmp/p", "base_branch": "main",
+                    "agent_command": "claude", "agent_shell": "bash",
+                    "session_name": "wingman-session-p",
+                    "shell": {"index": 0, "command": "zsh", "window_name": "lw:.repo/0"},
+                    "worktrees": [
+                        {"name": "Kept", "branch": "kept", "path": dir.path(),
+                         "created_at": "then", "base_commit": "f00", "agent_command": "codex",
+                         "shells": [{"index": 1, "command": "codex --x", "window_name": "lw:kept/1"}]},
+                        {"name": "Gone", "branch": "gone", "path": "/nonexistent/lw-gone",
+                         "created_at": "", "shells": []}
+                    ]
+                }]
+            });
+            std::fs::create_dir_all(crate::util::state_dir()).unwrap();
+            std::fs::write(crate::util::state_path(), v4.to_string()).unwrap();
+            let s = State::load().unwrap();
+            assert!(s.repositories.is_empty(), "repositories are rediscovered");
+            assert_eq!(s.records.len(), 1, "the vanished worktree is dropped");
+            let wt = s.restore_worktree(dir.path().to_path_buf(), "kept".into(), "kept".into());
+            assert_eq!(wt.name, "Kept");
+            assert_eq!(wt.base_commit.as_deref(), Some("f00"));
+            assert_eq!(wt.agent_command.as_deref(), Some("codex"));
+            assert_eq!(
+                s.legacy_commands
+                    .get(&(dir.path().to_path_buf(), 1))
+                    .map(String::as_str),
+                Some("codex --x")
+            );
+            assert_eq!(
+                s.legacy_commands
+                    .get(&(PathBuf::from("/tmp/p"), 0))
+                    .map(String::as_str),
+                Some("zsh")
+            );
+        });
+    }
+
+    #[test]
+    fn an_unknown_version_is_discarded_rather_than_loaded() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            std::fs::create_dir_all(crate::util::state_dir()).unwrap();
+            std::fs::write(crate::util::state_path(), r#"{"version":3,"projects":[]}"#).unwrap();
+            assert!(State::load().unwrap().records.is_empty());
+        });
     }
 
     #[test]
@@ -757,12 +749,8 @@ mod tests {
         assert_eq!(sanitize_name("wt/one"), "wt/one");
     }
 
-    /// A repository whose path vanished is KEPT and marked missing; it is
-    /// never pruned, and it re-activates when the path is a repo again.
-    #[test]
-    fn prune_keeps_missing_repositories_and_reactivates_them() {
-        let root = tempfile::TempDir::new().unwrap();
-        let repo = root.path().join("repo");
+    fn git_repo(root: &Path) -> PathBuf {
+        let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         run_git(&repo, &["init", "-b", "main"]);
         run_git(&repo, &["config", "user.name", "lw-test"]);
@@ -770,164 +758,10 @@ mod tests {
         std::fs::write(repo.join("readme.md"), "# t\n").unwrap();
         run_git(&repo, &["add", "."]);
         run_git(&repo, &["commit", "-m", "init"]);
-
-        let mut s = State::default();
-        s.repositories.push(Repository {
-            name: "repo".into(),
-            path: repo.clone(),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
-            session_name: None,
-            missing: false,
-            shell: None,
-            worktrees: vec![],
-        });
-        s.prune(None, &vec![true; s.repositories.len()]).unwrap();
-        assert!(!s.repositories[0].missing, "active repo stays active");
-
-        // path vanishes → kept, marked missing
-        std::fs::remove_dir_all(&repo).unwrap();
-        s.prune(None, &vec![true; s.repositories.len()]).unwrap();
-        assert_eq!(
-            s.repositories.len(),
-            1,
-            "missing repository is never pruned"
-        );
-        assert!(s.repositories[0].missing);
-
-        // path is a repo again → re-activated
-        std::fs::create_dir_all(&repo).unwrap();
-        run_git(&repo, &["init", "-b", "main"]);
-        s.prune(None, &vec![true; s.repositories.len()]).unwrap();
-        assert_eq!(s.repositories.len(), 1);
-        assert!(!s.repositories[0].missing, "re-activated");
+        repo
     }
 
-    /// Missing repositories keep their worktrees (they cannot be verified while
-    /// the path is gone; they are not dropped).
-    #[test]
-    fn prune_keeps_worktrees_of_missing_repositories() {
-        let root = tempfile::TempDir::new().unwrap();
-        let repo = root.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        run_git(&repo, &["init", "-b", "main"]);
-        run_git(&repo, &["config", "user.name", "lw-test"]);
-        run_git(&repo, &["config", "user.email", "lw-test@example.com"]);
-        std::fs::write(repo.join("readme.md"), "# t\n").unwrap();
-        run_git(&repo, &["add", "."]);
-        run_git(&repo, &["commit", "-m", "init"]);
-
-        let mut s = State::default();
-        s.repositories.push(Repository {
-            name: "repo".into(),
-            path: repo.clone(),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
-            session_name: None,
-            missing: false,
-            shell: None,
-            worktrees: vec![Worktree {
-                name: "wt".into(),
-                branch: "wt".into(),
-                path: repo.join("../wt-wt"),
-                created_at: "2026-08-16".into(),
-                base_commit: None,
-                agent_command: None,
-                shells: vec![Shell {
-                    command: None,
-                    index: 0,
-                    window_name: "lw:wt/0".into(),
-                    window_id: Some("@9".into()),
-                    pane_id: Some("%9".into()),
-                }],
-            }],
-        });
-        // verify the worktree is pruned while the repo is present (worktree
-        // is gone)
-        s.prune(None, &vec![true; s.repositories.len()]).unwrap();
-        assert!(s.repositories[0].worktrees.is_empty());
-
-        // now make the repository missing: a worktree added while missing is
-        // kept intact
-        s.repositories[0].worktrees.push(Worktree {
-            name: "feat2".into(),
-            branch: "feat2".into(),
-            path: repo.join("../wt-feat2"),
-            created_at: "".into(),
-            base_commit: None,
-            agent_command: None,
-            shells: vec![Shell {
-                command: None,
-                index: 0,
-                window_name: "lw:feat2/0".into(),
-                window_id: Some("@10".into()),
-                pane_id: Some("%10".into()),
-            }],
-        });
-        std::fs::remove_dir_all(&repo).unwrap();
-        s.prune(None, &vec![true; s.repositories.len()]).unwrap();
-        assert!(s.repositories[0].missing);
-        assert_eq!(
-            s.repositories[0].worktrees.len(),
-            1,
-            "worktrees survive while missing"
-        );
-        assert_eq!(s.repositories[0].worktrees[0].shells.len(), 1);
-    }
-
-    /// A pane stamped with the repository sentinel reconciles onto the
-    /// repository itself, never onto a worktree — and is adopted when state
-    /// has forgotten it, the way a worktree's shell is.
-    #[test]
-    fn a_repository_shell_reconciles_onto_its_repository() {
-        crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
-            let id = crate::dock::ShellId::for_session(
-                "wingman-session-p",
-                crate::dock::REPO_WORKTREE,
-                crate::dock::REPO_INDEX,
-            );
-            assert!(id.is_repo_shell());
-            let w = tmux
-                .new_session(
-                    "wingman-session-p",
-                    "lw:.repo/0",
-                    std::path::Path::new("/tmp"),
-                    "bash",
-                    &id,
-                    crate::tmux::testutil::HOLDER_W,
-                )
-                .expect("the repository's shell window");
-
-            let mut s = State::default();
-            s.repositories.push(Repository {
-                name: "p".into(),
-                path: PathBuf::from("/tmp/p"),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
-                session_name: Some("wingman-session-p".into()),
-                missing: false,
-                shell: None,
-                worktrees: vec![],
-            });
-
-            s.reconcile(&tmux).expect("reconcile");
-
-            let shell = s.repositories[0]
-                .shell
-                .as_ref()
-                .expect("the live pane is adopted onto the repository");
-            assert_eq!(shell.pane_id.as_deref(), Some(w.pane_id.as_str()));
-            assert!(
-                s.repositories[0].worktrees.is_empty(),
-                "and no worktree is invented for it"
-            );
-        });
-    }
-
-    fn run_git(dir: &std::path::Path, args: &[&str]) {
+    fn run_git(dir: &Path, args: &[&str]) {
         let status = std::process::Command::new("git")
             .arg("-C")
             .arg(dir)
@@ -938,39 +772,89 @@ mod tests {
     }
 
     #[test]
-    fn save_load_roundtrip() {
-        crate::util::testutil::with_fresh_xdg(|| {
+    fn prune_marks_a_vanished_repository_missing_and_reactivates_it() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = git_repo(root.path());
+        let mut s = State::default();
+        s.repositories
+            .push(repository("repo", repo.to_str().unwrap()));
+        s.prune(&[true]);
+        assert!(!s.repositories[0].missing, "active repo stays active");
+
+        std::fs::remove_dir_all(&repo).unwrap();
+        s.prune(&[true]);
+        assert!(s.repositories[0].missing);
+
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-b", "main"]);
+        s.prune(&[true]);
+        assert!(!s.repositories[0].missing, "re-activated");
+    }
+
+    #[test]
+    fn prune_drops_a_gone_worktree_and_its_record() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = git_repo(root.path());
+        let mut s = State::default();
+        let mut r = repository("repo", repo.to_str().unwrap());
+        let wt = worktree("wt", repo.join("../wt-wt").to_str().unwrap());
+        s.record(&wt);
+        r.worktrees.push(wt);
+        s.repositories.push(r);
+        s.prune(&[true]);
+        assert!(
+            s.repositories[0].worktrees.is_empty(),
+            "gone worktree pruned"
+        );
+        assert!(s.records.is_empty(), "and its record");
+    }
+
+    #[test]
+    fn a_repository_shell_reconciles_onto_its_repository() {
+        crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
+            let id = ShellId::for_session(
+                "wingman-session-p",
+                crate::dock::REPO_WORKTREE,
+                crate::dock::REPO_INDEX,
+            );
+            assert!(id.is_repo_shell());
+            let w = tmux
+                .new_session(
+                    "wingman-session-p",
+                    "lw:.repo/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &id,
+                    crate::tmux::testutil::HOLDER_W,
+                )
+                .expect("the repository's shell window");
+
             let mut s = State::default();
-            s.repositories.push(Repository {
-                name: "p".into(),
-                path: PathBuf::from("/tmp/p"),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
-                session_name: None,
-                missing: false,
-                shell: None,
-                worktrees: vec![],
-            });
-            s.save().unwrap();
-            let loaded = State::load().unwrap();
-            assert_eq!(loaded.repositories.len(), 1);
-            assert_eq!(loaded.repositories[0].name, "p");
-            assert_eq!(loaded.version, STATE_VERSION);
+            s.repositories.push(repository("p", "/tmp/p"));
+            s.reconcile(&tmux).expect("reconcile");
+
+            let shell = s.repositories[0]
+                .shell
+                .as_ref()
+                .expect("the live pane is adopted onto the repository");
+            assert_eq!(shell.pane_id, w.pane_id);
+            assert!(
+                s.repositories[0].worktrees.is_empty(),
+                "no worktree invented"
+            );
         });
     }
 
-    /// Identity lives on the pane, so renaming every agent window to
-    /// garbage costs the tree nothing: reconcile still finds each shell and
-    /// puts it back under its worktree.
+    /// Commands and paths round-trip through real pane options, and a command
+    /// only a v4 file recorded is written onto the pane.
     #[test]
-    fn rediscovery_survives_windows_renamed_by_hand() {
+    fn reconcile_reads_stamps_and_backfills_v4_commands() {
         crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
             let a = tmux
                 .new_session(
                     "wingman-session-p",
                     "lw:wt/0",
-                    std::path::Path::new("/tmp"),
+                    Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-p", "wt", 0),
                     crate::tmux::testutil::HOLDER_W,
@@ -980,7 +864,58 @@ mod tests {
                 .new_window(
                     "wingman-session-p",
                     "lw:wt/1",
-                    std::path::Path::new("/tmp"),
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-p", "wt", 1),
+                    crate::tmux::testutil::HOLDER_W,
+                )
+                .expect("window");
+            tmux.stamp_command(&a.pane_id, "codex exec | tee log");
+            tmux.stamp_repo_path(&a.pane_id, Path::new("/tmp/p"));
+
+            let mut s = repo_with_worktree(vec![], None);
+            s.legacy_commands
+                .insert((PathBuf::from("/tmp/p-wt"), 1), "claude".into());
+            s.reconcile(&tmux).expect("reconcile");
+            let shells = &s.repositories[0].worktrees[0].shells;
+            assert_eq!(shells.len(), 2, "{shells:?}");
+            assert_eq!(shells[0].command.as_deref(), Some("codex exec | tee log"));
+            assert_eq!(shells[1].command.as_deref(), Some("claude"));
+            assert!(s.legacy_commands.is_empty(), "backfilled once");
+            let pane_b = tmux
+                .list_panes()
+                .unwrap()
+                .into_iter()
+                .find(|p| p.pane_id == b.pane_id)
+                .unwrap();
+            assert_eq!(
+                pane_b.command.as_deref(),
+                Some("claude"),
+                "written onto the pane"
+            );
+        });
+    }
+
+    /// Identity lives on the pane, so renaming every agent window costs the
+    /// tree nothing.
+    #[test]
+    fn rediscovery_survives_windows_renamed_by_hand() {
+        crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
+            let a = tmux
+                .new_session(
+                    "wingman-session-p",
+                    "lw:wt/0",
+                    Path::new("/tmp"),
+                    "bash",
+                    &ShellId::for_session("wingman-session-p", "wt", 0),
+                    crate::tmux::testutil::HOLDER_W,
+                )
+                .expect("session");
+            let b = tmux
+                .new_window(
+                    "wingman-session-p",
+                    "lw:wt/1",
+                    Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingman-session-p", "wt", 1),
                     crate::tmux::testutil::HOLDER_W,
@@ -991,57 +926,28 @@ mod tests {
                     .expect("rename");
             }
 
-            // State knows the shape of the tree but no tmux coordinates —
-            // exactly what comes back off disk under v4.
-            let mut s = State::default();
-            s.repositories.push(Repository {
-                name: "p".into(),
-                path: PathBuf::from("/tmp/p"),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
-                session_name: Some("wingman-session-p".into()),
-                missing: false,
-                shell: None,
-                worktrees: vec![Worktree {
-                    name: "wt".into(),
-                    branch: "wt".into(),
-                    path: PathBuf::from("/tmp/p-wt"),
-                    created_at: String::new(),
-                    base_commit: None,
-                    agent_command: None,
-                    shells: vec![],
-                }],
-            });
+            let mut s = repo_with_worktree(vec![], None);
             s.reconcile(&tmux).expect("reconcile");
 
             let shells = &s.repositories[0].worktrees[0].shells;
             assert_eq!(shells.len(), 2, "both shells rediscovered: {shells:?}");
-            assert_eq!(shells[0].index, 0);
-            assert_eq!(shells[0].pane_id.as_deref(), Some(a.pane_id.as_str()));
-            assert_eq!(shells[1].index, 1);
-            assert_eq!(shells[1].pane_id.as_deref(), Some(b.pane_id.as_str()));
+            assert_eq!(shells[0].pane_id, a.pane_id);
+            assert_eq!(shells[1].pane_id, b.pane_id);
         });
     }
 
-    /// Furniture is never a shell, whatever identity is written onto it.
-    ///
-    /// The rule used to rest on an assumption — furniture carries no
-    /// `@lw_repo`, so it cannot parse as one — and a stamping path that
-    /// went by where a pane *sat* rather than what it *was* broke it: two
-    /// panes claimed one shell, `reconcile` kept whichever `list-panes -a`
-    /// listed last, and a dashboard that got the holder docked a sleeping
-    /// placeholder and read the shell as `ended`. The exclusion is
-    /// structural now, and this is the test that keeps it that way.
+    /// Furniture is never a shell, whatever identity is written onto it: a
+    /// holder stamped with an agent's identity once made two panes claim one
+    /// shell, and the dashboard docked the sleeping placeholder.
     #[test]
     fn a_holder_is_never_mistaken_for_the_shell_it_stands_in_for() {
         crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
-            let id = crate::dock::ShellId::for_session("wingman-session-p", "feat", 0);
+            let id = ShellId::for_session("wingman-session-p", "feat", 0);
             let w = tmux
                 .new_session(
                     "wingman-session-p",
                     "lw:feat/0",
-                    std::path::Path::new("/tmp"),
+                    Path::new("/tmp"),
                     "bash",
                     &id,
                     crate::tmux::testutil::HOLDER_W,
@@ -1055,80 +961,37 @@ mod tests {
                 .expect("the window has a holder");
 
             let mut s = State::default();
-            s.repositories.push(Repository {
-                name: "p".into(),
-                path: PathBuf::from("/tmp/p"),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
-                session_name: Some("wingman-session-p".into()),
-                missing: false,
-                shell: None,
-                worktrees: vec![Worktree {
-                    name: "feat".into(),
-                    branch: "feat".into(),
-                    path: PathBuf::from("/tmp/p-feat"),
-                    created_at: String::new(),
-                    base_commit: None,
-                    agent_command: None,
-                    shells: vec![],
-                }],
-            });
+            let mut r = repository("p", "/tmp/p");
+            r.worktrees.push(worktree("feat", "/tmp/p-feat"));
+            s.repositories.push(r);
 
-            // The holder claims to be the agent.
             tmux.stamp_shell(&holder.pane_id, &id).expect("stamp it");
             s.reconcile(&tmux).expect("reconcile");
 
             let shells = &s.repositories[0].worktrees[0].shells;
             assert_eq!(shells.len(), 1, "still exactly one shell: {shells:?}");
             assert_eq!(
-                shells[0].pane_id.as_deref(),
-                Some(w.pane_id.as_str()),
-                "and it is the agent, not the placeholder standing in for it"
-            );
-            assert!(
-                tmux.list_panes()
-                    .expect("panes")
-                    .iter()
-                    .all(|p| p.pane_id != holder.pane_id),
-                "the holder is not reported as a shell at all"
+                shells[0].pane_id, w.pane_id,
+                "the agent, not the placeholder"
             );
 
-            // A second reconcile does not change its mind.
             s.reconcile(&tmux).expect("reconcile again");
             assert_eq!(s.repositories[0].worktrees[0].shells.len(), 1);
         });
     }
 
-    /// Two dashboards share this file and both write it. Last-writer-wins
-    /// is survivable — reconcile re-derives everything live from tmux — but
-    /// a half-written file is not: `load` treats unparseable JSON as a hard
-    /// error, so one badly-timed write would take the tree down for every
-    /// instance and stay broken across restarts. The write goes to a
-    /// temporary beside the target and is renamed over it.
     #[test]
     fn save_is_atomic_so_a_torn_file_is_impossible() {
         crate::util::testutil::with_fresh_xdg(|| {
+            let dir = tempfile::TempDir::new().unwrap();
             let mut s = State::default();
-            s.repositories.push(Repository {
-                name: "p".into(),
-                path: PathBuf::from("/tmp/p"),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
-                session_name: None,
-                missing: false,
-                shell: None,
-                worktrees: vec![],
-            });
+            s.record(&worktree("wt", dir.path().to_str().unwrap()));
             s.save().expect("save");
 
             let path = crate::util::state_path();
             assert!(path.exists());
             State::load().expect("what was written parses");
 
-            // The temporary is not left behind, and nothing else is: the
-            // rename IS the write, so the directory holds one state file.
             let strays: Vec<String> = std::fs::read_dir(crate::util::state_dir())
                 .expect("state dir")
                 .filter_map(|e| e.ok())
@@ -1137,19 +1000,16 @@ mod tests {
                 .collect();
             assert!(strays.is_empty(), "temporaries left behind: {strays:?}");
 
-            // Saving again over a live file replaces it whole.
-            s.repositories[0].name = "renamed".into();
+            s.forget(dir.path());
             s.save().expect("save again");
-            let back = State::load().expect("still parses");
-            assert_eq!(back.repositories[0].name, "renamed");
+            assert!(State::load().expect("still parses").records.is_empty());
         });
     }
 
     #[test]
     fn missing_state_file_is_empty() {
         crate::util::testutil::with_fresh_xdg(|| {
-            let s = State::load().unwrap();
-            assert!(s.repositories.is_empty());
+            assert!(State::load().unwrap().records.is_empty());
         });
     }
 

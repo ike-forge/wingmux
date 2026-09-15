@@ -378,19 +378,17 @@ fn worktree_state_settles_row(st: WorktreeState) -> bool {
     matches!(st, WorktreeState::Merged | WorktreeState::Deleted)
 }
 
-/// The polled status of a shell, keyed by its live pane; a shell with no
-/// pane (or none polled yet) reads as idle.
+/// The polled status of a shell; one not polled yet reads as idle.
 fn shell_status(app: &App, sh: &crate::state::Shell) -> Status {
-    sh.pane_id
-        .as_ref()
-        .and_then(|p| app.statuses.get(p))
+    app.statuses
+        .get(&sh.pane_id)
         .copied()
         .unwrap_or(Status::Idle)
 }
 
 /// Is this shell docked in another dashboard right now?
 fn shell_leased<'a>(app: &'a App, sh: &crate::state::Shell) -> Option<&'a crate::app::Lease> {
-    app.leased_by(sh.pane_id.as_deref()?)
+    app.leased_by(&sh.pane_id)
 }
 
 /// Mute a row whole and say why: a shell another dashboard holds is not
@@ -981,7 +979,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 .filter(|sh| shell_status(app, sh) != Status::Dead)
             {
                 spans.push(Span::styled(
-                    format!("  {}{}", ic.shell, repo.base_branch),
+                    format!("  {}{}", ic.shell, app.cfg.base_branch_at(&repo.path)),
                     fg(theme.tree_shell),
                 ));
                 if shell_leased(app, sh).is_some() {
@@ -1369,7 +1367,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
              ({}), for the commands you would otherwise run by\n\
              hand: make, mise run …, cat config.\n\n\
              it starts on the first press and stays until `d` closes it.",
-            repo.base_branch,
+            app.cfg.base_branch_at(&repo.path),
         ))
     } else if selected_worktree_has_no_shell(app) {
         // A worktree with no shell: there is no pane to capture, and the
@@ -2687,10 +2685,6 @@ mod tests {
         app.state.repositories.push(crate::state::Repository {
             name: "gone".into(),
             path: std::path::PathBuf::from("/gone"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
-            session_name: None,
             missing: true,
             shell: None,
             worktrees: vec![],
@@ -2988,13 +2982,10 @@ mod tests {
             git(&["checkout", "-b", "checked-out"]);
 
             let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
+            app.cfg.worktrees.base_branch = "main".into();
             app.state.repositories.push(crate::state::Repository {
                 name: "repo".into(),
                 path: repo.clone(),
-                base_branch: "main".into(),
-                agent_command: "claude".into(),
-                agent_shell: "bash".into(),
-                session_name: None,
                 missing: false,
                 shell: None,
                 worktrees: vec![],
@@ -3019,7 +3010,14 @@ mod tests {
 
             // configured base missing from the repo: creation falls back to the
             // checkout, and the popup warns instead of naming a phantom base.
-            app.state.repositories[0].base_branch = "master".into();
+            app.cfg.repositories.push(crate::config::RepositoryConfig {
+                path: app.state.repositories[0]
+                    .path
+                    .to_string_lossy()
+                    .into_owned(),
+                base_branch: Some("master".into()),
+                ..Default::default()
+            });
             app.open_new_worktree();
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             let text = buffer_text(&terminal);
@@ -3033,20 +3031,15 @@ mod tests {
     // ---- M8.4a — small terminals, resize, ASCII fallback ----
 
     fn seeded_app() -> App {
-        let cfg = Config::default();
+        let mut cfg = Config::default();
+        cfg.worktrees.base_branch = "main".into();
         let theme = theme::load("ansi", false).unwrap();
-        // No `startup()`: it loads AND rewrites the real `state.json`, so
-        // the fixture would inherit the developer's repositories (dozens of
-        // them, past the unfold cap these render tests rely on) and race
-        // with every other test doing the same.
+        // No `startup()`: it reads and rewrites the developer's real state
+        // and config, and races with every other test doing the same.
         let mut app = App::new(cfg, theme, None);
         app.state.repositories.push(crate::state::Repository {
             name: "repo-a".into(),
             path: std::path::PathBuf::from("/tmp/repo-a"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -3057,10 +3050,6 @@ mod tests {
         app.state.repositories.push(crate::state::Repository {
             name: "repo-b".into(),
             path: std::path::PathBuf::from("/tmp/repo-b"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -3075,7 +3064,14 @@ mod tests {
     /// `main` so a resolved token cannot be confused with a literal.
     fn seeded_app_with_shell() -> App {
         let mut app = seeded_app();
-        app.state.repositories[0].base_branch = "trunk".into();
+        app.cfg.repositories.push(crate::config::RepositoryConfig {
+            path: app.state.repositories[0]
+                .path
+                .to_string_lossy()
+                .into_owned(),
+            base_branch: Some("trunk".into()),
+            ..Default::default()
+        });
         app.state.repositories[0]
             .worktrees
             .push(crate::state::Worktree {
@@ -3089,8 +3085,8 @@ mod tests {
                     command: None,
                     index: 0,
                     window_name: "lw:wt/0".into(),
-                    window_id: Some("@1".into()),
-                    pane_id: Some("%1".into()),
+                    window_id: "@1".into(),
+                    pane_id: "%1".into(),
                 }],
             });
         app.build_tree_flags();
@@ -3244,10 +3240,6 @@ mod tests {
         app.state.repositories.push(crate::state::Repository {
             name: "repo-a".into(),
             path: std::path::PathBuf::from("/tmp/repo-a"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees,
@@ -3344,8 +3336,8 @@ mod tests {
                     command: None,
                     index,
                     window_name: format!("lw:{name}/{index}"),
-                    window_id: Some(format!("@{index}")),
-                    pane_id: Some(format!("%{index}")),
+                    window_id: format!("@{index}"),
+                    pane_id: format!("%{index}"),
                 })
                 .collect(),
         }
@@ -3519,8 +3511,8 @@ mod tests {
             command: None,
             index: i,
             window_name: format!("lw:f/{i}"),
-            window_id: Some(format!("@{}", i + 1)),
-            pane_id: Some(format!("%{i}")),
+            window_id: format!("@{}", i + 1),
+            pane_id: format!("%{i}"),
         };
         app.state.repositories[0]
             .worktrees
@@ -4037,8 +4029,8 @@ mod tests {
             command: None,
             index: i,
             window_name: format!("lw:f/{i}"),
-            window_id: Some(format!("@{}", i + 1)),
-            pane_id: Some(format!("%{i}")),
+            window_id: format!("@{}", i + 1),
+            pane_id: format!("%{i}"),
         };
         app.state.repositories[0]
             .worktrees
@@ -4101,8 +4093,8 @@ mod tests {
             command: None,
             index: i,
             window_name: format!("lw:f/{i}"),
-            window_id: Some(format!("@{}", i + 7)),
-            pane_id: Some(format!("%{i}")),
+            window_id: format!("@{}", i + 7),
+            pane_id: format!("%{i}"),
         };
         app.state.repositories[0]
             .worktrees
@@ -4187,8 +4179,8 @@ mod tests {
                     command: None,
                     index: 0,
                     window_name: "lw:f/0".into(),
-                    window_id: Some("@7".into()),
-                    pane_id: Some("%0".into()),
+                    window_id: "@7".into(),
+                    pane_id: "%0".into(),
                 }],
             });
         app.build_tree_flags();
@@ -4271,8 +4263,8 @@ mod tests {
             command: None,
             index: i,
             window_name: format!("lw:f/{i}"),
-            window_id: Some(format!("@{}", i + 7)),
-            pane_id: Some(format!("%{i}")),
+            window_id: format!("@{}", i + 7),
+            pane_id: format!("%{i}"),
         };
         app.state.repositories[0]
             .worktrees
@@ -4545,8 +4537,8 @@ mod tests {
                         command: None,
                         index: 0,
                         window_name: format!("lw:{name}/0"),
-                        window_id: Some("@1".into()),
-                        pane_id: Some(pane.into()),
+                        window_id: "@1".into(),
+                        pane_id: pane.into(),
                     }],
                 });
             app.statuses.insert(pane.into(), st);
@@ -4597,8 +4589,8 @@ mod tests {
                         command: None,
                         index: 0,
                         window_name: format!("lw:{name}/0"),
-                        window_id: Some("@1".into()),
-                        pane_id: Some(pane.into()),
+                        window_id: "@1".into(),
+                        pane_id: pane.into(),
                     }],
                 });
             app.statuses.insert(pane.into(), st);
@@ -4805,10 +4797,6 @@ mod tests {
         app.state.repositories.push(crate::state::Repository {
             name: "repo-a".into(),
             path: std::path::PathBuf::from("/tmp/repo-a"),
-            base_branch: "main".into(),
-            agent_command: "claude".into(),
-            agent_shell: "bash".into(),
-            session_name: None,
             missing: false,
             shell: None,
             worktrees: vec![],
@@ -4826,8 +4814,8 @@ mod tests {
                     command: None,
                     index: 1,
                     window_name: "wt-1".into(),
-                    window_id: Some("@1".into()),
-                    pane_id: Some("%1".into()),
+                    window_id: "@1".into(),
+                    pane_id: "%1".into(),
                 }],
             });
         app.build_tree_flags();
@@ -5189,8 +5177,8 @@ mod tests {
             command: None,
             index: 0,
             window_name: "lw:.repo/0".into(),
-            window_id: Some("@9".into()),
-            pane_id: Some("%9".into()),
+            window_id: "@9".into(),
+            pane_id: "%9".into(),
         });
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -5211,8 +5199,8 @@ mod tests {
             command: None,
             index: 0,
             window_name: "lw:.repo/0".into(),
-            window_id: Some("@9".into()),
-            pane_id: Some("%9".into()),
+            window_id: "@9".into(),
+            pane_id: "%9".into(),
         });
         app.statuses.insert("%9".into(), Status::Dead);
         let backend = ratatui::backend::TestBackend::new(120, 40);
@@ -5248,8 +5236,8 @@ mod tests {
             command: None,
             index: 0,
             window_name: "lw:.repo/0".into(),
-            window_id: Some("@9".into()),
-            pane_id: Some("%9".into()),
+            window_id: "@9".into(),
+            pane_id: "%9".into(),
         });
         assert!(
             bar_entries(&app)
@@ -5262,7 +5250,14 @@ mod tests {
     #[test]
     fn add_shell_picker_lists_the_agent_and_a_plain_shell() {
         let mut app = seeded_app();
-        app.state.repositories[0].agent_command = "codex exec --yolo".into();
+        app.cfg.repositories.push(crate::config::RepositoryConfig {
+            path: app.state.repositories[0]
+                .path
+                .to_string_lossy()
+                .into_owned(),
+            agent_command: Some("codex exec --yolo".into()),
+            ..Default::default()
+        });
         app.sel = crate::app::Sel::Repository(0);
         app.mode = Mode::AddShell { index: 0 };
         let backend = ratatui::backend::TestBackend::new(120, 40);
@@ -5325,8 +5320,8 @@ mod tests {
                     command: None,
                     index: 0,
                     window_name: "lw:needs-me/0".into(),
-                    window_id: Some("@7".into()),
-                    pane_id: Some("%0".into()),
+                    window_id: "@7".into(),
+                    pane_id: "%0".into(),
                 }],
             });
         app.statuses.insert("%0".into(), Status::Blocked);

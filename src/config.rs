@@ -58,8 +58,8 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 # Theme to use. Built-ins: "catppuccin-mocha", "catppuccin-macchiato",
 # "catppuccin-frappe", "catppuccin-latte", "dracula", "gruvbox", "ansi".
 # Drop your own theme into ~/.config/lazywingman/themes/<name>.toml
-# Press ctrl-t inside the TUI to switch themes live (picked themes are
-# saved to the state file; this key is the startup default).
+# Press ctrl-t inside the TUI to switch themes live; the pick is written to
+# this key.
 #theme = "catppuccin-mocha"
 
 # How often (ms) agent panes are polled for status + preview.
@@ -954,6 +954,67 @@ const PATTERN_KEYS: &[&str] = &["working", "waiting", "failed"];
 const REPOSITORY_KEYS: &[&str] = &["path", "base_branch", "agent", "agent_command"];
 const MESSAGE_KEYS: &[&str] = &["text"];
 
+/// Write `theme = "<name>"` into the user config (`ctrl-t`), keeping the rest
+/// of the file byte for byte. Refuses when the result would not parse.
+pub fn save_theme(name: &str) -> Result<()> {
+    let path = crate::util::config_path();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DEFAULT_CONFIG.to_string(),
+        Err(e) => return Err(e.into()),
+    };
+    let updated = with_theme(&text, name);
+    let written = toml::from_str::<toml::Table>(&updated)
+        .ok()
+        .and_then(|t| t.get("theme").and_then(|v| v.as_str()).map(str::to_string));
+    if written.as_deref() != Some(name) {
+        return Err(Error::Config(format!(
+            "{} could not be updated safely",
+            path.display()
+        )));
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(&tmp, updated)?;
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::Io(e));
+    }
+    Ok(())
+}
+
+/// `text` with its top-level `theme` set: the active line is replaced, else
+/// the commented default is uncommented in place (next to its docs), else the
+/// key goes first. Only lines before the first table header are considered.
+fn with_theme(text: &str, name: &str) -> String {
+    let line = format!("theme = {}", toml::Value::String(name.into()));
+    let is_theme = |l: &str| {
+        l.trim_start()
+            .strip_prefix("theme")
+            .is_some_and(|r| r.trim_start().starts_with('='))
+    };
+    let mut lines: Vec<&str> = text.lines().collect();
+    let root = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .unwrap_or(lines.len());
+    let active = lines[..root].iter().position(|l| is_theme(l));
+    let commented = || {
+        lines[..root]
+            .iter()
+            .position(|l| l.trim_start().strip_prefix('#').is_some_and(&is_theme))
+    };
+    match active.or_else(commented) {
+        Some(i) => lines[i] = &line,
+        None => lines.insert(0, &line),
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
 impl Config {
     /// Load config, writing defaults (and built-in themes) on first run.
     /// Layered per the configuration rules: built-in defaults ← user config
@@ -1397,6 +1458,31 @@ impl Config {
             .base_branch
             .clone()
             .unwrap_or_else(|| self.worktrees.base_branch.clone())
+    }
+
+    /// The `[[repositories]]` entry for `path`, or an empty one. Looked up on
+    /// every use rather than copied into the tree, so nothing can go stale.
+    pub fn repository_at(&self, path: &Path) -> RepositoryConfig {
+        let path = crate::util::normalize_path(path);
+        self.usable_repositories()
+            .into_iter()
+            .find(|r| crate::util::normalize_path(Path::new(&r.path)) == path)
+            .cloned()
+            .unwrap_or_else(|| RepositoryConfig {
+                path: path.to_string_lossy().into_owned(),
+                ..Default::default()
+            })
+    }
+
+    /// Effective agent for the repository at `path`.
+    pub fn agent_at(&self, path: &Path) -> EffectiveAgent {
+        self.agent_for(&self.repository_at(path))
+    }
+
+    /// Configured base branch for the repository at `path`; git resolves it
+    /// (`Git::resolve_base_branch`).
+    pub fn base_branch_at(&self, path: &Path) -> String {
+        self.base_branch_for(&self.repository_at(path))
     }
 }
 
@@ -3349,6 +3435,64 @@ mod tests {
                 "dump: {}",
                 cfg.dump_string()
             );
+        });
+    }
+
+    /// Per-repository overrides are looked up by path on use, so an edited
+    /// `[[repositories]]` entry applies without anything to refresh.
+    #[test]
+    fn repository_settings_are_read_by_path() {
+        let mut cfg = Config::from_str(
+            "[[repositories]]\npath = \"/work/app/\"\nbase_branch = \"trunk\"\nagent_command = \"codex\"\n",
+        )
+        .unwrap();
+        let app = Path::new("/work/app");
+        assert_eq!(cfg.base_branch_at(app), "trunk");
+        assert_eq!(cfg.agent_at(app).command, "codex");
+        assert_eq!(cfg.base_branch_at(Path::new("/work/other")), "master");
+
+        cfg.repositories[0].agent_command = Some("claude --resume".into());
+        assert_eq!(cfg.agent_at(app).command, "claude --resume");
+    }
+
+    #[test]
+    fn with_theme_replaces_the_active_line() {
+        let text = "# mine\ntheme = \"ansi\" # keep?\npoll_interval_ms = 250\n";
+        assert_eq!(
+            with_theme(text, "dracula"),
+            "# mine\ntheme = \"dracula\"\npoll_interval_ms = 250\n"
+        );
+    }
+
+    /// The default config documents `#theme = …`; the pick lands there.
+    #[test]
+    fn with_theme_uncomments_the_documented_default() {
+        let out = with_theme(DEFAULT_CONFIG, "gruvbox");
+        assert!(out.contains("# this key.\ntheme = \"gruvbox\"\n"), "{out}");
+        assert_eq!(out.lines().count(), DEFAULT_CONFIG.lines().count());
+    }
+
+    #[test]
+    fn with_theme_ignores_keys_inside_tables() {
+        let text = "[preview]\ntheme = \"x\"\n";
+        let out = with_theme(text, "ansi");
+        assert_eq!(out, "theme = \"ansi\"\n[preview]\ntheme = \"x\"\n");
+    }
+
+    #[test]
+    fn save_theme_writes_the_user_config_and_the_next_load_reads_it() {
+        with_fresh_xdg(|| {
+            let cwd = tempfile::TempDir::new().unwrap();
+            load_user(cwd.path(), "# hand-written\npoll_interval_ms = 250\n");
+            save_theme("dracula").unwrap();
+            let text = std::fs::read_to_string(crate::util::config_path()).unwrap();
+            assert_eq!(
+                text,
+                "theme = \"dracula\"\n# hand-written\npoll_interval_ms = 250\n"
+            );
+            let cfg = Config::load_from(cwd.path(), None).unwrap();
+            assert_eq!(cfg.theme, "dracula");
+            assert_eq!(cfg.poll_interval_ms, 250);
         });
     }
 }

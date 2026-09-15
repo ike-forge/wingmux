@@ -58,8 +58,7 @@ there). Toolchain: `[tools] rust = "1.97"`.
 - Start from a clean config: `mise run reset-config` (deletes
   `$XDG_CONFIG_HOME/lazywingman` — `config.toml` and the theme copies —
   and lists what it removed first; the next run writes the defaults and
-  the shipped themes back). `state.json` is untouched, so discovered
-  repositories survive. Needed whenever a shipped theme or the default
+  the shipped themes back). `state.json` (worktree records) is untouched. Needed whenever a shipped theme or the default
   config changes: the on-disk copies are only written when absent, so an
   existing one shadows the new built-in for good.
 

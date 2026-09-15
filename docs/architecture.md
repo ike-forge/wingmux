@@ -33,37 +33,57 @@ the same commit as the change.
   worktrees. Malformed JSON is still an error — the user is told rather than
   silently losing the tree. (v3 introduced that rule, renaming the on-disk
   keys with no migration path; v4 keeps it.)
-- **No shells in `state.json`.** `Worktree.shells` and `Repository.shell`
-  are `skip_serializing`; `State::sync_shells` rebuilds both from one
-  `list-panes` on every poll. A persisted shell outlived its pane: after a
-  tmux restart a repository row kept its `● main` marker for a shell that
-  did not exist, and `a` found "a shell" and started nothing. Prune could
-  not tell such an entry from one not matched *yet*, so it kept it. With
-  tmux as the only source there is nothing to reconcile. They are still
-  *read*, which is why this is not a schema bump: a v4 file's recorded
-  commands seed panes spawned before `@lw_command`, and `reconcile` writes
-  them onto those panes once.
+- **`state.json` holds only what nothing else records** (schema v5): per
+  worktree path, the name typed in the popup, `created_at`, the fork point
+  (`base_commit`) and the agent picked. Everything else is rebuilt, because
+  any copy goes stale the moment its source changes:
+  - repositories (name, path) from the scope scan and `[[repositories]]`;
+  - base branch and agent from config on every use (`Config::base_branch_at`,
+    `Config::agent_at`), resolved by git where a real branch is needed;
+  - worktrees from `git worktree list`, joined with their record by path
+    (`State::restore_worktree`);
+  - shells from one `list-panes` on every poll (`State::sync_shells`). A
+    persisted shell outlived its pane: after a tmux restart a repository row
+    kept its `● main` marker for a shell that did not exist, and `a` found
+    "a shell" and started nothing.
+- A record is written on create and dropped on delete or prune; records whose
+  directory is gone are dropped on load, since a worktree outside this run's
+  scope is never pruned. A v4 file's records carry over, and the commands it
+  recorded for shells are written once onto live panes that lack
+  `@lw_command` (`reconcile`). Anything older is discarded.
 - **A pane carries its own identity.** `dock::ShellId` (repository slug,
   worktree, shell index) is written onto the pane's `@lw_repo` /
-  `@lw_worktree` / `@lw_index` options at spawn, and the launch command onto
-  `@lw_command`; pane options travel with the pane across windows and
-  sessions. So shells are grouped by identity rather than by window name,
-  and a window renamed by hand — or a pane sitting in a session that is not
-  its own — costs the tree nothing. `Tmux::window_name` stays, purely as the
-  human-facing label.
+  `@lw_worktree` / `@lw_index` options at spawn, the launch command onto
+  `@lw_command` and the repository path onto `@lw_repo_path` (both escaped:
+  `list-panes -F` output is `|`-separated lines); pane options travel with the
+  pane across windows and sessions. So shells are grouped by identity rather
+  than by window name, and a window renamed by hand — or a pane sitting in a
+  session that is not its own — costs the tree nothing. `Tmux::window_name`
+  stays, purely as the human-facing label.
 - **A closed shell's row goes at the next poll.** There is no dead row left
   until a refresh: a pane tmux no longer lists is no shell. A pane kept by
   `remain-on-exit` is still listed and still reads as dead.
-- Shell indices are never reused: `Worktree::next_shell_index` counts past
-  the highest index in use, because the index is part of a shell's identity
-  and is what `reconcile` matches a live pane back to.
+- **The repository path is on the pane, not a stored session name.** Two
+  repositories with one name get `wingman-session-<slug>` and
+  `…-<hash of path>` in whichever order they spawned, so the name alone
+  cannot be mapped back. `State::session_of` reads the owning session off the
+  panes; a pane from an older build falls back to the slug, hash-suffixed
+  form first.
+- `Worktree::next_shell_index` counts past the highest live index, so a new
+  shell cannot collide with a pane already stamped with it.
+- **The picked theme is config, not state.** `ctrl-t` writes `theme = …`
+  into the user `config.toml` (`config::save_theme`), editing that one line
+  so comments and layout survive: the active line is replaced, else the
+  documented `#theme = …` is uncommented in place. A higher layer
+  (`.lazywingman.toml`, `--config`) still wins at startup, and the toast says
+  so.
 
 ## Discovery
 
 - **Discovery is scope-based, live, and lazy.** The tree does not list every
   repository ever discovered — that mixed scopes. The scope is the startup
   directory (or `[discovery].scan_root`): only repositories inside it get
-  rows; repositories from other scopes stay in state but are hidden. When you
+  rows. Nothing about repositories is persisted, so the scan is the list. When you
   start INSIDE a git repo, that repo is the scope and its worktrees are shown
   flat at the top level (no repository row — `flatten`); a lone MISSING
   repository still shows its row. Everything unfolds by default up to
@@ -86,12 +106,11 @@ the same commit as the change.
   resolves to the MAIN repo (`git worktree list` first entry) even when
   booting from inside a linked worktree. Config-declared repositories that are
   not repos are skipped with a warning (explicit config entries are the user's
-  statement; the missing-flag is for repositories that WERE imported and later
-  vanished). A repository whose path vanished is kept in state and marked
-  `missing` (shown "(missing)" in the tree) instead of being pruned; it
-  re-activates when the path is a repo again, and keeps its worktrees and
-  shells untouched while gone (they cannot be verified). Pruning only removes
-  worktrees/shells of present repositories. Startup discovery is gated behind
+  statement). Import is filesystem only — no git process per repository.
+  A repository whose path vanishes while the dashboard runs is marked
+  `missing` (shown "(missing)" in the tree) on the next prune and
+  re-activates when the path is a repo again; at the next start the scan
+  simply no longer finds it. Startup discovery is gated behind
   an `interactive_boot` flag (`run()` sets it; tests boot headless without
   it), so tests never import the crate's own repo by accident.
 - **No `i import` / `I scan`: discovery is the only way in.** Both keys
@@ -405,10 +424,8 @@ with nothing re-implemented. Four invariants hold the whole thing up.
 - **Windows are storage.** A tmux window is the only place a pane can be alive
   and off-screen, and the nominal case is many hidden agents. What M18 retired
   is the window *name* as an identity mechanism, not the window.
-- **No live tmux coordinates in `state.json`.** Panes, window ids and indices
-  are re-derived from one `list-panes -a` per poll; the file keeps
-  repositories and worktrees. A coordinate that survived a restart would name
-  a window that no longer holds this shell — or holds someone else's.
+- **No tmux state in `state.json`.** Shells, their commands and the agent
+  session are re-derived from `list-panes -a`.
 - **Anything shared between instances lives in tmux, and is re-read every
   poll.** Two dashboards have no channel to each other except the tmux server.
   So the lease is a pane option (`@lw_docked`), never a field in the state
@@ -730,10 +747,8 @@ duplication docking exists to end.
   with the status, and `codex exec --yolo` would push the status off the
   panel. The index returns only where it earns its place: as a suffix when
   two shells of a worktree run the same program (`zsh #1`, `zsh #2`), and
-  as the whole label for a shell adopted from tmux or written by an older
-  build, where no command was ever recorded (the field is
-  `Option<String>`, `#[serde(default)]`, so an old `state.json` still
-  loads).
+  as the whole label for a pane spawned by an older build, which carries no
+  `@lw_command`.
 - **Creating something reveals it.** `create_worktree` unfolds the
   repository it just added to, and gives the new worktree the same unfolded
   flag discovery gives the rows it finds. A collapsed repository emits no
@@ -900,8 +915,7 @@ duplication docking exists to end.
   common case.
 - **The tmux window id left the tree**: `@5` next to every shell was the only
   thing on that row the user cannot act on — a handle for our own
-  `select-window` calls. It is no longer in `state.json` either (v4 keeps no
-  live tmux coordinates); the log is where a debugging session should look
+  `select-window` calls. The log is where a debugging session should look
   for it.
 
 ## Preview panel
@@ -1044,8 +1058,8 @@ duplication docking exists to end.
   `App::expand_message` substitutes `<base_branch>`, `<branch>`, `<worktree>`,
   `<repository>` and `<worktree_path>` from the selected shell's repository
   and worktree, and both `draw_messages` and `send_predefined` call it — which
-  is what makes the list honest. It reads state only (the base branch was resolved at import
-  time), so it is safe to call every frame. Unknown tokens pass through as
+  is what makes the list honest. It reads state and config only (the
+  configured base branch, no git), so it is safe to call every frame. Unknown tokens pass through as
   written, and so does everything when no shell is selected: there is no
   context to resolve against, and blanks would be worse than the template.
 - **The merge preset names the LOCAL base**: `merge to LOCAL <base_branch>`.
@@ -1363,9 +1377,8 @@ duplication docking exists to end.
 - **`ctrl-t` is a live theme picker**: it previews as the cursor moves (the
   whole screen repaints via the same load path), Enter keeps, Esc restores the
   theme it opened with. Built-ins list first (stable order), then user themes.
-  The pick persists to `state.json` (configuration guideline: the app never
-  rewrites the user's config file; `state.theme` wins over the config line at
-  startup, and the config line stays the documented startup default).
+  The pick is written to the user `config.toml` (see "State and
+  persistence").
 - **Picker motions**: j/k/arrows step by one theme, g/G and Home/End jump to
   first/last, PgUp/PgDn + ctrl-d/u move 5, the wheel moves 3, and a mouse click
   on a row selects + previews while a double-click keeps — all through the one
