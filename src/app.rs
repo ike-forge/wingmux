@@ -2774,9 +2774,23 @@ impl App {
 
     fn kill_shell_window(&mut self, tmux: &Tmux, sh: &Shell) {
         self.release_dock_before_kill(&sh.window_id, Some(&sh.pane_id));
-        match tmux.kill_window(&sh.window_id) {
-            Ok(()) => log::info!("killed window {} ({})", sh.window_id, sh.window_name),
-            Err(e) => log::warn!("kill-window {}: {e}", sh.window_id),
+        // A poll taken while docked recorded the dashboard's window; ask
+        // where the pane sits now that it is home.
+        let window = tmux
+            .pane_geometry(&sh.pane_id)
+            .map(|(_, _, w)| w)
+            .unwrap_or_else(|_| sh.window_id.clone());
+        if tmux.inside.as_ref().is_some_and(|i| i.window_id == window) {
+            log::warn!(
+                "not killing {window} ({}): it is the dashboard's own window",
+                sh.window_name
+            );
+            let _ = tmux.kill_pane(&sh.pane_id);
+            return;
+        }
+        match tmux.kill_window(&window) {
+            Ok(()) => log::info!("killed window {window} ({})", sh.window_name),
+            Err(e) => log::warn!("kill-window {window}: {e}"),
         }
     }
 
@@ -6702,6 +6716,36 @@ mod tests {
                 home.window_id, wid,
                 "the agent pane is home, where the kill can reach it"
             );
+        });
+    }
+
+    /// A poll taken while docked records the dashboard's window as the
+    /// shell's; the kill must not trust it.
+    #[test]
+    fn deleting_a_docked_shell_after_a_poll_spares_the_dashboard() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_wid, pane) = seed_repository_with_shell(&tmux, &mut app);
+            app.dock_pane(&pane, false).expect("dock");
+            app.poll();
+            let dash = tmux.inside.clone().expect("inside");
+            assert_eq!(
+                app.state.repositories[0].worktrees[0].shells[0].window_id, dash.window_id,
+                "the poll recorded the docked pane in the dashboard's window"
+            );
+
+            app.delete_shell(0, 0, 0).expect("delete");
+
+            let out = tmux
+                .run_raw(&["list-panes", "-a", "-F", "#{pane_id}"])
+                .expect("panes");
+            let panes: Vec<&str> = out.lines().collect();
+            assert!(
+                panes.contains(&dash.pane_id.as_str()),
+                "the dashboard survives"
+            );
+            assert!(!panes.contains(&pane.as_str()), "the shell is gone");
         });
     }
 
