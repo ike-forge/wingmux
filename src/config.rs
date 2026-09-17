@@ -90,9 +90,10 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 # Root directory for the worktrees. Absolute path, or relative to the
 # repository's parent directory. Empty = <repository-parent>/.lazywingman-worktrees
 #root = ""
-# Branch that worktree branches are cut from. Falls back to the repository's
-# current branch if this one doesn't exist in a repository.
-#base_branch = "master"
+# Branch that worktree branches are cut from. Empty = the branch the
+# repository's main checkout is on. A named branch that doesn't exist makes
+# worktree creation fail rather than silently cut from something else.
+#base_branch = ""
 # Also delete the worktree branch when the worktree is removed. Set to
 # false to keep the branch behind after the worktree is gone.
 #delete_branch = true
@@ -690,7 +691,7 @@ impl Default for Config {
             preview: PreviewConfig::default(),
             worktrees: WorktreeConfig {
                 root: String::new(),
-                base_branch: "master".into(),
+                base_branch: String::new(),
                 delete_branch: true,
             },
             discovery: DiscoveryConfig {
@@ -736,7 +737,7 @@ impl Default for WorktreeConfig {
     fn default() -> Self {
         WorktreeConfig {
             root: String::new(),
-            base_branch: "master".into(),
+            base_branch: String::new(),
             delete_branch: true,
         }
     }
@@ -1879,7 +1880,7 @@ impl SectionSalvage for WorktreeConfig {
     fn salvage(t: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self {
         WorktreeConfig {
             root: salvage_field(t, "root", String::new(), file, diags),
-            base_branch: salvage_field(t, "base_branch", "master".to_string(), file, diags),
+            base_branch: salvage_field(t, "base_branch", String::new(), file, diags),
             delete_branch: salvage_field(t, "delete_branch", true, file, diags),
         }
     }
@@ -2489,7 +2490,7 @@ mod tests {
             assert_eq!(cfg.poll_interval_ms, 500);
             assert!(cfg.confirm_on_delete);
             assert_eq!(cfg.defaults.agent_command, "claude");
-            assert_eq!(cfg.worktrees.base_branch, "master");
+            assert_eq!(cfg.worktrees.base_branch, "");
             assert!(
                 cfg.worktrees.delete_branch,
                 "the worktree branch goes with the worktree by default"
@@ -2684,7 +2685,7 @@ mod tests {
     #[test]
     fn base_branch_falls_back_to_global() {
         let cfg = Config::from_str("[[repositories]]\npath = \"/x\"\n").unwrap();
-        assert_eq!(cfg.base_branch_for(&cfg.repositories[0]), "master");
+        assert_eq!(cfg.base_branch_for(&cfg.repositories[0]), "");
     }
 
     #[test]
@@ -2953,7 +2954,7 @@ mod tests {
             // one bad field → that field defaults, the section survives
             assert_eq!(cfg.preview.colors, PreviewColors::default());
             assert_eq!(cfg.worktrees.root, "/wt");
-            assert_eq!(cfg.worktrees.base_branch, "master");
+            assert_eq!(cfg.worktrees.base_branch, "");
             // per-field salvage: the bad fields are reported, the good one
             // (root) is NOT (it never fails)
             assert!(cfg.diagnostics.iter().any(|d| d.contains("'colors'")));
@@ -3449,7 +3450,7 @@ mod tests {
         let app = Path::new("/work/app");
         assert_eq!(cfg.base_branch_at(app), "trunk");
         assert_eq!(cfg.agent_at(app).command, "codex");
-        assert_eq!(cfg.base_branch_at(Path::new("/work/other")), "master");
+        assert_eq!(cfg.base_branch_at(Path::new("/work/other")), "");
 
         cfg.repositories[0].agent_command = Some("claude --resume".into());
         assert_eq!(cfg.agent_at(app).command, "claude --resume");

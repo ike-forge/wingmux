@@ -810,6 +810,9 @@ pub struct App {
     /// worktree icon, so it must be a lookup, not a `git status` per frame;
     /// [`App::poll_worktree_state`] refills it every [`WT_STATE_INTERVAL`].
     pub(crate) wt_state: HashMap<PathBuf, WorktreeState>,
+    /// Resolved base branch per repository path, refreshed with `wt_state`,
+    /// so `<base_branch>` expands without a git call per frame.
+    base_branches: HashMap<PathBuf, String>,
     last_wt_state_poll: Option<Instant>,
     /// What the New Worktree popup says the branch will be cut from,
     /// re-resolved every time the popup opens (a `git` call per keystroke
@@ -833,13 +836,12 @@ pub struct App {
 }
 
 /// The base branch a new worktree would branch from, as shown in the New
-/// Worktree popup. `missing` carries the configured base branch when it is
-/// absent from the repo and `branch` is therefore the current checkout —
-/// the one case where the popup must not claim a base branch.
+/// Worktree popup. `missing`: the configured branch is not in the repo, so
+/// creation will refuse.
 #[derive(Debug, Clone)]
 pub struct BaseHint {
     pub branch: String,
-    pub missing: Option<String>,
+    pub missing: bool,
 }
 
 /// The slice of a pane capture status classification runs on: the last
@@ -887,6 +889,7 @@ impl App {
             started: Instant::now(),
             message: None,
             wt_state: HashMap::new(),
+            base_branches: HashMap::new(),
             last_wt_state_poll: None,
             interactive_boot: false,
             quit: false,
@@ -2445,7 +2448,7 @@ impl App {
             "shell started in {} ({} on {})",
             repo.name,
             crate::util::shell_name(&shell),
-            self.cfg.base_branch_at(&repo.path)
+            Git.current_branch(&repo.path).unwrap_or_default()
         ));
         Ok(())
     }
@@ -2866,15 +2869,24 @@ impl App {
         }
         self.last_wt_state_poll = Some(Instant::now());
         let cfg = &self.cfg;
-        let work: Vec<(PathBuf, String, String)> = self
+        let bases: HashMap<PathBuf, String> = self
             .state
             .repositories
             .iter()
-            .filter(|p| !p.missing && !p.worktrees.is_empty())
+            .filter(|p| !p.missing)
             .filter_map(|p| {
                 let base = Git
                     .resolve_base_branch(&p.path, &cfg.base_branch_at(&p.path))
                     .ok()?;
+                Some((p.path.clone(), base))
+            })
+            .collect();
+        let work: Vec<(PathBuf, String, String)> = self
+            .state
+            .repositories
+            .iter()
+            .filter_map(|p| {
+                let base = bases.get(&p.path)?.clone();
                 Some(p.worktrees.iter().map(move |f| {
                     // No recorded fork point (reconciled worktree, or an
                     // older state file): measure against the base branch and
@@ -2892,6 +2904,7 @@ impl App {
                 (path, st)
             })
             .collect();
+        self.base_branches = bases;
     }
 
     /// Is the worktree's worktree dirty? (drives the --force confirm option)
@@ -3164,8 +3177,7 @@ impl App {
 
     /// Open the New Worktree popup for the selected repository, resolving the
     /// branch the worktree would be cut from up front so the popup can name
-    /// it. A worktree always branches from the repository's base branch, never
-    /// from whatever the repo currently has checked out.
+    /// it.
     pub(crate) fn open_new_worktree(&mut self) {
         let ri = match self.sel {
             Sel::Repository(ri) | Sel::Worktree(ri, _) => ri,
@@ -3203,11 +3215,28 @@ impl App {
             return None;
         }
         let configured = self.cfg.base_branch_at(&repo.path).trim().to_string();
-        let branch = Git.resolve_base_branch(&repo.path, &configured).ok()?;
-        // `resolve_base_branch` returns the configured branch when it
-        // exists, so anything else means it fell back to the checkout.
-        let missing = (!configured.is_empty() && branch != configured).then_some(configured);
-        Some(BaseHint { branch, missing })
+        match Git.resolve_base_branch(&repo.path, &configured) {
+            Ok(branch) => Some(BaseHint {
+                branch,
+                missing: false,
+            }),
+            Err(_) if !configured.is_empty() => Some(BaseHint {
+                branch: configured,
+                missing: true,
+            }),
+            Err(_) => None,
+        }
+    }
+
+    /// Base branch of the repository at `path` without a git call: the
+    /// configured one, else the current branch as of the last state poll.
+    pub fn base_branch_of(&self, path: &std::path::Path) -> Option<String> {
+        let configured = self.cfg.base_branch_at(path).trim().to_string();
+        if configured.is_empty() {
+            self.base_branches.get(path).cloned()
+        } else {
+            Some(configured)
+        }
     }
 
     /// What the New Worktree popup should say the branch is cut from.
@@ -3924,8 +3953,11 @@ impl App {
         let Some(wt) = repo.worktrees.get(wi) else {
             return text.to_string();
         };
-        text.replace("<base_branch>", &self.cfg.base_branch_at(&repo.path))
-            .replace("<branch>", &wt.branch)
+        let text = match self.base_branch_of(&repo.path) {
+            Some(b) => text.replace("<base_branch>", &b),
+            None => text.to_string(),
+        };
+        text.replace("<branch>", &wt.branch)
             .replace("<worktree_path>", &wt.path.display().to_string())
             .replace("<worktree>", &wt.name)
             .replace("<repository>", &repo.name)
@@ -5565,19 +5597,17 @@ mod tests {
         });
     }
 
-    /// The New Worktree popup names the branch the worktree is cut from:
-    /// the repository's base branch, even when the repo has something else
-    /// checked out. Same resolution `create_worktree` runs, so the popup
-    /// cannot promise a base the creation then ignores.
+    /// With no base branch configured the popup names the branch the repo
+    /// has checked out; a configured one wins over the checkout.
     #[test]
-    fn new_worktree_popup_names_the_base_branch_not_the_checkout() {
+    fn new_worktree_popup_names_the_base_branch() {
         crate::util::testutil::with_test_lock(|| {
             let root = tempfile::TempDir::new().unwrap();
             let path = repo_with_commit(root.path(), "repo");
-            // the repo sits on an unrelated branch — the popup must ignore it
             git(&path, &["checkout", "-b", "some-other-branch"]);
 
             let mut app = app_with(tmux_nowhere());
+            app.cfg.worktrees.base_branch = String::new();
             app.state.repositories.push(Repository {
                 name: "repo".into(),
                 path: path.clone(),
@@ -5597,8 +5627,14 @@ mod tests {
                 }
             ));
             let hint = app.new_worktree_base().expect("base hint");
+            assert_eq!(hint.branch, "some-other-branch");
+            assert!(!hint.missing);
+
+            app.cfg.worktrees.base_branch = "main".into();
+            app.open_new_worktree();
+            let hint = app.new_worktree_base().expect("base hint");
             assert_eq!(hint.branch, "main");
-            assert!(hint.missing.is_none(), "main exists: {hint:?}");
+            assert!(!hint.missing);
         });
     }
 
@@ -5744,9 +5780,8 @@ mod tests {
         });
     }
 
-    /// When the configured base branch is not in the repo, creation falls
-    /// back to the current branch — so the popup says so instead of naming
-    /// a base that would be a lie.
+    /// A configured base branch that is not in the repo is named as missing,
+    /// and creation refuses instead of cutting from the checkout.
     #[test]
     fn new_worktree_popup_flags_a_missing_base_branch() {
         crate::util::testutil::with_test_lock(|| {
@@ -5771,8 +5806,10 @@ mod tests {
             app.open_new_worktree();
 
             let hint = app.new_worktree_base().expect("base hint");
-            assert_eq!(hint.branch, "main"); // the fallback: current branch
-            assert_eq!(hint.missing.as_deref(), Some("master"));
+            assert_eq!(hint.branch, "master");
+            assert!(hint.missing);
+            let err = app.create_worktree(0, "x", "claude").unwrap_err();
+            assert!(err.to_string().contains("master"), "{err}");
         });
     }
 
@@ -9393,6 +9430,26 @@ mod tests {
         assert_eq!(
             app.expand_message("<repository>/<worktree> at <worktree_path>"),
             "p/wt at /tmp/p/.lazywingman-worktrees/p/wt"
+        );
+    }
+
+    /// With no base branch configured, `<base_branch>` is the checkout's
+    /// branch as the last state poll resolved it — the same branch the
+    /// New Worktree popup names.
+    #[test]
+    fn expand_message_uses_the_resolved_base_without_config() {
+        let mut app = app_with_shell();
+        app.cfg.worktrees.base_branch = String::new();
+        assert_eq!(
+            app.expand_message("merge to LOCAL <base_branch>"),
+            "merge to LOCAL <base_branch>",
+            "nothing resolved yet: the token stays"
+        );
+        app.base_branches
+            .insert(PathBuf::from("/tmp/p"), "trunk".into());
+        assert_eq!(
+            app.expand_message("merge to LOCAL <base_branch>"),
+            "merge to LOCAL trunk"
         );
     }
 

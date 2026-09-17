@@ -115,7 +115,7 @@ you type in it.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `n` | new worktree (sibling; branched from the base branch, not the checkout; its own agent) | create action |
+| `n` | new worktree (sibling; branched from the base branch; its own agent) | create action |
 | `a` | add a shell to the worktree (picker: the worktree's own agent command, the other configured agents, or a plain `$SHELL`) | add action |
 | `d` | delete worktree (kills windows, removes worktree; `f` = force when dirty) | vim `d` destructive, confirms; `f` differs by position (confirm mode, not navigation) |
 | `Enter` | on a one-shell worktree: dock that shell (the folded row *is* the shell). With no shell at all it says so and points at `a` — never a silent no-op | no dead keys |
@@ -130,9 +130,9 @@ you type in it.
 
 ## Text input (new worktree — two fields)
 
-The New Worktree prompt names the branch it will cut from under the name
-field (`branches from: <base> (base branch)`), and warns when the configured
-base branch is absent and creation falls back to the current checkout.
+The New Worktree prompt shows the branch it will cut from as a read-only
+`base branch` field: the main checkout's branch, or the configured one
+(`(not found)` when it is absent, and creation refuses).
 
 Under it sits the **agent** field: which agent this worktree's shells run,
 prefilled with what the repository already runs (`[defaults].agent`, or the
