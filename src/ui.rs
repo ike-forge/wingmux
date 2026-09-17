@@ -12,7 +12,7 @@ use ratatui::widgets::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, BarAction, InputKind, Mode, Sel};
+use crate::app::{App, BarAction, Mode, Sel};
 use crate::config::IconsConfig;
 use crate::git::WorktreeState;
 use crate::status::Status;
@@ -186,8 +186,6 @@ fn overlay_min(kind: OverlayKind) -> (u16, u16) {
         OverlayKind::ThemePicker => (w, 8),
         OverlayKind::Messages | OverlayKind::AddShell => (w, 8),
         OverlayKind::Input | OverlayKind::Confirm => (w, 7),
-        // The textarea is the main interaction — it needs real estate.
-        OverlayKind::Textarea => (w, 10),
     }
 }
 
@@ -273,7 +271,6 @@ enum OverlayKind {
     Messages,
     Input,
     Confirm,
-    Textarea,
 }
 
 fn fg(c: Color) -> Style {
@@ -520,16 +517,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let kind = OverlayKind::Input;
             if fits(area, overlay_min(kind)) {
                 let popup = draw_input(f, app);
-                app.popup_area = Some(popup.area);
-                hint_rows = popup.hint_rows;
-            } else {
-                draw_overlay_too_small(f, area, app, kind);
-            }
-        }
-        Mode::Textarea { .. } => {
-            let kind = OverlayKind::Textarea;
-            if fits(area, overlay_min(kind)) {
-                let popup = draw_textarea(f, app);
                 app.popup_area = Some(popup.area);
                 hint_rows = popup.hint_rows;
             } else {
@@ -1221,7 +1208,7 @@ fn draw_todo(f: &mut Frame, area: Rect, app: &App) {
     } else {
         for i in 0..content_lines {
             match rows.get(scroll + i) {
-                // Tabs expand to four spaces, as in the textarea, so the
+                // Tabs expand to four spaces so the
                 // caret column and the text agree.
                 Some(&(row, start, end)) => {
                     lines.push(Line::from(buf.line(row)[start..end].replace('\t', "    ")))
@@ -1425,7 +1412,6 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         // unfolds the subtree).
         Sel::Worktree(ri, wi) if app.solo_shell(ri, wi).is_some() => vec![
             (h("dock", "Enter"), Dock),
-            (h("send", "s"), QuickSend),
             (h("predefined", "p"), PredefinedSend),
             (h("shell", "a"), AddShell),
             (h("delete", "d"), DeleteWorktree),
@@ -1439,7 +1425,6 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         ],
         Sel::Shell(..) => vec![
             (h("dock", "Enter"), Dock),
-            (h("send", "s"), QuickSend),
             (h("predefined", "p"), PredefinedSend),
             (h("close", "d"), DeleteShell),
             (h("help", "?"), Help),
@@ -1738,10 +1723,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                 &["add shell", "picks the agent or a plain shell", "1-9 pick"],
             ),
             (&["Enter"], &["dock", "one-shell worktree"]),
-            (
-                &["s", "p"],
-                &["quick-send / predefined", "one-shell worktree"],
-            ),
+            (&["p"], &["predefined message", "one-shell worktree"]),
             (
                 &["d"],
                 &["delete worktree", "kills windows", "removes worktree"],
@@ -1755,7 +1737,6 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                 &["Enter"],
                 &["dock the shell", "its real pane, beside the tree"],
             ),
-            (&["s"], &["quick-send", "ctrl-s sends"]),
             (&["p"], &["predefined message", "Enter sends", "1-9 pick"]),
             (
                 &["d"],
@@ -2286,14 +2267,8 @@ fn dialog_max_w(area: Rect) -> u16 {
 
 fn draw_input(f: &mut Frame, app: &App) -> Popup {
     let theme = &app.theme.colors;
-    let (title, label) = match &app.mode {
-        Mode::Input { kind, .. } => match kind {
-            InputKind::NewWorktree => ("New Worktree", "worktree name"),
-            InputKind::QuickSend => ("Quick Send", "send to agent"),
-        },
-        _ => unreachable!(),
-    };
-    let Mode::Input { kind, text, agent } = &app.mode else {
+    let (title, label) = ("New Worktree", "worktree name");
+    let Mode::Input { text, agent } = &app.mode else {
         return Rect::default().into();
     };
     let title_text = format!(" {title} ");
@@ -2310,9 +2285,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
     // Both fields share one indent, so the two values line up in a column
     // and the caret lands in the same place whichever field has it.
     let has_agent = matches!(&app.mode, Mode::Input { agent: Some(_), .. });
-    let base = (*kind == InputKind::NewWorktree)
-        .then(|| app.new_worktree_base())
-        .flatten();
+    let base = app.new_worktree_base();
     let inline_indent = [
         label,
         if has_agent { "agent" } else { label },
@@ -2432,90 +2405,7 @@ fn tail_to_width(text: &str, width: usize) -> &str {
     &text[start..]
 }
 
-fn draw_textarea(f: &mut Frame, app: &App) -> Popup {
-    let theme = &app.theme.colors;
-    // Span the popup to the textarea geometry (shared with the key
-    // handler's page-size math via app::textarea_visible_lines).
-    let w = crate::app::textarea_width(app.viewport.0).min(f.area().width);
-    let h = crate::app::textarea_height(app.viewport.1).min(f.area().height);
-    let area = centered_rect_wh(f.area(), w, h);
-    f.render_widget(Clear, area);
-    let Mode::Textarea { buf } = &app.mode else {
-        return area.into();
-    };
-    let ic = &app.cfg.icons;
-    let content_lines = crate::app::textarea_visible_lines(ic, app.viewport).max(1);
-    let block = popup_block(theme, ic, " Quick Send ");
-    let inner = modal_inner(area);
-    // Row layout inside the border: content, spacer, hint. The popup
-    // title already says "quick-send", so the content starts flush at
-    // the top border — no label row.
-    let content_top = inner.y;
-
-    // Long lines soft-wrap instead of overflowing the border, so the
-    // window scrolls in VISUAL rows, not logical lines.
-    let wrap_width = crate::app::textarea_wrap_width(app.viewport.0)
-        .min(inner.width as usize)
-        .max(1);
-    let rows = buf.visual_rows(wrap_width);
-    let mut lines: Vec<Line> = Vec::new();
-    // Content rows: the visible window of the buffer.
-    let scroll = buf.scroll();
-    for i in 0..content_lines {
-        match rows.get(scroll + i) {
-            // Expand tabs to four spaces for stable rendering.
-            Some(&(row, start, end)) => {
-                lines.push(Line::from(buf.line(row)[start..end].replace('\t', "    ")))
-            }
-            None => lines.push(Line::from("")),
-        }
-    }
-    // Spacer, then the hint rows.
-    lines.push(Line::from(""));
-    let footer = hint_rows(theme, ic, &textarea_hints(ic), modal_text_width(area.width));
-    let hint_rows = footer.len();
-    lines.extend(footer);
-
-    let popup_style = on(theme.popup_fg, theme.popup_bg);
-    f.render_widget(
-        Paragraph::new(Text::from(lines))
-            .block(block)
-            .style(popup_style),
-        area,
-    );
-    // Cursor: the visual row relative to the content window, and the
-    // rendered column within that row (tabs expanded to 4).
-    let (cur_row, render_col) = buf.visual_cursor(wrap_width);
-    if cur_row >= scroll && cur_row - scroll < content_lines {
-        let cursor_x = inner.x + render_col as u16;
-        let cursor_y = (content_top as usize + (cur_row - scroll)) as u16;
-        if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
-            f.set_cursor_position(Position::new(cursor_x, cursor_y));
-        }
-    }
-    Popup { area, hint_rows }
-}
-
-/// The quick-send editor's footer hints. Shared with
-/// [`crate::app::textarea_visible_lines`], which has to know how many rows
-/// they take before it can say how many lines of text are left.
-pub(crate) fn textarea_hints(ic: &crate::config::IconsConfig) -> Vec<Hint> {
-    vec![
-        hint(ic, "newline", "Enter"),
-        hint(ic, "send", "ctrl-s"),
-        hint(ic, "cancel", "esc"),
-    ]
-}
-
-/// Rows the quick-send editor's footer occupies at a viewport width — the
-/// hint rows and the rule above them.
-pub(crate) fn textarea_footer_h(ic: &crate::config::IconsConfig, viewport_w: u16) -> usize {
-    let w = crate::app::textarea_width(viewport_w);
-    footer_h(ic, &textarea_hints(ic), modal_text_width(w))
-}
-
-/// Centered rect of an exact width/height (the percentage version cannot
-/// express the textarea's clamped absolute size).
+/// Centered rect of an exact width/height.
 fn centered_rect_wh(area: Rect, w: u16, h: u16) -> Rect {
     let x = area.x + area.width.saturating_sub(w) / 2;
     let y = area.y + area.height.saturating_sub(h) / 2;
@@ -2621,7 +2511,7 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Popup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, Confirm, ConfirmAction, InputKind};
+    use crate::app::{App, Confirm, ConfirmAction};
     use crate::config::Config;
     use crate::theme;
 
@@ -2641,7 +2531,6 @@ mod tests {
             Mode::Normal,
             Mode::Help,
             Mode::Input {
-                kind: InputKind::NewWorktree,
                 text: "some-worktree".into(),
                 agent: None,
             },
@@ -2729,7 +2618,7 @@ mod tests {
     /// typed text. Regression, twice: `modal_inner` kept counting a
     /// vertical padding row that `MODAL_PADDING` no longer reserves, so the
     /// caret landed a row below the text in every input popup (new
-    /// worktree, add-shell, quick-send) — on the "branches from" hint.
+    /// worktree, add-shell) — on the "branches from" hint.
     ///
     /// The label sits beside the field whenever the strip is wide enough
     /// (it stacks onto its own row only in a narrow strip, where it does
@@ -2745,33 +2634,28 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
-        for (kind, label, text) in [
-            (InputKind::NewWorktree, "worktree name", "foo"),
-            (InputKind::QuickSend, "send to agent", "busy 2"),
-        ] {
-            app.mode = Mode::Input {
-                kind,
-                text: text.into(),
-                agent: None,
-            };
-            terminal
-                .draw(|f| draw(f, &mut app))
-                .expect("draw must not fail");
+        let (label, text) = ("worktree name", "foo");
+        app.mode = Mode::Input {
+            text: text.into(),
+            agent: None,
+        };
+        terminal
+            .draw(|f| draw(f, &mut app))
+            .expect("draw must not fail");
 
-            let area = app.popup_area.expect("input popup is on screen");
-            let body = buffer_text(&terminal);
-            assert!(body.contains(label), "the label names the field: {label:?}");
-            // inside the border AND the one column of padding, then the
-            // inline label, then the text
-            let expected_x =
-                area.x + 2 + (label.chars().count() + 2) as u16 + text.chars().count() as u16;
-            let expected_y = area.y + 1; // the field shares the label's row
-            assert_eq!(
-                terminal.get_cursor_position().unwrap(),
-                Position::new(expected_x, expected_y),
-                "cursor must sit on the field row after the typed text ({label:?})",
-            );
-        }
+        let area = app.popup_area.expect("input popup is on screen");
+        let body = buffer_text(&terminal);
+        assert!(body.contains(label), "the label names the field: {label:?}");
+        // inside the border AND the one column of padding, then the
+        // inline label, then the text
+        let expected_x =
+            area.x + 2 + (label.chars().count() + 2) as u16 + text.chars().count() as u16;
+        let expected_y = area.y + 1; // the field shares the label's row
+        assert_eq!(
+            terminal.get_cursor_position().unwrap(),
+            Position::new(expected_x, expected_y),
+            "cursor must sit on the field row after the typed text ({label:?})",
+        );
     }
 
     /// The new-worktree popup is two fields: both are drawn, both labels
@@ -2822,7 +2706,6 @@ mod tests {
     fn a_long_input_shows_its_tail_and_keeps_the_caret_inside() {
         let mut app = seeded_app();
         app.mode = Mode::Input {
-            kind: InputKind::QuickSend,
             text: "x".repeat(200),
             agent: None,
         };
@@ -2836,119 +2719,6 @@ mod tests {
             pos.x < area.x + area.width && pos.y < area.y + area.height,
             "the caret stays inside the popup: {pos:?} in {area:?}"
         );
-    }
-
-    /// The textarea popup shows the WHOLE visible window, not just the
-    /// line being typed (regression: TextBuf scrolled with a hardcoded
-    /// one-line viewport, so every earlier line left the popup), and its
-    /// hint names the send key that terminals actually deliver.
-    #[test]
-    fn textarea_popup_shows_every_line_and_the_send_hint() {
-        let cfg = Config::default();
-        let theme = theme::load("ansi", false).unwrap();
-        let mut app = App::new(cfg, theme, None);
-        // No `startup()` — see `seeded_app`: it would load and rewrite the
-        // real `state.json`.
-
-        let mut buf = crate::app::TextBuf::new();
-        for line in ["alpha", "beta", "gamma"] {
-            for c in line.chars() {
-                buf.insert_char(c);
-            }
-            buf.newline();
-        }
-        buf.ensure_visible(
-            crate::app::textarea_visible_lines(&app.cfg.icons, (120, 40)),
-            crate::app::textarea_wrap_width(120),
-        );
-        app.mode = Mode::Textarea { buf };
-
-        let backend = ratatui::backend::TestBackend::new(120, 40);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| draw(f, &mut app))
-            .expect("draw must not fail");
-        let text = buffer_text(&terminal);
-
-        for line in ["alpha", "beta", "gamma"] {
-            assert!(text.contains(line), "popup must still show {line:?}");
-        }
-        assert!(text.contains("send ctrl-s"), "hint names the send key");
-    }
-
-    /// The popup wraps a line too long for its width instead of letting
-    /// it run past the border, drops the old "send to agent (N rows)"
-    /// label, and keeps the footer rule between the text and the hint.
-    #[test]
-    fn textarea_popup_wraps_long_lines_and_spaces_the_hint() {
-        let cfg = Config::default();
-        let theme = theme::load("ansi", false).unwrap();
-        let mut app = App::new(cfg, theme, None);
-        app.startup().unwrap();
-        app.viewport = (120, 40);
-
-        let mut buf = crate::app::TextBuf::new();
-        let long = "wrap ".repeat(60);
-        for c in long.chars() {
-            buf.insert_char(c);
-        }
-        buf.ensure_visible(
-            crate::app::textarea_visible_lines(&app.cfg.icons, (120, 40)),
-            crate::app::textarea_wrap_width(120),
-        );
-        app.mode = Mode::Textarea { buf };
-
-        let backend = ratatui::backend::TestBackend::new(120, 40);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| draw(f, &mut app))
-            .expect("draw must not fail");
-        let text = buffer_text(&terminal);
-        let cells = terminal.backend().buffer().clone();
-        let rows: Vec<String> = (0..40)
-            .map(|y| (0..120).map(|x| cells[(x, y)].symbol()).collect())
-            .collect();
-
-        assert!(
-            !text.contains("send to agent"),
-            "the label row is gone: {text}"
-        );
-
-        // The popup border stays intact on every row it owns: nothing
-        // spills past the right edge.
-        let w = crate::app::textarea_width(120);
-        let h = crate::app::textarea_height(40);
-        let x0 = (120 - w) / 2;
-        let y0 = (40 - h) / 2;
-        // The footer rule meets the frame with tees; every other row
-        // has the plain side border.
-        let rule_y = y0 + h - 3;
-        for y in (y0..y0 + h).filter(|y| *y != rule_y) {
-            let row: Vec<char> = rows[y as usize].chars().collect();
-            assert!(
-                row[x0 as usize] == '\u{2502}' || y == y0 || y == y0 + h - 1,
-                "left border missing on row {y}"
-            );
-            assert!(
-                row[(x0 + w - 1) as usize] == '\u{2502}' || y == y0 || y == y0 + h - 1,
-                "text overflowed the right border on row {y}"
-            );
-        }
-
-        // The wrapped text really is spread over several rows, and a rule
-        // separates it from the hint.
-        let hint_y = (y0 + h - 2) as usize;
-        assert!(rows[hint_y].contains("send ctrl-s"), "hint on the last row");
-        assert_footer_rule(
-            terminal.backend().buffer(),
-            Rect::new(x0, y0, w, h),
-            "textarea",
-        );
-        let filled = rows[(y0 + 1) as usize..hint_y - 1]
-            .iter()
-            .filter(|r| r.contains("wrap"))
-            .count();
-        assert!(filled > 1, "the long line wrapped over {filled} rows");
     }
 
     /// The New Worktree popup names the base branch as a field, like the
@@ -3266,17 +3036,10 @@ mod tests {
         );
 
         for (mode, want) in [
-            (
-                Mode::Textarea {
-                    buf: crate::app::TextBuf::new(),
-                },
-                "Quick Send",
-            ),
             (Mode::Help, "Help"),
             (Mode::Messages { index: 0 }, "Messages"),
             (
                 Mode::Input {
-                    kind: InputKind::NewWorktree,
                     text: String::new(),
                     agent: None,
                 },
@@ -3458,7 +3221,6 @@ mod tests {
             Mode::Normal,
             Mode::Help,
             Mode::Input {
-                kind: InputKind::NewWorktree,
                 text: "some-worktree".into(),
                 agent: None,
             },
@@ -3599,7 +3361,7 @@ mod tests {
             "add shell",
             "delete worktree",
             "close shell",
-            "quick-send",
+            "predefined message",
             "refresh",
             "reset the layout",
             "this help",
@@ -3763,7 +3525,6 @@ mod tests {
         for (entry, _) in crate::ui::bar_entries(&app2) {
             match entry.desc.as_str() {
                 "help" => assert!(text.contains("this help"), "bar 'help ?' ↔ help row"),
-                "send" => assert!(text.contains("quick-send"), "bar 'send s' ↔ help row"),
                 "predefined" => assert!(
                     text.contains("predefined message"),
                     "bar 'predefined p' ↔ help row"
@@ -5275,22 +5036,19 @@ mod tests {
     fn input_popup_keeps_its_footer_on_short_frames() {
         let mut app = seeded_app();
         app.sel = crate::app::Sel::Repository(0);
-        for kind in [InputKind::QuickSend, InputKind::NewWorktree] {
-            app.mode = Mode::Input {
-                kind,
-                text: String::new(),
-                agent: None,
-            };
-            for height in [24, 30, 40] {
-                let backend = ratatui::backend::TestBackend::new(100, height);
-                let mut terminal = ratatui::Terminal::new(backend).unwrap();
-                terminal.draw(|f| draw(f, &mut app)).unwrap();
-                let text = buffer_text(&terminal);
-                assert!(
-                    text.contains("cancel esc"),
-                    "{kind:?} popup must keep its footer at height {height}: {text}"
-                );
-            }
+        app.mode = Mode::Input {
+            text: String::new(),
+            agent: None,
+        };
+        for height in [24, 30, 40] {
+            let backend = ratatui::backend::TestBackend::new(100, height);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let text = buffer_text(&terminal);
+            assert!(
+                text.contains("cancel esc"),
+                "popup must keep its footer at height {height}: {text}"
+            );
         }
     }
 
@@ -5369,7 +5127,6 @@ mod tests {
 
         for mode in [
             Mode::Input {
-                kind: InputKind::NewWorktree,
                 text: "my-worktree".into(),
                 agent: None,
             },
@@ -5452,21 +5209,8 @@ mod tests {
             (
                 "input",
                 Mode::Input {
-                    kind: InputKind::NewWorktree,
                     text: "claude".into(),
                     agent: None,
-                },
-            ),
-            (
-                "textarea",
-                Mode::Textarea {
-                    // Non-empty: an empty buffer would leave the first
-                    // content row blank and look like a padding row.
-                    buf: {
-                        let mut buf = crate::app::TextBuf::new();
-                        buf.insert_char('x');
-                        buf
-                    },
                 },
             ),
             (
@@ -5536,7 +5280,6 @@ mod tests {
             (
                 "input",
                 Mode::Input {
-                    kind: InputKind::NewWorktree,
                     text: "claude".into(),
                     agent: None,
                 },
@@ -5634,12 +5377,8 @@ mod tests {
                 Mode::AddShell { index: 0 },
                 Mode::Messages { index: 0 },
                 Mode::Input {
-                    kind: InputKind::NewWorktree,
                     text: "a-long-worktree-name-typed-in-full".into(),
                     agent: None,
-                },
-                Mode::Textarea {
-                    buf: crate::app::TextBuf::new(),
                 },
                 Mode::Confirm {
                     confirm: Confirm {

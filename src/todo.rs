@@ -36,8 +36,8 @@ pub fn repo_file_name(repo: &Path) -> String {
 
 /// Read a parked pad; the empty string when there is none.
 ///
-/// Never errors, like [`crate::drafts::Drafts::load`]: anything unreadable
-/// is logged and treated as empty, and the next save rewrites it.
+/// Never errors: anything unreadable is logged and treated as empty, and
+/// the next save rewrites it.
 pub fn load(pad: &Pad) -> String {
     let path = crate::util::todo_path(pad);
     match std::fs::read_to_string(&path) {

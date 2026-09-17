@@ -89,7 +89,6 @@ the help overlay (`?`).
 | `l` / `Enter` | expand, or **enter** the selected shell's docked pane (a one-shell worktree goes straight in — see the folded row below). Simply moving onto a shell already docks it; `Enter` is what puts the cursor there. On a **repository** row it only expands or collapses |
 | `n` | new worktree (git worktree + branch + agent shell) — a prompt asks for the name and shows the **base branch** it will be cut from: the branch the repository's main checkout is on, unless `worktrees.base_branch` (or a per-repository override) names one. A second field says which **agent** the worktree's shells run, prefilled with the repository's own (`[defaults].agent`, unless the repository overrides it): `Tab` moves onto it, `↑`/`↓` walk the configured `[[agents]]` presets, and anything else typed there is taken as the command itself. So a name and `Enter` is still the whole flow, and `codex` beside a `claude` repository costs one `Tab` |
 | `a` | add a shell to the selected worktree — a picker asks what it runs: the worktree's own agent command first (the one it was created with, else the repository's; `Enter` takes it), then the other configured `[[agents]]` presets, then a **plain shell** that just drops you at your own `$SHELL` prompt with nothing sent to it (`j`/`k` moves, `1`-`9` pick directly, `Esc` closes). Anything else you want to run, you type in that plain shell. On a **repository** row, `a` starts (or enters) the repository's own inline shell — no picker |
-| `s` | **quick-send** a line to the selected shell (or to a one-shell worktree's row). Any way out of the editor that is not a send (`Esc`, a click outside the popup, the `ctrl-t` theme chord) keeps the unsent text as that shell's draft; `s` on it again picks up where you left off, cursor included. A draft is dropped once the message is actually delivered. It otherwise survives quitting — parked in `$XDG_STATE_HOME/lazywingman/drafts.json` and kept until its shell is gone |
 | `p` | **predefined messages** for the selected shell (or a one-shell worktree's row) — a modal of configured presets, each listed in full with its `<base_branch>`-style tokens already resolved (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
 | `t` | **repository todo pad** — a scratch pad for the next steps you cannot start yet ("rebase the API worktree once the schema lands"). One per repository, shared by its worktrees: on any row of a repository, `t` opens that repository's pad. It splits off the bottom of the tree's column and takes half of it while you type, so neither the tree above nor the preview — or the docked agent — beside it is covered. `Esc` saves and hands the keyboard back to the tree, leaving the note on screen collapsed to its own height (five lines of text, a five-line panel; never more than the open half) and following the selection from repository to repository; an emptied pad takes the panel away with it. `ctrl-s` saves without leaving. Parked as plain text in `$XDG_STATE_HOME/lazywingman/todos/<escaped repository path>.md` (yours to edit with `$EDITOR` too) |
 | `T` | **global todo pad** — the same panel, one pad for the whole machine, for notes written about one repository and needed while looking at another. Stored in `$XDG_STATE_HOME/lazywingman/todo.md`. The parked panel shows whichever pad was opened last |
@@ -446,15 +445,9 @@ without hunting for the status word at the end of the row.
   Worktree popup shows it as a `base branch` field under the agent; a
   configured branch missing from the repo reads `(not found)` and creation
   refuses.
-- **Quick-send** = an in-TUI multiline editor (Enter = newline, Tab =
-  tab, arrows/Home/End move the cursor, **ctrl-s sends** — Alt+Enter too
-  where the terminal delivers it)
-  that pastes the prompt to the selected pane via tmux paste-buffer with
-  bracketed paste — multi-line prompts arrive as one paste, not as
-  premature Enter presses.
-- Unsent quick-send drafts (`$XDG_STATE_HOME/lazywingman/drafts.json`) are
-  keyed by repository + branch + shell index, so they are restored onto the
-  right shell after a restart even though tmux gives it a new pane id.
+- **Predefined messages** are pasted to the selected pane via tmux
+  paste-buffer with bracketed paste — multi-line prompts arrive as one
+  paste, not as premature Enter presses.
 - State (`$XDG_STATE_HOME/lazywingman/state.json`) holds only what
   LazyWingman recorded about the worktrees it created (name, creation time,
   fork point, agent), keyed by path. Worktrees come from `git worktree list`.
@@ -640,9 +633,9 @@ rest, and `d` deletes it like any other.
 
 **The folded row** (`login` above): the nominal case is one worktree, one
 agent, so a worktree with a single shell has no child row at all — its own row
-*is* that shell. It carries the shell's status, and `Enter` / `s` enter its
-docked pane and quick-send to it directly. `a` gives the worktree a
-second shell, and the subtree appears. Only worktrees with several shells (or
+*is* that shell. It carries the shell's status, and `Enter` / `p` enter its
+docked pane and send it a predefined message directly. `a` gives the worktree
+a second shell, and the subtree appears. Only worktrees with several shells (or
 none) are expandable.
 
 The statusbar carries the contextual shortcuts and nothing else — no app

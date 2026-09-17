@@ -20,9 +20,6 @@ the same commit as the change.
 
 - State file: JSON at `$XDG_STATE_HOME/lazywingman/state.json` (state, not
   data, is the semantically correct XDG dir for mutable runtime state).
-- Drafts file: JSON at `$XDG_STATE_HOME/lazywingman/drafts.json` — unsent
-  quick-send prompts (`src/drafts.rs`). State, not cache: a half-written
-  prompt cannot be regenerated.
 - Todo files: **plain text** — the global pad at
   `$XDG_STATE_HOME/lazywingman/todo.md`, one per repository at
   `$XDG_STATE_HOME/lazywingman/todos/<escaped repository path>.md`
@@ -289,7 +286,7 @@ the same commit as the change.
   echo them once and run them. `LAUNCH_GRACE` (8s) is the backstop — a shell
   with no prompt to draw gets typed into blind rather than never starting.
   Only the two *first* commands of a fresh shell go through the queue;
-  quick-send and the predefined messages talk to an agent that is already
+  the predefined messages talk to an agent that is already
   running and need no such wait.
 - **Always inside tmux — it starts one for you** (M18, replacing "runs inside
   AND outside tmux"). The old answer was that the dashboard did not require
@@ -383,7 +380,7 @@ and `cat config.toml` belong. So the row got a shell of its own.
   `selected_shell` does not.** The pane is what docking, the preview and
   the lease need, and giving the row a pane makes all three follow it for
   free. The `(repository, worktree, shell)` triple is what the *send* paths
-  take, and it stays `None` — so `s` and `p` are unbound on the row. The
+  take, and it stays `None` — so `p` is unbound on the row. The
   presets are agent prompts, and a command you want a shell to run is a
   command you type in it.
 - **`d` closes it, and only appears when there is one.** The bar offers
@@ -727,7 +724,7 @@ duplication docking exists to end.
 - **A one-shell worktree is folded, not collapsed**: the nominal case is one
   worktree, one agent, so a worktree with a single shell gets no child row at
   all — its own row carries the shell's status and acts as that shell (`Enter`
-  docks it, `s` quick-sends, the preview follows it). Making it "collapsed by
+  docks it, `p` sends to it, the preview follows it). Making it "collapsed by
   default" instead would still cost a keypress to see a row that repeats the
   worktree's name and nothing else. The rule lives in one predicate,
   `App::solo_shell`, and is enforced in `visible_nodes()` so navigation, mouse
@@ -973,77 +970,20 @@ duplication docking exists to end.
   the statusbar. `Esc` leaves the parked preview before it leaves the app
   (innermost first); `q` and `ctrl-c` still quit outright.
 
-## Quick send and predefined messages
+## Predefined messages
 
-- **Quick-send is a multiline textarea.** The main way to talk to agents is a
-  full editor (`Mode::Textarea` + `TextBuf`): Enter inserts a newline, Tab a
-  real tab, arrows/Home/End move the cursor (wrapping at line ends),
-  PgUp/PgDn/ctrl-u/d/f/b page the cursor, and the send key is **ctrl-s**
-  (Alt+Enter still works where the terminal delivers it) — a plain Enter is
-  needed for editing, so it cannot be the submit key. While the textarea is
-  open the accessibility layer yields ALL motion keys to it (only ctrl-c and
-  ctrl-t stay global); the tree selection never moves while editing. Delivery
-  uses tmux **paste-buffer with bracketed paste** (`paste_keys`) rather than
-  `send-keys -l`: `send-keys -l "a\nb"` would translate the newline into an
-  Enter press and submit the first line early; bracketed paste delivers
-  multi-line text as one paste, then a trailing Enter submits. The
-  new-worktree input stays single-line (`Enter` submits) — it is a name, not
-  a prompt.
-- **Why the send key is ctrl-s, and why the scroll window is the popup's.**
-  Two bugs made quick-send unusable in a real tmux. (1) *Nothing could be
-  submitted*: both original send chords are undeliverable in a default setup —
-  tmux ships `extended-keys off`, so **Ctrl+Enter is not encodable at all** and
-  arrives as a bare Enter (a newline), while **Alt+Enter** depends on the outer
-  terminal emulator forwarding `ESC CR` (Windows Terminal binds it to
-  fullscreen). The send key is **ctrl-s** — a plain control byte, which raw
-  mode always delivers; Alt+Enter is kept as a bonus, and Ctrl+Enter is still
-  accepted for terminals that do encode it. Lesson: a chord that needs the
-  kitty/CSI-u protocol cannot be the ONLY way to perform an action. (2) *Only
-  one line was ever visible*: every `TextBuf` edit and motion called
-  `ensure_visible(1)` — a hardcoded one-line viewport — so each Enter scrolled
-  the previous line out of a 10–18 row popup. `TextBuf` no longer scrolls at
-  all; the key handler calls `ensure_visible` once per key with the popup's
-  real content height (`textarea_visible_lines`), which is the only place that
-  knows it.
-- **Drafts are per shell, in memory, and dropped only on delivery.** A
-  half-written prompt is expensive to retype, so `Esc` parks the buffer
-  against the shell's pane id (the key `captures` and `statuses` already use)
-  and `s` resumes it, cursor included. Every other way out of the editor
-  parks it too, through the one `close_textarea` helper: the ctrl-t theme
-  chord (it dispatches over the textarea) and a click outside the popup —
-  both used to replace the mode and take the text with it. Two deliberate
-  limits: drafts do NOT go
-  into `state.json` — they are working state, not the tree, so they live in
-  their own `$XDG_STATE_HOME/lazywingman/drafts.json` (`src/drafts.rs`) that
-  can be dropped whole when it is corrupt or stale without taking the
-  repositories with it — and a draft is
-  dropped only when the send actually SUCCEEDED. `submit_input` toasts and
-  swallows its error, so clearing on submit would lose the text exactly when
-  the user most needs it (dead pane, no server). `TEXTBUF_MAX_BYTES =
-  1_000_000` is a runaway-paste backstop, not a limit anyone types into; past
-  it input is dropped silently, because an error toast per keystroke would be
-  worse than a buffer that stops growing.
-- **A draft's on-disk key is the shell, not the pane.** Drafts persist across
-  runs, so the key has to survive one: pane ids do not (tmux hands out new
-  ones, and `reconcile` rediscovers shells from the panes' own identity), so
-  `drafts.json` is keyed by that identity — repository, worktree branch,
-  shell index — and `App::load_drafts` resolves it back to the
-  current pane id AFTER `reconcile` has filled them in. Lifetime follows
-  from the same choice: `save_drafts` writes by walking the tree, so a draft
-  whose shell or worktree is gone has no row to be written under and simply
-  dies with it — no timestamps, no expiry. It is written on every change
-  (park, delivery, and every `save_state`) rather than on quit alone,
-  because a dashboard killed with its terminal never reaches a quit path.
-  `Drafts::load` never errors: a missing, malformed, or wrong-version file
-  means "no drafts" and a log line — refusing to start over a parked prompt
-  would be the bigger loss.
 - **Predefined messages are a picker, not a second editor**: `p` on a shell
   opens `Mode::Messages`, a numbered list of the configured presets, and
   `Enter` (or the entry's own digit `1`-`9`) **sends immediately** — no detour
-  through the textarea. The whole point of a canned prompt is that it needs no
-  editing; anything that does is what `s` is for. The text goes through the
-  same `quick_send` paste path as the textarea, so the agent cannot tell a
-  preset from a typed prompt.
+  through an editor: a canned prompt needs no editing, and anything that does
+  is typed in the docked pane itself. Delivery (`App::send_text`) uses tmux
+  **paste-buffer with bracketed paste** (`paste_keys`) rather than
+  `send-keys -l`: `send-keys -l "a\nb"` would translate the newline into an
+  Enter press and submit the first line early; bracketed paste delivers
+  multi-line text as one paste, then a trailing Enter submits.
+- **No in-dashboard prompt editor.** With the agent's real pane docked
+  beside the tree, typing into it is one `Enter` away and gets the agent's
+  own editor; a second editor in the dashboard would only duplicate it.
 - **The list shows the message, not a name for it**: an entry is only its
   `text`, and the modal renders that text in full. An earlier `label` field
   let the list say "merge + drop worktree" while the pane received something
@@ -1082,9 +1022,7 @@ duplication docking exists to end.
   repository's pad. Some are written about one repository and needed while
   looking at another; the global pad keeps those. There is no per-worktree
   pad: a note like "delete wt3 after the release" must outlive wt3, so a
-  worktree or shell row opens its repository's pad. A draft is the opposite
-  call (`drafts.json`): it belongs to the shell it was typed at and dies with
-  it.
+  worktree or shell row opens its repository's pad.
 - **Stored in the state dir, keyed by repository path.** Not in the
   repository, so nothing shows in `git status` or gets committed by accident.
   The key is the path, not the name: names are not unique. `%` and `/` are
@@ -1108,9 +1046,8 @@ duplication docking exists to end.
   preview, or the docked agent, that the note is being written *about*, and
   taking the tree's whole panel covered the tree the note is written *from*.
   The panel is the editor, so it owns every printable key (`q` types a `q`)
-  and the accessibility layer yields its motions the same way it does for the
-  textarea. `Esc` is the way back, and it saves — a scratch pad that can lose
-  a note is not one.
+  and the accessibility layer yields its motions to it. `Esc` is the way
+  back, and it saves — a scratch pad that can lose a note is not one.
 - **Two heights, one rule: a panel costs what it holds.** `ui::todo_panel_h`
   is the single source for the geometry — rendering, the caret's window
   (`app::todo_visible_lines`), the tree's page size (`ui::tree_rows`) and
@@ -1204,7 +1141,7 @@ duplication docking exists to end.
   "frame too small for this dialog" fallback is the one overlay without it:
   its hint is not on the last content row, so there is nothing to fence.
 - **Panel titles are Title Case names, body text is not.** Titles name a thing
-  (`Preview`, `Quick Send`, `Repositories`), so they read as proper names;
+  (`Preview`, `New Worktree`, `Repositories`), so they read as proper names;
   hints, statusbar and body text stay lowercase, which is the LazyGit register
   this repository follows. The preview title carries no `(capture-pane)`
   suffix: it named the implementation, not the panel. The tree title follows
@@ -1230,7 +1167,7 @@ duplication docking exists to end.
   fixed thresholds; overlays that don't fit are refused with a "frame too
   small" box instead of drawing garbage; the input cursor is only set when
   on-buffer.
-- **Dialog geometry**: the input prompt (new worktree, quick send) and the
+- **Dialog geometry**: the input prompt (new worktree) and the
   confirm dialog (delete worktree/repository) are sized to
   their content by `dialog_rect` — widest line and line count, plus one
   column/row of `DIALOG_PADDING` inside the border on every side — clamped
@@ -1289,8 +1226,8 @@ duplication docking exists to end.
   bought support for terminals that cannot draw UTF-8, cost a rewrite hook
   at fourteen render sites plus five whole-frame purity tests, and reached
   further than the app's own frame: over the preview panel and the
-  quick-send textarea it rewrote the captured agent output and the user's
-  typed buffer too. A tmux-native dashboard for coding agents does not run
+  todo pad it rewrote the captured agent output and the user's typed buffer
+  too. A tmux-native dashboard for coding agents does not run
   on a terminal that cannot draw `│`. `unicode` is the no-patched-font
   fallback; `none` is the no-icons one.
 

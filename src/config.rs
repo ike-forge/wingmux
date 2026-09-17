@@ -246,7 +246,7 @@ pub struct Config {
     pub icons: IconsConfig,
     pub agents: Vec<AgentConfig>,
     pub repositories: Vec<RepositoryConfig>,
-    /// Predefined messages offered by the `p` modal (quick-send presets).
+    /// Predefined messages offered by the `p` modal.
     pub messages: Vec<MessageConfig>,
     /// Diagnostics collected while loading (per configuration rules: a
     /// malformed config never prevents startup — the smallest addressable

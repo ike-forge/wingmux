@@ -40,7 +40,7 @@ const WT_STATE_INTERVAL: Duration = Duration::from_secs(5);
 /// and typing blind is still better than never starting the agent.
 const LAUNCH_GRACE: Duration = Duration::from_secs(8);
 
-/// Hard ceiling on one quick-send draft. Not a limit anyone types into —
+/// Hard ceiling on one text buffer. Not a limit anyone types into —
 /// a backstop so a runaway paste cannot grow the buffer without bound.
 const TEXTBUF_MAX_BYTES: usize = 1_000_000;
 
@@ -129,19 +129,11 @@ impl Lease {
 pub enum Mode {
     Normal,
     Input {
-        kind: InputKind,
         text: String,
         /// The second field, when the prompt has one (new worktree: which
         /// agent its first shell runs). `None` for single-field prompts —
         /// `Tab` then has nothing to move to and stays inert.
         agent: Option<AgentField>,
-    },
-    /// Multiline prompt editor (quick-send). Owns all editing keys:
-    /// Enter = newline, Tab = tab, arrows/Home/End move the cursor,
-    /// ctrl-s (or Alt+Enter) = send, Esc = cancel. The accessibility
-    /// layer only keeps ctrl-c (quit) and ctrl-t (theme) while it is open.
-    Textarea {
-        buf: TextBuf,
     },
     Confirm {
         confirm: Confirm,
@@ -161,10 +153,9 @@ pub enum Mode {
     AddShell {
         index: usize,
     },
-    /// Predefined-message modal (`p`): the configured quick-send presets
-    /// as a list. j/k move, digits `1`..`9` pick an entry directly, Enter
-    /// sends the selected one, Esc closes. Sending uses the same paste
-    /// path as the textarea — the agent sees what a human would type.
+    /// Predefined-message modal (`p`): the configured messages as a list.
+    /// j/k move, digits `1`..`9` pick an entry directly, Enter sends the
+    /// selected one, Esc closes. Sending pastes like a human would type.
     Messages {
         index: usize,
     },
@@ -179,15 +170,15 @@ pub enum Mode {
     ///
     /// The panel is the editor, so it owns every printable key — there is
     /// no navigation layer left underneath, and `Esc` is the way back to
-    /// the tree (saving as it goes). Like [`Mode::Textarea`] it keeps only
-    /// ctrl-c (quit) and ctrl-t (theme) global.
+    /// the tree (saving as it goes). It keeps only ctrl-c (quit) and
+    /// ctrl-t (theme) global.
     Todo {
         buf: TextBuf,
         pad: crate::todo::Pad,
     },
 }
 
-/// A multiline text buffer for the quick-send editor: lines + a cursor
+/// A multiline text buffer for the todo pads: lines + a cursor
 /// (`row`, and `col` as a BYTE offset into that line — the popup slices
 /// `line[..col]` to place the caret) + a viewport scroll (first visible
 /// line). Every motion lands on a char boundary: prompts are full of
@@ -236,7 +227,7 @@ impl TextBuf {
 
     /// Logical cursor position. The renderer uses `visual_cursor`, which
     /// accounts for soft-wrapping; these are the buffer-level view, read by
-    /// the editing tests and by draft persistence.
+    /// the editing tests and by pad reloads.
     pub fn cursor_row(&self) -> usize {
         self.row
     }
@@ -246,8 +237,8 @@ impl TextBuf {
     }
 
     /// Rebuild a buffer parked in a previous run: text plus the cursor it
-    /// was left at. Both coordinates are clamped — a truncated or
-    /// hand-edited `drafts.json` must not place `col` past the end of a
+    /// was left at. Both coordinates are clamped — a pad edited outside the
+    /// dashboard must not place `col` past the end of a
     /// line or inside a multi-byte character, which the next edit would
     /// panic on.
     pub fn from_parked(text: &str, row: usize, col: usize) -> TextBuf {
@@ -410,10 +401,8 @@ impl TextBuf {
     /// Keep the cursor row visible within a `visible`-row viewport, in
     /// VISUAL rows (soft-wrapped at `width` columns): scroll down if the
     /// cursor moved above the viewport, up if it moved below it. The key
-    /// handler calls this once per key — only it knows the popup's real
-    /// content height, and scrolling inside the editing methods (with a
-    /// hardcoded one-line window) pushed every earlier line out of the
-    /// textarea.
+    /// handler calls this once per key — only it knows the panel's real
+    /// content height.
     pub fn ensure_visible(&mut self, visible: usize, width: usize) {
         let view = visible.max(1);
         let total = self.visual_len(width);
@@ -462,7 +451,7 @@ impl TextBuf {
 }
 
 /// Rendered width of `s`: tabs take four columns, every other character
-/// one (the textarea renders tabs as four spaces).
+/// one (the pad renders tabs as four spaces).
 fn display_width(s: &str) -> usize {
     s.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum()
 }
@@ -516,51 +505,9 @@ fn next_boundary(line: &str, col: usize) -> usize {
         .unwrap_or(col)
 }
 
-/// Height of the quick-send textarea popup for a viewport height. Grows
-/// with the terminal up to a cap — the textarea is the main interaction,
-/// it should be roomy.
-pub(crate) fn textarea_height(viewport_h: u16) -> u16 {
-    (viewport_h / 2).clamp(10, 18)
-}
-
-/// Width of the quick-send textarea popup for a viewport width.
-///
-/// Capped at [`crate::ui::MODAL_MAX_W`] like every other overlay: the
-/// viewport is the dashboard's own strip while a pane is docked, and a
-/// popup that took a share of *that* would be a different editor in each
-/// layout. Never wider than the frame, and never below the strip's own
-/// minimum.
-pub(crate) fn textarea_width(viewport_w: u16) -> u16 {
-    (viewport_w * 90 / 100)
-        .clamp(crate::dock::DASH_MIN_WIDTH, crate::ui::MODAL_MAX_W)
-        .min(viewport_w)
-}
-
-/// Content rows of the textarea popup: its height, less the two borders,
-/// less the footer — the rule row and however many rows the hints took at
-/// this width. The modal padding costs no row.
-///
-/// The footer is measured rather than assumed: in the dashboard's own
-/// strip the editor is 26 columns wide and its three hints do not fit one
-/// row, and a content window that ignored that would draw text under them.
-pub(crate) fn textarea_visible_lines(
-    icons: &crate::config::IconsConfig,
-    viewport: (u16, u16),
-) -> usize {
-    (textarea_height(viewport.1) as usize)
-        .saturating_sub(2 + crate::ui::textarea_footer_h(icons, viewport.0))
-}
-
-/// Soft-wrap width of the textarea content: the popup width minus the two
-/// borders and the padding's two columns, minus one more so a cursor
-/// sitting at the end of a full row still has a cell of its own.
-pub(crate) fn textarea_wrap_width(viewport_w: u16) -> usize {
-    (textarea_width(viewport_w).saturating_sub(5) as usize).max(1)
-}
-
 /// Content rows of the todo panel: its share of the tree's column, less the
 /// panel's two borders. The pad is a panel split off the tree's column, so
-/// its geometry is [`crate::ui::todo_panel_h`]'s — not the textarea popup's.
+/// its geometry is [`crate::ui::todo_panel_h`]'s.
 ///
 /// Read while the pad is *open*, which is the only time the caret needs a
 /// window, so this is the open half of the column rather than the collapsed
@@ -572,7 +519,7 @@ pub(crate) fn todo_visible_lines(app: &App) -> usize {
 
 /// Soft-wrap width of the todo panel's text: the panel width minus its two
 /// borders, minus one more so a cursor at the end of a full row still has a
-/// cell of its own — the same allowance [`textarea_wrap_width`] makes.
+/// cell of its own.
 /// A frame too small for a tree has no panel to wrap into, so it falls back
 /// to the narrowest strip the dashboard ever draws in.
 pub(crate) fn todo_wrap_width(app: &App) -> usize {
@@ -591,7 +538,6 @@ pub enum BarAction {
     TodoBack,
     NewWorktree,
     AddShell,
-    QuickSend,
     PredefinedSend,
     DeleteWorktree,
     DeleteShell,
@@ -603,12 +549,6 @@ pub enum BarAction {
     Dock,
     /// Back to the live tail from a preview parked in the scrollback.
     PreviewLive,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputKind {
-    NewWorktree,
-    QuickSend,
 }
 
 /// The new-worktree popup's agent field: a `[[agents]]` preset name (or a
@@ -709,11 +649,6 @@ pub struct App {
     /// read through [`App::preview_offset`], which reports live whenever
     /// the selection has moved on.
     pub preview_pane: Option<String>,
-    /// Unsent quick-send text, per shell (keyed by pane id, like
-    /// `captures` and `statuses`). Closing the editor parks the buffer
-    /// here so the next `s` on that shell resumes where it left off;
-    /// delivering the message drops it.
-    pub drafts: HashMap<String, TextBuf>,
     pub statuses: HashMap<String, Status>,
     /// How spawn commands are instrumented, when it is enabled
     /// (`[defaults] agent_hooks`). `None` disables injection entirely.
@@ -881,7 +816,6 @@ impl App {
             preview_scroll: 0,
             preview_buf: None,
             preview_pane: None,
-            drafts: HashMap::new(),
             statuses: HashMap::new(),
             instrumentation: None,
             pattern_cache: HashMap::new(),
@@ -946,9 +880,6 @@ impl App {
         }
         self.build_tree_flags();
         self.clamp_sel();
-        // Before `save_state`: that call writes the drafts file too, and
-        // an empty in-memory map would erase what this run should resume.
-        self.load_drafts();
         self.load_todo();
         self.save_state()?;
         Ok(())
@@ -1299,10 +1230,6 @@ impl App {
 
     fn save_state(&mut self) -> Result<()> {
         self.state.save()?;
-        // The tree just changed, and a draft outlives its shell nowhere:
-        // `save_drafts` writes by walking the tree, so rewriting here is
-        // also what prunes a deleted shell's parked prompt.
-        self.save_drafts();
         Ok(())
     }
 
@@ -1599,7 +1526,7 @@ impl App {
     /// The shell a folded worktree row stands for. The nominal case is one
     /// worktree, one agent: a worktree with exactly one shell gets no child
     /// row at all — its own row *is* that shell (status, preview, attach,
-    /// quick-send). Worktrees with none or several shells keep their
+    /// predefined messages). Worktrees with none or several shells keep their
     /// subtree, so `a` on a folded worktree unfolds it by giving it a
     /// second shell.
     pub(crate) fn solo_shell(&self, ri: usize, wi: usize) -> Option<usize> {
@@ -1753,108 +1680,6 @@ impl App {
         }
     }
 
-    /// Open the quick-send editor on the selected shell, resuming that
-    /// shell's parked draft. Shells with no live pane get no draft: they
-    /// cannot receive a message, so there is nothing to resume.
-    fn open_quick_send(&mut self) {
-        let buf = self
-            .selected_shell_pane()
-            .and_then(|pid| self.drafts.get(&pid).cloned())
-            .unwrap_or_default();
-        self.mode = Mode::Textarea { buf };
-    }
-
-    /// Park an unsent buffer against its shell. An empty one is not a
-    /// draft — it is cleared so a stale entry never shadows a fresh start.
-    fn park_draft(&mut self, buf: TextBuf) {
-        let Some(pid) = self.selected_shell_pane() else {
-            return;
-        };
-        if buf.text().is_empty() {
-            self.drafts.remove(&pid);
-        } else {
-            self.drafts.insert(pid, buf);
-        }
-        self.save_drafts();
-    }
-
-    /// Write the parked drafts out. Called on every change rather than on
-    /// quit alone: the file is tiny, and a dashboard killed with its
-    /// terminal would otherwise take the last hour of drafts with it.
-    /// Failures are logged, never toasted — a draft that did not reach the
-    /// disk is still in memory, so there is nothing for the user to do.
-    fn save_drafts(&self) {
-        let mut entries = Vec::new();
-        for repo in &self.state.repositories {
-            for wt in &repo.worktrees {
-                for sh in &wt.shells {
-                    // Walking the tree (not the map) is the prune: a draft
-                    // whose shell or worktree is gone has no row to be
-                    // written under, so it dies with the shell.
-                    let Some(buf) = self.drafts.get(&sh.pane_id) else {
-                        continue;
-                    };
-                    entries.push(crate::drafts::Draft {
-                        repository: repo.name.clone(),
-                        branch: wt.branch.clone(),
-                        shell: sh.index,
-                        text: buf.text(),
-                        cursor_row: buf.cursor_row(),
-                        cursor_col: buf.cursor_col(),
-                    });
-                }
-            }
-        }
-        let drafts = crate::drafts::Drafts {
-            version: crate::drafts::DRAFTS_VERSION,
-            entries,
-        };
-        if let Err(e) = drafts.save() {
-            log::warn!("cannot save drafts: {e}");
-        }
-    }
-
-    /// Restore drafts parked by an earlier run, resolving each entry's
-    /// (repository, branch, shell index) triple to the pane id the shell
-    /// has *now*. Runs after `reconcile`, which is what puts the current
-    /// pane ids in state; an entry that resolves to nothing is dropped.
-    fn load_drafts(&mut self) {
-        let stored = crate::drafts::Drafts::load();
-        let mut restored = 0;
-        for d in stored.entries {
-            if d.text.len() > TEXTBUF_MAX_BYTES {
-                log::warn!(
-                    "draft for {}/{} exceeds the buffer cap — dropped",
-                    d.repository,
-                    d.branch
-                );
-                continue;
-            }
-            let Some(repo) = self
-                .state
-                .repositories
-                .iter()
-                .find(|r| r.name == d.repository)
-            else {
-                continue;
-            };
-            let Some(wt) = repo.worktrees.iter().find(|w| w.branch == d.branch) else {
-                continue;
-            };
-            let Some(sh) = wt.shells.iter().find(|s| s.index == d.shell) else {
-                continue;
-            };
-            self.drafts.insert(
-                sh.pane_id.clone(),
-                TextBuf::from_parked(&d.text, d.cursor_row, d.cursor_col),
-            );
-            restored += 1;
-        }
-        if restored > 0 {
-            log::info!("restored {restored} parked draft(s)");
-        }
-    }
-
     // ------------------------------------------------------------- todo
 
     /// Path of the repository the selected row belongs to — a worktree or
@@ -1956,7 +1781,7 @@ impl App {
 
     /// Wheel over the pad: walk the caret by whole lines and keep it on
     /// screen. The pad has no scroll of its own — the caret is what the
-    /// view follows, in the panel as in the textarea — so the wheel moves
+    /// view follows — so the wheel moves
     /// the caret rather than sliding text out from under it.
     fn todo_scroll_by(&mut self, lines: isize) {
         let visible = todo_visible_lines(self);
@@ -2008,17 +1833,6 @@ impl App {
             return None;
         }
         Some(TextBuf::from_parked(&text, 0, 0))
-    }
-
-    /// Leave the quick-send textarea without sending, parking whatever is
-    /// in it. Every exit that is not a delivered send goes through here —
-    /// a theme switch or a click outside must cost no typing.
-    fn close_textarea(&mut self) {
-        if let Mode::Textarea { buf } = &self.mode {
-            let parked = buf.clone();
-            self.mode = Mode::Normal;
-            self.park_draft(parked);
-        }
     }
 
     /// Pane id of the selected shell, if any.
@@ -2641,7 +2455,7 @@ impl App {
         }
     }
 
-    pub fn quick_send(&mut self, ri: usize, wi: usize, si: usize, text: &str) -> Result<()> {
+    pub fn send_text(&mut self, ri: usize, wi: usize, si: usize, text: &str) -> Result<()> {
         let tmux = self.require_tmux()?;
         let sh = self
             .state
@@ -2655,7 +2469,7 @@ impl App {
             return Ok(());
         }
         tmux.paste_keys(&sh.pane_id, text, true)?;
-        log::info!("quick-send to {}: {text}", sh.window_name);
+        log::info!("send to {}: {text}", sh.window_name);
         Ok(())
     }
 
@@ -3197,7 +3011,6 @@ impl App {
             })
             .unwrap_or_else(|| self.cfg.defaults.agent.clone());
         self.mode = Mode::Input {
-            kind: InputKind::NewWorktree,
             text: String::new(),
             agent: Some(AgentField {
                 text: agent,
@@ -3441,46 +3254,42 @@ impl App {
         // takes over the viewport); while the theme picker is open they
         // move the picker cursor; elsewhere they move the tree.
         //
-        // The quick-send textarea owns its own motions: while it is open,
-        // the page/Home/End keys edit the text, so the layer only keeps
-        // ctrl-c (quit) and ctrl-t (theme) global.
-        //
         // ctrl-t opens the live theme picker (a chord, so it dispatches
         // over every state — a theme switch is never behind a prompt).
-        // Both editors own their own motions: while one is open the
+        // The todo pad owns its own motions: while it is open the
         // page/Home/End keys move the caret through the text, so the
         // accessibility layer keeps only ctrl-c (quit) and ctrl-t (theme).
-        let in_textarea = matches!(self.mode, Mode::Textarea { .. } | Mode::Todo { .. });
+        let in_todo = matches!(self.mode, Mode::Todo { .. });
         let handled = match key.code {
-            KeyCode::PageUp if !in_textarea => {
+            KeyCode::PageUp if !in_todo => {
                 self.move_view(-1);
                 true
             }
-            KeyCode::PageDown if !in_textarea => {
+            KeyCode::PageDown if !in_todo => {
                 self.move_view(1);
                 true
             }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_textarea => {
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_todo => {
                 self.move_view(-1);
                 true
             }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_textarea => {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_todo => {
                 self.move_view(1);
                 true
             }
-            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_textarea => {
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_todo => {
                 self.move_view(2);
                 true
             }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_textarea => {
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_todo => {
                 self.move_view(-2);
                 true
             }
-            KeyCode::Home if !in_textarea => {
+            KeyCode::Home if !in_todo => {
                 self.move_view_first();
                 true
             }
-            KeyCode::End if !in_textarea => {
+            KeyCode::End if !in_todo => {
                 self.move_view_last();
                 true
             }
@@ -3489,10 +3298,8 @@ impl App {
                 true
             }
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Park an open draft (or pad) first: the picker replaces
-                // the textarea and covers the panel, and a theme switch
-                // must not eat the text.
-                self.close_textarea();
+                // Park an open pad first: the picker covers the panel, and
+                // a theme switch must not eat the text.
                 self.close_todo();
                 self.open_theme_picker();
                 true
@@ -3511,12 +3318,8 @@ impl App {
                 _ => {}
             }
         }
-        // The textarea's page size = its visible content rows; its
-        // soft-wrap width decides how many visual rows those hold.
-        let visible_lines = textarea_visible_lines(&self.cfg.icons, self.viewport);
-        let wrap_width = textarea_wrap_width(self.viewport.0);
-        // The pad's page size and soft-wrap width are the tree panel's, not
-        // the popup's — resolved here, before `mode` is borrowed.
+        // The pad's page size and soft-wrap width are the tree panel's —
+        // resolved here, before `mode` is borrowed.
         let todo_lines = todo_visible_lines(self);
         let todo_wrap = todo_wrap_width(self);
         // The add-shell picker's row count, resolved before the borrow of
@@ -3526,14 +3329,13 @@ impl App {
             _ => 0,
         };
         match &mut self.mode {
-            Mode::Input { kind, text, agent } => match key.code {
+            Mode::Input { text, agent } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
                     let text = std::mem::take(text);
                     let agent = agent.as_ref().map(|a| a.text.clone()).unwrap_or_default();
-                    let kind = *kind;
                     self.mode = Mode::Normal;
-                    self.submit_input(kind, text, &agent);
+                    self.submit_new_worktree(&text, &agent);
                 }
                 // Tab moves between the two fields; with only one there is
                 // nowhere to go and the key does nothing.
@@ -3574,85 +3376,6 @@ impl App {
                 },
                 _ => {}
             },
-            Mode::Textarea { buf } => {
-                // Send: ctrl-s, or Alt+Enter where the terminal delivers
-                // it. A plain Enter inserts a newline; Esc cancels. The
-                // textarea owns all editing keys.
-                //
-                // ctrl-s is the reliable half of that pair: tmux with
-                // `extended-keys off` (the default) cannot encode
-                // Ctrl+Enter at all — it reaches us as a bare Enter — and
-                // Alt+Enter is commonly swallowed by the outer terminal
-                // emulator. A plain control byte always arrives.
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                let send_chord = (key.code == KeyCode::Enter
-                    && (key.modifiers.contains(KeyModifiers::ALT) || ctrl))
-                    || (key.code == KeyCode::Char('s') && ctrl);
-                if send_chord {
-                    let parked = buf.clone();
-                    let text = buf.text();
-                    self.mode = Mode::Normal;
-                    // Park first, drop only on delivery: `submit_input`
-                    // toasts and swallows the error, so a send that never
-                    // reached the pane must not take the text with it.
-                    self.park_draft(parked);
-                    if self.submit_input(InputKind::QuickSend, text, "")
-                        && let Some(pid) = self.selected_shell_pane()
-                    {
-                        self.drafts.remove(&pid);
-                        self.save_drafts();
-                    }
-                } else if key.code == KeyCode::Esc {
-                    let parked = buf.clone();
-                    self.mode = Mode::Normal;
-                    self.park_draft(parked);
-                } else {
-                    match key.code {
-                        KeyCode::Enter => buf.newline(),
-                        KeyCode::Tab => buf.insert_tab(),
-                        KeyCode::Backspace => buf.backspace(),
-                        KeyCode::Delete => buf.delete(),
-                        KeyCode::Left => buf.move_left(),
-                        KeyCode::Right => buf.move_right(),
-                        KeyCode::Up => buf.move_up(),
-                        KeyCode::Down => buf.move_down(),
-                        KeyCode::Home => buf.move_home(),
-                        KeyCode::End => buf.move_end(),
-                        KeyCode::PageUp => {
-                            buf.move_page(-1, buf.page(visible_lines));
-                        }
-                        KeyCode::PageDown => {
-                            buf.move_page(1, buf.page(visible_lines));
-                        }
-                        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            // The textarea owns ctrl-u/d/f/b motions too
-                            // (the accessibility layer yielded them):
-                            // ctrl-u/d half a page, ctrl-f/b a full page.
-                            match c {
-                                'u' => {
-                                    buf.move_page(-1, buf.page(visible_lines));
-                                }
-                                'd' => {
-                                    buf.move_page(1, buf.page(visible_lines));
-                                }
-                                'f' => {
-                                    buf.move_page(1, visible_lines.saturating_sub(1));
-                                }
-                                'b' => {
-                                    buf.move_page(-1, visible_lines.saturating_sub(1));
-                                }
-                                _ => {}
-                            }
-                        }
-                        KeyCode::Char(c) => buf.insert_char(c),
-                        _ => {}
-                    }
-                    // Scrolling is decided here, where the popup's real
-                    // content height and wrap width are known — never
-                    // inside TextBuf.
-                    buf.ensure_visible(visible_lines, wrap_width);
-                }
-            }
             Mode::Todo { buf, pad } => {
                 // The panel *is* the editor, so every printable key is
                 // text and there is no navigation layer underneath: `Esc`
@@ -3666,8 +3389,6 @@ impl App {
                     self.park_todo(pad, parked);
                     self.notify("todo saved");
                 } else {
-                    // Same editing keys as the quick-send textarea — one
-                    // editor's habits are every editor's here.
                     let edited = match key.code {
                         KeyCode::Enter => {
                             buf.newline();
@@ -3883,13 +3604,6 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.expand_or_attach(),
             KeyCode::Char('n') => self.open_new_worktree(),
             KeyCode::Char('a') => self.open_add_shell(),
-            KeyCode::Char('s') => {
-                if self.selected_shell().is_some() {
-                    self.open_quick_send();
-                } else {
-                    self.notify("select a shell to quick-send");
-                }
-            }
             KeyCode::Char('p') => self.open_messages(),
             KeyCode::Char('t') => self.open_repo_todo(),
             KeyCode::Char('T') => self.open_todo(crate::todo::Pad::Global),
@@ -3963,9 +3677,8 @@ impl App {
             .replace("<repository>", &repo.name)
     }
 
-    /// Send the configured message at `index` to the selected shell — the
-    /// same paste path as the quick-send textarea, so a preset and a typed
-    /// prompt are indistinguishable to the agent.
+    /// Send the configured message at `index` to the selected shell, pasted
+    /// so the agent cannot tell it from typed input.
     fn send_predefined(&mut self, index: usize) {
         let Some(text) = self
             .cfg
@@ -3979,7 +3692,7 @@ impl App {
             self.notify("select a shell to send a predefined message");
             return;
         };
-        if let Err(e) = self.quick_send(ri, wi, si, &text) {
+        if let Err(e) = self.send_text(ri, wi, si, &text) {
             self.fail(&e);
         }
     }
@@ -4411,9 +4124,6 @@ impl App {
             if !inside {
                 if matches!(self.mode, Mode::Diagnostics) {
                     self.close_diagnostics();
-                } else if matches!(self.mode, Mode::Textarea { .. }) {
-                    // click outside = Esc, and Esc keeps the draft
-                    self.close_textarea();
                 } else {
                     self.mode = Mode::Normal;
                 }
@@ -4467,11 +4177,6 @@ impl App {
             BarAction::PreviewLive => self.preview_live(),
             BarAction::NewWorktree => self.open_new_worktree(),
             BarAction::AddShell => self.open_add_shell(),
-            BarAction::QuickSend => {
-                if self.selected_shell().is_some() {
-                    self.open_quick_send();
-                }
-            }
             BarAction::PredefinedSend => self.open_messages(),
             BarAction::DeleteWorktree => self.confirm_delete_worktree(),
             BarAction::DeleteShell => self.confirm_delete_shell(),
@@ -4640,26 +4345,14 @@ impl App {
         log::error!("action failed: {e}");
     }
 
-    /// Run a submitted input. Returns whether it succeeded — the quick-send
-    /// path needs to know, to tell a delivered message from a draft it must
-    /// keep. Failures are toasted here either way.
-    fn submit_input(&mut self, kind: InputKind, text: String, agent: &str) -> bool {
-        let res = match kind {
-            InputKind::NewWorktree => match self.sel {
-                Sel::Repository(ri) => self.create_worktree(ri, &text, agent),
-                Sel::Worktree(ri, _) => self.create_worktree(ri, &text, agent),
-                _ => Err(Error::State("select a repository first".into())),
-            },
-            InputKind::QuickSend => match self.selected_shell() {
-                Some((ri, wi, si)) => self.quick_send(ri, wi, si, &text),
-                None => Err(Error::State("select a shell first".into())),
-            },
+    fn submit_new_worktree(&mut self, text: &str, agent: &str) {
+        let res = match self.sel {
+            Sel::Repository(ri) | Sel::Worktree(ri, _) => self.create_worktree(ri, text, agent),
+            _ => Err(Error::State("select a repository first".into())),
         };
         if let Err(e) = res {
             self.fail(&e);
-            return false;
         }
-        true
     }
 
     fn run_confirm(&mut self, action: ConfirmAction, force: bool) {
@@ -5619,13 +5312,7 @@ mod tests {
             app.sel = Sel::Repository(0);
             app.open_new_worktree();
 
-            assert!(matches!(
-                app.mode,
-                Mode::Input {
-                    kind: InputKind::NewWorktree,
-                    ..
-                }
-            ));
+            assert!(matches!(app.mode, Mode::Input { .. }));
             let hint = app.new_worktree_base().expect("base hint");
             assert_eq!(hint.branch, "some-other-branch");
             assert!(!hint.missing);
@@ -6054,8 +5741,7 @@ mod tests {
     }
 
     /// A theme switch is a chord that works over every state, and it
-    /// replaces the panel — so it parks the pad first, exactly as it parks
-    /// an open quick-send draft.
+    /// replaces the panel — so it parks the pad first.
     #[test]
     fn a_theme_switch_parks_the_open_pad() {
         crate::util::testutil::with_fresh_xdg(|| {
@@ -6141,55 +5827,7 @@ mod tests {
         });
     }
 
-    /// A half-written prompt is not lost by leaving the editor: each
-    /// shell keeps its own draft, restored (cursor included) the next time
-    /// quick-send opens on it.
-    #[test]
-    fn quick_send_drafts_are_kept_per_shell() {
-        // Parking a draft persists it under XDG_STATE_HOME — keep the
-        // test off the developer's real drafts.json.
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-            app.state.repositories[0].worktrees[0].shells.push(Shell {
-                command: None,
-                index: 1,
-                window_name: "lw:wt/1".into(),
-                window_id: "@2".into(),
-                pane_id: "%2".into(),
-            });
-            app.build_tree_flags();
-
-            let typed = |app: &mut App, text: &str| {
-                app.on_key(key(KeyCode::Char('s'), false));
-                for c in text.chars() {
-                    app.on_key(key(KeyCode::Char(c), false));
-                }
-                app.on_key(key(KeyCode::Esc, false));
-            };
-
-            app.sel = Sel::Shell(0, 0, 0);
-            typed(&mut app, "hello");
-            app.sel = Sel::Shell(0, 0, 1);
-            app.on_key(key(KeyCode::Char('s'), false));
-            let Mode::Textarea { buf } = &app.mode else {
-                panic!("quick-send must open");
-            };
-            assert_eq!(buf.text(), "", "another shell starts from a blank draft");
-            app.on_key(key(KeyCode::Esc, false));
-            typed(&mut app, "world");
-
-            app.sel = Sel::Shell(0, 0, 0);
-            app.on_key(key(KeyCode::Char('s'), false));
-            let Mode::Textarea { buf } = &app.mode else {
-                panic!("quick-send must open");
-            };
-            assert_eq!(buf.text(), "hello", "the first shell's draft came back");
-            assert_eq!(buf.cursor_col(), 5, "and the cursor sits where it was left");
-        });
-    }
-
-    /// A hand-edited or truncated drafts file must not place the cursor
+    /// A pad edited outside the dashboard must not place the cursor
     /// past the line, or inside a multi-byte character — the next edit
     /// indexes with `col` and would panic on a split char.
     #[test]
@@ -6205,202 +5843,12 @@ mod tests {
         assert_eq!(buf.text(), "a\nbb", "the newlines round-trip");
     }
 
-    /// A parked draft outlives the process: quitting and starting again
-    /// brings it back. The on-disk key is the (repository, branch, shell
-    /// index) triple, NOT the pane id — tmux hands out new pane ids on the
-    /// next run, so a draft keyed by `%1` would never be found again.
-    #[test]
-    fn drafts_survive_a_restart_under_a_new_pane_id() {
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-            app.on_key(key(KeyCode::Char('s'), false));
-            for c in "resume me".chars() {
-                app.on_key(key(KeyCode::Char(c), false));
-            }
-            app.on_key(key(KeyCode::Esc, false));
-
-            // Next run: same shell, rediscovered by window name, new pane id.
-            let mut next = app_with_shell();
-            next.viewport = (120, 40);
-            next.state.repositories[0].worktrees[0].shells[0].pane_id = "%7".into();
-            next.load_drafts();
-
-            next.on_key(key(KeyCode::Char('s'), false));
-            let Mode::Textarea { buf } = &next.mode else {
-                panic!("quick-send must open");
-            };
-            assert_eq!(buf.text(), "resume me", "the draft came back from disk");
-            assert_eq!(buf.cursor_col(), 9, "cursor included");
-        });
-    }
-
-    /// A draft lives exactly as long as its shell: once the shell is gone
-    /// the entry resolves to nothing and is not restored — and the rewrite
-    /// drops it from the file too.
-    #[test]
-    fn a_draft_dies_with_its_shell() {
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-            app.on_key(key(KeyCode::Char('s'), false));
-            app.on_key(key(KeyCode::Char('x'), false));
-            app.on_key(key(KeyCode::Esc, false));
-            assert!(
-                crate::util::drafts_path().exists(),
-                "the draft reached the disk"
-            );
-
-            let mut next = app_with_shell();
-            next.state.repositories[0].worktrees[0].shells.clear();
-            next.build_tree_flags();
-            next.load_drafts();
-            assert!(next.drafts.is_empty(), "no shell to restore it onto");
-            next.save_drafts();
-            assert!(
-                !crate::util::drafts_path().exists(),
-                "and the stale entry is gone from the file"
-            );
-        });
-    }
-
-    /// A delivered message must not come back from the disk on the next
-    /// run — clearing the draft has to reach the file, not just the map.
-    #[test]
-    fn a_delivered_draft_is_cleared_on_disk_too() {
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-            app.on_key(key(KeyCode::Char('s'), false));
-            app.on_key(key(KeyCode::Char('x'), false));
-            app.on_key(key(KeyCode::Esc, false));
-            // The send fails (no tmux server), so the draft stays — that is
-            // the documented behaviour; force the delivered path instead.
-            app.drafts.clear();
-            app.save_drafts();
-
-            let mut next = app_with_shell();
-            next.load_drafts();
-            assert!(next.drafts.is_empty(), "nothing to resume after delivery");
-        });
-    }
-
-    /// ctrl-t is a chord: it opens the theme picker over an open
-    /// quick-send editor. Leaving that way must park the draft, not eat
-    /// it — the text comes back when quick-send reopens.
-    #[test]
-    fn the_theme_chord_keeps_an_open_draft() {
-        // Parking a draft persists it under XDG_STATE_HOME — keep the
-        // test off the developer's real drafts.json.
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-            app.on_key(key(KeyCode::Char('s'), false));
-            for c in "half written".chars() {
-                app.on_key(key(KeyCode::Char(c), false));
-            }
-            app.on_key(key(KeyCode::Char('t'), true));
-            assert!(matches!(app.mode, Mode::ThemePicker { .. }), "picker opens");
-            app.on_key(key(KeyCode::Esc, false));
-
-            app.on_key(key(KeyCode::Char('s'), false));
-            let Mode::Textarea { buf } = &app.mode else {
-                panic!("quick-send must open");
-            };
-            assert_eq!(buf.text(), "half written", "the draft survived the chord");
-        });
-    }
-
-    /// A click outside the editor dismisses it like Esc — and, like Esc,
-    /// it keeps the draft.
-    #[test]
-    fn a_click_outside_keeps_an_open_draft() {
-        // Parking a draft persists it under XDG_STATE_HOME — keep the
-        // test off the developer's real drafts.json.
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-            app.on_key(key(KeyCode::Char('s'), false));
-            for c in "half written".chars() {
-                app.on_key(key(KeyCode::Char(c), false));
-            }
-            app.on_mouse(click(0, 0));
-            assert!(matches!(app.mode, Mode::Normal), "the click dismissed it");
-
-            app.on_key(key(KeyCode::Char('s'), false));
-            let Mode::Textarea { buf } = &app.mode else {
-                panic!("quick-send must open");
-            };
-            assert_eq!(buf.text(), "half written", "the draft survived the click");
-        });
-    }
-
-    /// A send that failed (dead pane, no tmux) must not swallow the text —
-    /// the draft is what the user would have to retype.
-    #[test]
-    fn a_failed_send_keeps_the_draft() {
-        // Parking a draft persists it under XDG_STATE_HOME — keep the
-        // test off the developer's real drafts.json.
-        crate::util::testutil::with_fresh_xdg(|| {
-            // `tmux_nowhere()` has no server: `paste_keys` errors.
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-            app.on_key(key(KeyCode::Char('s'), false));
-            for c in "retry me".chars() {
-                app.on_key(key(KeyCode::Char(c), false));
-            }
-            app.on_key(key(KeyCode::Char('s'), true));
-            assert!(matches!(app.mode, Mode::Normal), "the editor closes");
-
-            app.on_key(key(KeyCode::Char('s'), false));
-            let Mode::Textarea { buf } = &app.mode else {
-                panic!("quick-send must open");
-            };
-            assert_eq!(buf.text(), "retry me", "a failed send keeps the text");
-        });
-    }
-
-    /// A delivered message is not a draft any more.
-    #[test]
-    fn a_delivered_draft_is_cleared() {
-        // Parking a draft persists it under XDG_STATE_HOME — keep the
-        // test off the developer's real drafts.json.
-        crate::util::testutil::with_fresh_xdg(|| {
-            with_tmux_server(|sock, _tmux| {
-                let tmux = tmux_inside(sock);
-                let mut app = app_with(tmux.clone());
-                seed_repository_with_shell(&tmux, &mut app);
-                app.build_tree_flags();
-                app.viewport = (120, 40);
-                app.sel = Sel::Worktree(0, 0);
-                app.clamp_sel();
-
-                app.on_key(key(KeyCode::Char('s'), false));
-                for c in "ship it".chars() {
-                    app.on_key(key(KeyCode::Char(c), false));
-                }
-                app.on_key(key(KeyCode::Char('s'), true));
-                let toast = app.toast().map(|t| t.text.clone()).unwrap_or_default();
-                assert!(
-                    !toast.contains("failed"),
-                    "the send must succeed: {toast:?}"
-                );
-
-                app.on_key(key(KeyCode::Char('s'), false));
-                let Mode::Textarea { buf } = &app.mode else {
-                    panic!("quick-send must open");
-                };
-                assert_eq!(buf.text(), "", "a sent message leaves no draft");
-            });
-        });
-    }
-
     /// Typing non-ASCII must not blow up the TUI. `col` is a BYTE offset
     /// (the popup slices `line[..col]` to place the cursor), so advancing
     /// it by one per char leaves it mid-character and the next edit hits a
     /// non-char-boundary panic.
     #[test]
-    fn the_quick_send_buffer_handles_non_ascii() {
+    fn the_text_buffer_handles_non_ascii() {
         let mut buf = TextBuf::new();
         for c in "please — do".chars() {
             buf.insert_char(c);
@@ -6413,10 +5861,10 @@ mod tests {
         assert_eq!(buf.cursor_col(), "please — d".len());
     }
 
-    /// Drafts are unbounded in practice but not in principle: the buffer
+    /// Buffers are unbounded in practice but not in principle: the buffer
     /// refuses to grow past the cap rather than eating memory.
     #[test]
-    fn the_quick_send_buffer_stops_at_the_cap() {
+    fn the_text_buffer_stops_at_the_cap() {
         let mut buf = TextBuf::new();
         for _ in 0..TEXTBUF_MAX_BYTES {
             buf.insert_char('x');
@@ -8034,34 +7482,6 @@ mod tests {
         });
     }
 
-    /// `s` on a folded worktree row opens the textarea and the send lands on
-    /// its shell — the row IS the agent.
-    #[test]
-    fn quick_send_works_from_a_folded_worktree_row() {
-        // Parking a draft persists it under XDG_STATE_HOME — keep the
-        // test off the developer's real drafts.json.
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-            assert_eq!(app.sel, Sel::Worktree(0, 0));
-            app.on_key(key(KeyCode::Char('s'), false));
-            assert!(
-                matches!(app.mode, Mode::Textarea { .. }),
-                "s on a folded worktree must open the textarea"
-            );
-            // no tmux here: the send fails at the tmux call, not at the
-            // selection — "select a shell first" would mean the row did not
-            // resolve.
-            app.mode = Mode::Normal;
-            app.submit_input(InputKind::QuickSend, "hi".into(), "");
-            let msg = app.toast().map(|t| t.text.clone()).unwrap_or_default();
-            assert!(
-                !msg.contains("select a shell"),
-                "the folded row must resolve to its shell, got: {msg:?}"
-            );
-        });
-    }
-
     /// PageDown / PageUp and ctrl-d / ctrl-u move half a page; ctrl-f / b
     /// a full page; Home / End and g / G jump to first / last; arrows are
     /// the same code path as j/k.
@@ -8205,7 +7625,6 @@ mod tests {
         let mut app = app_with_repositories(20);
         app.viewport = (120, 40);
         app.mode = Mode::Input {
-            kind: InputKind::NewWorktree,
             text: "abc".into(),
             agent: None,
         };
@@ -8227,24 +7646,21 @@ mod tests {
     /// `g`/`G` are motions in Normal mode but printable keys in a prompt.
     #[test]
     fn g_and_g_respect_text_input() {
-        // Parking a draft persists it under XDG_STATE_HOME — keep the
-        // test off the developer's real drafts.json.
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_repositories(5);
-            app.on_key(key(KeyCode::Char('G'), false));
-            assert_eq!(app.sel, Sel::Repository(4));
-            app.mode = Mode::Textarea {
-                buf: TextBuf::new(),
-            };
-            app.on_key(key(KeyCode::Char('g'), false));
-            let Mode::Textarea { buf } = &app.mode else {
-                panic!()
-            };
-            assert_eq!(buf.text(), "g");
-        });
+        let mut app = app_with_repositories(5);
+        app.on_key(key(KeyCode::Char('G'), false));
+        assert_eq!(app.sel, Sel::Repository(4));
+        app.mode = Mode::Input {
+            text: String::new(),
+            agent: None,
+        };
+        app.on_key(key(KeyCode::Char('g'), false));
+        let Mode::Input { text, .. } = &app.mode else {
+            panic!()
+        };
+        assert_eq!(text, "g");
     }
 
-    // ---- M9.2 — multiline textarea (quick-send rework) ----
+    // ---- M9.2 — multiline text buffer ----
 
     #[test]
     fn textbuf_types_and_edits_at_cursor() {
@@ -8424,148 +7840,6 @@ mod tests {
         buf.move_home();
         buf.ensure_visible(visible, 10);
         assert_eq!(buf.scroll(), 0, "Home scrolls back to the first row");
-    }
-
-    /// The textarea: plain Enter inserts a newline, Alt+Enter sends,
-    /// Esc cancels, Tab inserts a tab, arrows navigate.
-    #[test]
-    fn textarea_enter_newline_send_chord_cancel() {
-        // Parking a draft persists it under XDG_STATE_HOME — keep the
-        // test off the developer's real drafts.json.
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-
-            // `s` opens the textarea
-            app.on_key(key(KeyCode::Char('s'), false));
-            assert!(
-                matches!(app.mode, Mode::Textarea { .. }),
-                "s opens textarea"
-            );
-
-            // type two lines
-            for c in "line one".chars() {
-                app.on_key(key(KeyCode::Char(c), false));
-            }
-            app.on_key(key(KeyCode::Enter, false));
-            for c in "line two".chars() {
-                app.on_key(key(KeyCode::Char(c), false));
-            }
-            let Mode::Textarea { buf } = &app.mode else {
-                panic!("still in textarea");
-            };
-            assert_eq!(buf.text(), "line one\nline two", "Enter inserts newline");
-
-            // Alt+Enter sends: back to Normal, message + tree unchanged
-            app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
-            assert!(matches!(app.mode, Mode::Normal), "Alt+Enter sends");
-        });
-    }
-
-    #[test]
-    fn textarea_ctrl_enter_sends_and_esc_cancels() {
-        // Parking a draft persists it under XDG_STATE_HOME — keep the
-        // test off the developer's real drafts.json.
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-
-            app.on_key(key(KeyCode::Char('s'), false));
-            app.on_key(key(KeyCode::Char('x'), false));
-            // Ctrl+Enter sends too
-            app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
-            assert!(matches!(app.mode, Mode::Normal), "Ctrl+Enter sends");
-
-            // Esc cancels without sending
-            app.on_key(key(KeyCode::Char('s'), false));
-            app.on_key(key(KeyCode::Char('y'), false));
-            app.on_key(key(KeyCode::Esc, false));
-            assert!(matches!(app.mode, Mode::Normal), "Esc cancels");
-        });
-    }
-
-    /// Regression: the visible window is the popup's content height, not
-    /// one line — typing Enter must not scroll every earlier line out of
-    /// the textarea (M9.2 hardcoded `ensure_visible(1)`).
-    #[test]
-    fn textarea_enter_keeps_earlier_lines_visible() {
-        // Parking a draft persists it under XDG_STATE_HOME — keep the
-        // test off the developer's real drafts.json.
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-            let visible = textarea_visible_lines(&app.cfg.icons, (120, 40));
-            assert!(visible >= 3, "the test needs a roomy window, got {visible}");
-
-            app.on_key(key(KeyCode::Char('s'), false));
-            for _ in 0..3 {
-                app.on_key(key(KeyCode::Char('x'), false));
-                app.on_key(key(KeyCode::Enter, false));
-            }
-            let Mode::Textarea { buf } = &app.mode else {
-                panic!("still in textarea");
-            };
-            assert_eq!(buf.cursor_row(), 3);
-            assert_eq!(
-                buf.scroll(),
-                0,
-                "4 lines fit in {visible} rows — nothing scrolls away"
-            );
-
-            // one line past the window scrolls by exactly one
-            for _ in 0..(visible - 3) {
-                app.on_key(key(KeyCode::Enter, false));
-            }
-            let Mode::Textarea { buf } = &app.mode else {
-                panic!("still in textarea");
-            };
-            assert_eq!(buf.cursor_row(), visible);
-            assert_eq!(buf.scroll(), 1);
-        });
-    }
-
-    /// ctrl-s is the send key that survives a legacy terminal: tmux with
-    /// `extended-keys off` cannot deliver Ctrl+Enter, and Alt+Enter is
-    /// often eaten by the outer terminal emulator.
-    #[test]
-    fn textarea_ctrl_s_sends() {
-        // Parking a draft persists it under XDG_STATE_HOME — keep the
-        // test off the developer's real drafts.json.
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-
-            app.on_key(key(KeyCode::Char('s'), false));
-            app.on_key(key(KeyCode::Char('x'), false));
-            app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
-            assert!(matches!(app.mode, Mode::Normal), "ctrl-s sends");
-        });
-    }
-
-    #[test]
-    fn textarea_tab_and_navigation_do_not_leak_to_tree() {
-        // Parking a draft persists it under XDG_STATE_HOME — keep the
-        // test off the developer's real drafts.json.
-        crate::util::testutil::with_fresh_xdg(|| {
-            let mut app = app_with_shell();
-            app.viewport = (120, 40);
-
-            app.on_key(key(KeyCode::Char('s'), false));
-            let before = app.sel;
-            app.on_key(key(KeyCode::Tab, false));
-            app.on_key(key(KeyCode::Down, false));
-            app.on_key(key(KeyCode::PageDown, false));
-            app.on_key(key(KeyCode::Home, false));
-            let Mode::Textarea { buf } = &app.mode else {
-                panic!("still in textarea");
-            };
-            assert!(buf.text().starts_with('\t'), "Tab inserts a tab");
-            assert_eq!(buf.cursor_row(), 0, "Home did not move the tree");
-            assert_eq!(
-                app.sel, before,
-                "tree selection untouched while textarea open"
-            );
-        });
     }
 
     // ---- M8.4a — mouse ----
@@ -8785,13 +8059,7 @@ mod tests {
             .expect("bar must offer 'n worktree' for a repository");
         app.on_mouse(click((x0 + x1) / 2, y));
         assert!(
-            matches!(
-                app.mode,
-                Mode::Input {
-                    kind: InputKind::NewWorktree,
-                    ..
-                }
-            ),
+            matches!(app.mode, Mode::Input { .. }),
             "clicking 'n worktree' must open the input"
         );
     }
