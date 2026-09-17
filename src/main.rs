@@ -12,7 +12,6 @@ mod app;
 mod config;
 mod discovery;
 mod dock;
-mod drafts;
 mod error;
 mod git;
 mod hooks;

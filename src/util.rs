@@ -58,12 +58,6 @@ pub fn state_path() -> PathBuf {
     state_dir().join("state.json")
 }
 
-/// Parked quick-send drafts: `$XDG_STATE_HOME/lazywingman/drafts.json`.
-/// Beside the state file rather than in it — see [`crate::drafts`].
-pub fn drafts_path() -> PathBuf {
-    state_dir().join("drafts.json")
-}
-
 /// A todo pad: `$XDG_STATE_HOME/lazywingman/todo.md` for the global one,
 /// `…/todos/<escaped repository path>.md` per repository — see [`crate::todo`].
 pub fn todo_path(pad: &crate::todo::Pad) -> PathBuf {

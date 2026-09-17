@@ -107,7 +107,7 @@ the commands you would otherwise type by hand — `make`, `mise run …`,
 `cat config.toml` — and the shell you type those in is your own. Nothing is
 sent to it; the window already *is* the shell.
 
-`s` and `p` stay unbound on a repository row. The predefined messages are
+`p` stays unbound on a repository row. The predefined messages are
 written as agent prompts, and a command you want a shell to run is a command
 you type in it.
 
@@ -125,7 +125,6 @@ you type in it.
 | Key | Meaning | Rule satisfied |
 |---|---|---|
 | `Enter` / `l` | dock the shell: its real tmux pane swaps in beside the tree and takes the cursor | domain convention (open the thing the row stands for) |
-| `s` | quick-send a prompt to the agent (multiline editor, Alt+Enter sends) | send action |
 | `d` | close this shell (kills its window; the worktree and its other shells stay) | vim `d` destructive, confirms; the object is the selected row |
 
 ## Text input (new worktree — two fields)
@@ -157,29 +156,6 @@ the repository runs" and the worktree records no agent of its own.
 The arrows are the picker the field deserves without being a picker: an
 overlay over an overlay to choose between two names would cost more than it
 saves, and typing `codex` is three keys either way.
-
-## Quick-send textarea (multiline prompt editor)
-
-Quick-send is a full editor, not a line input — it is the main way to talk
-to agents, so it behaves like an editor.
-
-|| Key | Meaning | Rule satisfied |
-|---|---|---|
-| any printable | insert at the cursor | printable keys belong to text input |
-| `Enter` | insert a newline | multiline input: Enter writes, it does not submit |
-| `Alt+Enter` / `Ctrl+Enter` | send to the agent (and submit) | the send chord — a plain Enter is needed for editing |
-| `Tab` | insert a tab | tab is content, not focus (only one panel) |
-| `Backspace` / `Delete` | delete before / under the cursor (joining lines at line ends) | editing |
-| `←` `→` `↑` `↓` | move the cursor (wrapping at line ends) | arrows = same code path |
-| `Home` / `End` | line start / line end | editing motions; the textarea owns them (they never move the tree) |
-| `PgUp` / `PgDn`, `ctrl-u` / `ctrl-d` | page the cursor half a page up/down | accessibility, owned by the textarea |
-| `ctrl-f` / `ctrl-b` | page the cursor a full page down/up | accessibility, owned by the textarea |
-| `Esc` | cancel (back to Normal) | leave innermost first |
-| `ctrl-c` | quit, even here | ctrl layer keeps only quit (and ctrl-t) over the textarea |
-
-Sending uses tmux's paste-buffer with bracketed paste, so multi-line prompts
-arrive as ONE paste (embedded newlines are content, not Enter presses) and
-the trailing Enter submits.
 
 ## Todo pads (opened with `t` / `T`)
 
@@ -365,11 +341,13 @@ An inert key is a decision, not an omission.
   classified automatically). When a filter lands it takes `/` per the rules.
 - `Tab` / `Shift-Tab` — no panel cycling: the two focusable panels (the tree
   and the todo pad below it) are each reached by name — `t`/`T` into the pad,
-  `Esc` back — and the detail/preview panes are display-only. In the
-  quick-send textarea and in the pad, `Tab` inserts a tab (see above); in
+  `Esc` back — and the detail/preview panes are display-only. In the pad,
+  `Tab` inserts a tab (see above); in
   the New Worktree prompt it moves between that dialog's two fields, which
   is the one place `Tab` means focus and the only place there is a second
   field to move to.
+- `s` — no prompt editor: typing into the docked agent pane is one `Enter`
+  away, in the agent's own editor.
 - `1` / `2` / `3` — no numbered panels. LazyGit numbers its panel stack
   because it has five of them; here the left column holds two and one of
   them is reached by what it is (`t` for todo), which is a name rather than
