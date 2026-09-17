@@ -214,21 +214,17 @@ the same commit as the change.
   of terminals draw two, swallowing a single separator and printing
   `⚠unmerged commits`. Two spaces cost one column where the glyph is
   narrow and are correct where it is wide.
-- **The New Worktree popup names the base branch it cuts from.** A worktree's
-  branch has always been cut from the repository's base branch
-  (`worktrees.base_branch`, or the repository's override), never from the
-  branch the repo happens to have checked out — but the popup asked for a name
-  and said nothing else, so the user had to know that. It now prints `branches
-  from: <base> (base branch)` under the name field. The branch is resolved
-  through the SAME `Git::resolve_base_branch` call `create_worktree` makes, so
-  the popup cannot promise a base the creation then ignores, and it is
-  resolved ONCE when the popup opens — a git call per keystroke, or per frame,
-  for a line that cannot change while the popup is up, would be the wrong
-  trade. The fallback is spelled out rather than hidden: when the configured
-  base is absent from the repo, creation falls back to the current branch, so
-  the popup names that branch and warns `base branch '<configured>' not found
-  — using current branch` instead of claiming a base branch that does not
-  exist.
+- **The base branch is the checkout's branch unless configured.**
+  `worktrees.base_branch` (or a repository override) defaults to empty, which
+  `Git::resolve_base_branch` reads as the main checkout's current branch. A
+  global default like `master` warned in every repository using `main`, for a
+  choice that was never wrong. A configured branch that does not exist is an
+  error: silently cutting from the checkout would ignore an explicit setting.
+- **The New Worktree popup shows the base branch as a field**, aligned with
+  `worktree name` and `agent`. It is resolved through the same
+  `Git::resolve_base_branch` call `create_worktree` makes, ONCE when the popup
+  opens, so it cannot promise a base the creation then ignores and costs no
+  git call per frame. A missing configured branch reads `<name> (not found)`.
 
 ## Shells and tmux sessions
 
@@ -1058,8 +1054,10 @@ duplication docking exists to end.
   `App::expand_message` substitutes `<base_branch>`, `<branch>`, `<worktree>`,
   `<repository>` and `<worktree_path>` from the selected shell's repository
   and worktree, and both `draw_messages` and `send_predefined` call it — which
-  is what makes the list honest. It reads state and config only (the
-  configured base branch, no git), so it is safe to call every frame. Unknown tokens pass through as
+  is what makes the list honest. It makes no git call, so it is safe to call
+  every frame: `<base_branch>` is the configured branch, else the checkout's
+  branch as last resolved by `poll_worktree_state` (`App::base_branch_of`),
+  and stays unexpanded until that first poll. Unknown tokens pass through as
   written, and so does everything when no shell is selected: there is no
   context to resolve against, and blanks would be worse than the template.
 - **The merge preset names the LOCAL base**: `merge to LOCAL <base_branch>`.

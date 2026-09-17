@@ -205,20 +205,21 @@ impl Git {
         .unwrap_or(false)
     }
 
-    /// The branch new worktree branches are cut from: the configured base if
-    /// it exists in this repo, otherwise the repo's current branch.
+    /// The branch new worktree branches are cut from: the repo's current
+    /// branch, unless one is configured. A configured branch that does not
+    /// exist is an error, not a silent fallback.
     pub fn resolve_base_branch(&self, dir: &Path, configured: &str) -> Result<String> {
-        if !configured.is_empty() && self.branch_exists(dir, configured) {
+        let configured = configured.trim();
+        if configured.is_empty() {
+            return self.current_branch(dir);
+        }
+        if self.branch_exists(dir, configured) {
             return Ok(configured.to_string());
         }
-        if !configured.is_empty() {
-            log::warn!(
-                "base branch '{}' not found in {}, falling back to current branch",
-                configured,
-                dir.display()
-            );
-        }
-        self.current_branch(dir)
+        Err(Error::Git(format!(
+            "base branch '{configured}' not found in {}",
+            dir.display()
+        )))
     }
 
     /// List the repo's worktrees (main + linked), parsed from porcelain.
@@ -653,8 +654,10 @@ mod tests {
         assert!(git.branch_exists(&repo, "main"));
         assert!(!git.branch_exists(&repo, "nope"));
         assert_eq!(git.resolve_base_branch(&repo, "main").unwrap(), "main");
-        // configured branch missing → falls back to current branch
-        assert_eq!(git.resolve_base_branch(&repo, "master").unwrap(), "main");
+        assert_eq!(git.resolve_base_branch(&repo, "").unwrap(), "main");
+        run(&repo, &["checkout", "-q", "-b", "develop"]);
+        assert_eq!(git.resolve_base_branch(&repo, "").unwrap(), "develop");
+        assert!(git.resolve_base_branch(&repo, "master").is_err());
     }
 
     #[test]

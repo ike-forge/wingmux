@@ -87,7 +87,7 @@ the help overlay (`?`).
 | `ctrl-f` / `ctrl-b` | full page up / down |
 | `h` | collapse / jump to parent |
 | `l` / `Enter` | expand, or **enter** the selected shell's docked pane (a one-shell worktree goes straight in — see the folded row below). Simply moving onto a shell already docks it; `Enter` is what puts the cursor there. On a **repository** row it only expands or collapses |
-| `n` | new worktree (git worktree + branch + agent shell) — a prompt asks for the name and names the branch it will be cut from: the repository's **base branch** (`worktrees.base_branch`, per-repository override), never the branch the repo has checked out. A second field says which **agent** the worktree's shells run, prefilled with the repository's own (`[defaults].agent`, unless the repository overrides it): `Tab` moves onto it, `↑`/`↓` walk the configured `[[agents]]` presets, and anything else typed there is taken as the command itself. So a name and `Enter` is still the whole flow, and `codex` beside a `claude` repository costs one `Tab` |
+| `n` | new worktree (git worktree + branch + agent shell) — a prompt asks for the name and shows the **base branch** it will be cut from: the branch the repository's main checkout is on, unless `worktrees.base_branch` (or a per-repository override) names one. A second field says which **agent** the worktree's shells run, prefilled with the repository's own (`[defaults].agent`, unless the repository overrides it): `Tab` moves onto it, `↑`/`↓` walk the configured `[[agents]]` presets, and anything else typed there is taken as the command itself. So a name and `Enter` is still the whole flow, and `codex` beside a `claude` repository costs one `Tab` |
 | `a` | add a shell to the selected worktree — a picker asks what it runs: the worktree's own agent command first (the one it was created with, else the repository's; `Enter` takes it), then the other configured `[[agents]]` presets, then a **plain shell** that just drops you at your own `$SHELL` prompt with nothing sent to it (`j`/`k` moves, `1`-`9` pick directly, `Esc` closes). Anything else you want to run, you type in that plain shell. On a **repository** row, `a` starts (or enters) the repository's own inline shell — no picker |
 | `s` | **quick-send** a line to the selected shell (or to a one-shell worktree's row). Any way out of the editor that is not a send (`Esc`, a click outside the popup, the `ctrl-t` theme chord) keeps the unsent text as that shell's draft; `s` on it again picks up where you left off, cursor included. A draft is dropped once the message is actually delivered. It otherwise survives quitting — parked in `$XDG_STATE_HOME/lazywingman/drafts.json` and kept until its shell is gone |
 | `p` | **predefined messages** for the selected shell (or a one-shell worktree's row) — a modal of configured presets, each listed in full with its `<base_branch>`-style tokens already resolved (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
@@ -138,7 +138,7 @@ colors = "full"              # pane colours as-is; "foreground" drops background
 
 [worktrees]
 root = ""                    # default: <parent-of-repo>/.lazywingman-worktrees
-base_branch = "master"       # falls back to the repo's current branch
+base_branch = ""             # empty = the repo's current branch; a named one must exist
 delete_branch = true         # also delete the worktree branch on delete
 
 [discovery]
@@ -441,10 +441,11 @@ without hunting for the status word at the end of the row.
   chord in your tmux. The back-key it used to bind is retired: with the agent
   beside the tree there is no window to travel back from.
 - **New worktree**: the branch and worktree are cut from the repository's
-  **base branch** (`worktrees.base_branch`, or the repository's override), not
-  from whatever the repo has checked out. The New Worktree popup names that
-  branch under the name field; when the configured base branch does not
-  exist in the repo it warns that creation falls back to the current branch.
+  **base branch**: the branch its main checkout is on, unless
+  `worktrees.base_branch` (or the repository's override) names one. The New
+  Worktree popup shows it as a `base branch` field under the agent; a
+  configured branch missing from the repo reads `(not found)` and creation
+  refuses.
 - **Quick-send** = an in-TUI multiline editor (Enter = newline, Tab =
   tab, arrows/Home/End move the cursor, **ctrl-s sends** — Alt+Enter too
   where the terminal delivers it)

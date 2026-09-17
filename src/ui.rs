@@ -968,8 +968,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 spans.push(Span::styled(" (missing)", fg(theme.dim)));
             }
             // A repository with an inline shell says so, and names the
-            // checkout it runs in — the base branch, which is the one thing
-            // that distinguishes it from the worktrees hanging below it.
+            // base branch — what distinguishes it from the worktrees below.
             // A dead shell drops the marker altogether: the row is back to
             // what it was before the shell existed, and there is nothing
             // left to dim.
@@ -979,7 +978,11 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 .filter(|sh| shell_status(app, sh) != Status::Dead)
             {
                 spans.push(Span::styled(
-                    format!("  {}{}", ic.shell, app.cfg.base_branch_at(&repo.path)),
+                    format!(
+                        "  {}{}",
+                        ic.shell,
+                        app.base_branch_of(&repo.path).unwrap_or_default()
+                    ),
                     fg(theme.tree_shell),
                 ));
                 if shell_leased(app, sh).is_some() {
@@ -2307,11 +2310,18 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
     // Both fields share one indent, so the two values line up in a column
     // and the caret lands in the same place whichever field has it.
     let has_agent = matches!(&app.mode, Mode::Input { agent: Some(_), .. });
-    let inline_indent = [label, if has_agent { "agent" } else { label }]
-        .iter()
-        .map(|l| UnicodeWidthStr::width(*l) + 2)
-        .max()
-        .unwrap_or(0);
+    let base = (*kind == InputKind::NewWorktree)
+        .then(|| app.new_worktree_base())
+        .flatten();
+    let inline_indent = [
+        label,
+        if has_agent { "agent" } else { label },
+        if base.is_some() { "base branch" } else { label },
+    ]
+    .iter()
+    .map(|l| UnicodeWidthStr::width(*l) + 2)
+    .max()
+    .unwrap_or(0);
     // Under this the inline field is too cramped to read what is typed
     // into it, so the stacked layout wins.
     const MIN_INLINE_FIELD: usize = 12;
@@ -2365,26 +2375,13 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
         }
         lines.extend(field("agent", agent_shown, a.focused));
     }
-    // new-worktree only: the worktree is cut from the repository's base
-    // branch, NOT from whatever the repo has checked out. Name the branch
-    // so nobody has to guess which one it is.
-    if *kind == InputKind::NewWorktree
-        && let Some(hint) = app.new_worktree_base()
-    {
-        for l in wrap(
-            &format!("branches from: {} (base branch)", hint.branch),
-            body_w,
-        ) {
-            lines.push(Line::from(Span::styled(l, fg(theme.dim))));
-        }
-        if let Some(configured) = &hint.missing {
-            for l in wrap(
-                &format!("base branch '{configured}' not found; using current branch"),
-                body_w,
-            ) {
-                lines.push(Line::from(Span::styled(l, fg(theme.status_waiting))));
-            }
-        }
+    if let Some(hint) = base {
+        let shown = if hint.missing {
+            format!("{} (not found)", hint.branch)
+        } else {
+            hint.branch.clone()
+        };
+        lines.extend(field("base branch", tail_to_width(&shown, field_w), false));
     }
     let ic = &app.cfg.icons;
     lines.push(Line::from(""));
@@ -2954,9 +2951,8 @@ mod tests {
         assert!(filled > 1, "the long line wrapped over {filled} rows");
     }
 
-    /// The New Worktree popup spells out where the branch comes from: the
-    /// repository's base branch, not the branch the repo has checked out. The
-    /// hint is the one place a user can see it before hitting Enter.
+    /// The New Worktree popup names the base branch as a field, like the
+    /// agent: the checkout by default, the configured branch when set.
     #[test]
     fn new_worktree_popup_states_the_base_branch() {
         crate::util::testutil::with_test_lock(|| {
@@ -2982,7 +2978,6 @@ mod tests {
             git(&["checkout", "-b", "checked-out"]);
 
             let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
-            app.cfg.worktrees.base_branch = "main".into();
             app.state.repositories.push(crate::state::Repository {
                 name: "repo".into(),
                 path: repo.clone(),
@@ -3000,30 +2995,27 @@ mod tests {
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             let text = buffer_text(&terminal);
             assert!(
-                text.contains("branches from: main (base branch)"),
-                "popup must name the base branch: {text:?}"
-            );
-            assert!(
-                !text.contains("checked-out"),
-                "the checked-out branch is not what a worktree branches from: {text:?}"
+                text.contains("base branch:   checked-out"),
+                "popup must name the checkout: {text:?}"
             );
 
-            // configured base missing from the repo: creation falls back to the
-            // checkout, and the popup warns instead of naming a phantom base.
-            app.cfg.repositories.push(crate::config::RepositoryConfig {
-                path: app.state.repositories[0]
-                    .path
-                    .to_string_lossy()
-                    .into_owned(),
-                base_branch: Some("master".into()),
-                ..Default::default()
-            });
+            app.cfg.worktrees.base_branch = "main".into();
             app.open_new_worktree();
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             let text = buffer_text(&terminal);
             assert!(
-                text.contains("base branch 'master' not found"),
-                "popup must flag the fallback: {text:?}"
+                text.contains("base branch:   main"),
+                "popup must name the configured base: {text:?}"
+            );
+            assert!(!text.contains("not found"), "{text:?}");
+
+            app.cfg.worktrees.base_branch = "master".into();
+            app.open_new_worktree();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let text = buffer_text(&terminal);
+            assert!(
+                text.contains("master (not found)"),
+                "popup must flag a missing configured base: {text:?}"
             );
         });
     }
