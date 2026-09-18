@@ -95,6 +95,24 @@ pub fn shell_name(shell: &str) -> String {
         .unwrap_or_else(|| shell.to_string())
 }
 
+/// The editor to hand a file to: `$VISUAL`, then `$EDITOR`.
+///
+/// `None` when neither is set. The pad's `ctrl-e` then says so rather than
+/// falling back to `vi`: an editor the user has not named is one they may
+/// not know how to leave, and it would open over their dashboard.
+pub fn editor() -> Option<String> {
+    ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|v| env::var(v).ok())
+        .find(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string())
+}
+
+/// Single-quote a path for the `sh -c` tmux wraps a one-string command in.
+pub fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
+}
+
 /// Lexically resolve `.` and `..` in a path without touching the filesystem.
 /// `/a/b/../c` → `/a/c`; relative `../wt` stays relative.
 pub fn normalize_path(path: &Path) -> PathBuf {
@@ -213,6 +231,45 @@ pub mod testutil {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `$VISUAL` wins over `$EDITOR`, and a variable set to nothing is not
+    /// set — a blank one would spawn a window running the empty command.
+    #[test]
+    fn the_editor_is_visual_then_editor_then_nothing() {
+        testutil::with_test_lock(|| {
+            let restore = [
+                ("VISUAL", env::var("VISUAL")),
+                ("EDITOR", env::var("EDITOR")),
+            ];
+            unsafe {
+                env::set_var("EDITOR", "vim");
+                env::set_var("VISUAL", "  ");
+            }
+            assert_eq!(editor().as_deref(), Some("vim"), "a blank VISUAL is unset");
+            unsafe { env::set_var("VISUAL", "hx") };
+            assert_eq!(editor().as_deref(), Some("hx"));
+            unsafe {
+                env::remove_var("VISUAL");
+                env::remove_var("EDITOR");
+            }
+            assert_eq!(editor(), None, "nothing is guessed");
+            for (k, v) in restore {
+                unsafe {
+                    match v {
+                        Ok(v) => env::set_var(k, v),
+                        Err(_) => env::remove_var(k),
+                    }
+                }
+            }
+        });
+    }
+
+    /// The pad's path reaches `sh -c` whole, quote or space in it.
+    #[test]
+    fn a_quoted_path_survives_the_shell() {
+        assert_eq!(shell_quote(Path::new("/a b/c.md")), "'/a b/c.md'");
+        assert_eq!(shell_quote(Path::new("/a'b")), r"'/a'\''b'");
+    }
 
     /// The fixtures nest in both directions — `with_fresh_xdg` inside a
     /// tmux server (`app::tests::d_confirms_the_delete_popup`) and a tmux

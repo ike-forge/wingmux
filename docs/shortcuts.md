@@ -196,15 +196,24 @@ a parked one yields to the tree — the panel you steer with.
 | `PgUp` / `PgDn`, `ctrl-u` / `ctrl-d` | page the cursor half a page | accessibility, owned by the pad |
 | `ctrl-f` / `ctrl-b` | page the cursor a full page | accessibility, owned by the pad |
 | `ctrl-s` | save without leaving | explicit save for a pad kept open |
+| `ctrl-e` | save, then open the pad's file in `$EDITOR` (`$VISUAL` first) — a tmux window of its own; closing it reads the file back in. Unset, the key says so and spawns nothing | ctrl layer; the pad is plain text so a real editor can have it |
 | `Esc` | save and go back to the tree; the note stays, collapsed | leave innermost first; a scratch pad may not lose a note |
-| `ctrl-t` | theme picker — parks the pad first | ctrl layer keeps only quit and theme |
+| `ctrl-t` | theme picker — parks the pad first | ctrl layer keeps quit, theme, save and the editor |
 | `ctrl-c` | quit, even here — the pad is written on the way out | ctrl layer over every state |
 | wheel | walk the caret 3 lines (the pad has no scroll of its own) | the wheel belongs to the panel that has something to scroll |
 | click on the pad | nothing — the caret is placed with the keyboard | display-only click, like the preview panel |
 | click anywhere else (the tree above it included) | save and go back to the tree | click outside dismisses |
 
 `?` is **not** bound here: it types a question mark. For the same reason the
-statusbar drops every entry but `save & back esc` while the pad is open.
+statusbar, while the pad is open, carries only the two keys that are not
+text: `save & back esc` and `editor ctrl-e`.
+
+The editor takes the **whole terminal**, in a tmux window named `todo`. Not a
+popup (tmux 3.2, above the floor) and not a split of the dashboard's own pane
+(the pad is drawn inside it, so the tree would end up in half a column beside
+a docked agent). While it is up, the dashboard keeps running in its own
+window; closing the editor returns to it, and the next poll reads the file
+back into the pad.
 
 ## Confirm dialogs (delete worktree / close shell)
 
@@ -359,7 +368,11 @@ An inert key is a decision, not an omission.
   docking exists to stop doing.
 - `y` / `v` — no yank or row selection yet (no multi-select model).
 - `:` — no command language; every action already has a key.
-- `e`, `c`, `w`, `b`, `E`, `C`, ... — reserved for future actions
+- `e` — still unbound: `ctrl-e` opens `$EDITOR` on a todo pad, and only
+  inside the pad, where a bare `e` is text. A plain `e` on the tree would
+  have to mean editing *something* the cursor is on, and no row has an
+  answer to that yet.
+- `c`, `w`, `b`, `E`, `C`, ... — reserved for future actions
   (edit/rename, toggle, etc.); nothing is bound to a letter that has no
   action, so the one-key-one-action table stays unambiguous.
 

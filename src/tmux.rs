@@ -444,6 +444,42 @@ impl Tmux {
         })
     }
 
+    /// Spawn a window running one command to completion, and select it —
+    /// `$EDITOR` on a todo pad.
+    ///
+    /// Unlike [`Self::new_window`] it stamps no shell identity and gets no
+    /// holder: it is not an agent, so nothing in the tree may ever find it,
+    /// and the window dies with the command, which is how the dashboard
+    /// learns the editor has been closed. `command` is one string, so tmux
+    /// hands it to `sh -c` — `$EDITOR` may carry its own flags.
+    pub fn command_window(
+        &self,
+        session: &str,
+        name: &str,
+        cwd: &Path,
+        command: &str,
+    ) -> Result<WindowRef> {
+        let window = self.try_new_window(session, name, cwd, command)?;
+        if let Err(e) = self.select_window(&window.window_id) {
+            // A command that exits at once takes its window with it before
+            // the client can be moved there. It has run; there is nothing
+            // left to select and nothing to report to the user.
+            log::warn!("cannot select {}: {e}", window.window_id);
+        }
+        Ok(window)
+    }
+
+    /// Is this window still on the server?
+    ///
+    /// Asked of tmux directly rather than of [`Self::list_panes`], which
+    /// only reports panes carrying a shell identity — the pad's `$EDITOR`
+    /// window carries none, and is exactly the kind of window whose
+    /// disappearance matters.
+    pub fn window_exists(&self, window_id: &str) -> bool {
+        self.run(&["list-panes", "-t", window_id, "-F", "#{window_id}"])
+            .is_ok_and(|out| out.trim() == window_id)
+    }
+
     /// Kill a window by id (used on worktree deletion; killing a session's
     /// last window destroys the session).
     pub fn kill_window(&self, window_id: &str) -> Result<()> {
@@ -1600,6 +1636,51 @@ mod tests {
                 )
                 .expect("window");
             assert_stamped(&second.pane_id, "feat", "1");
+        });
+    }
+
+    /// The `$EDITOR` window is a plain window: selected, alone (no holder),
+    /// carrying no shell identity — and it dies with its command, which is
+    /// the only signal the pad has that the editing is over.
+    #[test]
+    fn the_editor_window_is_selected_unstamped_and_dies_with_its_command() {
+        with_tmux_server(|_sock, tmux| {
+            let window = tmux
+                .command_window("main", "todo", Path::new("/tmp"), "sleep 30")
+                .expect("editor window");
+            assert!(tmux.window_exists(&window.window_id));
+            assert!(
+                !tmux
+                    .list_panes()
+                    .expect("list-panes")
+                    .iter()
+                    .any(|p| p.window_id == window.window_id),
+                "the editor is no shell: the poll's pane map never sees it"
+            );
+            assert_eq!(
+                tmux.run_raw(&["list-panes", "-t", &window.window_id, "-F", "#{pane_id}"])
+                    .expect("list-panes")
+                    .lines()
+                    .count(),
+                1,
+                "no holder is split beside the editor"
+            );
+            assert_eq!(
+                tmux.run_raw(&["display-message", "-p", "-t", "main", "#{window_id}"])
+                    .expect("display-message")
+                    .trim(),
+                window.window_id,
+                "the user is taken to the editor"
+            );
+
+            let short = tmux
+                .command_window("main", "todo", Path::new("/tmp"), "true")
+                .expect("editor window");
+            let gone = (0..30).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                !tmux.window_exists(&short.window_id)
+            });
+            assert!(gone, "the window goes with the command it ran");
         });
     }
 

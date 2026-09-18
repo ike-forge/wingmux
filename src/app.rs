@@ -40,6 +40,10 @@ const WT_STATE_INTERVAL: Duration = Duration::from_secs(5);
 /// and typing blind is still better than never starting the agent.
 const LAUNCH_GRACE: Duration = Duration::from_secs(8);
 
+/// Window name of the pad's `$EDITOR`. No `lw:` prefix: that marks the
+/// windows agents live in, and this one holds no shell.
+const EDITOR_WINDOW: &str = "todo";
+
 /// Hard ceiling on one text buffer. Not a limit anyone types into —
 /// a backstop so a runaway paste cannot grow the buffer without bound.
 const TEXTBUF_MAX_BYTES: usize = 1_000_000;
@@ -536,6 +540,8 @@ pub enum BarAction {
     Todo,
     /// Leave the pad, keeping what is in it (`Esc`).
     TodoBack,
+    /// Hand the open pad to `$EDITOR` (`ctrl-e`).
+    TodoEdit,
     NewWorktree,
     AddShell,
     PredefinedSend,
@@ -768,6 +774,10 @@ pub struct App {
     /// [`App::poll`], so a dashboard killed with its terminal loses at most
     /// one poll interval of typing.
     todo_dirty: Option<crate::todo::Pad>,
+    /// The pad handed to `$EDITOR` (`ctrl-e`): the window running it, and
+    /// which pad it holds. The poll that finds the window gone reads the
+    /// file back in and clears this.
+    editor: Option<(String, crate::todo::Pad)>,
 }
 
 /// The base branch a new worktree would branch from, as shown in the New
@@ -849,6 +859,7 @@ impl App {
             repo_todos: HashMap::new(),
             todo_global_parked: false,
             todo_dirty: None,
+            editor: None,
         }
     }
 
@@ -1757,6 +1768,86 @@ impl App {
         *self.todo_buf_mut(&pad) = buf;
         self.todo_dirty = Some(pad);
         self.save_todo();
+    }
+
+    /// `ctrl-e`: hand the open pad's file to `$EDITOR`, in a tmux window of
+    /// its own, and close the panel.
+    ///
+    /// A window, not a popup: popups are tmux 3.2 and the floor here is
+    /// 3.0. A window, not a split of the dashboard's own pane: the pad is
+    /// drawn *inside* that pane, so an editor where the pad is would mean
+    /// squeezing the tree into half a column beside a docked agent.
+    ///
+    /// The pad is written before the spawn — the editor must open what is
+    /// on screen — and the file is the one source of truth for the round
+    /// trip: the buffer is read back whole in [`Self::reap_editor`].
+    fn edit_todo_externally(&mut self) {
+        let Mode::Todo { buf, pad } = &self.mode else {
+            return;
+        };
+        let (buf, pad) = (buf.clone(), pad.clone());
+        let Some(editor) = crate::util::editor() else {
+            self.notify("set $EDITOR (or $VISUAL) to edit the pad there");
+            return;
+        };
+        // Still in the pad while this is decided: a write that fails must
+        // leave the note on screen, with the typing still in it.
+        self.park_todo(pad.clone(), buf);
+        if self.todo_dirty.is_some() {
+            self.notify_err("cannot write the pad — $EDITOR not opened");
+            return;
+        }
+        let tmux = match self.require_tmux() {
+            Ok(t) => t,
+            Err(e) => {
+                self.notify_err(format!("cannot open $EDITOR: {e}"));
+                return;
+            }
+        };
+        let Some(inside) = tmux.inside.clone() else {
+            self.notify("$EDITOR needs a tmux window; this dashboard has none");
+            return;
+        };
+        let path = crate::util::todo_path(&pad);
+        // The repository for its own pad; for the global one the directory
+        // the pads live in — a cwd the editor's own file commands can use.
+        let cwd = match &pad {
+            crate::todo::Pad::Repo(p) => p.clone(),
+            crate::todo::Pad::Global => path.parent().unwrap_or(&path).to_path_buf(),
+        };
+        let command = format!("{editor} {}", crate::util::shell_quote(&path));
+        match tmux.command_window(&inside.session_name, EDITOR_WINDOW, &cwd, &command) {
+            Ok(window) => {
+                self.mode = Mode::Normal;
+                self.editor = Some((window.window_id, pad));
+            }
+            Err(e) => self.notify_err(format!("cannot open $EDITOR: {e}")),
+        }
+    }
+
+    /// The `$EDITOR` window is gone → read that pad back in.
+    ///
+    /// Whole file, cursor reset: the editor may have rewritten every line,
+    /// and a caret kept from before it ran would point into text that is no
+    /// longer there.
+    fn reap_editor(&mut self, tmux: &Tmux) {
+        let Some((window_id, pad)) = self.editor.clone() else {
+            return;
+        };
+        if tmux.window_exists(&window_id) {
+            return;
+        }
+        self.editor = None;
+        log::info!(
+            "$EDITOR closed; re-reading {}",
+            crate::util::todo_path(&pad).display()
+        );
+        *self.todo_buf_mut(&pad) = Self::read_pad(&pad).unwrap_or_default();
+        // Reopened while the editor was running: the panel is showing the
+        // text from before it ran.
+        if matches!(&self.mode, Mode::Todo { pad: open, .. } if *open == pad) {
+            self.open_todo(pad);
+        }
     }
 
     /// Write the dirty pad out, if any.
@@ -3157,6 +3248,9 @@ impl App {
         // Before anything reads a pane size: a dashboard strip that has
         // been resized takes every agent window with it.
         self.refresh_strip(&tmux);
+        // One extra tmux call, and only while a pad is out at the editor:
+        // that window is unstamped, so the pane map below cannot see it.
+        self.reap_editor(&tmux);
         let panes = match tmux.list_panes() {
             Ok(p) => p,
             Err(e) => {
@@ -3388,6 +3482,8 @@ impl App {
                     let (parked, pad) = (buf.clone(), pad.clone());
                     self.park_todo(pad, parked);
                     self.notify("todo saved");
+                } else if key.code == KeyCode::Char('e') && ctrl {
+                    self.edit_todo_externally();
                 } else {
                     let edited = match key.code {
                         KeyCode::Enter => {
@@ -4197,6 +4293,7 @@ impl App {
             }
             BarAction::Todo => self.open_repo_todo(),
             BarAction::TodoBack => self.close_todo(),
+            BarAction::TodoEdit => self.edit_todo_externally(),
         }
     }
 
@@ -5620,6 +5717,98 @@ mod tests {
 
     fn p_pad() -> crate::todo::Pad {
         crate::todo::Pad::Repo(PathBuf::from("/tmp/p"))
+    }
+
+    /// Run `f` with `$EDITOR` set (or unset), putting back whatever the
+    /// environment had.
+    fn with_editor<R>(value: Option<&str>, f: impl FnOnce() -> R) -> R {
+        crate::util::testutil::with_test_lock(|| {
+            let before = [
+                ("EDITOR", std::env::var("EDITOR")),
+                ("VISUAL", std::env::var("VISUAL")),
+            ];
+            unsafe {
+                std::env::remove_var("VISUAL");
+                match value {
+                    Some(v) => std::env::set_var("EDITOR", v),
+                    None => std::env::remove_var("EDITOR"),
+                }
+            }
+            let r = f();
+            for (k, v) in before {
+                unsafe {
+                    match v {
+                        Ok(v) => std::env::set_var(k, v),
+                        Err(_) => std::env::remove_var(k),
+                    }
+                }
+            }
+            r
+        })
+    }
+
+    /// `ctrl-e` writes the pad out before handing it over: `$EDITOR` opens
+    /// what was on screen, never the file as it was one keystroke ago.
+    ///
+    /// There is no tmux server here, so the spawn itself stops at a toast —
+    /// the save in front of it is what this pins, and it happens either way.
+    #[test]
+    fn ctrl_e_saves_the_pad_before_the_editor_gets_it() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            with_editor(Some("true"), || {
+                let mut app = app_with_shell();
+                app.viewport = (120, 40);
+                app.on_key(key(KeyCode::Char('t'), false));
+                typed(&mut app, "bump the tmux floor");
+                app.on_key(key(KeyCode::Char('e'), true));
+                assert_eq!(crate::todo::load(&p_pad()), "bump the tmux floor");
+            });
+        });
+    }
+
+    /// With no `$EDITOR` the key says so and the pad stays open with the
+    /// text in it — no dead key, and nothing guessed.
+    #[test]
+    fn ctrl_e_without_an_editor_says_so_and_keeps_the_pad() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            with_editor(None, || {
+                let mut app = app_with_shell();
+                app.viewport = (120, 40);
+                app.on_key(key(KeyCode::Char('t'), false));
+                typed(&mut app, "note");
+                app.on_key(key(KeyCode::Char('e'), true));
+                let Mode::Todo { buf, .. } = &app.mode else {
+                    panic!("the pad stays open");
+                };
+                assert_eq!(buf.text(), "note");
+                let toast = app.message.as_ref().expect("the key says why");
+                assert!(toast.text.contains("$EDITOR"), "{:?}", toast.text);
+                assert!(app.editor.is_none(), "nothing was spawned");
+            });
+        });
+    }
+
+    /// The editor's window leaving the pane map is what ends the round
+    /// trip: the pad is re-read whole, whatever the editor did to it.
+    #[test]
+    fn a_closed_editor_window_re_reads_the_pad() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.viewport = (120, 40);
+            app.on_key(key(KeyCode::Char('t'), false));
+            typed(&mut app, "before");
+            app.on_key(key(KeyCode::Esc, false));
+            app.editor = Some(("@42".into(), p_pad()));
+            crate::todo::save(&p_pad(), "rewritten in $EDITOR").unwrap();
+
+            // No window on this (dead) server, so the editor has closed.
+            app.reap_editor(&tmux_nowhere());
+            assert_eq!(
+                app.repo_todos[&PathBuf::from("/tmp/p")].text(),
+                "rewritten in $EDITOR"
+            );
+            assert!(app.editor.is_none(), "the round trip is over");
+        });
     }
 
     /// `T` opens the global pad, `t` the repository's — separate buffers,

@@ -1070,6 +1070,27 @@ duplication docking exists to end.
   `quit`, because ctrl-c quits from any state. The worst a `kill -9` costs is
   one poll interval of typing. `save_todo` reads through the open buffer
   rather than a copy, so the panel never has to clone its text per keystroke.
+- **`ctrl-e` hands the pad to `$EDITOR`, in a tmux window of its own.** The
+  pads were plain text so `$EDITOR` could reach them without the dashboard;
+  `ctrl-e` is that sentence made reachable from inside it, for the note that
+  has grown past what a five-line panel is for. Three choices in it:
+  - **A window, not a popup.** `display-popup` is tmux 3.2 and the floor is
+    3.0. No key is worth raising it.
+  - **A window, not a split of the dashboard's own pane.** The pad is drawn
+    *inside* that pane by ratatui, so "the editor where the pad is" means
+    cutting the dashboard pane in two and leaving the tree half a column
+    beside a docked agent — the shape the panel rules already refuse.
+  - **The file is the one source of truth for the round trip.** The pad is
+    written before the spawn (the editor must open what is on screen) and
+    read back whole when the window goes away — cursor reset, because the
+    editor may have rewritten every line. `App::reap_editor` asks tmux
+    directly whether that window still exists: it carries no shell identity,
+    so `list_panes` (which filters to stamped panes) cannot see it. That is
+    one extra tmux call per poll, and only while a pad is out at the editor.
+
+  With no `$EDITOR` (nor `$VISUAL`) the key says so and nothing is spawned:
+  an editor the user has not named is one they may not know how to leave,
+  and it would open over their dashboard.
 - **`t`, not `2`.** The LazyGit-style numbered panel stack (`[1]` files,
   `[2]` branches, …) buys nothing with two panels: a number is a position,
   which goes stale the moment a third thing wants the panel, while `t` names

@@ -1388,10 +1388,14 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
     let ic = &app.cfg.icons;
     let h = |desc: &str, key: &str| hint(ic, desc, key);
     // The pad owns every printable key while it is open, so the bar offers
-    // the one key that still does something: the way back. `? help` is not
-    // listed because `?` types a question mark in there.
+    // the two keys that still do something: the way back, and the way to a
+    // real editor. `? help` is not listed because `?` types a question mark
+    // in there.
     if matches!(app.mode, Mode::Todo { .. }) {
-        return vec![(h("save & back", "esc"), TodoBack)];
+        return vec![
+            (h("save & back", "esc"), TodoBack),
+            (h("editor", "ctrl-e"), TodoEdit),
+        ];
     }
     let mut entries = match app.sel {
         // `a` starts (or re-enters) the repository's inline shell; `d`
@@ -1758,6 +1762,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                     "repository todo pad",
                     "shared by its worktrees",
                     "esc saves; the note stays, collapsed",
+                    "ctrl-e opens it in $EDITOR",
                 ],
             ),
             (&["T"], &["global todo pad", "one pad for every repository"]),
