@@ -551,8 +551,8 @@ pub enum BarAction {
     VisualStart,
     /// Leave visual mode (`Esc`).
     VisualCancel,
-    /// Close every selected shell (`d` in visual mode).
-    CloseMarked,
+    /// Delete everything selected (`d` in visual mode).
+    DeleteMarked,
     /// Close the selected repository's inline shell.
     CloseRepoShell,
     /// Start (if needed) and dock the selected repository's inline shell.
@@ -611,6 +611,13 @@ pub struct Confirm {
     pub action: ConfirmAction,
 }
 
+/// A visual selection resolved to what `d` does to it.
+#[derive(Debug, Clone, Default)]
+pub struct Marks {
+    pub worktrees: Vec<(usize, usize)>,
+    pub shells: Vec<(usize, usize, usize)>,
+}
+
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
     DeleteWorktree {
@@ -629,8 +636,8 @@ pub enum ConfirmAction {
     CloseRepoShell {
         repository: usize,
     },
-    /// Close every shell of a visual selection, as `(repo, worktree, shell)`.
-    DeleteShells(Vec<(usize, usize, usize)>),
+    /// Delete everything a visual selection covers.
+    DeleteMarked(Marks),
 }
 
 pub struct App {
@@ -1693,40 +1700,40 @@ impl App {
         }
     }
 
-    /// The shell a tree node stands for: a shell row, or a folded worktree
-    /// row's only shell.
-    fn node_shell(&self, node: Sel) -> Option<(usize, usize, usize)> {
-        match node {
-            Sel::Shell(ri, wi, si) => Some((ri, wi, si)),
-            Sel::Worktree(ri, wi) => self.solo_shell(ri, wi).map(|si| (ri, wi, si)),
-            Sel::Repository(_) => None,
-        }
-    }
-
-    /// Shells on the visible rows between the visual anchor and the cursor.
-    /// Empty when no visual selection is active or the anchor row is gone.
-    pub(crate) fn visual_shells(&self) -> Vec<(usize, usize, usize)> {
+    /// What the rows between the visual anchor and the cursor stand for,
+    /// each as its own `d` would act: a worktree row deletes the worktree,
+    /// a shell row closes the shell. Shells of a worktree that is going
+    /// anyway are dropped. Empty when no selection is active or the anchor
+    /// row is gone.
+    pub(crate) fn visual_marks(&self) -> Marks {
+        let mut marks = Marks::default();
         let Some(anchor) = self.visual else {
-            return Vec::new();
+            return marks;
         };
         let nodes = self.visible_nodes();
         let (Some(a), Some(c)) = (
             nodes.iter().position(|n| *n == anchor),
             nodes.iter().position(|n| *n == self.sel),
         ) else {
-            return Vec::new();
+            return marks;
         };
-        nodes[a.min(c)..=a.max(c)]
-            .iter()
-            .filter_map(|n| self.node_shell(*n))
-            .collect()
+        for node in &nodes[a.min(c)..=a.max(c)] {
+            match *node {
+                Sel::Worktree(ri, wi) => marks.worktrees.push((ri, wi)),
+                Sel::Shell(ri, wi, si) => marks.shells.push((ri, wi, si)),
+                Sel::Repository(_) => {}
+            }
+        }
+        let wts = marks.worktrees.clone();
+        marks.shells.retain(|&(ri, wi, _)| !wts.contains(&(ri, wi)));
+        marks
     }
 
     fn start_visual(&mut self) {
-        if self.selected_shell().is_some() {
-            self.visual = Some(self.sel);
+        if matches!(self.sel, Sel::Repository(_)) {
+            self.notify("select a worktree or shell to start a selection");
         } else {
-            self.notify("select a shell to start a selection");
+            self.visual = Some(self.sel);
         }
     }
 
@@ -1735,50 +1742,68 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.move_sel(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
             KeyCode::Char('v') | KeyCode::Esc => self.visual = None,
-            KeyCode::Char('d') => self.confirm_delete_shells(),
+            KeyCode::Char('d') => self.confirm_delete_marked(),
             KeyCode::Char('q') => self.quit = true,
             _ => {}
         }
     }
 
-    pub fn confirm_delete_shells(&mut self) {
-        let shells = self.visual_shells();
+    pub fn confirm_delete_marked(&mut self) {
+        let marks = self.visual_marks();
         self.visual = None;
-        if shells.is_empty() {
+        if marks.worktrees.is_empty() && marks.shells.is_empty() {
             return;
         }
-        let names: Vec<String> = shells
-            .iter()
-            .map(|&(ri, wi, si)| {
-                let wt = &self.state.repositories[ri].worktrees[wi];
-                format!("  {} ({})", wt.shells[si].window_name, wt.name)
-            })
-            .collect();
+        let mut lines: Vec<String> = Vec::new();
+        let (mut dirty, mut unmerged) = (false, false);
+        for &(ri, wi) in &marks.worktrees {
+            dirty |= self.worktree_is_dirty(ri, wi);
+            unmerged |= self.worktree_has_unmerged_commits(ri, wi);
+            let wt = &self.state.repositories[ri].worktrees[wi];
+            lines.push(format!("  worktree {}", wt.name));
+        }
+        for &(ri, wi, si) in &marks.shells {
+            let wt = &self.state.repositories[ri].worktrees[wi];
+            lines.push(format!(
+                "  shell {} ({})",
+                wt.shells[si].window_name, wt.name
+            ));
+        }
+        let drop_branch = self.cfg.worktrees.delete_branch;
+        let warning = match (dirty, unmerged) {
+            (true, _) => Some("uncommitted changes — force delete discards them".to_string()),
+            (false, true) if drop_branch => {
+                Some("unmerged commits — deleting the branches discards them".to_string())
+            }
+            (false, true) => Some("unmerged commits — the branches keep them".to_string()),
+            (false, false) => None,
+        };
         self.mode = Mode::Confirm {
             confirm: Confirm {
-                title: "Close Shells".into(),
-                body: format!(
-                    "Close {} shells?\n{}\nThe tmux windows are killed; the worktrees stay.",
-                    shells.len(),
-                    names.join("\n")
-                ),
-                yes_label: Some("yes".into()),
-                warning: None,
-                force_label: None,
-                action: ConfirmAction::DeleteShells(shells),
+                title: "Delete Selection".into(),
+                body: format!("Delete {} items?\n{}", lines.len(), lines.join("\n")),
+                yes_label: (!dirty).then(|| "yes".into()),
+                warning,
+                force_label: dirty.then(|| "force delete (discards changes)".into()),
+                action: ConfirmAction::DeleteMarked(marks),
             },
         };
     }
 
-    /// Close `shells` last-index-first so earlier removals do not shift the
-    /// later ones; a failure stops the batch and is reported.
-    fn delete_shells(&mut self, mut shells: Vec<(usize, usize, usize)>) -> Result<()> {
-        shells.sort_unstable_by(|a, b| b.cmp(a));
-        let n = shells.len();
-        for (ri, wi, si) in shells {
+    /// Shells first (they leave worktree indices alone), then worktrees,
+    /// both last-index-first so a removal never shifts a pending one. A
+    /// failure stops the batch and is reported.
+    fn delete_marked(&mut self, mut marks: Marks, force: bool) -> Result<()> {
+        marks.shells.sort_unstable_by(|a, b| b.cmp(a));
+        marks.worktrees.sort_unstable_by(|a, b| b.cmp(a));
+        let n = marks.shells.len() + marks.worktrees.len();
+        for (ri, wi, si) in marks.shells {
             self.delete_shell(ri, wi, si)?;
         }
-        self.notify(format!("{n} shells closed"));
+        for (ri, wi) in marks.worktrees {
+            self.delete_worktree(ri, wi, force)?;
+        }
+        self.notify(format!("{n} items deleted"));
         Ok(())
     }
 
@@ -4383,7 +4408,7 @@ impl App {
             BarAction::DeleteShell => self.confirm_delete_shell(),
             BarAction::VisualStart => self.start_visual(),
             BarAction::VisualCancel => self.visual = None,
-            BarAction::CloseMarked => self.confirm_delete_shells(),
+            BarAction::DeleteMarked => self.confirm_delete_marked(),
             BarAction::CloseRepoShell => {
                 if let Sel::Repository(ri) = self.sel {
                     self.confirm_delete_repo_shell(ri);
@@ -4572,7 +4597,7 @@ impl App {
                 shell,
             } => self.delete_shell(repository, worktree, shell),
             ConfirmAction::CloseRepoShell { repository } => self.delete_repo_shell(repository),
-            ConfirmAction::DeleteShells(shells) => self.delete_shells(shells),
+            ConfirmAction::DeleteMarked(marks) => self.delete_marked(marks, force),
         };
         if let Err(e) = res {
             self.fail(&e);
@@ -6235,12 +6260,12 @@ mod tests {
 
         app.on_key(key(KeyCode::Char('v'), false));
         app.on_key(key(KeyCode::Char('j'), false));
-        assert_eq!(app.visual_shells(), vec![(0, 0, 0), (0, 0, 1)]);
+        assert_eq!(app.visual_marks().shells, vec![(0, 0, 0), (0, 0, 1)]);
 
         app.on_key(key(KeyCode::Char('d'), false));
         match &app.mode {
             Mode::Confirm { confirm } => assert!(
-                matches!(&confirm.action, ConfirmAction::DeleteShells(s) if s.len() == 2),
+                matches!(&confirm.action, ConfirmAction::DeleteMarked(m) if m.shells.len() == 2),
                 "{:?}",
                 confirm.action
             ),
@@ -6254,7 +6279,28 @@ mod tests {
         assert!(app.visual.is_none() && !app.quit);
     }
 
-    /// Only shell rows can anchor a selection.
+    /// On worktree rows `d` deletes worktrees, as it does on one row; a
+    /// shell of a worktree that goes anyway is not listed twice.
+    #[test]
+    fn v_over_worktree_rows_deletes_the_worktrees() {
+        let mut app = app_with_shell();
+        app.sel = Sel::Worktree(0, 0);
+        app.on_key(key(KeyCode::Char('v'), false));
+        let marks = app.visual_marks();
+        assert_eq!(marks.worktrees, vec![(0, 0)]);
+        assert!(marks.shells.is_empty());
+        app.on_key(key(KeyCode::Char('d'), false));
+        match &app.mode {
+            Mode::Confirm { confirm } => assert!(
+                matches!(&confirm.action, ConfirmAction::DeleteMarked(m) if m.worktrees == [(0, 0)]),
+                "{:?}",
+                confirm.action
+            ),
+            m => panic!("expected a confirm, got {m:?}"),
+        }
+    }
+
+    /// Repository rows cannot anchor a selection.
     #[test]
     fn v_on_a_repository_row_starts_nothing() {
         let mut app = app_with_shell();
