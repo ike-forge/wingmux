@@ -928,7 +928,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let spin = app.started.elapsed();
     let mut items: Vec<ListItem> = Vec::new();
     let mut sel_row: Option<usize> = None;
-    let marked = app.visual_shells();
+    let marked = app.visual_marks();
     let mut row: usize = 0;
 
     // Scope-filtered: only repositories inside the current path get rows.
@@ -1061,9 +1061,10 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 mark_leased(theme, &mut wt_spans);
             }
             let item = ListItem::new(Line::from(wt_spans));
-            items.push(match solo {
-                Some(si) if marked.contains(&(ri, wi, si)) => item.style(bg(theme.selection_bg)),
-                _ => item,
+            items.push(if marked.worktrees.contains(&(ri, wi)) {
+                item.style(bg(theme.selection_bg))
+            } else {
+                item
             });
             if app.sel == Sel::Worktree(ri, wi) {
                 sel_row = Some(row);
@@ -1117,7 +1118,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     mark_leased(theme, &mut sh_spans);
                 }
                 let item = ListItem::new(Line::from(sh_spans));
-                items.push(if marked.contains(&(ri, wi, si)) {
+                items.push(if marked.shells.contains(&(ri, wi, si)) {
                     item.style(bg(theme.selection_bg))
                 } else {
                     item
@@ -1409,7 +1410,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
     }
     if app.visual.is_some() {
         return vec![
-            (h("close", "d"), CloseMarked),
+            (h("delete", "d"), DeleteMarked),
             (h("cancel", "Esc"), VisualCancel),
         ];
     }
@@ -1441,6 +1442,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         Sel::Worktree(..) => vec![
             (h("worktree", "n"), NewWorktree),
             (h("shell", "a"), AddShell),
+            (h("select", "v"), VisualStart),
             (h("delete", "d"), DeleteWorktree),
             (h("help", "?"), Help),
         ],
@@ -1766,7 +1768,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             ),
             (
                 &["v"],
-                &["select shells", "j/k extends", "d closes all, Esc cancels"],
+                &["select rows", "j/k extends", "d deletes all, Esc cancels"],
             ),
         ],
     ),
@@ -3560,7 +3562,7 @@ mod tests {
                 "shell" => assert!(text.contains("add shell"), "bar 'shell a' ↔ help"),
                 "delete" => assert!(text.contains("delete worktree"), "bar 'delete d' ↔ help"),
                 "dock" => assert!(text.contains("dock the shell"), "bar 'dock ↵' ↔ help"),
-                "select" => assert!(text.contains("select shells"), "bar 'select v' ↔ help"),
+                "select" => assert!(text.contains("select rows"), "bar 'select v' ↔ help"),
                 "close" => assert!(text.contains("close shell"), "bar 'close d' ↔ help"),
                 "live" => assert!(text.contains("live tail"), "bar 'live Esc' ↔ help"),
                 "todo" => assert!(text.contains("todo pad"), "bar 'todo t' ↔ help"),

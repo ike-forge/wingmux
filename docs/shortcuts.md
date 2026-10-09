@@ -126,18 +126,20 @@ you type in it.
 |---|---|---|
 | `Enter` / `l` | dock the shell: its real tmux pane swaps in beside the tree and takes the cursor | domain convention (open the thing the row stands for) |
 | `d` | close this shell (kills its window; the worktree and its other shells stay) | vim `d` destructive, confirms; the object is the selected row |
-| `v` | start a visual selection (also on a folded one-shell worktree row) | vim visual mode; the anchor is the row under the cursor |
+| `v` | start a visual selection | vim visual mode; the anchor is the row under the cursor |
 
 ### Visual selection
 
-The shells on the rows between the anchor and the cursor are marked. Only
-shells close in bulk: every other action is per-row, so those keys are
-swallowed rather than acting on the cursor row alone.
+`v` works on worktree and shell rows. Each row in the range gets what its
+own `d` does: a worktree row deletes the worktree, a shell row closes the
+shell (shells of a worktree that goes anyway are not counted twice).
+Repository rows in the range are skipped. Every other action is per-row, so
+those keys are swallowed rather than acting on the cursor row alone.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
 | `j` / `k` / arrows | extend or shrink | vim motions |
-| `d` | one confirm for all marked shells | vim `d` on a selection; confirms |
+| `d` | one confirm for everything marked; `f` forces when any worktree is dirty | vim `d` on a selection; confirms, same `y`/`d`/`f` as a single delete |
 | `v` / `Esc` | drop the selection | `Esc` closes every overlay |
 | `q` | quit | unconditional quit |
 
@@ -380,7 +382,7 @@ An inert key is a decision, not an omission.
   bindings, whatever the user has them set to; re-implementing any of them
   would mean emulating the agent's terminal, which is the exact thing
   docking exists to stop doing.
-- `y` — no yank. `v` selects shells only, for bulk close.
+- `y` — no yank. `v` selects rows for bulk delete.
 - `:` — no command language; every action already has a key.
 - `e` — still unbound: `ctrl-e` opens `$EDITOR` on a todo pad, and only
   inside the pad, where a bare `e` is text. A plain `e` on the tree would
