@@ -650,7 +650,7 @@ three rows so a long error stays readable, and fade after a few
 seconds. Only errors are drawn in the failure colour; an ordinary notice
 takes `title_fg`, so "worktree deleted" never reads as a problem; the log and the diagnostics overlay (`D`) keep the record.
 
-The tree takes a percentage of the frame width, capped at 54 columns — it
+The tree takes a percentage of the frame width, capped at 60 columns — it
 holds short names, so on a wide screen the extra width goes to the preview
 instead of to empty tree padding. Below 64x12 the tree takes a larger share
 of the width; below 44x9 the preview hides and the tree fills the frame;

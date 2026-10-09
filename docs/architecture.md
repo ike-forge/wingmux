@@ -1197,7 +1197,7 @@ duplication docking exists to end.
   two-line question drew a box a quarter of the screen tall with text
   jammed against the border.
 - **Overlays are built for the narrow strip, and capped there** (post-M18).
-  Docking left the dashboard living in 26–54 columns while a pane is docked
+  Docking left the dashboard living in 26–60 columns while a pane is docked
   and in the whole window while none is, and the overlays were built for the
   second one: the help palette was a fixed 82-column table, the dialogs took
   60% of the frame, and every `overlay_min` was wider than the strip — so
