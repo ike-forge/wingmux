@@ -928,6 +928,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let spin = app.started.elapsed();
     let mut items: Vec<ListItem> = Vec::new();
     let mut sel_row: Option<usize> = None;
+    let marked = app.visual_shells();
     let mut row: usize = 0;
 
     // Scope-filtered: only repositories inside the current path get rows.
@@ -1059,7 +1060,11 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             if solo.is_some_and(|si| shell_leased(app, &wt.shells[si]).is_some()) {
                 mark_leased(theme, &mut wt_spans);
             }
-            items.push(ListItem::new(Line::from(wt_spans)));
+            let item = ListItem::new(Line::from(wt_spans));
+            items.push(match solo {
+                Some(si) if marked.contains(&(ri, wi, si)) => item.style(bg(theme.selection_bg)),
+                _ => item,
+            });
             if app.sel == Sel::Worktree(ri, wi) {
                 sel_row = Some(row);
             }
@@ -1111,7 +1116,12 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 if shell_leased(app, sh).is_some() {
                     mark_leased(theme, &mut sh_spans);
                 }
-                items.push(ListItem::new(Line::from(sh_spans)));
+                let item = ListItem::new(Line::from(sh_spans));
+                items.push(if marked.contains(&(ri, wi, si)) {
+                    item.style(bg(theme.selection_bg))
+                } else {
+                    item
+                });
                 if app.sel == Sel::Shell(ri, wi, si) {
                     sel_row = Some(row);
                 }
@@ -1397,6 +1407,12 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             (h("editor", "ctrl-e"), TodoEdit),
         ];
     }
+    if app.visual.is_some() {
+        return vec![
+            (h("close", "d"), CloseMarked),
+            (h("cancel", "Esc"), VisualCancel),
+        ];
+    }
     let mut entries = match app.sel {
         // `a` starts (or re-enters) the repository's inline shell; `d`
         // closes it, and only appears once there is one to close.
@@ -1418,6 +1434,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             (h("dock", "Enter"), Dock),
             (h("predefined", "p"), PredefinedSend),
             (h("shell", "a"), AddShell),
+            (h("select", "v"), VisualStart),
             (h("delete", "d"), DeleteWorktree),
             (h("help", "?"), Help),
         ],
@@ -1430,6 +1447,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         Sel::Shell(..) => vec![
             (h("dock", "Enter"), Dock),
             (h("predefined", "p"), PredefinedSend),
+            (h("select", "v"), VisualStart),
             (h("close", "d"), DeleteShell),
             (h("help", "?"), Help),
         ],
@@ -1745,6 +1763,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             (
                 &["d"],
                 &["close shell", "kills the window", "worktree stays"],
+            ),
+            (
+                &["v"],
+                &["select shells", "j/k extends", "d closes all, Esc cancels"],
             ),
         ],
     ),
@@ -3538,6 +3560,7 @@ mod tests {
                 "shell" => assert!(text.contains("add shell"), "bar 'shell a' ↔ help"),
                 "delete" => assert!(text.contains("delete worktree"), "bar 'delete d' ↔ help"),
                 "dock" => assert!(text.contains("dock the shell"), "bar 'dock ↵' ↔ help"),
+                "select" => assert!(text.contains("select shells"), "bar 'select v' ↔ help"),
                 "close" => assert!(text.contains("close shell"), "bar 'close d' ↔ help"),
                 "live" => assert!(text.contains("live tail"), "bar 'live Esc' ↔ help"),
                 "todo" => assert!(text.contains("todo pad"), "bar 'todo t' ↔ help"),
