@@ -2032,8 +2032,7 @@ mod tests {
             // Paste a multi-line prompt WITHOUT a trailing Enter: bracketed
             // paste (set-buffer + paste-buffer -p) delivers the text
             // literally — embedded newlines must NOT submit the line.
-            tmux.paste_keys(&w.pane_id, "pa-1\npa-2", false)
-                .unwrap();
+            tmux.paste_keys(&w.pane_id, "pa-1\npa-2", false).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(300));
             let capture = tmux.capture_pane(&w.pane_id, 50).unwrap();
             assert!(

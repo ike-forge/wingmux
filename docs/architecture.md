@@ -8,9 +8,12 @@ the same commit as the change.
 ## Crate and runtime
 
 - Single binary crate, no `lib.rs`; modules: `error`, `util`, `logging`,
-  `config`, `theme`, `git`, `tmux`, `state`, `status`, `ansi`, `app`, `ui`.
+  `config`, `theme`, `git`, `tmux`, `state`, `status`, `ansi`, `remover`,
+  `app`, `ui`.
 - No async runtime: single-threaded crossterm event loop, status polling on a
   timer inside the loop (tmux CLI calls are fast enough at 500ms cadence).
+  The one exception is `remover`: a worker thread for `git worktree remove`
+  (see Worktrees and deletion).
 - ratatui 0.30 is the rendering stack (the crate was rewritten around
   ratatui-core / ratatui-widgets / ratatui-crossterm): `Color::Rgb` is a
   tuple, 256-colour is `Color::Indexed`, ANSI colors render as `38;5;0..15`
@@ -136,6 +139,22 @@ the same commit as the change.
   goes with the worktree unless `worktrees.delete_branch = false` — a
   worktree branch whose worktree is gone is dead weight in the common case;
   keeping it is the exception, so it is the opt-in.
+- **Removal runs off the loop.** `git worktree remove` deletes the whole
+  checkout — seconds on a large tree, multiplied by a visual-mode batch —
+  and froze the dashboard for all of it. Windows are still killed
+  synchronously (fast, and the user expects the agent gone at once); the
+  git work goes to `remover`'s single worker thread. One thread, jobs in
+  order: parallel removals in one repository contend for its ref locks on
+  `branch -D`, and the I/O is disk-bound anyway.
+  - The row stays until the job reports back, drawn as `deleting` with the
+    spinner, and `d`/`a` on it are refused. Dropping it up front would
+    hide a failure and let `n` reuse the path mid-removal.
+  - Results are applied by path, and only in normal mode with no visual
+    selection: popups and visual marks hold worktree indices that dropping
+    a row would shift onto a different worktree. The cursor index is
+    shifted back so it stays on its row.
+  - Quit waits for pending jobs: the process exiting mid-`remove` would
+    leave a half-deleted checkout that git still lists.
 - **The agent is chosen per worktree, in the popup that creates it.** A
   worktree is one unit of work, and which agent runs it is a property of
   that work, not of the repository holding it — a codex worktree beside a
