@@ -1002,7 +1002,8 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             let n = wt.shells.len();
             let wstate = app.worktree_state_cached(ri, wi);
             let ficon = worktree_icon(ic, wstate);
-            let settled = worktree_state_settles_row(wstate);
+            let removing = app.remover.is_removing(&wt.path);
+            let settled = removing || worktree_state_settles_row(wstate);
             // In flatten mode the worktrees are the top level (no guide);
             // otherwise they hang off the repository with a tree branch.
             let (prefix, icon_span) = if app.flatten {
@@ -1043,6 +1044,10 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 // to do is remove the worktree, and what the agent inside
                 // is waiting for is no longer anybody's business.
                 match solo.filter(|_| !settled) {
+                    _ if removing => Span::styled(
+                        format!("  {}deleting", spinner_frame(ic, spin)),
+                        fg(theme.dim),
+                    ),
                     Some(si) => {
                         let st = shell_status(app, &wt.shells[si]);
                         Span::styled(

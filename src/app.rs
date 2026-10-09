@@ -766,6 +766,9 @@ pub struct App {
     /// worktree icon, so it must be a lookup, not a `git status` per frame;
     /// [`App::poll_worktree_state`] refills it every [`WT_STATE_INTERVAL`].
     pub(crate) wt_state: HashMap<PathBuf, WorktreeState>,
+    /// Worktree removals running off the loop; their rows stay until
+    /// [`App::drain_removals`] applies the result.
+    pub(crate) remover: crate::remover::Remover,
     /// Resolved base branch per repository path, refreshed with `wt_state`,
     /// so `<base_branch>` expands without a git call per frame.
     base_branches: HashMap<PathBuf, String>,
@@ -879,6 +882,7 @@ impl App {
             todo_dirty: None,
             visual: None,
             editor: None,
+            remover: Default::default(),
         }
     }
 
@@ -1749,8 +1753,11 @@ impl App {
     }
 
     pub fn confirm_delete_marked(&mut self) {
-        let marks = self.visual_marks();
+        let mut marks = self.visual_marks();
         self.visual = None;
+        marks
+            .worktrees
+            .retain(|&(ri, wi)| !self.worktree_removing(ri, wi));
         if marks.worktrees.is_empty() && marks.shells.is_empty() {
             return;
         }
@@ -1800,10 +1807,15 @@ impl App {
         for (ri, wi, si) in marks.shells {
             self.delete_shell(ri, wi, si)?;
         }
+        let queued = !marks.worktrees.is_empty();
         for (ri, wi) in marks.worktrees {
             self.delete_worktree(ri, wi, force)?;
         }
-        self.notify(format!("{n} items deleted"));
+        self.notify(if queued {
+            format!("deleting {n} items")
+        } else {
+            format!("{n} items deleted")
+        });
         Ok(())
     }
 
@@ -2706,6 +2718,8 @@ impl App {
         }
     }
 
+    /// Kill the worktree's windows now and queue the removal itself; the
+    /// row stays, marked, until [`Self::drain_removals`] drops it.
     pub fn delete_worktree(&mut self, ri: usize, wi: usize, force: bool) -> Result<()> {
         let tmux = self.require_tmux()?;
         let repo = self
@@ -2719,28 +2733,94 @@ impl App {
             .get(wi)
             .cloned()
             .ok_or_else(|| Error::State(format!("worktree index {wi} out of range")))?;
+        if self.remover.is_removing(&wt.path) {
+            return Ok(());
+        }
         let session = self.session_name(&tmux, ri);
         for sh in &wt.shells {
             self.kill_shell_window(&tmux, sh);
         }
         Self::kill_session_if_empty(&tmux, session);
-        Git.worktree_remove(&repo.path, &wt.path, force)?;
-        if self.cfg.worktrees.delete_branch {
-            match Git.branch_delete(&repo.path, &wt.branch) {
-                Ok(()) => log::info!("deleted branch '{}'", wt.branch),
-                Err(e) => log::warn!("branch delete: {e}"),
-            }
-        }
-        self.state.repositories[ri].worktrees.remove(wi);
-        self.state.forget(&wt.path);
-        if let Some(v) = self.wt_expanded.get_mut(ri) {
-            v.remove(wi);
-        }
-        self.clamp_sel();
-        self.save_state()?;
-        self.poll_worktree_state(true);
-        self.notify(format!("worktree '{}' deleted", wt.name));
+        // The poll would drop them too, but until then Enter would reach
+        // for a dead pane.
+        self.state.repositories[ri].worktrees[wi].shells.clear();
+        self.remover.submit(crate::remover::Job {
+            repo: repo.path.clone(),
+            path: wt.path.clone(),
+            name: wt.name.clone(),
+            branch: wt.branch.clone(),
+            force,
+            delete_branch: self.cfg.worktrees.delete_branch,
+        });
+        self.notify(format!("deleting worktree '{}'", wt.name));
         Ok(())
+    }
+
+    /// Is the worktree's removal still running?
+    pub(crate) fn worktree_removing(&self, ri: usize, wi: usize) -> bool {
+        self.state
+            .repositories
+            .get(ri)
+            .and_then(|r| r.worktrees.get(wi))
+            .is_some_and(|wt| self.remover.is_removing(&wt.path))
+    }
+
+    /// Apply finished removals. Deferred while a popup or a visual selection
+    /// is open: those hold worktree indices that dropping a row would shift.
+    pub fn drain_removals(&mut self) {
+        if !matches!(self.mode, Mode::Normal) || self.visual.is_some() {
+            return;
+        }
+        for done in self.remover.poll() {
+            self.finish_removal(done);
+        }
+    }
+
+    /// Block until every queued removal is done (quit path).
+    pub fn wait_removals(&mut self) {
+        for done in self.remover.wait() {
+            self.finish_removal(done);
+        }
+    }
+
+    fn finish_removal(&mut self, done: crate::remover::Done) {
+        if let Err(e) = done.result {
+            self.fail(&e);
+            return;
+        }
+        // Looked up by path: other rows may have come and gone since submit.
+        // `r` may already have pruned it.
+        let at = self
+            .state
+            .repositories
+            .iter()
+            .enumerate()
+            .find_map(|(ri, r)| {
+                r.worktrees
+                    .iter()
+                    .position(|w| w.path == done.path)
+                    .map(|wi| (ri, wi))
+            });
+        if let Some((ri, wi)) = at {
+            self.state.repositories[ri].worktrees.remove(wi);
+            if let Some(v) = self.wt_expanded.get_mut(ri)
+                && wi < v.len()
+            {
+                v.remove(wi);
+            }
+            // Keep the cursor on the row it was on.
+            match &mut self.sel {
+                Sel::Worktree(r, w) | Sel::Shell(r, w, _) if *r == ri && *w > wi => *w -= 1,
+                _ => {}
+            }
+            self.clamp_sel();
+        }
+        self.state.forget(&done.path);
+        self.wt_state.remove(&done.path);
+        if let Err(e) = self.save_state() {
+            log::warn!("save: {e}");
+        }
+        self.notify(format!("worktree '{}' deleted", done.name));
     }
 
     /// Close one shell: kill its tmux window and drop it from the
@@ -2918,13 +2998,19 @@ impl App {
             .iter()
             .filter_map(|p| {
                 let base = bases.get(&p.path)?.clone();
-                Some(p.worktrees.iter().map(move |f| {
-                    // No recorded fork point (reconciled worktree, or an
-                    // older state file): measure against the base branch and
-                    // accept that a merged worktree reads as new.
-                    let fork = f.base_commit.clone().unwrap_or_else(|| base.clone());
-                    (f.path.clone(), fork, base.clone())
-                }))
+                let remover = &self.remover;
+                Some(
+                    p.worktrees
+                        .iter()
+                        .filter(|f| !remover.is_removing(&f.path))
+                        .map(move |f| {
+                            // No recorded fork point (reconciled worktree, or an
+                            // older state file): measure against the base branch and
+                            // accept that a merged worktree reads as new.
+                            let fork = f.base_commit.clone().unwrap_or_else(|| base.clone());
+                            (f.path.clone(), fork, base.clone())
+                        }),
+                )
             })
             .flatten()
             .collect();
@@ -2975,6 +3061,10 @@ impl App {
             self.notify("select a worktree first");
             return;
         };
+        if self.worktree_removing(ri, wi) {
+            self.notify("worktree is already being deleted");
+            return;
+        }
         let dirty = self.worktree_is_dirty(ri, wi);
         let unmerged = self.worktree_has_unmerged_commits(ri, wi);
         let wt = &self.state.repositories[ri].worktrees[wi];
@@ -3124,7 +3214,11 @@ impl App {
     fn open_add_shell(&mut self) {
         if let Sel::Repository(ri) = self.sel {
             self.enter_repo_shell(ri);
-        } else if self.selected_worktree_ctx().is_some() {
+        } else if let Some((ri, wi, _)) = self.selected_worktree_ctx() {
+            if self.worktree_removing(ri, wi) {
+                self.notify("worktree is being deleted");
+                return;
+            }
             self.mode = Mode::AddShell { index: 0 };
         } else {
             self.notify("select a worktree to add a shell");
@@ -4729,6 +4823,14 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
             // before the loop ends or the last note typed dies with the
             // process.
             app.save_todo();
+            // Killing a half-done `git worktree remove` would leave a
+            // partial checkout behind.
+            let n = app.remover.pending();
+            if n > 0 {
+                app.notify(format!("finishing {n} worktree deletions"));
+                terminal.draw(|f| crate::ui::draw(f, app))?;
+                app.wait_removals();
+            }
             // Furniture of ours, in what may well be the user's own window.
             app.drop_slot();
             break;
@@ -4737,6 +4839,7 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
         // scope with dozens of repos fills the tree in over the next few
         // frames instead of freezing before the first one.
         let loading = app.drain_pending_worktrees();
+        app.drain_removals();
         if app.last_poll.elapsed() >= Duration::from_millis(app.cfg.poll_interval_ms) {
             app.poll();
         }
@@ -7823,6 +7926,76 @@ mod tests {
                 live,
                 vec![0],
                 "the sibling shell stays and the closed one is gone"
+            );
+        });
+    }
+
+    /// Deleting a worktree returns at once with the row still there and
+    /// marked; the result is applied by the loop, never under an open popup,
+    /// and the cursor stays on the row it was on.
+    #[test]
+    fn worktree_removal_runs_off_the_loop() {
+        with_tmux_server(|sock, _tmux| {
+            let root = tempfile::TempDir::new().unwrap();
+            let path = repo_with_commit(root.path(), "repo");
+            let mut wts = Vec::new();
+            for name in ["a", "b"] {
+                let wt = root.path().join(format!("wt-{name}"));
+                Git.worktree_add(&path, &wt, name, "main").unwrap();
+                wts.push(Worktree {
+                    name: name.into(),
+                    branch: name.into(),
+                    path: wt,
+                    created_at: String::new(),
+                    base_commit: None,
+                    agent_command: None,
+                    shells: vec![],
+                });
+            }
+            let mut app = app_with(tmux_inside(sock));
+            app.state.repositories.push(Repository {
+                name: "repo".into(),
+                path: path.clone(),
+                missing: false,
+                shell: None,
+                worktrees: wts,
+            });
+            app.build_tree_flags();
+            app.sel = Sel::Worktree(0, 1);
+            let gone = root.path().join("wt-a");
+
+            crate::util::testutil::with_fresh_xdg(|| {
+                app.delete_worktree(0, 0, false).unwrap();
+                assert_eq!(app.state.repositories[0].worktrees.len(), 2);
+                assert!(app.worktree_removing(0, 0));
+
+                app.open_help();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while gone.exists() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                app.drain_removals();
+                assert_eq!(
+                    app.state.repositories[0].worktrees.len(),
+                    2,
+                    "an open popup holds indices: nothing is applied under it"
+                );
+
+                app.mode = Mode::Normal;
+                app.wait_removals();
+            });
+
+            let names: Vec<_> = app.state.repositories[0]
+                .worktrees
+                .iter()
+                .map(|w| w.name.as_str())
+                .collect();
+            assert_eq!(names, ["b"]);
+            assert_eq!(app.sel, Sel::Worktree(0, 0), "the cursor follows 'b'");
+            assert!(!gone.exists());
+            assert!(
+                !Git.branch_exists(&path, "a"),
+                "the branch goes with the worktree"
             );
         });
     }

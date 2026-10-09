@@ -457,7 +457,9 @@ without hunting for the status word at the end of the row.
 - Worktree deletion kills the worktree's windows — a session whose last shell
   window is killed destroys itself — then `git worktree remove` (with
   `--force` offered when the worktree is dirty). The worktree branch goes
-  with it unless `worktrees.delete_branch = false`. The confirm is three beats a
+  with it unless `worktrees.delete_branch = false`. The removal runs in the
+  background: the UI stays usable and the row reads `deleting` with a
+  spinner until it is gone. Quitting waits for pending removals. The confirm is three beats a
   blank line apart — the question, the worktree path, then whether the
   worktree is clean — and "clean" counts committed work too: a clean
   working tree on a branch that is ahead of the base reads as "worktree is

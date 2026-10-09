@@ -16,6 +16,7 @@ mod error;
 mod git;
 mod hooks;
 mod logging;
+mod remover;
 mod state;
 mod status;
 mod theme;
