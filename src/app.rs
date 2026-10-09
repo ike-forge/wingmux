@@ -547,6 +547,12 @@ pub enum BarAction {
     PredefinedSend,
     DeleteWorktree,
     DeleteShell,
+    /// Start a visual selection of shells (`v`).
+    VisualStart,
+    /// Leave visual mode (`Esc`).
+    VisualCancel,
+    /// Close every selected shell (`d` in visual mode).
+    CloseMarked,
     /// Close the selected repository's inline shell.
     CloseRepoShell,
     /// Start (if needed) and dock the selected repository's inline shell.
@@ -623,6 +629,8 @@ pub enum ConfirmAction {
     CloseRepoShell {
         repository: usize,
     },
+    /// Close every shell of a visual selection, as `(repo, worktree, shell)`.
+    DeleteShells(Vec<(usize, usize, usize)>),
 }
 
 pub struct App {
@@ -774,6 +782,9 @@ pub struct App {
     /// [`App::poll`], so a dashboard killed with its terminal loses at most
     /// one poll interval of typing.
     todo_dirty: Option<crate::todo::Pad>,
+    /// Visual-mode anchor (`v`): the shells on the rows between it and
+    /// `sel` are the selection.
+    pub visual: Option<Sel>,
     /// The pad handed to `$EDITOR` (`ctrl-e`): the window running it, and
     /// which pad it holds. The poll that finds the window gone reads the
     /// file back in and clears this.
@@ -859,6 +870,7 @@ impl App {
             repo_todos: HashMap::new(),
             todo_global_parked: false,
             todo_dirty: None,
+            visual: None,
             editor: None,
         }
     }
@@ -1679,6 +1691,95 @@ impl App {
             }
             Sel::Shell(ri, wi, _) => self.sel = Sel::Worktree(ri, wi),
         }
+    }
+
+    /// The shell a tree node stands for: a shell row, or a folded worktree
+    /// row's only shell.
+    fn node_shell(&self, node: Sel) -> Option<(usize, usize, usize)> {
+        match node {
+            Sel::Shell(ri, wi, si) => Some((ri, wi, si)),
+            Sel::Worktree(ri, wi) => self.solo_shell(ri, wi).map(|si| (ri, wi, si)),
+            Sel::Repository(_) => None,
+        }
+    }
+
+    /// Shells on the visible rows between the visual anchor and the cursor.
+    /// Empty when no visual selection is active or the anchor row is gone.
+    pub(crate) fn visual_shells(&self) -> Vec<(usize, usize, usize)> {
+        let Some(anchor) = self.visual else {
+            return Vec::new();
+        };
+        let nodes = self.visible_nodes();
+        let (Some(a), Some(c)) = (
+            nodes.iter().position(|n| *n == anchor),
+            nodes.iter().position(|n| *n == self.sel),
+        ) else {
+            return Vec::new();
+        };
+        nodes[a.min(c)..=a.max(c)]
+            .iter()
+            .filter_map(|n| self.node_shell(*n))
+            .collect()
+    }
+
+    fn start_visual(&mut self) {
+        if self.selected_shell().is_some() {
+            self.visual = Some(self.sel);
+        } else {
+            self.notify("select a shell to start a selection");
+        }
+    }
+
+    fn on_key_visual(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => self.move_sel(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
+            KeyCode::Char('v') | KeyCode::Esc => self.visual = None,
+            KeyCode::Char('d') => self.confirm_delete_shells(),
+            KeyCode::Char('q') => self.quit = true,
+            _ => {}
+        }
+    }
+
+    pub fn confirm_delete_shells(&mut self) {
+        let shells = self.visual_shells();
+        self.visual = None;
+        if shells.is_empty() {
+            return;
+        }
+        let names: Vec<String> = shells
+            .iter()
+            .map(|&(ri, wi, si)| {
+                let wt = &self.state.repositories[ri].worktrees[wi];
+                format!("  {} ({})", wt.shells[si].window_name, wt.name)
+            })
+            .collect();
+        self.mode = Mode::Confirm {
+            confirm: Confirm {
+                title: "Close Shells".into(),
+                body: format!(
+                    "Close {} shells?\n{}\nThe tmux windows are killed; the worktrees stay.",
+                    shells.len(),
+                    names.join("\n")
+                ),
+                yes_label: Some("yes".into()),
+                warning: None,
+                force_label: None,
+                action: ConfirmAction::DeleteShells(shells),
+            },
+        };
+    }
+
+    /// Close `shells` last-index-first so earlier removals do not shift the
+    /// later ones; a failure stops the batch and is reported.
+    fn delete_shells(&mut self, mut shells: Vec<(usize, usize, usize)>) -> Result<()> {
+        shells.sort_unstable_by(|a, b| b.cmp(a));
+        let n = shells.len();
+        for (ri, wi, si) in shells {
+            self.delete_shell(ri, wi, si)?;
+        }
+        self.notify(format!("{n} shells closed"));
+        Ok(())
     }
 
     /// The shell the selection acts on: an explicit shell row, or the
@@ -3689,7 +3790,11 @@ impl App {
     }
 
     fn on_key_normal(&mut self, key: KeyEvent) {
+        if self.visual.is_some() {
+            return self.on_key_visual(key);
+        }
         match key.code {
+            KeyCode::Char('v') => self.start_visual(),
             // Innermost first: Esc leaves the parked preview before it
             // leaves the app. `q` stays the unconditional quit.
             KeyCode::Esc if self.preview_offset() > 0 => self.preview_live(),
@@ -4276,6 +4381,9 @@ impl App {
             BarAction::PredefinedSend => self.open_messages(),
             BarAction::DeleteWorktree => self.confirm_delete_worktree(),
             BarAction::DeleteShell => self.confirm_delete_shell(),
+            BarAction::VisualStart => self.start_visual(),
+            BarAction::VisualCancel => self.visual = None,
+            BarAction::CloseMarked => self.confirm_delete_shells(),
             BarAction::CloseRepoShell => {
                 if let Sel::Repository(ri) = self.sel {
                     self.confirm_delete_repo_shell(ri);
@@ -4464,6 +4572,7 @@ impl App {
                 shell,
             } => self.delete_shell(repository, worktree, shell),
             ConfirmAction::CloseRepoShell { repository } => self.delete_repo_shell(repository),
+            ConfirmAction::DeleteShells(shells) => self.delete_shells(shells),
         };
         if let Err(e) = res {
             self.fail(&e);
@@ -6105,6 +6214,53 @@ mod tests {
         );
         // the worktree row is no longer a shell — it expands again
         assert_eq!(app.selected_shell(), None);
+    }
+
+    /// `v` anchors on a shell, `j` extends over the rows below, `d` confirms
+    /// closing exactly those shells, and `Esc` drops the selection.
+    #[test]
+    fn v_then_j_then_d_confirms_closing_the_marked_shells() {
+        let mut app = app_with_shell();
+        for i in 1..3 {
+            app.state.repositories[0].worktrees[0].shells.push(Shell {
+                command: None,
+                index: i,
+                window_name: format!("lw:wt/{i}"),
+                window_id: format!("@{}", i + 1),
+                pane_id: format!("%{}", i + 1),
+            });
+        }
+        app.build_tree_flags();
+        app.sel = Sel::Shell(0, 0, 0);
+
+        app.on_key(key(KeyCode::Char('v'), false));
+        app.on_key(key(KeyCode::Char('j'), false));
+        assert_eq!(app.visual_shells(), vec![(0, 0, 0), (0, 0, 1)]);
+
+        app.on_key(key(KeyCode::Char('d'), false));
+        match &app.mode {
+            Mode::Confirm { confirm } => assert!(
+                matches!(&confirm.action, ConfirmAction::DeleteShells(s) if s.len() == 2),
+                "{:?}",
+                confirm.action
+            ),
+            m => panic!("expected a confirm, got {m:?}"),
+        }
+        assert!(app.visual.is_none());
+
+        app.mode = Mode::Normal;
+        app.on_key(key(KeyCode::Char('v'), false));
+        app.on_key(key(KeyCode::Esc, false));
+        assert!(app.visual.is_none() && !app.quit);
+    }
+
+    /// Only shell rows can anchor a selection.
+    #[test]
+    fn v_on_a_repository_row_starts_nothing() {
+        let mut app = app_with_shell();
+        app.sel = Sel::Repository(0);
+        app.on_key(key(KeyCode::Char('v'), false));
+        assert!(app.visual.is_none());
     }
 
     /// `d` is contextual: on a shell row it closes that shell, on a
