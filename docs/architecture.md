@@ -475,6 +475,9 @@ window's width leaves the tree a column or two. With the dashboard alone in
 its window the strip *is* the window, which is the ordinary case and the one
 the proportions are tuned for.
 
+A zoomed window is skipped: its pane is as wide as the window, and a
+`resize-pane` would unzoom `choose-tree -Z` a moment after it opened.
+
 Those sizes are only re-cut when the strip changes size
 (`App::refresh_strip`), so a pane the user dragged — or a stray `resize-pane`
 — stays dragged: nothing in a steady-state poll disagrees with it. `R`
