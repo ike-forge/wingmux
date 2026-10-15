@@ -1006,6 +1006,14 @@ impl App {
     /// self-repair for a strip the user has just taken space away from —
     /// the next poll cuts the furniture down to what is left.
     fn refresh_strip(&mut self, tmux: &Tmux) {
+        // `choose-tree -Z` and friends zoom our pane; its size is then the
+        // window's, and re-cutting would unzoom the picker a moment after
+        // it opened.
+        if let Some(inside) = &tmux.inside
+            && tmux.window_zoomed(&inside.window_id)
+        {
+            return;
+        }
         let size = self.strip_size(tmux);
         if size == (0, 0) || self.strip == Some(size) {
             return;

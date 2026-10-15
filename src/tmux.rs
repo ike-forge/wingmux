@@ -741,6 +741,19 @@ impl Tmux {
         Ok(())
     }
 
+    /// Is the window zoomed? A zoomed pane fills the window, so its size
+    /// says nothing about the layout, and any `resize-pane` unzooms it.
+    pub fn window_zoomed(&self, window_id: &str) -> bool {
+        self.run(&[
+            "display-message",
+            "-p",
+            "-t",
+            window_id,
+            "#{window_zoomed_flag}",
+        ])
+        .is_ok_and(|out| out.trim() == "1")
+    }
+
     /// Set one pane's width, leaving its neighbour the rest.
     pub fn resize_pane_width(&self, pane_id: &str, width: u16) -> Result<()> {
         self.run(&[
