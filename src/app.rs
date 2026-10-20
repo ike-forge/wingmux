@@ -1259,6 +1259,16 @@ impl App {
         let Ok(tmux) = self.require_tmux() else {
             return;
         };
+        // tmux gives a killed pane's columns to either neighbour; claim
+        // them first or a foreign pane beside the strip takes them.
+        if let Some(inside) = &tmux.inside
+            && let Ok((w, _, window)) = tmux.pane_geometry(&inside.pane_id)
+            && let Ok((sw, _, slot_window)) = tmux.pane_geometry(&pane)
+            && window == slot_window
+            && let Err(e) = tmux.resize_pane_width(&inside.pane_id, w + sw + 1)
+        {
+            log::warn!("cannot widen the dashboard pane: {e}");
+        }
         match tmux.kill_pane(&pane) {
             Ok(()) => log::info!("slot {pane} removed"),
             Err(e) => log::warn!("cannot remove slot {pane}: {e}"),
