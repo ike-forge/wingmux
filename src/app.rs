@@ -1770,9 +1770,10 @@ impl App {
             return;
         }
         let mut lines: Vec<String> = Vec::new();
-        let (mut dirty, mut unmerged) = (false, false);
+        let (mut dirty, mut unmerged, mut locked) = (false, false, false);
         for &(ri, wi) in &marks.worktrees {
             dirty |= self.worktree_is_dirty(ri, wi);
+            locked |= self.worktree_lock(ri, wi).is_some();
             unmerged |= self.worktree_has_unmerged_commits(ri, wi);
             let wt = &self.state.repositories[ri].worktrees[wi];
             lines.push(format!("  worktree {}", wt.name));
@@ -1787,6 +1788,7 @@ impl App {
         let drop_branch = self.cfg.worktrees.delete_branch;
         let warning = match (dirty, unmerged) {
             (true, _) => Some("uncommitted changes — force delete discards them".to_string()),
+            _ if locked => Some("locked worktrees — force delete unlocks them".to_string()),
             (false, true) if drop_branch => {
                 Some("unmerged commits — deleting the branches discards them".to_string())
             }
@@ -1797,9 +1799,13 @@ impl App {
             confirm: Confirm {
                 title: "Delete Selection".into(),
                 body: format!("Delete {} items?\n{}", lines.len(), lines.join("\n")),
-                yes_label: (!dirty).then(|| "yes".into()),
+                yes_label: (!dirty && !locked).then(|| "yes".into()),
                 warning,
-                force_label: dirty.then(|| "force delete (discards changes)".into()),
+                force_label: if dirty {
+                    Some("force delete (discards changes)".into())
+                } else {
+                    locked.then(|| "force delete (locked)".into())
+                },
                 action: ConfirmAction::DeleteMarked(marks),
             },
         };
@@ -3042,6 +3048,13 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// The lock reason when the worktree is locked (drives the `--force`
+    /// confirm option: git refuses to remove a locked worktree).
+    pub fn worktree_lock(&self, ri: usize, wi: usize) -> Option<String> {
+        let wt = self.state.repositories.get(ri)?.worktrees.get(wi)?;
+        Git.worktree_lock(&wt.path)
+    }
+
     /// Does the worktree hold commits the base branch does not have?
     /// (drives the delete confirm's wording, not the `--force` option:
     /// `git worktree remove` is happy to remove a worktree whose branch is
@@ -3073,6 +3086,8 @@ impl App {
             self.notify("worktree is already being deleted");
             return;
         }
+        let lock = self.worktree_lock(ri, wi);
+        let locked = lock.is_some();
         let dirty = self.worktree_is_dirty(ri, wi);
         let unmerged = self.worktree_has_unmerged_commits(ri, wi);
         let wt = &self.state.repositories[ri].worktrees[wi];
@@ -3093,7 +3108,7 @@ impl App {
                     "Delete worktree '{}'?\n\n{}\n\n{}",
                     wt.name,
                     wt.path.display(),
-                    if dirty || unmerged {
+                    if dirty || unmerged || locked {
                         "worktree is NOT clean"
                     } else {
                         "worktree is clean"
@@ -3102,12 +3117,24 @@ impl App {
                 // Dirty: `git worktree remove` refuses, so `f` is the only
                 // answer that deletes anything. Unmerged commits do not
                 // block the removal — the branch outlives the worktree.
-                yes_label: (!dirty).then(|| "yes".into()),
+                yes_label: (!dirty && !locked).then(|| "yes".into()),
                 // Which caveat is the true one depends on
                 // `worktrees.delete_branch`: with it on (the default) the
                 // branch is deleted with `-D`, so unmerged commits are
                 // lost, not parked.
                 warning: match (dirty, unmerged) {
+                    _ if locked => {
+                        let reason = lock.as_deref().unwrap_or_default();
+                        let mut w = String::from("worktree is locked");
+                        if !reason.is_empty() {
+                            w.push_str(&format!(" ({reason})"));
+                        }
+                        w.push_str(" — force delete unlocks and removes it");
+                        if dirty {
+                            w.push_str(", discarding uncommitted changes");
+                        }
+                        Some(w)
+                    }
                     (true, true) if self.cfg.worktrees.delete_branch => Some(
                         "uncommitted changes and unmerged commits — force delete discards both"
                             .into(),
@@ -3130,6 +3157,8 @@ impl App {
                 },
                 force_label: if dirty {
                     Some("force delete (discards changes)".into())
+                } else if locked {
+                    Some("force delete (locked)".into())
                 } else {
                     None
                 },

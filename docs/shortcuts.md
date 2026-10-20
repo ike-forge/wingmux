@@ -117,7 +117,7 @@ you type in it.
 |---|---|---|
 | `n` | new worktree (sibling; branched from the base branch; its own agent) | create action |
 | `a` | add a shell to the worktree (picker: the worktree's own agent command, the other configured agents, or a plain `$SHELL`) | add action |
-| `d` | delete worktree (kills windows, removes worktree; `f` = force when dirty) | vim `d` destructive, confirms; `f` differs by position (confirm mode, not navigation) |
+| `d` | delete worktree (kills windows, removes worktree; `f` = force when dirty or locked) | vim `d` destructive, confirms; `f` differs by position (confirm mode, not navigation) |
 | `Enter` | on a one-shell worktree: dock that shell (the folded row *is* the shell). With no shell at all it says so and points at `a` — never a silent no-op | no dead keys |
 
 ### Shell selected
@@ -139,7 +139,7 @@ those keys are swallowed rather than acting on the cursor row alone.
 | Key | Meaning | Rule satisfied |
 |---|---|---|
 | `j` / `k` / arrows | extend or shrink | vim motions |
-| `d` | one confirm for everything marked; `f` forces when any worktree is dirty | vim `d` on a selection; confirms, same `y`/`d`/`f` as a single delete |
+| `d` | one confirm for everything marked; `f` forces when any worktree is dirty or locked | vim `d` on a selection; confirms, same `y`/`d`/`f` as a single delete |
 | `v` / `Esc` | drop the selection | `Esc` closes every overlay |
 | `q` | quit | unconditional quit |
 
@@ -241,7 +241,7 @@ back into the pad.
 
 `Enter` is deliberately **unbound** here. It means "open / drill into"
 everywhere else in the app, so it is the key the fingers press by reflex —
-a delete must not answer to it. On a dirty worktree `y`/`d` are unbound
+a delete must not answer to it. On a dirty or locked worktree `y`/`d` are unbound
 too and the footer drops them: `git worktree remove` refuses without
 `--force`, so the plain answer exists only to fail.
 | `ctrl-c` | quit, even here | ctrl layer over overlays |

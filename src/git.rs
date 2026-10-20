@@ -249,7 +249,7 @@ impl Git {
     }
 
     /// Remove a linked worktree of `repo`. `force` is required when it has
-    /// changes. Removing something git no longer knows about is a no-op.
+    /// changes or is locked. Removing something git no longer knows about is a no-op.
     pub fn worktree_remove(&self, repo: &Path, wt_path: &Path, force: bool) -> Result<()> {
         // git refuses to remove a worktree from inside itself, and running
         // from an unrelated repo misidentifies it — so run from the worktree's
@@ -273,7 +273,8 @@ impl Git {
         };
         let mut args = vec!["worktree", "remove"];
         if force {
-            args.push("--force");
+            // A locked worktree needs the flag twice.
+            args.extend(["--force", "--force"]);
         }
         args.push(wt_path.to_str().unwrap_or_default());
         let out = Self::command(&main, &args).output()?;
@@ -291,6 +292,16 @@ impl Git {
         }
         log::info!("worktree removed: {}", wt_path.display());
         Ok(())
+    }
+
+    /// The lock reason (possibly empty) when the worktree is locked
+    /// (`git worktree lock`, or a tool that crashed mid-creation), else
+    /// `None`. `git worktree remove` refuses a locked worktree without
+    /// `--force --force`.
+    pub fn worktree_lock(&self, wt_path: &Path) -> Option<String> {
+        let out = Self::run_ok(wt_path, &["rev-parse", "--absolute-git-dir"]).ok()?;
+        let reason = std::fs::read_to_string(Path::new(out.stdout.trim()).join("locked")).ok()?;
+        Some(reason.trim().to_string())
     }
 
     /// Does the worktree have uncommitted changes? Drives the `--force`
@@ -658,6 +669,32 @@ mod tests {
         run(&repo, &["checkout", "-q", "-b", "develop"]);
         assert_eq!(git.resolve_base_branch(&repo, "").unwrap(), "develop");
         assert!(git.resolve_base_branch(&repo, "master").is_err());
+    }
+
+    #[test]
+    fn a_locked_worktree_reports_its_reason_and_needs_force() {
+        let (_guard, repo) = temp_repo("proj");
+        let git = Git;
+        let wt_path = repo.parent().unwrap().join("wt-locked");
+        git.worktree_add(&repo, &wt_path, "locked", "main").unwrap();
+        assert_eq!(git.worktree_lock(&wt_path), None);
+
+        Git::run_ok(
+            &repo,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "mid-creation",
+                wt_path.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(git.worktree_lock(&wt_path).as_deref(), Some("mid-creation"));
+
+        assert!(git.worktree_remove(&repo, &wt_path, false).is_err());
+        git.worktree_remove(&repo, &wt_path, true).unwrap();
+        assert!(!wt_path.exists());
     }
 
     #[test]
