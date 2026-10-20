@@ -697,13 +697,9 @@ pub struct App {
     /// in state from other scopes stay saved but are not shown — scopes
     /// never mix.
     pub scope_root: PathBuf,
-    /// Flatten mode: exactly one repository is in scope, so the tree shows
-    /// its worktrees at the top level without a repository row.
-    pub flatten: bool,
     /// Has `git worktree list` been run for each repository (index-parallel
     /// to `state.repositories`)? Worktrees are the expensive part of
-    /// discovery, so they load lazily — when a repository is expanded, or for
-    /// the single flattened repository at boot.
+    /// discovery, so they load lazily — when a repository is expanded.
     pub worktrees_loaded: Vec<bool>,
     /// Last frame size — drives page-sized motions and mouse hit-testing.
     pub viewport: (u16, u16),
@@ -869,7 +865,6 @@ impl App {
             help_scroll: 0,
             diag_scroll: 0,
             scope_root: PathBuf::from("."),
-            flatten: false,
             worktrees_loaded: Vec::new(),
             theme_names: vec![crate::theme::DEFAULT_THEME.into()],
             picker_original: crate::theme::DEFAULT_THEME.into(),
@@ -1360,45 +1355,28 @@ impl App {
             );
         }
         self.build_tree_flags();
-        // Worktrees for every unfolded repository (and for the flattened
-        // single repository, whose worktrees ARE the tree). Only the first one
+        // Worktrees for every unfolded repository Only the first one
         // is loaded here: it is what the first frame draws, and blocking
         // boot on one `git worktree list` per repo would cost seconds in a
         // scope with dozens of them. The rest are queued and drained by the
         // event loop, so the tree paints immediately and fills in.
         let vis = self.visible_repositories();
-        let mut to_load: Vec<usize> = vis
+        let to_load: Vec<usize> = vis
             .iter()
             .copied()
             .filter(|&ri| self.repo_expanded.get(ri).copied().unwrap_or(false))
             .collect();
-        if self.flatten
-            && let Some(&ri) = vis.first()
-            && !to_load.contains(&ri)
-        {
-            to_load.push(ri);
-        }
         let mut queued = to_load.into_iter();
         if let Some(ri) = queued.next() {
             self.ensure_worktrees(ri)?;
         }
         self.pending_worktrees.extend(queued);
-        // Re-decide flatten now that worktrees are known (a lone repository
-        // with NO worktrees still shows its row — a blank tree would be
-        // worse than a redundant row).
-        if let Some(&ri) = vis.first()
-            && vis.len() == 1
-            && !self.state.repositories[ri].worktrees.is_empty()
-        {
-            self.flatten = true;
-            self.build_tree_flags();
-        }
         Ok(())
     }
 
     /// Import (or complete) the repository for `main_repo`. Worktrees are NOT
     /// listed here — [`Self::ensure_worktrees`] does that lazily when the
-    /// repository is expanded (or right after boot in flatten mode). Never
+    /// repository is expanded. Never
     /// fails startup on git errors — discovery is best-effort.
     fn import_cwd_repo(&mut self, main_repo: &std::path::Path) -> Result<()> {
         let path = main_repo.to_path_buf();
@@ -1408,7 +1386,6 @@ impl App {
             ri = Some(self.state.repositories.len() - 1);
         }
         let ri = ri.unwrap();
-        // In flatten mode the worktrees ARE the tree — load them now.
         self.ensure_worktrees(ri)?;
         Ok(())
     }
@@ -1461,10 +1438,6 @@ impl App {
         // `git worktree list` each unfolded repository owes is queued and
         // drained in the background (see `boot_discovery_from`).
         let vis = self.visible_repositories();
-        // Flatten: exactly one repository in scope WITH worktrees → its
-        // worktrees ARE the tree, no repository row. A lone repository with no
-        // worktrees (missing, or nothing linked yet) still shows its row.
-        self.flatten = vis.len() == 1 && !self.state.repositories[vis[0]].worktrees.is_empty();
         let expand = vis.len() <= UNFOLD_CAP;
         self.repo_expanded = self
             .state
@@ -1502,8 +1475,7 @@ impl App {
 
     /// Lazily load a repository's worktrees (the expensive part of
     /// discovery): `git worktree list` runs ONCE per repository, when its
-    /// details are actually needed (expanded, or the flattened single
-    /// repository at boot). Worktrees are added deduplicated by worktree path.
+    /// details are actually needed (expanded). Worktrees are added deduplicated by worktree path.
     fn ensure_worktrees(&mut self, ri: usize) -> Result<()> {
         if self.worktrees_loaded.get(ri).copied().unwrap_or(false) {
             return Ok(());
@@ -1576,17 +1548,14 @@ impl App {
         (wt.shells.len() == 1).then_some(0)
     }
 
-    /// All visible tree nodes in display order (scope-filtered; in flatten
-    /// mode the single repository's worktrees sit at the top level).
+    /// All visible tree nodes in display order (scope-filtered).
     fn visible_nodes(&self) -> Vec<Sel> {
         let mut v = Vec::new();
         for ri in self.visible_repositories() {
             let repo = &self.state.repositories[ri];
-            if !self.flatten {
-                v.push(Sel::Repository(ri));
-                if !self.repo_expanded.get(ri).copied().unwrap_or(false) {
-                    continue;
-                }
+            v.push(Sel::Repository(ri));
+            if !self.repo_expanded.get(ri).copied().unwrap_or(false) {
+                continue;
             }
             for (wi, wt) in repo.worktrees.iter().enumerate() {
                 v.push(Sel::Worktree(ri, wi));
@@ -1702,9 +1671,7 @@ impl App {
                     if let Some(e) = self.wt_expanded.get_mut(ri).and_then(|v| v.get_mut(wi)) {
                         *e = false;
                     }
-                } else if !self.flatten {
-                    // In flatten mode there is no repository row above the
-                    // worktrees — `h` at a collapsed worktree is a no-op.
+                } else {
                     self.sel = Sel::Repository(ri);
                 }
             }
@@ -5143,9 +5110,8 @@ mod tests {
             assert!(matches!(app.mode, Mode::Normal));
             assert_eq!(app.state.repositories.len(), 2);
             assert_eq!(app.scope_root, crate::util::normalize_path(r));
-            // Two repositories → not flattened, both unfolded; the first
+            // Two repositories, both unfolded; the first
             // repository's worktrees load at boot and the second's is queued.
-            assert!(!app.flatten);
             assert!(app.visible_repositories().len() == 2);
             assert_eq!(app.pending_worktrees.len(), 1, "the second is queued");
             while app.drain_pending_worktrees() {}
@@ -5171,7 +5137,6 @@ mod tests {
             let tmux = tmux_nowhere();
             let mut app = app_with(tmux.clone());
             app.boot_discovery_from(r).unwrap();
-            assert!(!app.flatten, "6 repositories → not flattened");
             assert_eq!(
                 app.worktrees_loaded.iter().filter(|f| **f).count(),
                 1,
@@ -5221,8 +5186,7 @@ mod tests {
             });
         }
         app.build_tree_flags();
-        // 31 repositories → collapsed, not flattened
-        assert!(!app.flatten);
+        // 31 repositories → collapsed
         assert!(app.repo_expanded.iter().all(|e| !*e));
 
         let mut few = app_with(tmux_nowhere());
@@ -5239,41 +5203,6 @@ mod tests {
         few.build_tree_flags();
         // 30 repositories → expanded
         assert!(few.repo_expanded.iter().all(|e| *e));
-
-        // 1 repository WITH worktrees → flattened (worktrees are the tree)
-        let mut one = app_with(tmux_nowhere());
-        one.scope_root = PathBuf::from("/");
-        one.state.repositories.push(Repository {
-            name: "p".into(),
-            path: PathBuf::from("/tmp/p"),
-            missing: false,
-            shell: None,
-            worktrees: vec![Worktree {
-                name: "f".into(),
-                branch: "f".into(),
-                path: PathBuf::from("/tmp/p/f"),
-                created_at: "".into(),
-                base_commit: None,
-                agent_command: None,
-                shells: vec![],
-            }],
-        });
-        one.build_tree_flags();
-        assert!(one.flatten, "1 repository with worktrees → flat");
-
-        // 1 repository WITHOUT worktrees → NOT flattened; the row stays so
-        // the repository is visible instead of a blank tree.
-        let mut empty = app_with(tmux_nowhere());
-        empty.scope_root = PathBuf::from("/");
-        empty.state.repositories.push(Repository {
-            name: "p".into(),
-            path: PathBuf::from("/tmp/p"),
-            missing: false,
-            shell: None,
-            worktrees: vec![],
-        });
-        empty.build_tree_flags();
-        assert!(!empty.flatten, "no worktrees → keep the repository row");
     }
 
     /// Worktrees unfold by default too — a folded worktree hides the very
@@ -7003,8 +6932,7 @@ mod tests {
             assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
             let slot = app.slot.clone().expect("a slot while something is docked");
 
-            // A second repository, so the tree has a repository row at all
-            // (a lone repository is flattened away).
+            // A second repository, to have a sibling row.
             app.state.repositories.push(Repository {
                 name: "q".into(),
                 path: PathBuf::from("/tmp/q"),
@@ -8073,7 +8001,6 @@ mod tests {
             );
 
             app.wt_expanded[0][0] = true; // stale flag must not eat the key
-            app.flatten = false; // `h` reaches a parent only when one has a row
             app.collapse_or_up();
             assert_eq!(
                 app.sel,

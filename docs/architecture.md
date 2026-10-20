@@ -84,16 +84,14 @@ the same commit as the change.
   repository ever discovered — that mixed scopes. The scope is the startup
   directory (or `[discovery].scan_root`): only repositories inside it get
   rows. Nothing about repositories is persisted, so the scan is the list. When you
-  start INSIDE a git repo, that repo is the scope and its worktrees are shown
-  flat at the top level (no repository row — `flatten`); a lone MISSING
-  repository still shows its row. Everything unfolds by default up to
+  start INSIDE a git repo, that repo is the scope and its row always shows,
+  so the user can see where they are. Everything unfolds by default up to
   `UNFOLD_CAP = 30` repositories in scope (see "The tree"). There is no
   startup scan prompt and no `discovered.json` cache: finding `.git` entries
   is a few stats per dir, done live at boot — no stale cache to trust, no
   prompt to dismiss, even at hundreds of folders. The expensive part —
   `git worktree list` per repository — is lazy (`ensure_worktrees`): it runs
-  ONCE per repository when the repository is expanded (or for the flattened
-  single repository at boot), and `prune` skips worktree verification for
+  ONCE per repository when the repository is expanded , and `prune` skips worktree verification for
   repositories whose worktrees were never loaded, so boot never pays 200 git
   calls. The unfolded repositories' listings are queued rather than run at
   boot.
@@ -1189,8 +1187,7 @@ duplication docking exists to end.
   hints, statusbar and body text stay lowercase, which is the LazyGit register
   this repository follows. The preview title carries no `(capture-pane)`
   suffix: it named the implementation, not the panel. The tree title follows
-  the tree's actual contents — `Worktrees (n)` when a single repo is
-  flattened, `Repositories (n)` otherwise — and counts only in-scope
+  the tree's actual contents — `Repositories (n)`, counting only in-scope
   repositories, since out-of-scope ones have no rows.
 - **UI pass from the screenshots (rounded corners, bare titles, tree guides,
   icons).** Panels and popups use `BorderType::Rounded` (╭ ╮ ╰ ╯). Titles

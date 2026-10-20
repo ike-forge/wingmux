@@ -241,9 +241,8 @@ again. There is no cache and no prompt: finding `.git` entries is a few
 stats per directory, done live.
 
 - **Start inside a git repo**: that repo is the scope. It is auto-imported
-  and, because it is the only repository, the tree shows its **worktrees
-  flat** at the top level (no repository row — the repository is obvious). A
-  lone *missing* repository still shows its row so the problem is visible.
+  and its row always shows at the top of the tree, so you can see where
+  you are.
 - **Start in a folder of repos**: every repo inside it is listed (walk is
   bounded by `max_depth`, skips hidden dirs and `skip_dirs`; linked-worktree
   `.git` files are never treated as repos — their main repo covers them).
@@ -509,8 +508,7 @@ as the note is, and gone again when the note is:
 ```
 
 Panel titles are Title Case and name what the panel holds. The tree is
-`Repositories (n)`, or `Worktrees (n)` when a single git repo is in scope and
-its worktrees have replaced the repository row (the flat layout below).
+`Repositories (n)`.
 
 **The preview panel** shows the tail of `capture-pane -e` for the selected
 shell — escape sequences included, so the agent's own colouring (spinners,
@@ -622,8 +620,7 @@ Rows carry no counts — the tree is expanded by default, so the children *are*
 the count, and the repository icon says whether a folded repository holds
 anything. Missing repositories show `(missing)` dimmed. A worktree LazyWingman
 has no tmux window for is dimmed *whole* — see **Worktrees without a shell**
-below. When only ONE repository is in scope its worktree rows replace the
-repository row entirely (the flat layout).
+below.
 
 **Worktrees without a shell**: every worktree `git worktree list` reports
 gets a row, whether LazyWingman created it or you did. A worktree it has no

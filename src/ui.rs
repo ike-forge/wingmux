@@ -935,56 +935,54 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let vis = app.visible_repositories();
     for ri in vis {
         let repo = &app.state.repositories[ri];
-        if !app.flatten {
-            let expanded = app.repo_expanded.get(ri).copied().unwrap_or(false);
-            // The folder glyph carries the disclosure state, which is why
-            // repository rows draw no separate ▸/▾ marker. An empty
-            // repository has nothing to open, so it has one glyph only.
-            let icon = if repo.worktrees.is_empty() {
-                &ic.repository_empty
-            } else if expanded {
-                &ic.repository_open
-            } else {
-                &ic.repository
-            };
-            let pdead = repository_dead(app, repo);
-            let mut spans = vec![Span::styled(
-                format!("{icon}{}", repo.name),
-                fg(row_color(theme, pdead, theme.tree_repository)).add_modifier(Modifier::BOLD),
-            )];
-            if repo.missing {
-                spans.push(Span::styled(" (missing)", fg(theme.dim)));
+        let expanded = app.repo_expanded.get(ri).copied().unwrap_or(false);
+        // The folder glyph carries the disclosure state, which is why
+        // repository rows draw no separate ▸/▾ marker. An empty
+        // repository has nothing to open, so it has one glyph only.
+        let icon = if repo.worktrees.is_empty() {
+            &ic.repository_empty
+        } else if expanded {
+            &ic.repository_open
+        } else {
+            &ic.repository
+        };
+        let pdead = repository_dead(app, repo);
+        let mut spans = vec![Span::styled(
+            format!("{icon}{}", repo.name),
+            fg(row_color(theme, pdead, theme.tree_repository)).add_modifier(Modifier::BOLD),
+        )];
+        if repo.missing {
+            spans.push(Span::styled(" (missing)", fg(theme.dim)));
+        }
+        // A repository with an inline shell says so, and names the
+        // base branch — what distinguishes it from the worktrees below.
+        // A dead shell drops the marker altogether: the row is back to
+        // what it was before the shell existed, and there is nothing
+        // left to dim.
+        if let Some(sh) = repo
+            .shell
+            .as_ref()
+            .filter(|sh| shell_status(app, sh) != Status::Dead)
+        {
+            spans.push(Span::styled(
+                format!(
+                    "  {}{}",
+                    ic.shell,
+                    app.base_branch_of(&repo.path).unwrap_or_default()
+                ),
+                fg(theme.tree_shell),
+            ));
+            if shell_leased(app, sh).is_some() {
+                mark_leased(theme, &mut spans);
             }
-            // A repository with an inline shell says so, and names the
-            // base branch — what distinguishes it from the worktrees below.
-            // A dead shell drops the marker altogether: the row is back to
-            // what it was before the shell existed, and there is nothing
-            // left to dim.
-            if let Some(sh) = repo
-                .shell
-                .as_ref()
-                .filter(|sh| shell_status(app, sh) != Status::Dead)
-            {
-                spans.push(Span::styled(
-                    format!(
-                        "  {}{}",
-                        ic.shell,
-                        app.base_branch_of(&repo.path).unwrap_or_default()
-                    ),
-                    fg(theme.tree_shell),
-                ));
-                if shell_leased(app, sh).is_some() {
-                    mark_leased(theme, &mut spans);
-                }
-            }
-            items.push(ListItem::new(Line::from(spans)));
-            if app.sel == Sel::Repository(ri) {
-                sel_row = Some(row);
-            }
-            row += 1;
-            if !expanded {
-                continue;
-            }
+        }
+        items.push(ListItem::new(Line::from(spans)));
+        if app.sel == Sel::Repository(ri) {
+            sel_row = Some(row);
+        }
+        row += 1;
+        if !expanded {
+            continue;
         }
         let n_feat = repo.worktrees.len();
         for (wi, wt) in repo.worktrees.iter().enumerate() {
@@ -1004,18 +1002,12 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             let ficon = worktree_icon(ic, wstate);
             let removing = app.remover.is_removing(&wt.path);
             let settled = removing || worktree_state_settles_row(wstate);
-            // In flatten mode the worktrees are the top level (no guide);
-            // otherwise they hang off the repository with a tree branch.
-            let (prefix, icon_span) = if app.flatten {
-                (String::new(), ficon.to_string())
+            let prefix = if wi + 1 == n_feat {
+                last_child.clone()
             } else {
-                let guide = if wi + 1 == n_feat {
-                    &last_child
-                } else {
-                    &child
-                };
-                (guide.clone(), ficon.to_string())
+                child.clone()
             };
+            let icon_span = ficon.to_string();
             let mut wt_spans = vec![
                 Span::styled(
                     prefix,
@@ -1084,13 +1076,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             }
             for (si, sh) in wt.shells.iter().enumerate() {
                 let st = shell_status(app, sh);
-                let guide = if app.flatten {
-                    if si + 1 == n {
-                        &last_grandchild
-                    } else {
-                        &grandchild
-                    }
-                } else if wi + 1 == n_feat {
+                let guide = if wi + 1 == n_feat {
                     if si + 1 == n {
                         &no_last_grandchild
                     } else {
@@ -1136,20 +1122,10 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    // Flatten mode lists a single repo's worktrees, so the title names
-    // what the rows actually are. The count follows the tree: only
-    // in-scope repositories have rows, so out-of-scope ones must not be
-    // counted.
+    // The count follows the tree: only in-scope repositories have rows,
+    // so out-of-scope ones must not be counted.
     let vis = app.visible_repositories();
-    let title = if app.flatten {
-        let n = vis
-            .first()
-            .map(|&ri| app.state.repositories[ri].worktrees.len())
-            .unwrap_or(0);
-        format!("Worktrees ({n})")
-    } else {
-        format!("Repositories ({})", vis.len())
-    };
+    let title = format!("Repositories ({})", vis.len());
     let block = panel_block(theme, &app.cfg.icons, &title, true);
     let list = List::new(items)
         .block(block)
@@ -2840,9 +2816,7 @@ mod tests {
             shell: None,
             worktrees: vec![],
         });
-        // A second repository keeps the fixture out of flatten mode (a lone
-        // repository's worktrees would become the top level, hiding the rows
-        // these render tests assert on).
+        // A second repository, to have a sibling row.
         app.state.repositories.push(crate::state::Repository {
             name: "repo-b".into(),
             path: std::path::PathBuf::from("/tmp/repo-b"),
@@ -3030,7 +3004,7 @@ mod tests {
 
     /// A fixture with no disk state: `seeded_app` runs `startup()`, which
     /// loads (and rewrites) the real `state.json`, so any assertion on
-    /// exact counts or on flatten mode must build its own app.
+    /// exact counts must build its own app.
     fn bare_app(worktrees: Vec<crate::state::Worktree>) -> App {
         let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
         app.state.repositories.push(crate::state::Repository {
@@ -3087,10 +3061,9 @@ mod tests {
         }
     }
 
-    /// A single git repo flattens to its worktrees, so the tree names what
-    /// it actually lists: `Worktrees (n)`, not `Repositories`.
+    /// A lone repository keeps its row, so the user sees where they are.
     #[test]
-    fn tree_title_says_worktrees_when_flattened() {
+    fn lone_repository_keeps_its_row() {
         let mut app = bare_app(vec![crate::state::Worktree {
             name: "wt".into(),
             branch: "wt".into(),
@@ -3100,16 +3073,9 @@ mod tests {
             agent_command: None,
             shells: vec![],
         }]);
-        assert!(app.flatten, "one repository with worktrees flattens");
         let text = render_wide(&mut app);
-        assert!(
-            text.contains("Worktrees (1)"),
-            "flattened tree title: {text:?}"
-        );
-        assert!(
-            !text.contains("Repositories"),
-            "no repository wording: {text:?}"
-        );
+        assert!(text.contains("Repositories (1)"), "tree title: {text:?}");
+        assert!(text.contains("repo-a"), "repository row: {text:?}");
     }
 
     fn worktree_with_shells(name: &str, n: usize) -> crate::state::Worktree {
@@ -4647,7 +4613,9 @@ mod tests {
                 "escape sequences must never reach the screen:\n{}",
                 rows.join("\n")
             );
-            let x = rows[y as usize].find("red on blue").unwrap() as u16;
+            let row = &rows[y as usize];
+            // Columns, not bytes: the tree's guides are multi-byte.
+            let x = row[..row.find("red on blue").unwrap()].chars().count() as u16;
             buf[(x, y)].clone()
         };
 
