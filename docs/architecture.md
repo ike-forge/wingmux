@@ -135,7 +135,8 @@ the same commit as the change.
 - Worktree root default:
   `<parent of repo>/.lazywingman-worktrees/<repository>/<worktree>`.
 - Worktree deletion: kill windows → `git worktree remove` (with `--force`
-  offered in the confirm dialog when dirty) → drop from state. The branch
+  offered in the confirm dialog when dirty or locked; git needs it twice
+  for a locked worktree, which the warning line names with its reason) → drop from state. The branch
   goes with the worktree unless `worktrees.delete_branch = false` — a
   worktree branch whose worktree is gone is dead weight in the common case;
   keeping it is the exception, so it is the opt-in.
@@ -193,7 +194,7 @@ the same commit as the change.
   everywhere else it means "open / drill into", and the reflex key must not
   delete anything.
 - **An answer that cannot succeed is not offered.** `Confirm::yes_label` is
-  `None` on a dirty worktree, so `y`/`d` are unbound and absent from the
+  `None` on a dirty or locked worktree, so `y`/`d` are unbound and absent from the
   footer — `git worktree remove` refuses without `--force`, and a key whose
   only outcome is an error toast teaches the user nothing. `f` is then the
   single way through, which is also what makes the discard deliberate.
