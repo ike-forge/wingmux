@@ -83,7 +83,7 @@ warnings`, `cargo test`.
 - Commit freely; **push at the end of every finished unit of work**
   (feature/change). Doc/planning commits may be pushed midway (optional).
   Never force-push or rewrite history.
-- Remote: `origin` → `git@github.com:ikempf/lazywingman.git` (deploy key)
+- Remote: `origin` → `git@github.com:ike-forge/lazywingman.git` (deploy key)
 
 ## Links out
 
