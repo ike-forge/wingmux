@@ -1092,7 +1092,7 @@ impl App {
         self.resize_agent_windows(&tmux, size);
         crate::dock::ensure_holders(&tmux, width);
         log::info!("layout reset to {width} columns of {}", size.0);
-        self.notify("layout reset");
+        self.notify("Layout reset");
     }
 
     /// The dashboard's slot pane, created if it is not there.
@@ -1651,7 +1651,7 @@ impl App {
                 {
                     // Nothing to expand into and nothing to dock: toggling
                     // an expand flag here would look like a dead key.
-                    self.notify("no agent shell here — press `a` to start one");
+                    self.notify("No agent shell here — press `a` to start one");
                 } else if let Some(e) = self.wt_expanded.get_mut(ri).and_then(|v| v.get_mut(wi)) {
                     *e = !*e;
                 }
@@ -1720,7 +1720,7 @@ impl App {
 
     fn start_visual(&mut self) {
         if matches!(self.sel, Sel::Repository(_)) {
-            self.notify("select a worktree or shell to start a selection");
+            self.notify("Select a worktree or shell to start a selection");
         } else {
             self.visual = Some(self.sel);
         }
@@ -1764,12 +1764,12 @@ impl App {
         }
         let drop_branch = self.cfg.worktrees.delete_branch;
         let warning = match (dirty, unmerged) {
-            (true, _) => Some("uncommitted changes — force delete discards them".to_string()),
-            _ if locked => Some("locked worktrees — force delete unlocks them".to_string()),
+            (true, _) => Some("Uncommitted changes — force delete discards them".to_string()),
+            _ if locked => Some("Locked worktrees — force delete unlocks them".to_string()),
             (false, true) if drop_branch => {
-                Some("unmerged commits — deleting the branches discards them".to_string())
+                Some("Unmerged commits — deleting the branches discards them".to_string())
             }
-            (false, true) => Some("unmerged commits — the branches keep them".to_string()),
+            (false, true) => Some("Unmerged commits — the branches keep them".to_string()),
             (false, false) => None,
         };
         self.mode = Mode::Confirm {
@@ -1853,7 +1853,7 @@ impl App {
     fn open_repo_todo(&mut self) {
         match self.selected_repo_path() {
             Some(path) => self.open_todo(crate::todo::Pad::Repo(path)),
-            None => self.notify("select a repository for its todo"),
+            None => self.notify("Select a repository for its todo"),
         }
     }
 
@@ -1916,7 +1916,7 @@ impl App {
         };
         let (buf, pad) = (buf.clone(), pad.clone());
         let Some(editor) = crate::util::editor() else {
-            self.notify("set $EDITOR (or $VISUAL) to edit the pad there");
+            self.notify("Set $EDITOR (or $VISUAL) to edit the pad there");
             return;
         };
         // Still in the pad while this is decided: a write that fails must
@@ -3056,11 +3056,11 @@ impl App {
 
     pub fn confirm_delete_worktree(&mut self) {
         let Some((ri, wi, _)) = self.selected_worktree_ctx() else {
-            self.notify("select a worktree first");
+            self.notify("Select a worktree first");
             return;
         };
         if self.worktree_removing(ri, wi) {
-            self.notify("worktree is already being deleted");
+            self.notify("Worktree is already being deleted");
             return;
         }
         let lock = self.worktree_lock(ri, wi);
@@ -3086,9 +3086,9 @@ impl App {
                     wt.name,
                     wt.path.display(),
                     if dirty || unmerged || locked {
-                        "worktree is NOT clean"
+                        "Worktree is NOT clean"
                     } else {
-                        "worktree is clean"
+                        "Worktree is clean"
                     }
                 ),
                 // Dirty: `git worktree remove` refuses, so `f` is the only
@@ -3102,7 +3102,7 @@ impl App {
                 warning: match (dirty, unmerged) {
                     _ if locked => {
                         let reason = lock.as_deref().unwrap_or_default();
-                        let mut w = String::from("worktree is locked");
+                        let mut w = String::from("Worktree is locked");
                         if !reason.is_empty() {
                             w.push_str(&format!(" ({reason})"));
                         }
@@ -3113,22 +3113,22 @@ impl App {
                         Some(w)
                     }
                     (true, true) if self.cfg.worktrees.delete_branch => Some(
-                        "uncommitted changes and unmerged commits — force delete discards both"
+                        "Uncommitted changes and unmerged commits — force delete discards both"
                             .into(),
                     ),
                     (true, true) => Some(
-                        "uncommitted changes — force delete discards them; the branch keeps its \
+                        "Uncommitted changes — force delete discards them; the branch keeps its \
                          commits"
                             .into(),
                     ),
                     (true, false) => {
-                        Some("uncommitted changes — force delete discards them".into())
+                        Some("Uncommitted changes — force delete discards them".into())
                     }
                     (false, true) if self.cfg.worktrees.delete_branch => {
-                        Some("unmerged commits — deleting the branch discards them".into())
+                        Some("Unmerged commits — deleting the branch discards them".into())
                     }
                     (false, true) => {
-                        Some("unmerged commits — the worktree goes, its branch keeps them".into())
+                        Some("Unmerged commits — the worktree goes, its branch keeps them".into())
                     }
                     (false, false) => None,
                 },
@@ -3149,7 +3149,7 @@ impl App {
 
     pub fn confirm_delete_shell(&mut self) {
         let Sel::Shell(ri, wi, si) = self.sel else {
-            self.notify("select a shell first");
+            self.notify("Select a shell first");
             return;
         };
         let wt = &self.state.repositories[ri].worktrees[wi];
@@ -3158,7 +3158,7 @@ impl App {
             confirm: Confirm {
                 title: "Close Shell".into(),
                 body: format!(
-                    "Close shell '{}' of worktree '{}'?\nThe tmux window is killed; the worktree, its worktree and its other shells stay.",
+                    "Close shell '{}' of worktree '{}'?\nThe tmux window is killed; the worktree and its other shells stay.",
                     sh.window_name, wt.name
                 ),
                 yes_label: Some("yes".into()),
@@ -3178,7 +3178,7 @@ impl App {
             return;
         };
         if repo.shell.is_none() {
-            self.notify("this repository has no shell");
+            self.notify("This repository has no shell");
             return;
         }
         self.mode = Mode::Confirm {
@@ -3230,12 +3230,12 @@ impl App {
             self.enter_repo_shell(ri);
         } else if let Some((ri, wi, _)) = self.selected_worktree_ctx() {
             if self.worktree_removing(ri, wi) {
-                self.notify("worktree is being deleted");
+                self.notify("Worktree is being deleted");
                 return;
             }
             self.mode = Mode::AddShell { index: 0 };
         } else {
-            self.notify("select a worktree to add a shell");
+            self.notify("Select a worktree to add a shell");
         }
     }
 
@@ -3321,7 +3321,7 @@ impl App {
         let ri = match self.sel {
             Sel::Repository(ri) | Sel::Worktree(ri, _) => ri,
             Sel::Shell(..) => {
-                self.notify("select a repository to add a worktree");
+                self.notify("Select a repository to add a worktree");
                 return;
             }
         };
@@ -3715,7 +3715,7 @@ impl App {
                 } else if key.code == KeyCode::Char('s') && ctrl {
                     let (parked, pad) = (buf.clone(), pad.clone());
                     self.park_todo(pad, parked);
-                    self.notify("todo saved");
+                    self.notify("Todo saved");
                 } else if key.code == KeyCode::Char('e') && ctrl {
                     self.edit_todo_externally();
                 } else {
@@ -3973,11 +3973,11 @@ impl App {
     /// say so instead of opening an empty box.
     fn open_messages(&mut self) {
         if self.selected_shell().is_none() {
-            self.notify("select a shell to send a predefined message");
+            self.notify("Select a shell to send a predefined message");
             return;
         }
         if self.cfg.messages.is_empty() {
-            self.notify("no predefined messages configured");
+            self.notify("No predefined messages configured");
             return;
         }
         self.mode = Mode::Messages { index: 0 };
@@ -4023,7 +4023,7 @@ impl App {
             return;
         };
         let Some((ri, wi, si)) = self.selected_shell() else {
-            self.notify("select a shell to send a predefined message");
+            self.notify("Select a shell to send a predefined message");
             return;
         };
         if let Err(e) = self.send_text(ri, wi, si, &text) {
@@ -4669,7 +4669,7 @@ impl App {
                 if let Err(e) = self.save_state() {
                     log::warn!("save: {e}");
                 }
-                self.notify("refreshed");
+                self.notify("Refreshed");
             } else {
                 self.notify_err("refresh had errors (see log)");
             }
@@ -5687,7 +5687,7 @@ mod tests {
                 "the path stands alone: {lines:?}"
             );
             assert_eq!(
-                lines[4], "worktree is NOT clean",
+                lines[4], "Worktree is NOT clean",
                 "committed work must not read as clean"
             );
             assert!(
@@ -5699,7 +5699,7 @@ mod tests {
                 confirm
                     .warning
                     .as_deref()
-                    .is_some_and(|w| w.contains("unmerged commits")),
+                    .is_some_and(|w| w.contains("Unmerged commits")),
                 "the caveat names the reason and is drawn as a warning"
             );
             assert!(
@@ -7633,7 +7633,7 @@ mod tests {
         assert_eq!(app.docked, None, "nothing was docked");
         let toast = app.toast().expect("it explains itself");
         assert!(
-            toast.text.contains("no agent shell") && toast.text.contains('a'),
+            toast.text.contains("No agent shell") && toast.text.contains('a'),
             "and names the key that fixes it: {}",
             toast.text
         );
@@ -7793,7 +7793,7 @@ mod tests {
                 "and the holder is back at the dashboard pane's width"
             );
             assert!(
-                app.toast().is_some_and(|t| t.text.contains("layout reset")),
+                app.toast().is_some_and(|t| t.text.contains("Layout reset")),
                 "and it says so"
             );
         });
@@ -9081,7 +9081,7 @@ mod tests {
         assert!(
             app.message
                 .as_ref()
-                .is_some_and(|m| m.text.contains("select a shell")),
+                .is_some_and(|m| m.text.contains("Select a shell")),
             "a hint is shown instead"
         );
 
@@ -9141,7 +9141,7 @@ mod tests {
         assert!(
             app.message
                 .as_ref()
-                .is_some_and(|m| m.text.contains("no predefined messages")),
+                .is_some_and(|m| m.text.contains("No predefined messages")),
         );
     }
 

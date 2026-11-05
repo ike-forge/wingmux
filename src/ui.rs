@@ -764,7 +764,7 @@ fn draw_too_small(f: &mut Frame, area: Rect, app: &mut App) {
             Line::from(Span::styled(" terminal too small ", title_style(theme))),
             Line::from(""),
             Line::from(Span::raw(
-                "enlarge the window to at least 26x7 to show the dashboard",
+                "Enlarge the window to at least 26x7 to show the dashboard",
             )),
             hint_line(theme, &app.cfg.icons, &[hint(&app.cfg.icons, "quit", "q")]),
         ]))
@@ -782,7 +782,7 @@ fn draw_overlay_too_small(f: &mut Frame, area: Rect, app: &App, kind: OverlayKin
     let ic = &app.cfg.icons;
     let text = Text::from(vec![
         Line::from(Span::raw(format!(
-            "enlarge the window to at least {min_w}x{min_h}"
+            "Enlarge the window to at least {min_w}x{min_h}"
         ))),
         Line::from(""),
         hint_line(theme, ic, &[hint(ic, "dismiss", "esc")]),
@@ -1160,7 +1160,7 @@ fn draw_todo(f: &mut Frame, area: Rect, app: &App) {
     let (name, ghost) = match &pad {
         crate::todo::Pad::Global => (
             "global".to_string(),
-            "the next steps you cannot start yet — kept for every repository".to_string(),
+            "The next steps you cannot start yet — kept for every repository".to_string(),
         ),
         crate::todo::Pad::Repo(path) => {
             let name = app
@@ -1169,7 +1169,7 @@ fn draw_todo(f: &mut Frame, area: Rect, app: &App) {
                 .iter()
                 .find(|r| &r.path == path)
                 .map_or_else(|| path.display().to_string(), |r| r.name.clone());
-            let ghost = format!("the next steps for {name} you cannot start yet");
+            let ghost = format!("The next steps for {name} you cannot start yet");
             (name, ghost)
         }
     };
@@ -1333,22 +1333,22 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
             crate::ansi::styled_text(&win, app.cfg.preview.colors)
         } else {
             Text::from(format!(
-                "capturing{} (select the shell in the tree)",
+                "Capturing{} (select the shell in the tree)",
                 app.cfg.icons.ellipsis
             ))
         }
     } else if app.selected_shell().is_some() {
-        Text::from("no live pane for this shell")
+        Text::from("No live pane for this shell")
     } else if let Some(repo) = selected_repository_without_shell(app) {
         // The one row whose panel is empty because nothing has been
         // started yet — and starting it is one keystroke, so the panel
         // says which.
         Text::from(format!(
-            "no shell in this repository yet\n\n\
-             press `a` to start one in the repository's own checkout\n\
+            "No shell in this repository yet\n\n\
+             Press `a` to start one in the repository's own checkout\n\
              ({}), for the commands you would otherwise run by\n\
              hand: make, mise run …, cat config.\n\n\
-             it starts on the first press and stays until `d` closes it.",
+             It starts on the first press and stays until `d` closes it.",
             app.cfg.base_branch_at(&repo.path),
         ))
     } else if selected_worktree_has_no_shell(app) {
@@ -1356,13 +1356,13 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         // generic hint below would send the user hunting for a child row
         // that does not exist.
         Text::from(
-            "no agent shell for this worktree\n\n\
-             wingman has no tmux window here, so there is nothing to\n\
+            "No agent shell for this worktree\n\n\
+             Wingman has no tmux window here, so there is nothing to\n\
              preview, dock or send to.\n\n\
-             press `a` to start a shell in this worktree.",
+             Press `a` to start a shell in this worktree.",
         )
     } else {
-        Text::from("select a shell to preview its contents")
+        Text::from("Select a shell to preview its contents")
     };
     let p = Paragraph::new(text)
         .block(block)
@@ -2277,7 +2277,7 @@ fn dialog_max_w(area: Rect) -> u16 {
 
 fn draw_input(f: &mut Frame, app: &App) -> Popup {
     let theme = &app.theme.colors;
-    let (title, label) = ("New Worktree", "worktree name");
+    let (title, label) = ("New Worktree", "Worktree name");
     let Mode::Input { text, agent } = &app.mode else {
         return Rect::default().into();
     };
@@ -2298,8 +2298,8 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
     let base = app.new_worktree_base();
     let inline_indent = [
         label,
-        if has_agent { "agent" } else { label },
-        if base.is_some() { "base branch" } else { label },
+        if has_agent { "Agent" } else { label },
+        if base.is_some() { "Base branch" } else { label },
     ]
     .iter()
     .map(|l| UnicodeWidthStr::width(*l) + 2)
@@ -2356,7 +2356,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
             cursor_row = lines.len() + if inline { 0 } else { 1 };
             cursor_text = agent_shown;
         }
-        lines.extend(field("agent", agent_shown, a.focused));
+        lines.extend(field("Agent", agent_shown, a.focused));
     }
     if let Some(hint) = base {
         let shown = if hint.missing {
@@ -2364,7 +2364,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
         } else {
             hint.branch.clone()
         };
-        lines.extend(field("base branch", tail_to_width(&shown, field_w), false));
+        lines.extend(field("Base branch", tail_to_width(&shown, field_w), false));
     }
     let ic = &app.cfg.icons;
     lines.push(Line::from(""));
@@ -2644,7 +2644,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
-        let (label, text) = ("worktree name", "foo");
+        let (label, text) = ("Worktree name", "foo");
         app.mode = Mode::Input {
             text: text.into(),
             agent: None,
@@ -2680,8 +2680,8 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).expect("draw");
         let body = buffer_text(&terminal);
-        assert!(body.contains("worktree name"), "the name field is drawn");
-        assert!(body.contains("agent"), "the agent field is drawn");
+        assert!(body.contains("Worktree name"), "the name field is drawn");
+        assert!(body.contains("Agent"), "the agent field is drawn");
         assert!(
             body.contains("claude"),
             "prefilled with the repository agent"
@@ -2775,7 +2775,7 @@ mod tests {
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             let text = buffer_text(&terminal);
             assert!(
-                text.contains("base branch:   checked-out"),
+                text.contains("Base branch:   checked-out"),
                 "popup must name the checkout: {text:?}"
             );
 
@@ -2784,7 +2784,7 @@ mod tests {
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             let text = buffer_text(&terminal);
             assert!(
-                text.contains("base branch:   main"),
+                text.contains("Base branch:   main"),
                 "popup must name the configured base: {text:?}"
             );
             assert!(!text.contains("not found"), "{text:?}");
@@ -3180,7 +3180,7 @@ mod tests {
         app.sel = Sel::Worktree(0, 0);
         let text = render_wide(&mut app);
         assert!(
-            text.contains("no agent shell for this worktree"),
+            text.contains("No agent shell for this worktree"),
             "the preview names the state: {text:?}"
         );
         assert!(
@@ -4915,7 +4915,7 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
         assert!(
-            text.contains("no shell in this repository yet"),
+            text.contains("No shell in this repository yet"),
             "the empty panel names its state: {text}"
         );
         assert!(
