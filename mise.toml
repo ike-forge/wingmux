@@ -3,7 +3,8 @@
 # sure the declared toolchain exists. `mise tasks` lists what can be run.
 
 [tools]
-rust = "1.97"
+# rustfmt and clippy are not in mise's default minimal profile.
+rust = { version = "1.97", components = "rustfmt,clippy" }
 # Generates release.yml; `dist-workspace.toml` pins the same version.
 "aqua:axodotdev/cargo-dist" = "0.33.1"
 

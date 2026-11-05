@@ -44,7 +44,8 @@ global TUI rules on purpose, say so here with the reason.
 
 Driven by **mise** (`mise.toml` at the repo root — the single task runner
 per the global task-runner rules; task commands below are also documented
-there). Toolchain: `[tools] rust = "1.97"`.
+there). Toolchain: `[tools] rust = 1.97` with the `rustfmt` and `clippy`
+components.
 
 - Build: `mise run build` (cargo build)
 - Format: `mise run fmt` (cargo fmt --check)
