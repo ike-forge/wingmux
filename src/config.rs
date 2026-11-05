@@ -194,7 +194,7 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #text = "merge to LOCAL <base_branch>"
 
 #[[messages]]
-#text = "push LOCAL <base_branch> to origin/<base_branch> (no force-push)"
+#text = "run CI, push <branch> to origin (no force-push)"
 
 #[[messages]]
 #text = "summarise what you've changed and what's still left"
@@ -2160,7 +2160,7 @@ pub fn default_messages() -> Vec<MessageConfig> {
     [
         "continue",
         "merge to LOCAL <base_branch>",
-        "push LOCAL <base_branch> to origin/<base_branch> (no force-push)",
+        "run CI, push <branch> to origin (no force-push)",
         "summarise what you've changed and what's still left",
     ]
     .into_iter()
@@ -2519,7 +2519,7 @@ mod tests {
         vec![
             "continue",
             "merge to LOCAL <base_branch>",
-            "push LOCAL <base_branch> to origin/<base_branch> (no force-push)",
+            "run CI, push <branch> to origin (no force-push)",
             "summarise what you've changed and what's still left",
         ]
     }

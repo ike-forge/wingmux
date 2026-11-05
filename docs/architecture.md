@@ -1415,7 +1415,7 @@ duplication docking exists to end.
 - **`[[messages]]` replaces the built-ins, like every other list**: a config
   that defines any entry defines the whole list (the layering rule "maps merge
   deeply, lists are replaced outright"). The four defaults — continue, merge
-  to `<base_branch>` and drop the worktree, push the local base to origin,
+  to `<base_branch>` and drop the worktree, run CI and push the branch to origin,
   summarise the work so far: unblock, integrate, publish, take stock — therefore only apply when no layer mentions
   `[[messages]]`, and they are written out (commented) on first run, so editing
   them is editing a visible list, not fighting an invisible one. Three because
