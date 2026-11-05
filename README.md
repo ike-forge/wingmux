@@ -173,6 +173,9 @@ text = "continue"            # listed and sent verbatim, as if you had typed it
 text = "merge to LOCAL <base_branch>"
 
 [[messages]]
+text = "push LOCAL <base_branch> to origin/<base_branch> (no force-push)"
+
+[[messages]]
 text = "summarise what you've changed and what's still left"
 
 [[agents]]                   # presets: patterns classify pane status
