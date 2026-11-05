@@ -1233,7 +1233,7 @@ duplication docking exists to end.
   - **Footers wrap, and the modal that owns one sizes itself to it.**
     `hint_packing` splits the hints across rows; `footer_h` reports how many
     rows that took, and each modal adds it instead of the old constant. A
-    single truncated row would have dropped `cancel esc` — the one hint a
+    single truncated row would have dropped `esc cancel` — the one hint a
     dialog cannot lose — at exactly the width where it is hardest to guess.
     `draw_footer_rule` takes the row count so the rule still lands directly
     above the hints, which is why the overlay draw functions return a
@@ -1335,7 +1335,7 @@ duplication docking exists to end.
   default; config files written before this keep their old `theme = "dracula"`
   line and load exactly as before).
 - **An accent must be measurably far from the foreground**: `accent` prints
-  directly beside `foreground` in every shortcut hint (`<action> <key>`), on
+  directly beside `foreground` in every shortcut hint (`<key> <action>`), on
   one or two characters with no space of its own, so the two have to separate
   at a glance. The three dark Catppuccin flavours originally took lavender —
   the swatch that sits next to text in the palette — and measured ΔE 12, 15
