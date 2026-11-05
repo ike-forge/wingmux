@@ -571,9 +571,8 @@ pub(crate) fn sep(icons: &crate::config::IconsConfig) -> &str {
 }
 
 /// One shortcut hint. Every hint in the app — status bar, modal footer,
-/// help palette — is written `<description> <key>` ("cancel esc"): the
-/// word says what happens, the key comes last and is the only part that
-/// is highlighted, so the eye finds it without reading the sentence.
+/// help palette — is written `<key> <description>` ("esc cancel"), the
+/// lazy* tradition: the key leads and is the only highlighted part.
 #[derive(Debug, Clone)]
 pub(crate) struct Hint {
     pub desc: String,
@@ -583,7 +582,7 @@ pub(crate) struct Hint {
 impl Hint {
     /// The hint as one string, exactly as it renders.
     pub(crate) fn label(&self) -> String {
-        format!("{} {}", self.desc, self.key)
+        format!("{} {}", self.key, self.desc)
     }
 }
 
@@ -609,8 +608,11 @@ pub(crate) fn key_label(icons: &crate::config::IconsConfig, key: &str) -> String
 /// The two spans of one hint: plain description, highlighted key.
 fn hint_spans(theme: &ResolvedColors, h: &Hint) -> [Span<'static>; 2] {
     [
-        Span::styled(format!("{} ", h.desc), fg(theme.foreground)),
-        Span::styled(h.key.clone(), fg(theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("{} ", h.key),
+            fg(theme.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(h.desc.clone(), fg(theme.foreground)),
     ]
 }
 
@@ -764,7 +766,7 @@ fn draw_too_small(f: &mut Frame, area: Rect, app: &mut App) {
             Line::from(Span::styled(" terminal too small ", title_style(theme))),
             Line::from(""),
             Line::from(Span::raw(
-                "enlarge the window to at least 26x7 to show the dashboard",
+                "Enlarge the window to at least 26x7 to show the dashboard",
             )),
             hint_line(theme, &app.cfg.icons, &[hint(&app.cfg.icons, "quit", "q")]),
         ]))
@@ -782,7 +784,7 @@ fn draw_overlay_too_small(f: &mut Frame, area: Rect, app: &App, kind: OverlayKin
     let ic = &app.cfg.icons;
     let text = Text::from(vec![
         Line::from(Span::raw(format!(
-            "enlarge the window to at least {min_w}x{min_h}"
+            "Enlarge the window to at least {min_w}x{min_h}"
         ))),
         Line::from(""),
         hint_line(theme, ic, &[hint(ic, "dismiss", "esc")]),
@@ -1160,7 +1162,7 @@ fn draw_todo(f: &mut Frame, area: Rect, app: &App) {
     let (name, ghost) = match &pad {
         crate::todo::Pad::Global => (
             "global".to_string(),
-            "the next steps you cannot start yet — kept for every repository".to_string(),
+            "The next steps you cannot start yet — kept for every repository".to_string(),
         ),
         crate::todo::Pad::Repo(path) => {
             let name = app
@@ -1169,7 +1171,7 @@ fn draw_todo(f: &mut Frame, area: Rect, app: &App) {
                 .iter()
                 .find(|r| &r.path == path)
                 .map_or_else(|| path.display().to_string(), |r| r.name.clone());
-            let ghost = format!("the next steps for {name} you cannot start yet");
+            let ghost = format!("The next steps for {name} you cannot start yet");
             (name, ghost)
         }
     };
@@ -1333,22 +1335,22 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
             crate::ansi::styled_text(&win, app.cfg.preview.colors)
         } else {
             Text::from(format!(
-                "capturing{} (select the shell in the tree)",
+                "Capturing{} (select the shell in the tree)",
                 app.cfg.icons.ellipsis
             ))
         }
     } else if app.selected_shell().is_some() {
-        Text::from("no live pane for this shell")
+        Text::from("No live pane for this shell")
     } else if let Some(repo) = selected_repository_without_shell(app) {
         // The one row whose panel is empty because nothing has been
         // started yet — and starting it is one keystroke, so the panel
         // says which.
         Text::from(format!(
-            "no shell in this repository yet\n\n\
-             press `a` to start one in the repository's own checkout\n\
+            "No shell in this repository yet\n\n\
+             Press `a` to start one in the repository's own checkout\n\
              ({}), for the commands you would otherwise run by\n\
              hand: make, mise run …, cat config.\n\n\
-             it starts on the first press and stays until `d` closes it.",
+             It starts on the first press and stays until `d` closes it.",
             app.cfg.base_branch_at(&repo.path),
         ))
     } else if selected_worktree_has_no_shell(app) {
@@ -1356,13 +1358,13 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         // generic hint below would send the user hunting for a child row
         // that does not exist.
         Text::from(
-            "no agent shell for this worktree\n\n\
-             wingman has no tmux window here, so there is nothing to\n\
+            "No agent shell for this worktree\n\n\
+             Wingman has no tmux window here, so there is nothing to\n\
              preview, dock or send to.\n\n\
-             press `a` to start a shell in this worktree.",
+             Press `a` to start a shell in this worktree.",
         )
     } else {
-        Text::from("select a shell to preview its contents")
+        Text::from("Select a shell to preview its contents")
     };
     let p = Paragraph::new(text)
         .block(block)
@@ -1484,7 +1486,7 @@ fn draw_statusbar(f: &mut Frame, area: Rect, app: &mut App) {
                 cx += sp.chars().count() as u16;
             }
             let start = cx;
-            // `<description> <key>`, the key highlighted — the same shape the
+            // `<key> <description>`, the key highlighted — the same shape the
             // modal footers and the help palette use.
             cx += entry.label().chars().count() as u16;
             spans.extend(hint_spans(theme, entry));
@@ -1855,18 +1857,18 @@ fn help_row<'a>(
     let one_line = UnicodeWidthStr::width(action) + 1 + UnicodeWidthStr::width(key_str) <= body;
     if one_line {
         out.push(Line::from(vec![
-            Span::styled(format!("{pad}{action} "), fg(theme.foreground)),
-            Span::styled(key_str.to_string(), key_style),
+            Span::styled(format!("{pad}{key_str} "), key_style),
+            Span::styled(action.to_string(), fg(theme.foreground)),
         ]));
     } else {
-        for l in wrap(action, body) {
+        for l in wrap(key_str, body) {
+            out.push(Line::from(Span::styled(format!("{pad}{l}"), key_style)));
+        }
+        for l in wrap(action, body.saturating_sub(2)) {
             out.push(Line::from(Span::styled(
-                format!("{pad}{l}"),
+                format!("{pad}  {l}"),
                 fg(theme.foreground),
             )));
-        }
-        for l in wrap(key_str, body.saturating_sub(2)) {
-            out.push(Line::from(Span::styled(format!("{pad}  {l}"), key_style)));
         }
     }
     if desc.len() > 1 {
@@ -2277,7 +2279,7 @@ fn dialog_max_w(area: Rect) -> u16 {
 
 fn draw_input(f: &mut Frame, app: &App) -> Popup {
     let theme = &app.theme.colors;
-    let (title, label) = ("New Worktree", "worktree name");
+    let (title, label) = ("New Worktree", "Worktree name");
     let Mode::Input { text, agent } = &app.mode else {
         return Rect::default().into();
     };
@@ -2298,8 +2300,8 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
     let base = app.new_worktree_base();
     let inline_indent = [
         label,
-        if has_agent { "agent" } else { label },
-        if base.is_some() { "base branch" } else { label },
+        if has_agent { "Agent" } else { label },
+        if base.is_some() { "Base branch" } else { label },
     ]
     .iter()
     .map(|l| UnicodeWidthStr::width(*l) + 2)
@@ -2356,7 +2358,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
             cursor_row = lines.len() + if inline { 0 } else { 1 };
             cursor_text = agent_shown;
         }
-        lines.extend(field("agent", agent_shown, a.focused));
+        lines.extend(field("Agent", agent_shown, a.focused));
     }
     if let Some(hint) = base {
         let shown = if hint.missing {
@@ -2364,7 +2366,7 @@ fn draw_input(f: &mut Frame, app: &App) -> Popup {
         } else {
             hint.branch.clone()
         };
-        lines.extend(field("base branch", tail_to_width(&shown, field_w), false));
+        lines.extend(field("Base branch", tail_to_width(&shown, field_w), false));
     }
     let ic = &app.cfg.icons;
     lines.push(Line::from(""));
@@ -2644,7 +2646,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
-        let (label, text) = ("worktree name", "foo");
+        let (label, text) = ("Worktree name", "foo");
         app.mode = Mode::Input {
             text: text.into(),
             agent: None,
@@ -2680,13 +2682,13 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, &mut app)).expect("draw");
         let body = buffer_text(&terminal);
-        assert!(body.contains("worktree name"), "the name field is drawn");
-        assert!(body.contains("agent"), "the agent field is drawn");
+        assert!(body.contains("Worktree name"), "the name field is drawn");
+        assert!(body.contains("Agent"), "the agent field is drawn");
         assert!(
             body.contains("claude"),
             "prefilled with the repository agent"
         );
-        assert!(body.contains("agent field tab"), "tab is hinted: {body}");
+        assert!(body.contains("tab agent field"), "tab is hinted: {body}");
         let area = app.popup_area.expect("input popup is on screen");
         let name_row = terminal.get_cursor_position().unwrap();
         assert_eq!(name_row.y, area.y + 1, "the caret starts on the name field");
@@ -2775,7 +2777,7 @@ mod tests {
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             let text = buffer_text(&terminal);
             assert!(
-                text.contains("base branch:   checked-out"),
+                text.contains("Base branch:   checked-out"),
                 "popup must name the checkout: {text:?}"
             );
 
@@ -2784,7 +2786,7 @@ mod tests {
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             let text = buffer_text(&terminal);
             assert!(
-                text.contains("base branch:   main"),
+                text.contains("Base branch:   main"),
                 "popup must name the configured base: {text:?}"
             );
             assert!(!text.contains("not found"), "{text:?}");
@@ -3180,7 +3182,7 @@ mod tests {
         app.sel = Sel::Worktree(0, 0);
         let text = render_wide(&mut app);
         assert!(
-            text.contains("no agent shell for this worktree"),
+            text.contains("No agent shell for this worktree"),
             "the preview names the state: {text:?}"
         );
         assert!(
@@ -4115,13 +4117,13 @@ mod tests {
         let mut app = seeded_app();
         let short = help_text(&mut app, 80, 18);
         assert!(
-            short.contains("scroll j/k"),
+            short.contains("j/k scroll"),
             "short frame must advertise scrolling: {short:?}"
         );
         let mut app = seeded_app();
         let tall = help_text(&mut app, 120, 80);
         assert!(
-            !tall.contains("scroll j/k"),
+            !tall.contains("j/k scroll"),
             "tall frame fits everything: {tall:?}"
         );
     }
@@ -4238,7 +4240,7 @@ mod tests {
             !text.contains("config problem 0"),
             "scrolled-out diagnostics are gone"
         );
-        assert!(text.contains("scroll j/k"), "scroll hint advertised");
+        assert!(text.contains("j/k scroll"), "scroll hint advertised");
     }
 
     /// The diagnostics overlay on a tiny frame is refused with the standard
@@ -4760,7 +4762,7 @@ mod tests {
             "the panel says how far back it is parked:\n{text}"
         );
         assert!(
-            text.contains("live Esc"),
+            text.contains("Esc live"),
             "the statusbar offers the way back to the tail:\n{text}"
         );
     }
@@ -4785,7 +4787,7 @@ mod tests {
             text.contains("2 merge to LOCAL <base_branch>"),
             "second entry is numbered and listed in full, got: {text}"
         );
-        assert!(text.contains("send ↵"), "modal states its keys");
+        assert!(text.contains("↵ send"), "modal states its keys");
         assert!(
             app.popup_area.is_some(),
             "modal must register its dismissable rect"
@@ -4839,7 +4841,7 @@ mod tests {
             .map(|(h, _)| h.label())
             .collect();
         assert!(
-            labels.iter().any(|l| l == "predefined p"),
+            labels.iter().any(|l| l == "p predefined"),
             "shell shortcuts: {labels:?}"
         );
         assert!(
@@ -4861,7 +4863,7 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(h, a)| h.label() == "close d" && *a == BarAction::DeleteShell),
+                .any(|(h, a)| h.label() == "d close" && *a == BarAction::DeleteShell),
             "a shell closes itself: {entries:?}"
         );
         assert!(
@@ -4874,7 +4876,7 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(h, a)| h.label() == "delete d" && *a == BarAction::DeleteWorktree),
+                .any(|(h, a)| h.label() == "d delete" && *a == BarAction::DeleteWorktree),
             "a worktree deletes itself: {entries:?}"
         );
 
@@ -4915,7 +4917,7 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
         assert!(
-            text.contains("no shell in this repository yet"),
+            text.contains("No shell in this repository yet"),
             "the empty panel names its state: {text}"
         );
         assert!(
@@ -4979,7 +4981,7 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(h, a)| h.label() == "shell a" && *a == BarAction::RepoShell),
+                .any(|(h, a)| h.label() == "a shell" && *a == BarAction::RepoShell),
             "`a` is named: {:?}",
             entries.iter().map(|(h, _)| h.label()).collect::<Vec<_>>()
         );
@@ -4998,7 +5000,7 @@ mod tests {
         assert!(
             bar_entries(&app)
                 .iter()
-                .any(|(h, a)| h.label() == "close d" && *a == BarAction::CloseRepoShell),
+                .any(|(h, a)| h.label() == "d close" && *a == BarAction::CloseRepoShell),
             "and `d` appears once there is one"
         );
     }
@@ -5049,7 +5051,7 @@ mod tests {
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             let text = buffer_text(&terminal);
             assert!(
-                text.contains("cancel esc"),
+                text.contains("esc cancel"),
                 "popup must keep its footer at height {height}: {text}"
             );
         }
@@ -5261,7 +5263,7 @@ mod tests {
             // "no" to `n` and spells that instead, since `esc` cancels every
             // overlay and does not need re-teaching per dialog.
             assert!(
-                footer.contains("esc") || footer.contains("cancel n"),
+                footer.contains("esc") || footer.contains("n cancel"),
                 "{name}: the bottom content row names the way out, got {footer:?}"
             );
             assert!(
@@ -5333,13 +5335,17 @@ mod tests {
                         .all(|(i, c)| buf[(x + i as u16, y)].symbol() == c.to_string())
                 })
                 .unwrap_or_else(|| panic!("bar shows {label:?}"));
-            let key_at = x0 + (entry.desc.chars().count() + 1) as u16;
+            let key_at = x0;
             assert_eq!(
                 buf[(key_at, y)].fg,
                 accent,
                 "{label:?}: the key is highlighted"
             );
-            assert_ne!(buf[(x0, y)].fg, accent, "{label:?}: the description is not");
+            assert_ne!(
+                buf[(x0 + label.chars().count() as u16 - 1, y)].fg,
+                accent,
+                "{label:?}: the description is not"
+            );
         }
     }
 
@@ -5427,10 +5433,10 @@ mod tests {
                 // The way out survives the width: a footer cut at the
                 // border would lose `cancel esc`, which is the one hint a
                 // dialog cannot afford to lose. (The confirm spells its
-                // own `cancel n` instead — `esc` cancels every overlay and
+                // own `n cancel` instead — `esc` cancels every overlay and
                 // is not re-taught per dialog.)
                 assert!(
-                    text.contains("esc") || text.contains("cancel n"),
+                    text.contains("esc") || text.contains("n cancel"),
                     "{:?} at {w}x{h} has no way out on screen: {text}",
                     app.mode
                 );

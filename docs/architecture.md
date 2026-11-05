@@ -1148,14 +1148,11 @@ duplication docking exists to end.
   click on the wrapped row still runs its action. A toast wraps the same
   way, up to three rows: errors are sentences, and a cut one names neither
   what failed nor why.
-- **One shape for every shortcut hint**: `<action> <key>` ("cancel esc"),
-  with only the key in the accent colour, everywhere the app names a key —
-  status bar, modal footers, help palette (`ui::Hint`, `ui::hint_line`). The
-  three used to disagree: the bar led with the key (`n worktree`), modal
-  footers led with the key and spelled it out in prose (`Enter to submit ·
-  Esc to cancel`), the help palette put keys in a left-hand column. Action
-  first is what a reader scans for, and one shape means learning the bar
-  teaches the modals. Keys with a glyph form (`enter`, `arrows`) resolve
+- **One shape for every shortcut hint**: `<key> <action>` ("esc cancel"),
+  joined by ` | `, with only the key in the accent colour, everywhere the
+  app names a key — status bar, modal footers, help palette (`ui::Hint`,
+  `ui::hint_line`). Key first is the lazygit/lazycassandra convention, and
+  one shape means learning the bar teaches the modals. Keys with a glyph form (`enter`, `arrows`) resolve
   through `[icons]`, so the `ascii` preset spells them out.
 - **Every modal is padded and ends with its shortcuts**: `MODAL_PADDING`
   (one column left and right, nothing vertically) lives on `popup_block`, so
@@ -1236,7 +1233,7 @@ duplication docking exists to end.
   - **Footers wrap, and the modal that owns one sizes itself to it.**
     `hint_packing` splits the hints across rows; `footer_h` reports how many
     rows that took, and each modal adds it instead of the old constant. A
-    single truncated row would have dropped `cancel esc` — the one hint a
+    single truncated row would have dropped `esc cancel` — the one hint a
     dialog cannot lose — at exactly the width where it is hardest to guess.
     `draw_footer_rule` takes the row count so the rule still lands directly
     above the hints, which is why the overlay draw functions return a
@@ -1338,7 +1335,7 @@ duplication docking exists to end.
   default; config files written before this keep their old `theme = "dracula"`
   line and load exactly as before).
 - **An accent must be measurably far from the foreground**: `accent` prints
-  directly beside `foreground` in every shortcut hint (`<action> <key>`), on
+  directly beside `foreground` in every shortcut hint (`<key> <action>`), on
   one or two characters with no space of its own, so the two have to separate
   at a glance. The three dark Catppuccin flavours originally took lavender —
   the swatch that sits next to text in the palette — and measured ΔE 12, 15

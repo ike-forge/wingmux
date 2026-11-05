@@ -168,7 +168,7 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 #guide_branch = "├─"            # tree guide, more siblings below
 #guide_last = "└─"              # tree guide, last sibling
 #guide_vertical = "│"          # tree guide, carried down a column
-#separator = " · "               # between status-bar fields
+#separator = " | "               # between status-bar fields
 #warn = "⚠"                    # startup diagnostics indicator
 #ellipsis = "…"                # marks text truncated to fit
 #enter = "↵"                   # names the Enter key in shortcut hints
@@ -426,7 +426,7 @@ impl IconsConfig {
             guide_branch: "├─".into(),
             guide_last: "└─".into(),
             guide_vertical: "│".into(),
-            separator: " · ".into(),
+            separator: " | ".into(),
             warn: "⚠".into(),
             ellipsis: "…".into(),
             enter: "↵".into(),
