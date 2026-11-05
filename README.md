@@ -600,7 +600,7 @@ reads as new until it has commits of its own.
 | `guide_branch` | `├─` | `├─` | `├─` | guide, non-last child |
 | `guide_last` | `└─` | `└─` | `└─` | guide, last child |
 | `guide_vertical` | `│` | `│` | `│` | guide, continuing parent |
-| `separator` | ` · ` | ` · ` | ` · ` | between bar/help entries |
+| `separator` | ` | ` | ` | ` | ` | ` | between bar/help entries |
 | `warn` | `⚠` | `⚠` | `⚠` | startup diagnostics |
 | `ellipsis` | `…` | `…` | `…` | truncation marker |
 | `enter` | `↵` | `↵` | `↵` | the Enter key, in shortcut hints |
@@ -639,8 +639,8 @@ none) are expandable.
 
 The statusbar carries the contextual shortcuts and nothing else — no app
 name, no session chip, no repository count. Every shortcut in the app —
-status bar, modal footer, help palette — is written the same way, `<action>
-<key>` ("cancel esc"), with only the key in the accent colour and glyphs
+status bar, modal footer, help palette — is written the same way, `<key>
+<action>` ("esc cancel"), with only the key in the accent colour and glyphs
 from `[icons]` where a key has one (`↵`, `↑↓`). On a frame too narrow to
 hold them all the entries wrap onto a second bar row instead of losing
 their tail at the border. Notices ("worktree 'x' created",

@@ -1148,14 +1148,11 @@ duplication docking exists to end.
   click on the wrapped row still runs its action. A toast wraps the same
   way, up to three rows: errors are sentences, and a cut one names neither
   what failed nor why.
-- **One shape for every shortcut hint**: `<action> <key>` ("cancel esc"),
-  with only the key in the accent colour, everywhere the app names a key —
-  status bar, modal footers, help palette (`ui::Hint`, `ui::hint_line`). The
-  three used to disagree: the bar led with the key (`n worktree`), modal
-  footers led with the key and spelled it out in prose (`Enter to submit ·
-  Esc to cancel`), the help palette put keys in a left-hand column. Action
-  first is what a reader scans for, and one shape means learning the bar
-  teaches the modals. Keys with a glyph form (`enter`, `arrows`) resolve
+- **One shape for every shortcut hint**: `<key> <action>` ("esc cancel"),
+  joined by ` | `, with only the key in the accent colour, everywhere the
+  app names a key — status bar, modal footers, help palette (`ui::Hint`,
+  `ui::hint_line`). Key first is the lazygit/lazycassandra convention, and
+  one shape means learning the bar teaches the modals. Keys with a glyph form (`enter`, `arrows`) resolve
   through `[icons]`, so the `ascii` preset spells them out.
 - **Every modal is padded and ends with its shortcuts**: `MODAL_PADDING`
   (one column left and right, nothing vertically) lives on `popup_block`, so

@@ -571,9 +571,8 @@ pub(crate) fn sep(icons: &crate::config::IconsConfig) -> &str {
 }
 
 /// One shortcut hint. Every hint in the app — status bar, modal footer,
-/// help palette — is written `<description> <key>` ("cancel esc"): the
-/// word says what happens, the key comes last and is the only part that
-/// is highlighted, so the eye finds it without reading the sentence.
+/// help palette — is written `<key> <description>` ("esc cancel"), the
+/// lazy* tradition: the key leads and is the only highlighted part.
 #[derive(Debug, Clone)]
 pub(crate) struct Hint {
     pub desc: String,
@@ -583,7 +582,7 @@ pub(crate) struct Hint {
 impl Hint {
     /// The hint as one string, exactly as it renders.
     pub(crate) fn label(&self) -> String {
-        format!("{} {}", self.desc, self.key)
+        format!("{} {}", self.key, self.desc)
     }
 }
 
@@ -609,8 +608,11 @@ pub(crate) fn key_label(icons: &crate::config::IconsConfig, key: &str) -> String
 /// The two spans of one hint: plain description, highlighted key.
 fn hint_spans(theme: &ResolvedColors, h: &Hint) -> [Span<'static>; 2] {
     [
-        Span::styled(format!("{} ", h.desc), fg(theme.foreground)),
-        Span::styled(h.key.clone(), fg(theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("{} ", h.key),
+            fg(theme.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(h.desc.clone(), fg(theme.foreground)),
     ]
 }
 
@@ -1484,7 +1486,7 @@ fn draw_statusbar(f: &mut Frame, area: Rect, app: &mut App) {
                 cx += sp.chars().count() as u16;
             }
             let start = cx;
-            // `<description> <key>`, the key highlighted — the same shape the
+            // `<key> <description>`, the key highlighted — the same shape the
             // modal footers and the help palette use.
             cx += entry.label().chars().count() as u16;
             spans.extend(hint_spans(theme, entry));
@@ -1855,18 +1857,18 @@ fn help_row<'a>(
     let one_line = UnicodeWidthStr::width(action) + 1 + UnicodeWidthStr::width(key_str) <= body;
     if one_line {
         out.push(Line::from(vec![
-            Span::styled(format!("{pad}{action} "), fg(theme.foreground)),
-            Span::styled(key_str.to_string(), key_style),
+            Span::styled(format!("{pad}{key_str} "), key_style),
+            Span::styled(action.to_string(), fg(theme.foreground)),
         ]));
     } else {
-        for l in wrap(action, body) {
+        for l in wrap(key_str, body) {
+            out.push(Line::from(Span::styled(format!("{pad}{l}"), key_style)));
+        }
+        for l in wrap(action, body.saturating_sub(2)) {
             out.push(Line::from(Span::styled(
-                format!("{pad}{l}"),
+                format!("{pad}  {l}"),
                 fg(theme.foreground),
             )));
-        }
-        for l in wrap(key_str, body.saturating_sub(2)) {
-            out.push(Line::from(Span::styled(format!("{pad}  {l}"), key_style)));
         }
     }
     if desc.len() > 1 {
@@ -2686,7 +2688,7 @@ mod tests {
             body.contains("claude"),
             "prefilled with the repository agent"
         );
-        assert!(body.contains("agent field tab"), "tab is hinted: {body}");
+        assert!(body.contains("tab agent field"), "tab is hinted: {body}");
         let area = app.popup_area.expect("input popup is on screen");
         let name_row = terminal.get_cursor_position().unwrap();
         assert_eq!(name_row.y, area.y + 1, "the caret starts on the name field");
@@ -4115,13 +4117,13 @@ mod tests {
         let mut app = seeded_app();
         let short = help_text(&mut app, 80, 18);
         assert!(
-            short.contains("scroll j/k"),
+            short.contains("j/k scroll"),
             "short frame must advertise scrolling: {short:?}"
         );
         let mut app = seeded_app();
         let tall = help_text(&mut app, 120, 80);
         assert!(
-            !tall.contains("scroll j/k"),
+            !tall.contains("j/k scroll"),
             "tall frame fits everything: {tall:?}"
         );
     }
@@ -4238,7 +4240,7 @@ mod tests {
             !text.contains("config problem 0"),
             "scrolled-out diagnostics are gone"
         );
-        assert!(text.contains("scroll j/k"), "scroll hint advertised");
+        assert!(text.contains("j/k scroll"), "scroll hint advertised");
     }
 
     /// The diagnostics overlay on a tiny frame is refused with the standard
@@ -4760,7 +4762,7 @@ mod tests {
             "the panel says how far back it is parked:\n{text}"
         );
         assert!(
-            text.contains("live Esc"),
+            text.contains("Esc live"),
             "the statusbar offers the way back to the tail:\n{text}"
         );
     }
@@ -4785,7 +4787,7 @@ mod tests {
             text.contains("2 merge to LOCAL <base_branch>"),
             "second entry is numbered and listed in full, got: {text}"
         );
-        assert!(text.contains("send ↵"), "modal states its keys");
+        assert!(text.contains("↵ send"), "modal states its keys");
         assert!(
             app.popup_area.is_some(),
             "modal must register its dismissable rect"
@@ -4839,7 +4841,7 @@ mod tests {
             .map(|(h, _)| h.label())
             .collect();
         assert!(
-            labels.iter().any(|l| l == "predefined p"),
+            labels.iter().any(|l| l == "p predefined"),
             "shell shortcuts: {labels:?}"
         );
         assert!(
@@ -4861,7 +4863,7 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(h, a)| h.label() == "close d" && *a == BarAction::DeleteShell),
+                .any(|(h, a)| h.label() == "d close" && *a == BarAction::DeleteShell),
             "a shell closes itself: {entries:?}"
         );
         assert!(
@@ -4874,7 +4876,7 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(h, a)| h.label() == "delete d" && *a == BarAction::DeleteWorktree),
+                .any(|(h, a)| h.label() == "d delete" && *a == BarAction::DeleteWorktree),
             "a worktree deletes itself: {entries:?}"
         );
 
@@ -4979,7 +4981,7 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(h, a)| h.label() == "shell a" && *a == BarAction::RepoShell),
+                .any(|(h, a)| h.label() == "a shell" && *a == BarAction::RepoShell),
             "`a` is named: {:?}",
             entries.iter().map(|(h, _)| h.label()).collect::<Vec<_>>()
         );
@@ -4998,7 +5000,7 @@ mod tests {
         assert!(
             bar_entries(&app)
                 .iter()
-                .any(|(h, a)| h.label() == "close d" && *a == BarAction::CloseRepoShell),
+                .any(|(h, a)| h.label() == "d close" && *a == BarAction::CloseRepoShell),
             "and `d` appears once there is one"
         );
     }
@@ -5049,7 +5051,7 @@ mod tests {
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             let text = buffer_text(&terminal);
             assert!(
-                text.contains("cancel esc"),
+                text.contains("esc cancel"),
                 "popup must keep its footer at height {height}: {text}"
             );
         }
@@ -5261,7 +5263,7 @@ mod tests {
             // "no" to `n` and spells that instead, since `esc` cancels every
             // overlay and does not need re-teaching per dialog.
             assert!(
-                footer.contains("esc") || footer.contains("cancel n"),
+                footer.contains("esc") || footer.contains("n cancel"),
                 "{name}: the bottom content row names the way out, got {footer:?}"
             );
             assert!(
@@ -5333,13 +5335,17 @@ mod tests {
                         .all(|(i, c)| buf[(x + i as u16, y)].symbol() == c.to_string())
                 })
                 .unwrap_or_else(|| panic!("bar shows {label:?}"));
-            let key_at = x0 + (entry.desc.chars().count() + 1) as u16;
+            let key_at = x0;
             assert_eq!(
                 buf[(key_at, y)].fg,
                 accent,
                 "{label:?}: the key is highlighted"
             );
-            assert_ne!(buf[(x0, y)].fg, accent, "{label:?}: the description is not");
+            assert_ne!(
+                buf[(x0 + label.chars().count() as u16 - 1, y)].fg,
+                accent,
+                "{label:?}: the description is not"
+            );
         }
     }
 
@@ -5427,10 +5433,10 @@ mod tests {
                 // The way out survives the width: a footer cut at the
                 // border would lose `cancel esc`, which is the one hint a
                 // dialog cannot afford to lose. (The confirm spells its
-                // own `cancel n` instead — `esc` cancels every overlay and
+                // own `n cancel` instead — `esc` cancels every overlay and
                 // is not re-taught per dialog.)
                 assert!(
-                    text.contains("esc") || text.contains("cancel n"),
+                    text.contains("esc") || text.contains("n cancel"),
                     "{:?} at {w}x{h} has no way out on screen: {text}",
                     app.mode
                 );

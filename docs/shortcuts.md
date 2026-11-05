@@ -399,8 +399,8 @@ same strings (see `HELP_GROUPS` in `src/ui.rs` and `bar_entries` in
 `src/ui.rs`). Keyboard-only users see the key in the accent colour; mouse
 users click the same words.
 
-Every hint is written in one shape — `<action> <key>`, e.g. `cancel esc`,
-`dock ↵` — and only the key carries the accent colour, so the eye finds it
+Every hint is written in one shape — `<key> <action>`, e.g. `esc cancel`,
+`↵ dock` — and only the key carries the accent colour, so the eye finds it
 without reading the sentence (`ui::Hint`, `ui::hint_line`). Keys with a glyph
 form take it from `[icons]` (`enter`, `arrows`), so the `ascii` preset spells
 them out instead. Every modal ends with such a hint row, one blank row above
