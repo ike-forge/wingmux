@@ -675,7 +675,7 @@ mise run fmt        # cargo fmt --check
 mise run lint       # cargo clippy --all-targets -- -D warnings
 mise run test       # unit tests + real-tmux integration tests (needs tmux)
 mise run gate       # fmt + lint + test — the pre-commit gate
-mise run install    # release build + link into ~/.local/bin (test from anywhere)
+mise run install    # release build + link as ~/.local/bin/lazywingman-local
 ```
 
 Logs go to `$XDG_STATE_HOME/lazywingman/lazywingman.log` — never stdout
