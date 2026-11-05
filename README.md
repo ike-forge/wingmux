@@ -43,6 +43,14 @@ teardown is automated.
 
 ## Install
 
+With Homebrew (macOS or Linux):
+
+```sh
+brew install ike-forge/tap/lazywingman
+```
+
+From source:
+
 ```sh
 cargo build --release
 # binary at target/release/lazywingman

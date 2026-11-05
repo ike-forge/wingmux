@@ -4,6 +4,8 @@
 
 [tools]
 rust = "1.97"
+# Generates release.yml; `dist-workspace.toml` pins the same version.
+"aqua:axodotdev/cargo-dist" = "0.33.1"
 
 [tasks.build]
 description = "Build the debug binary"
@@ -41,3 +43,7 @@ else
   echo "nothing to do: $dir does not exist"
 fi
 """
+
+[tasks.ci]
+description = "Everything CI gates on"
+depends = ["gate"]

@@ -66,6 +66,15 @@ The underlying cargo commands (from the pre-mise workflow, kept for
 reference): `cargo build`, `cargo fmt --check`, `cargo clippy -- -D
 warnings`, `cargo test`.
 
+## Releases
+
+Run the `Prepare release` workflow (Actions tab, `main`) with a version. It
+bumps `Cargo.toml`, tags, and dispatches `release.yml` (cargo-dist), which
+builds the four targets, creates the GitHub release and pushes the formula to
+`ike-forge/homebrew-tap`. The repo needs a `HOMEBREW_TAP_TOKEN` secret with
+write access to the tap. `release.yml` is generated: edit
+`dist-workspace.toml` and run `dist generate`.
+
 ## Definition of done
 
 - Gating command green: fmt clean, clippy zero warnings, all tests pass
