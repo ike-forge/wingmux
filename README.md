@@ -329,6 +329,7 @@ away from what a state means:
 | `status_idle` | `dim` | nothing to act on, so it recedes |
 | `status_dead` | `dim` | same, and the whole row is muted anyway |
 | `worktree_merged` | `tree_worktree` | the green of the worktree level: a merged worktree is done and safe to delete, and must not read as ordinary text |
+| `shortcut` | `accent` | the key in a shortcut hint; the Catppuccin flavours and `dracula` set it to the yellow lazycassandra uses, so both apps mark keys alike |
 
 Every one of the eight stays optional and overridable: set the key in your
 theme and your value wins, omit it and it borrows (`blocked` falls back to

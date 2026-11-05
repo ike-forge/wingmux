@@ -610,7 +610,7 @@ fn hint_spans(theme: &ResolvedColors, h: &Hint) -> [Span<'static>; 2] {
     [
         Span::styled(
             format!("{} ", h.key),
-            fg(theme.accent).add_modifier(Modifier::BOLD),
+            fg(theme.shortcut).add_modifier(Modifier::BOLD),
         ),
         Span::styled(h.desc.clone(), fg(theme.foreground)),
     ]
@@ -1853,7 +1853,7 @@ fn help_row<'a>(
     let pad = " ".repeat(INDENT);
     let mut out: Vec<Line> = Vec::new();
     let action = desc[0];
-    let key_style = fg(theme.accent).add_modifier(Modifier::BOLD);
+    let key_style = fg(theme.shortcut).add_modifier(Modifier::BOLD);
     let one_line = UnicodeWidthStr::width(action) + 1 + UnicodeWidthStr::width(key_str) <= body;
     if one_line {
         out.push(Line::from(vec![
@@ -5324,7 +5324,7 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer().clone();
         let y = 39;
-        let accent = app.theme.colors.accent;
+        let accent = app.theme.colors.shortcut;
         for (entry, _) in bar_entries(&app) {
             let label = entry.label();
             let x0 = (0..120u16)
