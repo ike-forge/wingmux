@@ -1347,6 +1347,11 @@ duplication docking exists to end.
   and is unmistakable, Catppuccin's lavender on text rates 1.24 and is
   invisible — the difference is hue, which only ΔE sees. ANSI-named roles
   (`ansi.toml`) have no measurable value and are skipped.
+- **Hint keys have their own `shortcut` role**, borrowing `accent` when
+  unset. The Catppuccin flavours and `dracula` set it to the yellow
+  lazycassandra uses for the same job, so the two apps mark keys alike per
+  theme; `accent` keeps the focused-field label. The ΔE test measures
+  `shortcut`, the colour actually printed beside the description.
 - **`ctrl-t` is a live theme picker**: it previews as the cursor moves (the
   whole screen repaints via the same load path), Enter keeps, Esc restores the
   theme it opened with. Built-ins list first (stable order), then user themes.

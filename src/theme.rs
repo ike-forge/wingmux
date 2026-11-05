@@ -104,6 +104,11 @@ pub struct ThemeColors {
     /// Unset, it borrows `tree_worktree`, green in every shipped theme.
     #[serde(default)]
     pub worktree_merged: Option<Spec>,
+    /// The key in a shortcut hint. Unset, it borrows `accent`; a theme sets
+    /// it when the hue that suits borders and labels is not the one that
+    /// makes a key letter stand out beside body text.
+    #[serde(default)]
+    pub shortcut: Option<Spec>,
     pub title_bg: Spec,
     pub title_fg: Spec,
     pub popup_bg: Spec,
@@ -145,6 +150,7 @@ pub struct ResolvedColors {
     pub status_dead: Color,
     pub status_ended: Color,
     pub worktree_merged: Color,
+    pub shortcut: Color,
     pub title_bg: Color,
     pub title_fg: Color,
     pub popup_bg: Color,
@@ -540,6 +546,7 @@ fn resolve_theme(file: ThemeFile, truecolor: bool, monochrome: bool) -> Result<T
             status_dead: resolve(c.status_dead.unwrap_or(c.dim)),
             status_ended: resolve(c.status_ended.unwrap_or(c.foreground)),
             worktree_merged: resolve(c.worktree_merged.unwrap_or(c.tree_worktree)),
+            shortcut: resolve(c.shortcut.unwrap_or(c.accent)),
             title_bg: resolve(c.title_bg),
             title_fg: resolve(c.title_fg),
             popup_bg: resolve(c.popup_bg),
@@ -688,6 +695,7 @@ mod tests {
                 ("status_dead", c.status_dead),
                 ("status_ended", c.status_ended),
                 ("worktree_merged", c.worktree_merged),
+                ("shortcut", c.shortcut),
                 ("selection_bg", c.selection_bg),
             ] {
                 // `ansi.toml` leaves roles on the terminal default, which is
@@ -743,6 +751,7 @@ mod tests {
                 ("status_dead", c.status_dead),
                 ("status_ended", c.status_ended),
                 ("worktree_merged", c.worktree_merged),
+                ("shortcut", c.shortcut),
                 ("title_bg", c.title_bg),
                 ("title_fg", c.title_fg),
                 ("popup_bg", c.popup_bg),
@@ -872,7 +881,11 @@ mod tests {
             let file = parse_theme(content, Path::new(&format!("<builtin:{name}>")))
                 .unwrap_or_else(|e| panic!("theme {name}: {e}"));
             let (Some(accent), Some(text)) = (
-                rgb(file.colors.accent.resolve(true)),
+                rgb(file
+                    .colors
+                    .shortcut
+                    .unwrap_or(file.colors.accent)
+                    .resolve(true)),
                 rgb(file.colors.foreground.resolve(true)),
             ) else {
                 continue;
