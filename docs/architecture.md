@@ -1414,9 +1414,9 @@ duplication docking exists to end.
   configuration rule "make the resolved config inspectable".
 - **`[[messages]]` replaces the built-ins, like every other list**: a config
   that defines any entry defines the whole list (the layering rule "maps merge
-  deeply, lists are replaced outright"). The three defaults — continue, merge
-  to `<base_branch>` and drop the worktree, summarise the work so far: unblock,
-  integrate, take stock — therefore only apply when no layer mentions
+  deeply, lists are replaced outright"). The four defaults — continue, merge
+  to `<base_branch>` and drop the worktree, push the local base to origin,
+  summarise the work so far: unblock, integrate, publish, take stock — therefore only apply when no layer mentions
   `[[messages]]`, and they are written out (commented) on first run, so editing
   them is editing a visible list, not fighting an invisible one. Three because
   the modal gives entries `1`-`9` a single-key shortcut and a picker earns

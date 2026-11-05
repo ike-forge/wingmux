@@ -186,12 +186,15 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 # <worktree_path>; anything else in angle brackets is sent as written.
 # Defining any [[messages]] entry replaces this whole list, like every
 # other list in this file. Entries 1-9 keep a single-key shortcut in the
-# modal. The three below are the built-in defaults.
+# modal. The four below are the built-in defaults.
 #[[messages]]
 #text = "continue"
 
 #[[messages]]
 #text = "merge to LOCAL <base_branch>"
+
+#[[messages]]
+#text = "push LOCAL <base_branch> to origin/<base_branch> (no force-push)"
 
 #[[messages]]
 #text = "summarise what you've changed and what's still left"
@@ -2157,6 +2160,7 @@ pub fn default_messages() -> Vec<MessageConfig> {
     [
         "continue",
         "merge to LOCAL <base_branch>",
+        "push LOCAL <base_branch> to origin/<base_branch> (no force-push)",
         "summarise what you've changed and what's still left",
     ]
     .into_iter()
@@ -2515,15 +2519,16 @@ mod tests {
         vec![
             "continue",
             "merge to LOCAL <base_branch>",
+            "push LOCAL <base_branch> to origin/<base_branch> (no force-push)",
             "summarise what you've changed and what's still left",
         ]
     }
 
-    /// The built-ins are the three moves that carry agent supervision:
-    /// unblock, integrate, take stock. Each keeps a `1`-`9` shortcut and
+    /// The built-ins are the four moves that carry agent supervision:
+    /// unblock, integrate, publish, take stock. Each keeps a `1`-`9` shortcut and
     /// the merge one is a template resolved against the selected shell.
     #[test]
-    fn built_in_messages_are_the_three_agent_staples() {
+    fn built_in_messages_are_the_four_agent_staples() {
         let built_in = default_messages();
         let texts: Vec<&str> = built_in.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(texts, default_texts());
