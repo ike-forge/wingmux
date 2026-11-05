@@ -2,6 +2,14 @@
 name = "lazywingman"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.97"
+license = "0BSD"
+description = "Tmux-native control centre for supervising coding agents across repositories and worktrees"
+repository = "https://github.com/ike-forge/lazywingman"
+homepage = "https://github.com/ike-forge/lazywingman"
+
+[package.metadata.dist]
+dist = true
 
 [dependencies]
 ansi-to-tui = { version = "8.0.1", default-features = false, features = ["zero-copy"] }
