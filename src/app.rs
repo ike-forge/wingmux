@@ -1297,19 +1297,21 @@ impl App {
         let Ok(tmux) = self.require_tmux() else {
             return;
         };
-        // tmux gives a killed pane's columns to either neighbour; claim
-        // them first or a foreign pane beside the strip takes them.
-        if let Some(inside) = &tmux.inside
-            && let Ok((w, _, window)) = tmux.pane_geometry(&inside.pane_id)
-            && let Ok((sw, _, slot_window)) = tmux.pane_geometry(&pane)
-            && window == slot_window
-            && let Err(e) = tmux.resize_pane_width(&inside.pane_id, w + sw + 1)
-        {
-            log::warn!("cannot widen the dashboard pane: {e}");
-        }
+        let strip = tmux.inside.as_ref().and_then(|inside| {
+            let (w, _, window) = tmux.pane_geometry(&inside.pane_id).ok()?;
+            let (sw, _, slot_window) = tmux.pane_geometry(&pane).ok()?;
+            (window == slot_window).then(|| (inside.pane_id.clone(), w + sw + 1))
+        });
         match tmux.kill_pane(&pane) {
             Ok(()) => log::info!("slot {pane} removed"),
             Err(e) => log::warn!("cannot remove slot {pane}: {e}"),
+        }
+        // Which neighbour inherits a killed pane's columns differs across
+        // tmux versions (3.4 left, 3.8 right): reclaim them after the kill.
+        if let Some((dash, width)) = strip
+            && let Err(e) = tmux.resize_pane_width(&dash, width)
+        {
+            log::warn!("cannot widen the dashboard pane: {e}");
         }
     }
 

@@ -789,6 +789,9 @@ mod tests {
                 mine.to_str().unwrap(),
             ],
         );
+        // Identity is per-repo in `temp_repo`; CI has no global one.
+        run(&mine, &["config", "user.name", "wm-test"]);
+        run(&mine, &["config", "user.email", "wm-test@example.com"]);
         let t = Duration::from_secs(10);
         run(&mine, &["commit", "-q", "--allow-empty", "-m", "x"]);
         assert_eq!(Git.upstream_divergence(&mine).unwrap().ahead, 1);
