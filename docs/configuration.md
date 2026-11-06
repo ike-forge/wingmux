@@ -13,6 +13,7 @@ uncommenting a single key under one is enough. Example, uncommented:
 theme = "catppuccin-mocha"  # 7 built-ins; ctrl-t switches live (saved to state)
 poll_interval_ms = 500       # status/preview refresh
 confirm_on_delete = true
+lazygit = "lazygit"          # what ctrl-g runs in a tmux popup (tmux 3.2+); hidden from the bar when not on PATH
 
 [preview]
 colors = "full"              # pane colours as-is; "foreground" drops backgrounds, "none" = plain text

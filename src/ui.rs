@@ -1443,6 +1443,10 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
     // `help` (which stays last, where the eye has learned to find it).
     let before_help = entries.len().saturating_sub(1);
     entries.insert(before_help, (h("todo", "t"), Todo));
+    // Absent lazygit: the bar omits the entry; help lists it muted.
+    if app.lazygit_found {
+        entries.insert(before_help + 1, (h("lazygit", "ctrl-g"), Lazygit));
+    }
     // `Enter` on a shell another dashboard holds does something different
     // enough to deserve a different word: it takes the pane off them.
     if app
@@ -1782,6 +1786,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                     "strip and panes back to their proportions",
                 ],
             ),
+            (
+                &["ctrl-g"],
+                &["lazygit", "popup on the selected repository or worktree"],
+            ),
             (&["ctrl-t"], &["change theme", "live picker"]),
             (&["?"], &["this help", "palette"]),
             (&["q", "Esc"], &["quit"]),
@@ -1809,7 +1817,20 @@ fn help_lines(app: &App, width: usize) -> Vec<Line<'_>> {
                 .map(|k| key_label(ic, k))
                 .collect::<Vec<_>>()
                 .join(s);
-            lines.extend(help_row(theme, width, desc, &key_str, s));
+            let mut row = help_row(theme, width, desc, &key_str, s);
+            // Muted but listed, for discoverability.
+            if *keys == ["ctrl-g"] && !app.lazygit_found {
+                for l in &mut row {
+                    for span in &mut l.spans {
+                        span.style = fg(theme.dim);
+                    }
+                }
+                row.push(Line::from(Span::styled(
+                    format!("    not installed{s}ctrl-g will say so"),
+                    fg(theme.dim),
+                )));
+            }
+            lines.extend(row);
         }
         lines.push(Line::from(""));
     }
@@ -3540,6 +3561,7 @@ mod tests {
                 "close" => assert!(text.contains("close shell"), "bar 'close d' ↔ help"),
                 "live" => assert!(text.contains("live tail"), "bar 'live Esc' ↔ help"),
                 "todo" => assert!(text.contains("todo pad"), "bar 'todo t' ↔ help"),
+                "lazygit" => assert!(text.contains("lazygit"), "bar 'lazygit ctrl-g' ↔ help"),
                 other => panic!("unmapped bar entry: {other:?}"),
             }
         }
@@ -4830,6 +4852,36 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
         assert!(text.contains("too small"), "tiny frame refuses the modal");
+    }
+
+    /// `ctrl-g` is on the bar only when lazygit is installed; the help lists
+    /// it either way, muted when absent.
+    #[test]
+    fn lazygit_entry_follows_availability() {
+        let mut app = seeded_app();
+        app.lazygit_found = true;
+        assert!(
+            bar_entries(&app)
+                .iter()
+                .any(|(_, a)| *a == BarAction::Lazygit)
+        );
+        let on = help_line_count(&app);
+        app.lazygit_found = false;
+        assert!(
+            !bar_entries(&app)
+                .iter()
+                .any(|(_, a)| *a == BarAction::Lazygit)
+        );
+        assert!(
+            help_line_count(&app) > on,
+            "the muted help row carries a reason line"
+        );
+        let rows: Vec<&str> = HELP_GROUPS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter())
+            .flat_map(|(keys, _)| keys.iter().copied())
+            .collect();
+        assert!(rows.contains(&"ctrl-g"), "help lists ctrl-g: {rows:?}");
     }
 
     /// The statusbar advertises `p` on a shell (same words as the help).

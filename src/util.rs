@@ -19,6 +19,22 @@ fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// First word of `command` is an executable: looked up on `$PATH`, or a path if it has a slash.
+pub fn command_exists(command: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(prog) = command.split_whitespace().next() else {
+        return false;
+    };
+    let is_exe = |p: &Path| {
+        p.metadata()
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    };
+    if prog.contains('/') {
+        return is_exe(Path::new(prog));
+    }
+    env::var_os("PATH").is_some_and(|paths| env::split_paths(&paths).any(|d| is_exe(&d.join(prog))))
+}
+
 /// `$XDG_CONFIG_HOME` or `~/.config`.
 pub fn config_home() -> PathBuf {
     env::var_os("XDG_CONFIG_HOME")

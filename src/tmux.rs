@@ -13,7 +13,7 @@
 //! by the integration tests and handy for multi-server setups).
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 
 use crate::dock::{self, ShellId};
 use crate::error::{Error, Result};
@@ -218,6 +218,22 @@ impl Tmux {
     /// pane-cwd lookups).
     pub fn run_raw(&self, args: &[&str]) -> Result<String> {
         self.run(args)
+    }
+
+    /// `display-popup` blocks until the popup closes, so the caller polls the
+    /// returned client. Needs tmux 3.2; older servers fail fast on stderr.
+    pub fn spawn_popup(&self, target: &str, cwd: &Path, command: &str) -> Result<Child> {
+        base_command(&self.socket)
+            .args(["display-popup", "-E", "-w", "90%", "-h", "90%", "-t"])
+            .arg(target)
+            .arg("-d")
+            .arg(cwd)
+            .arg(command)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| Error::Tmux(format!("cannot run tmux: {e}")))
     }
 
     // ---------------------------------------------------------- naming
