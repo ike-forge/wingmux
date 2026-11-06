@@ -1446,6 +1446,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             let mut v = vec![
                 (h("shell", "a"), RepoShell),
                 (h("worktree", "n"), NewWorktree),
+                (h("push", "p"), Push),
             ];
             if app.repo_shell_pane(ri).is_some() {
                 v.push((h("close", "d"), CloseRepoShell));
@@ -1458,7 +1459,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         // unfolds the subtree).
         Sel::Worktree(ri, wi) if app.solo_shell(ri, wi).is_some() => vec![
             (h("dock", "Enter"), Dock),
-            (h("predefined", "p"), PredefinedSend),
+            (h("messages", "m"), PredefinedSend),
             (h("shell", "a"), AddShell),
             (h("select", "v"), VisualStart),
             (h("delete", "d"), DeleteWorktree),
@@ -1473,7 +1474,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         ],
         Sel::Shell(..) => vec![
             (h("dock", "Enter"), Dock),
-            (h("predefined", "p"), PredefinedSend),
+            (h("messages", "m"), PredefinedSend),
             (h("select", "v"), VisualStart),
             (h("close", "d"), DeleteShell),
             (h("help", "?"), Help),
@@ -1766,6 +1767,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             (&["n"], &["new worktree", "worktree + agent shell"]),
             (&["d"], &["close that shell", "the repository stays"]),
             (
+                &["p"],
+                &["push", "git push of the checkout", "any row of it"],
+            ),
+            (
                 &["f"],
                 &[
                     "fetch upstream",
@@ -1784,7 +1789,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                 &["add shell", "picks the agent or a plain shell", "1-9 pick"],
             ),
             (&["Enter"], &["dock", "one-shell worktree"]),
-            (&["p"], &["predefined message", "one-shell worktree"]),
+            (&["m"], &["predefined message", "one-shell worktree"]),
             (
                 &["d"],
                 &["delete worktree", "kills windows", "removes worktree"],
@@ -1798,7 +1803,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                 &["Enter"],
                 &["dock the shell", "its real pane, beside the tree"],
             ),
-            (&["p"], &["predefined message", "Enter sends", "1-9 pick"]),
+            (&["m"], &["predefined message", "Enter sends", "1-9 pick"]),
             (
                 &["d"],
                 &["close shell", "kills the window", "worktree stays"],
@@ -2178,7 +2183,7 @@ fn draw_theme_picker(f: &mut Frame, app: &App) -> Popup {
     Popup { area, hint_rows }
 }
 
-/// The predefined-message modal (`p`): the configured presets as a
+/// The predefined-message modal (`m`): the configured presets as a
 /// numbered list. Same shape as the theme picker — content-sized, cursor
 /// on the selection, keys in the footer.
 fn draw_messages(f: &mut Frame, app: &App) -> Popup {
@@ -2906,7 +2911,7 @@ mod tests {
     }
 
     /// `seeded_app` with a worktree and its single shell selected — the
-    /// state the `p` modal is actually opened from. `trunk` rather than
+    /// state the `m` modal is actually opened from. `trunk` rather than
     /// `main` so a resolved token cannot be confused with a literal.
     fn seeded_app_with_shell() -> App {
         let mut app = seeded_app();
@@ -3625,9 +3630,9 @@ mod tests {
         for (entry, _) in crate::ui::bar_entries(&app2) {
             match entry.desc.as_str() {
                 "help" => assert!(text.contains("this help"), "bar 'help ?' ↔ help row"),
-                "predefined" => assert!(
+                "messages" => assert!(
                     text.contains("predefined message"),
-                    "bar 'predefined p' ↔ help row"
+                    "bar 'messages m' ↔ help row"
                 ),
                 "worktree" => assert!(text.contains("new worktree"), "bar 'worktree n' ↔ help"),
                 "shell" => assert!(text.contains("add shell"), "bar 'shell a' ↔ help"),
@@ -3638,6 +3643,7 @@ mod tests {
                 "live" => assert!(text.contains("live tail"), "bar 'live Esc' ↔ help"),
                 "todo" => assert!(text.contains("todo pad"), "bar 'todo t' ↔ help"),
                 "lazygit" => assert!(text.contains("lazygit"), "bar 'lazygit ctrl-g' ↔ help"),
+                "push" => assert!(text.contains("git push"), "bar 'push p' ↔ help"),
                 other => panic!("unmapped bar entry: {other:?}"),
             }
         }
@@ -4960,7 +4966,7 @@ mod tests {
         assert!(rows.contains(&"ctrl-g"), "help lists ctrl-g: {rows:?}");
     }
 
-    /// The statusbar advertises `p` on a shell (same words as the help).
+    /// The statusbar advertises `m` on a shell (same words as the help).
     #[test]
     fn statusbar_offers_predefined_on_a_shell() {
         let mut app = seeded_app();
@@ -4970,7 +4976,7 @@ mod tests {
             .map(|(h, _)| h.label())
             .collect();
         assert!(
-            labels.iter().any(|l| l == "p predefined"),
+            labels.iter().any(|l| l == "m messages"),
             "shell shortcuts: {labels:?}"
         );
         assert!(
@@ -5020,7 +5026,7 @@ mod tests {
         );
     }
 
-    /// The help palette documents `p` under the shell group.
+    /// The help palette documents `m` under the shell group.
     #[test]
     fn help_documents_predefined_messages() {
         let rows: Vec<&str> = HELP_GROUPS

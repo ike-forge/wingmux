@@ -51,7 +51,7 @@ itself. Then:
 2. `j` / `k` — move; the agent's pane docks beside the tree as you land on it.
 3. `Enter` — type into the agent. Get back with your tmux binding
    (`<prefix> + ←` by default).
-4. `p` — send a canned prompt ("continue", "run CI and push …").
+4. `m` — send a canned prompt ("continue", "run CI and push …").
 
    ![Predefined messages](docs/img/messages.png)
 5. `d` — delete the worktree when its work is merged.
@@ -88,7 +88,8 @@ merge/PR automation. Only worktree teardown is automated.
 | `Enter` | put the cursor in the docked agent pane |
 | `n` | new worktree |
 | `a` | add a shell to a worktree |
-| `p` | send a predefined message |
+| `m` | send a predefined message |
+| `p` | push the selected repository |
 | `t` / `T` | repository / global todo pad |
 | `d` | delete worktree or close shell |
 | `r` / `R` | refresh / reset layout |
@@ -117,7 +118,7 @@ agent = "claude"             # what new worktrees start
 [icons]
 preset = "unicode"           # no Nerd Font? "nerdfont" is the default
 
-[[messages]]                 # the `p` modal
+[[messages]]                 # the `m` modal
 text = "merge to LOCAL <base_branch>"
 ```
 

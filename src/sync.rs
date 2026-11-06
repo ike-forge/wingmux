@@ -77,6 +77,57 @@ impl Fetcher {
     }
 }
 
+/// Slower than a fetch: a push may run pre-push hooks.
+const PUSH_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// User-initiated pushes, one thread each, never queued behind fetches.
+pub struct Pusher {
+    running: Vec<PathBuf>,
+    tx: Sender<Done>,
+    rx: Receiver<Done>,
+}
+
+impl Default for Pusher {
+    fn default() -> Self {
+        let (tx, rx) = mpsc::channel();
+        Pusher {
+            running: Vec::new(),
+            tx,
+            rx,
+        }
+    }
+}
+
+impl Pusher {
+    /// Start a push; false when one is already running for the repository.
+    pub fn submit(&mut self, repo: &Path) -> bool {
+        if self.is_pushing(repo) {
+            return false;
+        }
+        self.running.push(repo.to_path_buf());
+        let (repo, tx) = (repo.to_path_buf(), self.tx.clone());
+        std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(|| Git.push_upstream(&repo, PUSH_TIMEOUT))
+                .unwrap_or_else(|_| Err(Error::Git("push thread panicked".into())));
+            let _ = tx.send(Done { repo, result });
+        });
+        true
+    }
+
+    pub fn is_pushing(&self, repo: &Path) -> bool {
+        self.running.iter().any(|p| p == repo)
+    }
+
+    /// Finished pushes, without blocking.
+    pub fn poll(&mut self) -> Vec<Done> {
+        let done: Vec<Done> = self.rx.try_iter().collect();
+        for d in &done {
+            self.running.retain(|p| *p != d.repo);
+        }
+        done
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

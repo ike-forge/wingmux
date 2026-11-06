@@ -193,7 +193,7 @@ pub const DEFAULT_CONFIG: &str = r#"# Wingmux configuration — written on first
 # "rounded" | "plain".
 #border = "rounded"
 
-# Predefined messages, offered by the `p` modal on a selected shell:
+# Predefined messages, offered by the `m` modal on a selected shell:
 # pick one and it is sent to the agent exactly as if you had typed it.
 # The modal lists each entry's `text` verbatim, so what you read is what
 # the agent gets. These tokens are resolved against the selected shell
@@ -267,7 +267,7 @@ pub struct Config {
     pub icons: IconsConfig,
     pub agents: Vec<AgentConfig>,
     pub repositories: Vec<RepositoryConfig>,
-    /// Predefined messages offered by the `p` modal.
+    /// Predefined messages offered by the `m` modal.
     pub messages: Vec<MessageConfig>,
     /// Diagnostics collected while loading (per configuration rules: a
     /// malformed config never prevents startup — the smallest addressable
@@ -716,7 +716,7 @@ pub struct StatusPatterns {
     pub failed: Vec<String>,
 }
 
-/// One entry of the predefined-message modal (`p`). Only the text: the
+/// One entry of the predefined-message modal (`m`). Only the text: the
 /// modal lists it verbatim and pastes it into the agent pane, so there is
 /// no second name that could describe it inaccurately.
 #[derive(Debug, Clone, Default, Deserialize)]

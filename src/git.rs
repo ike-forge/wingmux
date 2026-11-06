@@ -438,15 +438,33 @@ impl Git {
         if remote.is_empty() || remote == "." || merge.is_empty() {
             return Ok(());
         }
-        let args = ["fetch", "--quiet", "--no-tags", &remote, &merge];
-        let mut c = Self::command(dir, &args);
+        Self::run_unattended(
+            dir,
+            &["fetch", "--quiet", "--no-tags", &remote, &merge],
+            timeout,
+        )
+    }
+
+    /// Push HEAD's branch to its upstream (`git push`). Same no-prompt
+    /// guarantees as [`Git::fetch_upstream`]; unlike it, no upstream is an
+    /// error, since the user asked for a push.
+    pub fn push_upstream(&self, dir: &Path, timeout: Duration) -> Result<()> {
+        Self::run_unattended(dir, &["push", "--quiet"], timeout)
+    }
+
+    /// Run a networked git command that must never prompt or take the tty.
+    fn run_unattended(dir: &Path, args: &[&str], timeout: Duration) -> Result<()> {
+        let verb = args[0];
+        let mut c = Self::command(dir, args);
         c.env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .process_group(0);
-        if std::env::var_os("GIT_SSH_COMMAND").is_none() && get("core.sshCommand".into()).is_empty()
-        {
+        let ssh_set = Self::run_ok(dir, &["config", "--get", "core.sshCommand"])
+            .map(|o| !o.stdout.trim().is_empty())
+            .unwrap_or(false);
+        if std::env::var_os("GIT_SSH_COMMAND").is_none() && !ssh_set {
             c.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
         }
         let mut child = c.spawn()?;
@@ -459,7 +477,7 @@ impl Git {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(Error::Git(format!(
-                    "git fetch {remote} timed out after {}s",
+                    "git {verb} timed out after {}s",
                     timeout.as_secs()
                 )));
             }
@@ -472,10 +490,7 @@ impl Git {
         if let Some(mut s) = child.stderr.take() {
             let _ = s.read_to_string(&mut err);
         }
-        Err(Error::Git(format!(
-            "git fetch {remote} failed: {}",
-            err.trim()
-        )))
+        Err(Error::Git(format!("git {verb} failed: {}", err.trim())))
     }
 }
 
@@ -758,6 +773,30 @@ mod tests {
             &["remote", "set-url", "origin", "/nonexistent/repo.git"],
         );
         assert!(Git.fetch_upstream(&mine, t).is_err());
+    }
+
+    #[test]
+    fn push_upstream_moves_the_remote_and_errors_without_one() {
+        let (_guard, origin) = temp_repo("origin");
+        run(&origin, &["config", "receive.denyCurrentBranch", "ignore"]);
+        let mine = origin.parent().unwrap().join("mine");
+        run(
+            origin.parent().unwrap(),
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                mine.to_str().unwrap(),
+            ],
+        );
+        let t = Duration::from_secs(10);
+        run(&mine, &["commit", "-q", "--allow-empty", "-m", "x"]);
+        assert_eq!(Git.upstream_divergence(&mine).unwrap().ahead, 1);
+        Git.push_upstream(&mine, t).unwrap();
+        assert_eq!(Git.upstream_divergence(&mine).unwrap().ahead, 0);
+
+        // No upstream: the user asked for a push, so say it failed.
+        assert!(Git.push_upstream(&origin, t).is_err());
     }
 
     #[test]

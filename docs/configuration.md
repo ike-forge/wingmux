@@ -43,7 +43,7 @@ preset = "nerdfont"          # "nerdfont" | "unicode" (no patched font) | "none"
 worktree_ahead = ""        # any key overrides the preset; "" draws nothing
 border = "rounded"           # "rounded" | "plain"
 
-[[messages]]                 # `p` modal: canned prompts for the selected shell
+[[messages]]                 # `m` modal: canned prompts for the selected shell
 text = "continue"            # listed and sent verbatim, as if you had typed it
 
 [[messages]]                 # tokens resolved against the selected shell:

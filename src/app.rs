@@ -163,7 +163,7 @@ pub enum Mode {
     AddShell {
         index: usize,
     },
-    /// Predefined-message modal (`p`): the configured messages as a list.
+    /// Predefined-message modal (`m`): the configured messages as a list.
     /// j/k move, digits `1`..`9` pick an entry directly, Enter sends the
     /// selected one, Esc closes. Sending pastes like a human would type.
     Messages {
@@ -551,6 +551,7 @@ pub enum BarAction {
     NewWorktree,
     AddShell,
     PredefinedSend,
+    Push,
     DeleteWorktree,
     DeleteShell,
     /// Start a visual selection of shells (`v`).
@@ -779,6 +780,8 @@ pub struct App {
     pub(crate) remover: crate::remover::Remover,
     /// Upstream fetches behind the repository row's ahead/behind counts.
     pub(crate) fetcher: crate::sync::Fetcher,
+    /// `p` on a repository: pushes in flight.
+    pub(crate) pusher: crate::sync::Pusher,
     /// Repository path → HEAD against its upstream, refilled with
     /// `wt_state` and after each fetch. Absent: no upstream.
     pub(crate) divergence: HashMap<PathBuf, crate::git::Divergence>,
@@ -904,6 +907,7 @@ impl App {
             editor: None,
             remover: Default::default(),
             fetcher: Default::default(),
+            pusher: Default::default(),
             divergence: HashMap::new(),
             fetch_failed: Default::default(),
             auto_fetch: false,
@@ -2206,7 +2210,7 @@ impl App {
     /// makes docking, the preview and the lease follow that row exactly as
     /// they follow a worktree's. What it deliberately does NOT reach is
     /// [`App::selected_shell`] — the `(repository, worktree, shell)` triple
-    /// the send paths take — so `s` and `p` stay unbound on a repository
+    /// the send paths take — so `s` and `m` stay unbound on a repository
     /// row: the presets are agent prompts, and a command you want a shell
     /// to run is a command you type in it.
     pub fn selected_shell_pane(&self) -> Option<String> {
@@ -3211,6 +3215,22 @@ impl App {
             }
             self.count_divergence(&d.repo);
         }
+        for d in self.pusher.poll() {
+            let name = self.repo_display_name(&d.repo);
+            match d.result {
+                Ok(()) => self.notify(format!("pushed '{name}'")),
+                Err(e) => self.notify_err(format!("push '{name}': {e}")),
+            }
+            self.count_divergence(&d.repo);
+        }
+    }
+
+    fn repo_display_name(&self, path: &Path) -> String {
+        self.state
+            .repositories
+            .iter()
+            .find(|r| r.path == path)
+            .map_or_else(|| path.display().to_string(), |r| r.name.clone())
     }
 
     /// Is the worktree's worktree dirty? (drives the --force confirm option)
@@ -4146,7 +4166,8 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.expand_or_attach(),
             KeyCode::Char('n') => self.open_new_worktree(),
             KeyCode::Char('a') => self.open_add_shell(),
-            KeyCode::Char('p') => self.open_messages(),
+            KeyCode::Char('m') => self.open_messages(),
+            KeyCode::Char('p') => self.push_selected(),
             KeyCode::Char('t') => self.open_repo_todo(),
             KeyCode::Char('T') => self.open_todo(crate::todo::Pad::Global),
             KeyCode::Char('d') => match self.sel {
@@ -4180,6 +4201,20 @@ impl App {
                 self.notify(format!("fetching '{name}'"));
             }
             _ => self.notify("Select a repository to fetch"),
+        }
+    }
+
+    /// Push the selected row's repository (its main checkout's branch).
+    fn push_selected(&mut self) {
+        let (Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, ..)) = self.sel;
+        match self.state.repositories.get(ri) {
+            Some(r) if !r.missing => {
+                let name = r.name.clone();
+                if self.pusher.submit(&r.path) {
+                    self.notify(format!("pushing '{name}'"));
+                }
+            }
+            _ => self.notify("Select a repository to push"),
         }
     }
 
@@ -4734,6 +4769,7 @@ impl App {
             BarAction::NewWorktree => self.open_new_worktree(),
             BarAction::AddShell => self.open_add_shell(),
             BarAction::PredefinedSend => self.open_messages(),
+            BarAction::Push => self.push_selected(),
             BarAction::DeleteWorktree => self.confirm_delete_worktree(),
             BarAction::DeleteShell => self.confirm_delete_shell(),
             BarAction::VisualStart => self.start_visual(),
@@ -9398,15 +9434,15 @@ mod tests {
         assert!(matches!(app.mode, Mode::Diagnostics));
     }
 
-    // ---- M11 — predefined messages (`p`) ----
+    // ---- M11 — predefined messages (`m`) ----
 
-    /// `p` on a shell opens the predefined-message modal; anywhere else it
+    /// `m` on a shell opens the predefined-message modal; anywhere else it
     /// says what to select instead (same shape as `s`).
     #[test]
     fn p_opens_predefined_messages_only_on_a_shell() {
         let mut app = app_with_shell();
         app.sel = Sel::Repository(0);
-        app.on_key(key(KeyCode::Char('p'), false));
+        app.on_key(key(KeyCode::Char('m'), false));
         assert!(matches!(app.mode, Mode::Normal), "no modal on a repository");
         assert!(
             app.message
@@ -9416,14 +9452,14 @@ mod tests {
         );
 
         app.sel = Sel::Shell(0, 0, 0);
-        app.on_key(key(KeyCode::Char('p'), false));
+        app.on_key(key(KeyCode::Char('m'), false));
         assert!(
             matches!(app.mode, Mode::Messages { index: 0 }),
             "p opens the modal on the first entry"
         );
     }
 
-    /// A folded one-shell worktree row IS its shell (M11), so `p` opens
+    /// A folded one-shell worktree row IS its shell (M11), so `m` opens
     /// the modal there exactly like `s` sends from it.
     #[test]
     fn p_opens_from_a_folded_worktree_row() {
@@ -9433,7 +9469,7 @@ mod tests {
             app.solo_shell(0, 0).is_some(),
             "the fixture's worktree is folded"
         );
-        app.on_key(key(KeyCode::Char('p'), false));
+        app.on_key(key(KeyCode::Char('m'), false));
         assert!(
             matches!(app.mode, Mode::Messages { index: 0 }),
             "the folded row opens the modal"
@@ -9446,7 +9482,7 @@ mod tests {
     fn predefined_modal_moves_and_esc_cancels() {
         let mut app = app_with_shell();
         let last = app.cfg.messages.len() - 1;
-        app.on_key(key(KeyCode::Char('p'), false));
+        app.on_key(key(KeyCode::Char('m'), false));
         app.on_key(key(KeyCode::Char('j'), false));
         assert!(matches!(app.mode, Mode::Messages { index: 1 }));
         // clamped at the end of the list, however long it is
@@ -9466,7 +9502,7 @@ mod tests {
     fn p_without_configured_messages_notifies() {
         let mut app = app_with_shell();
         app.cfg.messages.clear();
-        app.on_key(key(KeyCode::Char('p'), false));
+        app.on_key(key(KeyCode::Char('m'), false));
         assert!(matches!(app.mode, Mode::Normal));
         assert!(
             app.message
@@ -9494,7 +9530,7 @@ mod tests {
                 },
             ];
 
-            app.on_key(key(KeyCode::Char('p'), false));
+            app.on_key(key(KeyCode::Char('m'), false));
             app.on_key(key(KeyCode::Char('j'), false));
             app.on_key(key(KeyCode::Enter, false));
             assert!(matches!(app.mode, Mode::Normal), "sending closes the modal");
@@ -9531,7 +9567,7 @@ mod tests {
                 },
             ];
 
-            app.on_key(key(KeyCode::Char('p'), false));
+            app.on_key(key(KeyCode::Char('m'), false));
             app.on_key(key(KeyCode::Char('2'), false));
             assert!(matches!(app.mode, Mode::Normal));
 
@@ -9543,7 +9579,7 @@ mod tests {
             );
 
             // a digit past the end of the list does nothing
-            app.on_key(key(KeyCode::Char('p'), false));
+            app.on_key(key(KeyCode::Char('m'), false));
             app.on_key(key(KeyCode::Char('9'), false));
             assert!(
                 matches!(app.mode, Mode::Messages { .. }),
@@ -9627,7 +9663,7 @@ mod tests {
                 text: "wm-merge to <base_branch> now".into(),
             }];
 
-            app.on_key(key(KeyCode::Char('p'), false));
+            app.on_key(key(KeyCode::Char('m'), false));
             app.on_key(key(KeyCode::Enter, false));
 
             std::thread::sleep(std::time::Duration::from_millis(300));
@@ -9648,7 +9684,7 @@ mod tests {
     #[test]
     fn messages_modal_mouse_selects_and_dismisses() {
         let mut app = app_with_shell();
-        app.on_key(key(KeyCode::Char('p'), false));
+        app.on_key(key(KeyCode::Char('m'), false));
         let rect = Rect::new(20, 5, 40, app.cfg.messages.len() as u16 + 3);
         app.popup_area = Some(rect);
 
@@ -9670,7 +9706,7 @@ mod tests {
     fn messages_modal_owns_the_motion_keys() {
         let mut app = app_with_shell();
         let before = app.sel;
-        app.on_key(key(KeyCode::Char('p'), false));
+        app.on_key(key(KeyCode::Char('m'), false));
 
         app.on_key(key(KeyCode::End, false));
         let Mode::Messages { index } = app.mode else {

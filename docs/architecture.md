@@ -268,6 +268,11 @@ pushed from there.
   unless the user set `GIT_SSH_COMMAND` or `core.sshCommand`, and the child
   runs in its own process group: a tty read stops it instead of taking
   keys, and the 30 s timeout kills it.
+- **`p` pushes on demand.** `sync::Pusher` runs a plain `git push` on its own
+  thread, under the same no-prompt rules as fetches but not queued behind
+  them or capped: the user asked for it now. The toast reports the outcome and
+  the counts are re-read, so `↑` drops without a fetch. No upstream is an
+  error here, unlike for fetch.
 - **Offline is normal.** A failed fetch keeps the last counts, dims them,
   and logs the error; no toast.
 
@@ -428,7 +433,7 @@ and `cat config.toml` belong. So the row got a shell of its own.
   `selected_shell` does not.** The pane is what docking, the preview and
   the lease need, and giving the row a pane makes all three follow it for
   free. The `(repository, worktree, shell)` triple is what the *send* paths
-  take, and it stays `None` — so `p` is unbound on the row. The
+  take, and it stays `None` — so `m` is unbound on the row. The
   presets are agent prompts, and a command you want a shell to run is a
   command you type in it.
 - **`d` closes it, and only appears when there is one.** The bar offers
@@ -775,7 +780,7 @@ duplication docking exists to end.
 - **A one-shell worktree is folded, not collapsed**: the nominal case is one
   worktree, one agent, so a worktree with a single shell gets no child row at
   all — its own row carries the shell's status and acts as that shell (`Enter`
-  docks it, `p` sends to it, the preview follows it). Making it "collapsed by
+  docks it, `m` sends to it, the preview follows it). Making it "collapsed by
   default" instead would still cost a keypress to see a row that repeats the
   worktree's name and nothing else. The rule lives in one predicate,
   `App::solo_shell`, and is enforced in `visible_nodes()` so navigation, mouse
@@ -1023,7 +1028,7 @@ duplication docking exists to end.
 
 ## Predefined messages
 
-- **Predefined messages are a picker, not a second editor**: `p` on a shell
+- **Predefined messages are a picker, not a second editor**: `m` on a shell
   opens `Mode::Messages`, a numbered list of the configured presets, and
   `Enter` (or the entry's own digit `1`-`9`) **sends immediately** — no detour
   through an editor: a canned prompt needs no editing, and anything that does

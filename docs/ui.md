@@ -168,7 +168,7 @@ rest, and `d` deletes it like any other.
 
 **The folded row** (`login` above): the nominal case is one worktree, one
 agent, so a worktree with a single shell has no child row at all — its own row
-*is* that shell. It carries the shell's status, and `Enter` / `p` enter its
+*is* that shell. It carries the shell's status, and `Enter` / `m` enter its
 docked pane and send it a predefined message directly. `a` gives the worktree
 a second shell, and the subtree appears. Only worktrees with several shells (or
 none) are expandable.

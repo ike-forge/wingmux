@@ -94,6 +94,7 @@ tail — `help ?`, the way to everything that did not fit, sits at that end.
 | `n` | new worktree (git worktree + branch cut from the repository's base branch, + a shell running the agent its second field names) | create action |
 | `d` | close the inline shell (kills its window; the repository, its worktrees and their agents stay). Absent until there is one to close | vim `d` destructive, confirms; an answer that cannot succeed is not offered |
 | `f` | fetch the repository's upstream, refreshing `↑ahead ↓behind`. Works from any row of the repository | LazyGit `f` = fetch |
+| `p` | `git push` the repository's checkout to its upstream, off the event loop. Works from any row of the repository; the result is a toast | LazyGit `P` = push, kept lower-case: no pull key competes for it |
 
 `Enter` does not start the shell. It used to, and since `Enter`, `l` and
 `→` all expand, every repository opened to look at its worktrees left a
@@ -108,7 +109,7 @@ the commands you would otherwise type by hand — `make`, `mise run …`,
 `cat config.toml` — and the shell you type those in is your own. Nothing is
 sent to it; the window already *is* the shell.
 
-`p` stays unbound on a repository row. The predefined messages are
+`m` is unbound on a repository row. The predefined messages are
 written as agent prompts, and a command you want a shell to run is a command
 you type in it.
 
@@ -117,6 +118,7 @@ you type in it.
 | Key | Meaning | Rule satisfied |
 |---|---|---|
 | `n` | new worktree (sibling; branched from the base branch; its own agent) | create action |
+| `m` | send a predefined message, on a one-shell worktree's row | mnemonic: messages |
 | `a` | add a shell to the worktree (picker: the worktree's own agent command, the other configured agents, or a plain `$SHELL`) | add action |
 | `d` | delete worktree (kills windows, removes worktree; `f` = force when dirty or locked) | vim `d` destructive, confirms; `f` differs by position (confirm mode, not navigation) |
 | `Enter` | on a one-shell worktree: dock that shell (the folded row *is* the shell). With no shell at all it says so and points at `a` — never a silent no-op | no dead keys |
@@ -127,6 +129,7 @@ you type in it.
 |---|---|---|
 | `Enter` / `l` | dock the shell: its real tmux pane swaps in beside the tree and takes the cursor | domain convention (open the thing the row stands for) |
 | `d` | close this shell (kills its window; the worktree and its other shells stay) | vim `d` destructive, confirms; the object is the selected row |
+| `m` | predefined messages: pick a configured prompt and send it to the shell | mnemonic: messages |
 | `v` | start a visual selection | vim visual mode; the anchor is the row under the cursor |
 
 ### Visual selection
