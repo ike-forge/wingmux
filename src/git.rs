@@ -254,7 +254,7 @@ impl Git {
         // git refuses to remove a worktree from inside itself, and running
         // from an unrelated repo misidentifies it — so run from the worktree's
         // main repo, discovered via its `.git` file. A missing `.git` file
-        // only means the DIRECTORY is gone (deleted outside wingman): git
+        // only means the DIRECTORY is gone (deleted outside wingmux): git
         // still lists the worktree as `prunable` and still holds its branch,
         // so fall back to the repository's own main repo and remove it there.
         let main = match main_repo_of_worktree(wt_path) {
@@ -734,7 +734,7 @@ mod tests {
         git.worktree_remove(&repo, &wt_path, false).unwrap();
     }
 
-    /// A worktree whose DIRECTORY was deleted outside wingman stays
+    /// A worktree whose DIRECTORY was deleted outside wingmux stays
     /// registered in git (`prunable`) and keeps holding its branch.
     /// Removing the worktree has to clear that registration too — otherwise
     /// `git worktree list` keeps reporting it and the worktree reappears on

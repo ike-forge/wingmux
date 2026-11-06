@@ -1,12 +1,12 @@
 [package]
-name = "lazywingman"
+name = "wingmux"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 license = "0BSD"
 description = "Tmux-native control centre for supervising coding agents across repositories and worktrees"
-repository = "https://github.com/ike-forge/lazywingman"
-homepage = "https://github.com/ike-forge/lazywingman"
+repository = "https://github.com/ike-forge/wingmux"
+homepage = "https://github.com/ike-forge/wingmux"
 
 [package.metadata.dist]
 dist = true

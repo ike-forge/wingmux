@@ -1,6 +1,6 @@
-//! Persistent state: what LazyWingman records about the worktrees it creates.
+//! Persistent state: what Wingmux records about the worktrees it creates.
 //!
-//! `$XDG_STATE_HOME/lazywingman/state.json` holds only facts no other system
+//! `$XDG_STATE_HOME/wingmux/state.json` holds only facts no other system
 //! keeps: per worktree path, the name typed in the popup, when it was created,
 //! the fork point and the agent picked. Everything else is rebuilt — repositories
 //! from the scan and `[[repositories]]`, their base branch and agent from config
@@ -52,7 +52,7 @@ pub struct Worktree {
     pub created_at: String,
     /// The base-branch commit this worktree was cut from. A merged branch and
     /// a fresh cut both have an empty `base..HEAD`; only the fork point tells
-    /// them apart. `None` for worktrees LazyWingman did not create.
+    /// them apart. `None` for worktrees Wingmux did not create.
     pub base_commit: Option<String>,
     /// The agent command picked in the new-worktree popup; `None` means
     /// "whatever the repository runs".
@@ -216,7 +216,7 @@ impl State {
         }
     }
 
-    /// Record a worktree LazyWingman created.
+    /// Record a worktree Wingmux created.
     pub fn record(&mut self, wt: &Worktree) {
         self.records.insert(
             wt.path.clone(),
@@ -544,7 +544,7 @@ mod tests {
         PaneInfo {
             pane_id: pane_id.into(),
             window_id: format!("@{pane_id}"),
-            shell: Some(ShellId::for_session("wingman-session-p", worktree, index)),
+            shell: Some(ShellId::for_session("wingmux-session-p", worktree, index)),
             command: command.map(str::to_string),
             ..Default::default()
         }
@@ -633,16 +633,16 @@ mod tests {
             ..Default::default()
         };
         let panes = [
-            stamped("%1", "wingman-session-app", "/work/b/app"),
-            stamped("%2", "wingman-session-app-0000beef", "/work/a/app"),
+            stamped("%1", "wingmux-session-app", "/work/b/app"),
+            stamped("%2", "wingmux-session-app-0000beef", "/work/a/app"),
         ];
         assert_eq!(
             s.session_of(&panes, 0).as_deref(),
-            Some("wingman-session-app-0000beef")
+            Some("wingmux-session-app-0000beef")
         );
         assert_eq!(
             s.session_of(&panes, 1).as_deref(),
-            Some("wingman-session-app")
+            Some("wingmux-session-app")
         );
         s.sync_shells(&panes);
         assert_eq!(s.repositories[0].shell.as_ref().unwrap().pane_id, "%2");
@@ -699,7 +699,7 @@ mod tests {
                 "repositories": [{
                     "name": "p", "path": "/tmp/p", "base_branch": "main",
                     "agent_command": "claude", "agent_shell": "bash",
-                    "session_name": "wingman-session-p",
+                    "session_name": "wingmux-session-p",
                     "shell": {"index": 0, "command": "zsh", "window_name": "lw:.repo/0"},
                     "worktrees": [
                         {"name": "Kept", "branch": "kept", "path": dir.path(),
@@ -813,14 +813,14 @@ mod tests {
     fn a_repository_shell_reconciles_onto_its_repository() {
         crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
             let id = ShellId::for_session(
-                "wingman-session-p",
+                "wingmux-session-p",
                 crate::dock::REPO_WORKTREE,
                 crate::dock::REPO_INDEX,
             );
             assert!(id.is_repo_shell());
             let w = tmux
                 .new_session(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:.repo/0",
                     Path::new("/tmp"),
                     "bash",
@@ -852,21 +852,21 @@ mod tests {
         crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
             let a = tmux
                 .new_session(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:wt/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-p", "wt", 0),
+                    &ShellId::for_session("wingmux-session-p", "wt", 0),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .expect("session");
             let b = tmux
                 .new_window(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:wt/1",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-p", "wt", 1),
+                    &ShellId::for_session("wingmux-session-p", "wt", 1),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .expect("window");
@@ -903,21 +903,21 @@ mod tests {
         crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
             let a = tmux
                 .new_session(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:wt/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-p", "wt", 0),
+                    &ShellId::for_session("wingmux-session-p", "wt", 0),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .expect("session");
             let b = tmux
                 .new_window(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:wt/1",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-p", "wt", 1),
+                    &ShellId::for_session("wingmux-session-p", "wt", 1),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .expect("window");
@@ -942,10 +942,10 @@ mod tests {
     #[test]
     fn a_holder_is_never_mistaken_for_the_shell_it_stands_in_for() {
         crate::tmux::testutil::with_tmux_server(|_sock, tmux| {
-            let id = ShellId::for_session("wingman-session-p", "feat", 0);
+            let id = ShellId::for_session("wingmux-session-p", "feat", 0);
             let w = tmux
                 .new_session(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:feat/0",
                     Path::new("/tmp"),
                     "bash",

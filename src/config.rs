@@ -1,9 +1,9 @@
 //! Configuration loading, defaults, and first-run bootstrap.
 //!
-//! Config lives at `$XDG_CONFIG_HOME/lazywingman/config.toml`, layered with
-//! a repository-local `.lazywingman.toml` (searched upward from the working
+//! Config lives at `$XDG_CONFIG_HOME/wingmux/config.toml`, layered with
+//! a repository-local `.wingmux.toml` (searched upward from the working
 //! directory, stopping at the first hit / repository root), its ignored
-//! sibling `.lazywingman.local.toml`, and — on top of all of them — the file
+//! sibling `.wingmux.local.toml`, and — on top of all of them — the file
 //! named by `--config <path>` (or `LW_CONFIG`). On first run a fully
 //! commented default config is written (and built-in themes are copied into
 //! `themes/`).
@@ -32,10 +32,10 @@ pub const LAYER_LOCAL: &str = "local";
 pub const LAYER_ARGUMENT: &str = "argument";
 
 /// Fully commented default config, written on first run.
-pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on first run, edit freely.
-# Location: $XDG_CONFIG_HOME/lazywingman/config.toml (default ~/.config/lazywingman)
+pub const DEFAULT_CONFIG: &str = r#"# Wingmux configuration — written on first run, edit freely.
+# Location: $XDG_CONFIG_HOME/wingmux/config.toml (default ~/.config/wingmux)
 #
-# Every setting LazyWingman understands is listed below, commented out at
+# Every setting Wingmux understands is listed below, commented out at
 # its built-in default — so this file changes nothing until you edit it.
 # Two comment styles are used: `#key = value` (no space after the hash) is
 # a real default, and uncommenting it as-is is a no-op; `# text` (hash then
@@ -44,20 +44,20 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 # under one is enough.
 #
 # This file is the USER layer. A repository can also carry a committed
-# .lazywingman.toml (searched upward from the working directory, stopping at
-# the repository root) and a gitignored .lazywingman.local.toml next to it;
+# .wingmux.toml (searched upward from the working directory, stopping at
+# the repository root) and a gitignored .wingmux.local.toml next to it;
 # those layers override keys here. Above all of them sits the file named by
-# `lazywingman --config <path>` (or LW_CONFIG) — an extra top layer for this
+# `wingmux --config <path>` (or LW_CONFIG) — an extra top layer for this
 # run, not a replacement for this file, so it need only carry the keys it
 # changes. Some keys are user-only and are ignored in repository files with a
 # diagnostic: worktrees.root and discovery.scan_root. Inspect the effective
-# config with `lazywingman --config-dump`. A malformed config never prevents
+# config with `wingmux --config-dump`. A malformed config never prevents
 # startup — the smallest bad unit is dropped and reported once in a startup
 # diagnostics overlay.
 
 # Theme to use. Built-ins: "catppuccin-mocha", "catppuccin-macchiato",
 # "catppuccin-frappe", "catppuccin-latte", "dracula", "gruvbox", "ansi".
-# Drop your own theme into ~/.config/lazywingman/themes/<name>.toml
+# Drop your own theme into ~/.config/wingmux/themes/<name>.toml
 # Press ctrl-t inside the TUI to switch themes live; the pick is written to
 # this key.
 #theme = "catppuccin-mocha"
@@ -83,12 +83,12 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 # that jumped from an agent window back to the dashboard window, and with
 # docking the agent's pane sits beside the tree, so "back to the dashboard"
 # is a move between two panes of one window — `<prefix> + ←` by default,
-# and the user's own binding rather than one LazyWingman sets behind their
+# and the user's own binding rather than one Wingmux sets behind their
 # back. A config still carrying it is told so and otherwise ignored.
 
 [worktrees]
 # Root directory for the worktrees. Absolute path, or relative to the
-# repository's parent directory. Empty = <repository-parent>/.lazywingman-worktrees
+# repository's parent directory. Empty = <repository-parent>/.wingmux-worktrees
 #root = ""
 # Branch that worktree branches are cut from. Empty = the branch the
 # repository's main checkout is on. A named branch that doesn't exist makes
@@ -100,7 +100,7 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 
 [discovery]
 # The scope: only repositories inside this directory are listed (scopes never
-# mix). Empty = the directory LazyWingman was started from. When you start
+# mix). Empty = the directory Wingmux was started from. When you start
 # inside a git repo, that repo is the scope and its worktrees are shown
 # flat (no repository row). The scan is live (no cache) and runs at startup.
 #scan_root = ""
@@ -109,7 +109,7 @@ pub const DEFAULT_CONFIG: &str = r#"# LazyWingman configuration — written on f
 # Directory names skipped during a scan. Hidden directories (names starting
 # with '.') are always skipped; worktree `.git` files are never treated as
 # repositories (their main repo covers them).
-#skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
+#skip_dirs = [".git", "node_modules", "target", ".wingmux-worktrees"]
 
 [defaults]
 # Agent preset (a `[[agents]]` name) new worktrees start with. It is what
@@ -313,7 +313,7 @@ pub struct WorktreeConfig {
 #[serde(default)]
 pub struct DiscoveryConfig {
     /// Root scanned by the `I` key and the startup scan prompt. Empty =
-    /// the directory LazyWingman was started from.
+    /// the directory Wingmux was started from.
     pub scan_root: String,
     /// Maximum subdirectory depth of a scan (0 = scan root only).
     pub max_depth: usize,
@@ -350,7 +350,7 @@ pub enum BorderStyle {
 /// Preset names accepted by `[icons].preset`.
 pub const ICON_PRESETS: &[&str] = &["nerdfont", "unicode", "none"];
 
-/// Every glyph LazyWingman draws itself. Resolved: each field is the exact
+/// Every glyph Wingmux draws itself. Resolved: each field is the exact
 /// string a render site emits, already padded to its column.
 ///
 /// This replaced a `LW_ASCII` boolean. That boolean answered "can this
@@ -704,7 +704,7 @@ impl Default for Config {
                     ".git".into(),
                     "node_modules".into(),
                     "target".into(),
-                    ".lazywingman-worktrees".into(),
+                    ".wingmux-worktrees".into(),
                 ],
             },
             defaults: DefaultsConfig {
@@ -755,7 +755,7 @@ impl Default for DiscoveryConfig {
                 ".git".into(),
                 "node_modules".into(),
                 "target".into(),
-                ".lazywingman-worktrees".into(),
+                ".wingmux-worktrees".into(),
             ],
         }
     }
@@ -1022,10 +1022,10 @@ fn with_theme(text: &str, name: &str) -> String {
 impl Config {
     /// Load config, writing defaults (and built-in themes) on first run.
     /// Layered per the configuration rules: built-in defaults ← user config
-    /// (`$XDG_CONFIG_HOME/lazywingman/config.toml`) ← repository-local
-    /// `.lazywingman.toml` (searched upward from the working directory,
+    /// (`$XDG_CONFIG_HOME/wingmux/config.toml`) ← repository-local
+    /// `.wingmux.toml` (searched upward from the working directory,
     /// stopping at the first hit / repository root) ← its gitignored sibling
-    /// `.lazywingman.local.toml` ← the file named by `--config <path>` /
+    /// `.wingmux.local.toml` ← the file named by `--config <path>` /
     /// `LW_CONFIG`. Higher layers win key by key (maps merge deeply, lists
     /// replace). A malformed file never prevents startup — the smallest
     /// addressable unit is dropped and reported in `Config.diagnostics`.
@@ -1102,7 +1102,7 @@ impl Config {
         // --- repository layers ---------------------------------------------
         if let Some(dir) = find_repository_dir(cwd) {
             layer(
-                &dir.join(".lazywingman.toml"),
+                &dir.join(".wingmux.toml"),
                 LAYER_REPOSITORY,
                 &mut merged,
                 &mut sources,
@@ -1111,7 +1111,7 @@ impl Config {
             );
             // gitignored sibling: highest of the files found by convention
             layer(
-                &dir.join(".lazywingman.local.toml"),
+                &dir.join(".wingmux.local.toml"),
                 LAYER_LOCAL,
                 &mut merged,
                 &mut sources,
@@ -1448,7 +1448,7 @@ impl Config {
         let parent = repository_path.parent().unwrap_or(repository_path);
         let root = self.worktrees.root.trim();
         let root = if root.is_empty() {
-            parent.join(".lazywingman-worktrees")
+            parent.join(".wingmux-worktrees")
         } else {
             let p = PathBuf::from(root);
             if p.is_absolute() { p } else { parent.join(p) }
@@ -1515,7 +1515,7 @@ fn parse_layer(path: &Path) -> Result<toml::Table> {
 fn find_repository_dir(cwd: &Path) -> Option<PathBuf> {
     let mut dir = Some(cwd);
     while let Some(d) = dir {
-        if d.join(".lazywingman.toml").is_file() || d.join(".lazywingman.local.toml").is_file() {
+        if d.join(".wingmux.toml").is_file() || d.join(".wingmux.local.toml").is_file() {
             return Some(d.to_path_buf());
         }
         // Repository root is the repository boundary: check it (already did),
@@ -1989,7 +1989,7 @@ fn default_skip_dirs() -> Vec<String> {
         ".git".to_string(),
         "node_modules".to_string(),
         "target".to_string(),
-        ".lazywingman-worktrees".to_string(),
+        ".wingmux-worktrees".to_string(),
     ]
 }
 
@@ -2677,7 +2677,7 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(
             cfg.worktree_root_for(repository),
-            PathBuf::from("/work/repositories/.lazywingman-worktrees")
+            PathBuf::from("/work/repositories/.wingmux-worktrees")
         );
         // absolute override
         let cfg = Config::from_str("[worktrees]\nroot = \"/wt\"\n").unwrap();
@@ -3019,11 +3019,7 @@ mod tests {
                 "theme = \"dracula\"\npoll_interval_ms = 250\n[tmux]\nback_key = \"C-x\"\n",
             );
             // repository-local config in an ancestor: overrides ONE key
-            std::fs::write(
-                root.path().join("sub/.lazywingman.toml"),
-                "theme = \"ansi\"\n",
-            )
-            .unwrap();
+            std::fs::write(root.path().join("sub/.wingmux.toml"), "theme = \"ansi\"\n").unwrap();
             let cfg = Config::load_from(&cwd, None).unwrap();
             assert_eq!(cfg.theme, "ansi"); // repository wins for theme
             assert_eq!(cfg.poll_interval_ms, 250); // user keeps poll
@@ -3051,12 +3047,12 @@ mod tests {
             // repo root is a git repo → search stops there; a config above
             // the repo root must NOT be picked up
             std::fs::create_dir_all(repo.join(".git")).unwrap();
-            std::fs::write(root.path().join(".lazywingman.toml"), "theme = \"ansi\"\n").unwrap();
+            std::fs::write(root.path().join(".wingmux.toml"), "theme = \"ansi\"\n").unwrap();
             let cfg = Config::load_from(&deep, None).unwrap();
             assert_eq!(cfg.theme, crate::theme::DEFAULT_THEME);
             // first hit wins: put one in a/ and one in repo root
-            std::fs::write(repo.join(".lazywingman.toml"), "theme = \"gruvbox\"\n").unwrap();
-            std::fs::write(repo.join("a/.lazywingman.toml"), "theme = \"dracula\"\n").unwrap();
+            std::fs::write(repo.join(".wingmux.toml"), "theme = \"gruvbox\"\n").unwrap();
+            std::fs::write(repo.join("a/.wingmux.toml"), "theme = \"dracula\"\n").unwrap();
             let cfg = Config::load_from(&deep, None).unwrap();
             assert_eq!(cfg.theme, "dracula"); // nearest ancestor wins
         });
@@ -3066,13 +3062,9 @@ mod tests {
     fn local_sibling_config_wins_over_repository_config() {
         with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
+            std::fs::write(root.path().join(".wingmux.toml"), "theme = \"gruvbox\"\n").unwrap();
             std::fs::write(
-                root.path().join(".lazywingman.toml"),
-                "theme = \"gruvbox\"\n",
-            )
-            .unwrap();
-            std::fs::write(
-                root.path().join(".lazywingman.local.toml"),
+                root.path().join(".wingmux.local.toml"),
                 "theme = \"dracula\"\n",
             )
             .unwrap();
@@ -3095,7 +3087,7 @@ mod tests {
                 "[[agents]]\nname=\"user-agent\"\ncommand=\"u\"\n",
             );
             std::fs::write(
-                root.path().join(".lazywingman.toml"),
+                root.path().join(".wingmux.toml"),
                 "[[agents]]\nname=\"repository-agent\"\ncommand=\"p\"\n",
             )
             .unwrap();
@@ -3117,7 +3109,7 @@ mod tests {
             let root = tempfile::TempDir::new().unwrap();
             load_user(root.path(), "[discovery]\nscan_root = \"/mine\"\n");
             std::fs::write(
-                root.path().join(".lazywingman.toml"),
+                root.path().join(".wingmux.toml"),
                 "[discovery]\nscan_root = \"/theirs\"\n[worktrees]\nroot = \"/machine/path\"\n",
             )
             .unwrap();
@@ -3146,13 +3138,9 @@ mod tests {
             let root = tempfile::TempDir::new().unwrap();
             std::fs::create_dir_all(root.path().join(".git")).unwrap();
             load_user(root.path(), "theme = \"dracula\"\npoll_interval_ms = 100\n");
+            std::fs::write(root.path().join(".wingmux.toml"), "theme = \"gruvbox\"\n").unwrap();
             std::fs::write(
-                root.path().join(".lazywingman.toml"),
-                "theme = \"gruvbox\"\n",
-            )
-            .unwrap();
-            std::fs::write(
-                root.path().join(".lazywingman.local.toml"),
+                root.path().join(".wingmux.local.toml"),
                 "theme = \"ansi\"\n",
             )
             .unwrap();
@@ -3265,7 +3253,7 @@ mod tests {
                 "theme = \"dracula\"\npoll_interval_ms = 250\n[icons]\nworktree_ahead = \"D\"\n",
             );
             std::fs::write(
-                root.path().join(".lazywingman.toml"),
+                root.path().join(".wingmux.toml"),
                 "[worktrees]\nbase_branch = \"develop\"\n",
             )
             .unwrap();
@@ -3325,7 +3313,7 @@ mod tests {
 
     /// `back_key` was retired when docking made "back to the dashboard" a
     /// move between two panes of one window — the user's own binding, not
-    /// one LazyWingman sets behind their back. A config still carrying it
+    /// one Wingmux sets behind their back. A config still carrying it
     /// is reported like any other stray key rather than failing, the
     /// treatment [`retired_label_key_is_reported`] established.
     #[test]

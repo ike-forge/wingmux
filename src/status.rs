@@ -357,7 +357,7 @@ mod tests {
         );
     }
 
-    /// Garbage, or a state only LazyWingman may assign, falls through.
+    /// Garbage, or a state only Wingmux may assign, falls through.
     #[test]
     fn unparsable_overlays_fall_through_to_the_ladder() {
         let p = c(&["Thinking"], &["❯"], &["Error:"]);

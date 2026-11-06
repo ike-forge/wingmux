@@ -1,7 +1,7 @@
-//! LazyWingman — a control centre for supervising coding agents.
+//! Wingmux — a control centre for supervising coding agents.
 //!
 //! Agent shells live in dedicated tmux sessions
-//! (`wingman-session-<repository>`) that LazyWingman spawns, polls, and tears
+//! (`wingmux-session-<repository>`) that Wingmux spawns, polls, and tears
 //! down — never in the user's own session. The dashboard itself is always a
 //! tmux pane: launched from a bare shell it execs into a tmux that runs it
 //! again (see `should_wrap`), because docking swaps the agent's real pane in
@@ -33,7 +33,7 @@ use error::Result;
 fn main() {
     if let Err(e) = real_main() {
         // Before the TUI takes over, stderr is still safe.
-        eprintln!("lazywingman: {e}");
+        eprintln!("wingmux: {e}");
         std::process::exit(1);
     }
 }
@@ -50,7 +50,7 @@ struct Cli {
     /// `hook <Event>`: apply one agent hook event to our own pane and exit.
     hook_event: Option<String>,
     /// `--socket <name>`: tmux socket for the hook subcommand, matching the
-    /// dashboard's `$LAZYWINGMAN_TMUX_SOCKET`.
+    /// dashboard's `$WINGMUX_TMUX_SOCKET`.
     socket: Option<String>,
 }
 
@@ -98,15 +98,15 @@ fn print_usage() {
     // indentation, so the one the reader sees has to be spelled out before
     // the backslash.
     eprintln!(
-        "lazywingman — a control centre for supervising coding agents\n\
+        "wingmux — a control centre for supervising coding agents\n\
          \n\
-         usage: lazywingman [--config <path>] [--config-dump] [--help]\n\
-         \x20      | lazywingman hook <Event> [--socket <name>]\n\
+         usage: wingmux [--config <path>] [--config-dump] [--help]\n\
+         \x20      | wingmux hook <Event> [--socket <name>]\n\
          \n\
          \x20 --config <path>  read this file last, on top of the config\n\
          \x20                  layers found by convention ($XDG_CONFIG_HOME/\n\
-         \x20                  lazywingman/config.toml, then the repository's\n\
-         \x20                  .lazywingman.toml and .lazywingman.local.toml),\n\
+         \x20                  wingmux/config.toml, then the repository's\n\
+         \x20                  .wingmux.toml and .wingmux.local.toml),\n\
          \x20                  so it need only carry the keys it changes; the\n\
          \x20                  LW_CONFIG env var names the same layer and\n\
          \x20                  --config wins over it\n\
@@ -118,7 +118,7 @@ fn print_usage() {
          \x20 --socket <name>  tmux socket name for `hook <Event>` to talk to,\n\
          \x20                  matching the dashboard's own socket; set\n\
          \x20                  automatically in the generated hook commands\n\
-         \x20                  via $LAZYWINGMAN_TMUX_SOCKET, not meant to be\n\
+         \x20                  via $WINGMUX_TMUX_SOCKET, not meant to be\n\
          \x20                  passed by hand\n\
          \x20 -h, --help       show this help"
     );
@@ -127,10 +127,10 @@ fn print_usage() {
 fn real_main() -> Result<()> {
     // Argv is parsed, and the `hook` subcommand dispatched, before logging
     // is ever initialised: `PostToolUse` fires once per tool call, so a
-    // normal agent session runs `lazywingman hook <Event>` hundreds of
+    // normal agent session runs `wingmux hook <Event>` hundreds of
     // times. Initialising the file logger on that path would append a
     // session banner plus a "starting" line to the single unrotated
-    // `lazywingman.log` on every one of those invocations, spamming the one
+    // `wingmux.log` on every one of those invocations, spamming the one
     // diagnostic channel AGENTS.md mandates. The hook subcommand's own
     // errors already go to stderr (see `run_hook_subcommand`), so nothing
     // is lost by skipping the log on this path.
@@ -140,9 +140,9 @@ fn real_main() -> Result<()> {
     }
 
     if let Err(e) = logging::init() {
-        eprintln!("lazywingman: warning: cannot open log file: {e}");
+        eprintln!("wingmux: warning: cannot open log file: {e}");
     }
-    log::info!("lazywingman starting (pid {})", std::process::id());
+    log::info!("wingmux starting (pid {})", std::process::id());
 
     if let Some(ref p) = cli.config {
         log::info!("config argument (top layer): {}", p.display());
@@ -209,7 +209,7 @@ fn real_main() -> Result<()> {
 
 /// Should this process re-launch itself inside tmux?
 ///
-/// LazyWingman docks the agent's *real* tmux pane beside its tree, so it has
+/// Wingmux docks the agent's *real* tmux pane beside its tree, so it has
 /// to BE a tmux pane. Launched from a bare shell it therefore execs into a
 /// tmux that runs it again — but only when there is a terminal to hand over:
 /// with stdin piped or redirected (automation, a cron entry, a test harness)
@@ -237,7 +237,7 @@ fn wrap_into_tmux(tmux: &tmux::Tmux, cfg: &config::Config, cwd: &std::path::Path
     let exe_name = exe
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "lazywingman".into());
+        .unwrap_or_else(|| "wingmux".into());
     let argv: Vec<String> = std::env::args().skip(1).collect();
 
     // Where to attach, once there is something to attach to.
@@ -322,9 +322,9 @@ fn wrap_into_tmux(tmux: &tmux::Tmux, cfg: &config::Config, cwd: &std::path::Path
 /// One session for every scope that has no home of its own, because
 /// `swap-pane` cannot cross tmux servers and a second server would put the
 /// dashboard out of reach of its own agent panes.
-const WRAPPER_SESSION: &str = "lazywingman";
+const WRAPPER_SESSION: &str = "wingmux";
 
-/// `lazywingman hook <Event>`: called by Claude Code or Codex, once per
+/// `wingmux hook <Event>`: called by Claude Code or Codex, once per
 /// lifecycle event, in the agent's own pane. Must be fast and must never
 /// write to stdout — both read hook stdout as protocol. Any failure is
 /// swallowed:
@@ -338,7 +338,7 @@ fn run_hook_subcommand(event: &str, socket: Option<String>) -> Result<()> {
         // other startup code) on this single-threaded path, so nothing has
         // had a chance to spawn a thread yet, which is the documented
         // safety condition for `std::env::set_var`.
-        unsafe { std::env::set_var("LAZYWINGMAN_TMUX_SOCKET", s) };
+        unsafe { std::env::set_var("WINGMUX_TMUX_SOCKET", s) };
     }
     let Some(pane_id) = std::env::var("TMUX_PANE").ok().filter(|p| !p.is_empty()) else {
         // Not inside tmux: nothing to report to. Not an error.
@@ -362,12 +362,12 @@ fn run_hook_subcommand(event: &str, socket: Option<String>) -> Result<()> {
     let tmux = match tmux::Tmux::detect() {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("lazywingman hook {event}: {e}");
+            eprintln!("wingmux hook {event}: {e}");
             return Ok(());
         }
     };
     if let Err(e) = hooks::run_hook(event, &pane_id, &tmux, &payload) {
-        eprintln!("lazywingman hook {event}: {e}");
+        eprintln!("wingmux hook {event}: {e}");
     }
     Ok(())
 }

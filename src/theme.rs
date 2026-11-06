@@ -2,7 +2,7 @@
 //!
 //! Themes are TOML files describing named colour roles. Three built-ins ship
 //! with the binary (`dracula`, `gruvbox`, `ansi`) and are copied into
-//! `$XDG_CONFIG_HOME/lazywingman/themes/` on first run so the user can edit
+//! `$XDG_CONFIG_HOME/wingmux/themes/` on first run so the user can edit
 //! them; any `<name>.toml` in that directory overrides the built-in of the
 //! same name.
 //!

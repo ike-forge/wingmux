@@ -1,6 +1,6 @@
 # Shortcuts
 
-Every binding in LazyWingman lives in one key table (`App::on_key` in
+Every binding in Wingmux lives in one key table (`App::on_key` in
 `src/app.rs`), follows the global TUI rules (`/opt/data/agents-common-instructions/tui/`,
 LazyGit / LazyDocker / vim tradition), and is listed here — current state,
 not a wishlist. Update this file in the same commit as any binding change.
@@ -334,7 +334,7 @@ Once the pane is on screen it is a normal tmux pane, so **everything past
 the dock is tmux's own binding and deliberately unbound here**: moving
 between the tree and the agent (`<prefix> + ←` / `→` / `o` / `;` by
 default), scrolling and searching the scrollback (copy mode), selecting and
-copying, zooming (`<prefix> + z`) and resizing. LazyWingman binds no
+copying, zooming (`<prefix> + z`) and resizing. Wingmux binds no
 navigation key of its own — the keys the user already knows keep working,
 and none of the agent's own keys (`1`/`2`/`3`, typing, image paste) is
 intercepted on the way in.
@@ -344,7 +344,7 @@ still carrying it says so and is otherwise ignored). It bound a chord that
 jumped from an agent *window* to the dashboard window. There is no such trip
 any more: the agent's pane is beside the tree, so "back to the dashboard" is
 `<prefix> + ←` between two panes of one window — the user's own binding,
-whatever they have it set to, rather than one LazyWingman writes into their
+whatever they have it set to, rather than one Wingmux writes into their
 tmux behind their back. Nothing is lost and one bug goes with it: tmux key
 tables are server-wide, so the single binding served every dashboard on the
 server and the newest one to start silently retargeted the chord for all the

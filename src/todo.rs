@@ -1,6 +1,6 @@
 //! Todo pads: scratch pads for the next steps that cannot be started yet.
 //!
-//! Two kinds, both **plain text** under `$XDG_STATE_HOME/lazywingman/`:
+//! Two kinds, both **plain text** under `$XDG_STATE_HOME/wingmux/`:
 //!
 //! - the global pad (`T`), `todo.md` — notes written while looking at one
 //!   repository and needed while looking at another;

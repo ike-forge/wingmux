@@ -96,7 +96,7 @@ pub enum Sel {
     Shell(usize, usize, usize),
 }
 
-/// A shell docked in another LazyWingman instance.
+/// A shell docked in another Wingmux instance.
 ///
 /// Held only for the length of one poll: `@lw_docked` on the agent pane is
 /// the single source of truth, because it is the only thing two instances
@@ -1040,7 +1040,7 @@ impl App {
         };
         let mut done: Vec<&str> = Vec::new();
         for p in &panes {
-            if !crate::tmux::is_lazywingman_session(&p.session_name)
+            if !crate::tmux::is_wingmux_session(&p.session_name)
                 || done.contains(&p.window_id.as_str())
             {
                 continue;
@@ -1324,7 +1324,7 @@ impl App {
     // ---------------------------------------------------------- discovery
 
     /// The startup scope: `[discovery].scan_root`, or the directory
-    /// LazyWingman was started from when unset. Relative roots resolve
+    /// Wingmux was started from when unset. Relative roots resolve
     /// against `cwd`, which is injected so tests don't have to `chdir`.
     fn scan_root_from(&self, cwd: &std::path::Path) -> PathBuf {
         scope_for(&self.cfg, cwd)
@@ -2107,7 +2107,7 @@ impl App {
     /// needed. Returns the session name and, when a NEW session was created,
     /// its first window (already running `shell` in `cwd`).
     ///
-    /// A new session is `wingman-session-<slug>`, suffixed with a stable hash
+    /// A new session is `wingmux-session-<slug>`, suffixed with a stable hash
     /// of the path when that name is taken. Callers stamp each pane with the
     /// repository path, so the name never has to be remembered.
     fn ensure_agent_session(
@@ -2360,7 +2360,7 @@ impl App {
     /// tmux pane in the slot, and one `select-pane` leaves the user typing
     /// in it — direct keys, copy-mode, search, selection and resize are
     /// tmux's own from there, confined to that pane. Moving back out is
-    /// the user's own pane binding (`prefix + <-` by default); LazyWingman
+    /// the user's own pane binding (`prefix + <-` by default); Wingmux
     /// binds no navigation key.
     ///
     /// Exactly one pane is docked at a time, so docking a different shell
@@ -3540,7 +3540,7 @@ impl App {
                 // purely from `capture-pane`, exactly as before this
                 // worktree existed. Turning the flag off only stops writing
                 // new overlays — a pane instrumented earlier (or by another
-                // LazyWingman instance sharing the tmux server) still
+                // Wingmux instance sharing the tmux server) still
                 // carries one, and it outlives both a restart and this
                 // flag flip. `classify` has no way to know the flag is
                 // off, so silence the overlay here, the one seam every
@@ -4771,7 +4771,7 @@ pub fn run(cfg: Config, theme: Theme, tmux: Tmux) -> Result<()> {
     }
     if let Err(e) = app.startup() {
         // before the terminal is taken over, stderr is safe
-        eprintln!("lazywingman: startup failed: {e}");
+        eprintln!("wingmux: startup failed: {e}");
         return Err(e);
     }
     app.poll();
@@ -4912,13 +4912,13 @@ mod tests {
     fn spawn_command_is_instrumented_when_hooks_are_on() {
         let mut app = App::new(Config::default(), theme::load("ansi", false).unwrap(), None);
         app.instrumentation = Some(crate::hooks::Instrumentation::for_test(
-            "/s/lazywingman-activity-hooks.json",
-            "/bin/lazywingman",
+            "/s/wingmux-activity-hooks.json",
+            "/bin/wingmux",
             None,
         ));
         assert_eq!(
             app.agent_command_for_spawn("claude"),
-            "claude --settings '/s/lazywingman-activity-hooks.json'"
+            "claude --settings '/s/wingmux-activity-hooks.json'"
         );
         let codex = app.agent_command_for_spawn("codex exec");
         assert!(
@@ -4941,11 +4941,11 @@ mod tests {
     fn seed_repository_with_shell(tmux: &Tmux, app: &mut App) -> (String, String) {
         let w = tmux
             .new_session(
-                "wingman-session-p",
+                "wingmux-session-p",
                 "lw:wt/0",
                 Path::new("/tmp"),
                 "bash",
-                &crate::dock::ShellId::for_session("wingman-session-p", "wt", 0),
+                &crate::dock::ShellId::for_session("wingmux-session-p", "wt", 0),
                 crate::tmux::testutil::HOLDER_W,
             )
             .unwrap();
@@ -4982,7 +4982,7 @@ mod tests {
 
     /// `agent_hooks = false` must be a real kill switch: even a pane that
     /// still carries a live `@lw_agent` overlay (written by an earlier
-    /// spawn, or by a second LazyWingman instance) must classify purely
+    /// spawn, or by a second Wingmux instance) must classify purely
     /// from `capture-pane`, exactly as README/STATE promise. The overlay
     /// says `blocked`, which a foreground `cat` (not a shell, so the
     /// login-shell guard alone would not save this test) would otherwise
@@ -5862,7 +5862,7 @@ mod tests {
             worktrees: vec![Worktree {
                 name: "wt".into(),
                 branch: "wt".into(),
-                path: PathBuf::from("/tmp/p/.lazywingman-worktrees/p/wt"),
+                path: PathBuf::from("/tmp/p/.wingmux-worktrees/p/wt"),
                 created_at: String::new(),
                 base_commit: None,
                 agent_command: None,
@@ -6761,11 +6761,11 @@ mod tests {
     fn seed_second_shell(tmux: &Tmux, app: &mut App) -> String {
         let w = tmux
             .new_window(
-                "wingman-session-p",
+                "wingmux-session-p",
                 "lw:wt/1",
                 Path::new("/tmp"),
                 "bash",
-                &crate::dock::ShellId::for_session("wingman-session-p", "wt", 1),
+                &crate::dock::ShellId::for_session("wingmux-session-p", "wt", 1),
                 crate::tmux::testutil::HOLDER_W,
             )
             .unwrap();
@@ -6972,7 +6972,7 @@ mod tests {
                     .iter()
                     .find(|p| p.pane_id == pane)
                     .map(|p| p.session_name.clone()),
-                Some("wingman-session-p".into()),
+                Some("wingmux-session-p".into()),
                 "and the agent pane went home rather than being killed with it"
             );
         });
@@ -7190,7 +7190,7 @@ mod tests {
             // They take it: home first, then into their own slot — the same
             // two steps our own steal takes.
             let (rival, rival_slot) = rival_dashboard(sock, &tmux, "/home/ike/thief");
-            let id = crate::dock::ShellId::for_session("wingman-session-p", "wt", 0);
+            let id = crate::dock::ShellId::for_session("wingmux-session-p", "wt", 0);
             let home = crate::dock::home_window(&tmux.list_furniture().unwrap(), &id, &[])
                 .expect("its own window is waiting");
             crate::dock::undock(&tmux, &pane, &home).expect("they send it home");
@@ -7306,11 +7306,11 @@ mod tests {
     fn add_second_shell(tmux: &Tmux, app: &mut App) -> String {
         let w = tmux
             .new_window(
-                "wingman-session-p",
+                "wingmux-session-p",
                 "lw:wt/1",
                 Path::new("/tmp"),
                 "bash",
-                &crate::dock::ShellId::for_session("wingman-session-p", "wt", 1),
+                &crate::dock::ShellId::for_session("wingmux-session-p", "wt", 1),
                 crate::tmux::testutil::HOLDER_W,
             )
             .expect("second shell");
@@ -7809,11 +7809,11 @@ mod tests {
             seed_repository_with_shell(&tmux, &mut app);
             let w2 = tmux
                 .new_window(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:wt/1",
                     Path::new("/tmp"),
                     "bash",
-                    &crate::dock::ShellId::for_session("wingman-session-p", "wt", 1),
+                    &crate::dock::ShellId::for_session("wingmux-session-p", "wt", 1),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
@@ -7859,11 +7859,11 @@ mod tests {
             seed_repository_with_shell(&tmux, &mut app);
             let w2 = tmux
                 .new_window(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:wt/1",
                     Path::new("/tmp"),
                     "bash",
-                    &crate::dock::ShellId::for_session("wingman-session-p", "wt", 1),
+                    &crate::dock::ShellId::for_session("wingmux-session-p", "wt", 1),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
@@ -7996,7 +7996,7 @@ mod tests {
                     "display-message",
                     "-p",
                     "-t",
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "#{window_id}",
                 ])
                 .unwrap();
@@ -9235,7 +9235,7 @@ mod tests {
         );
         assert_eq!(
             app.expand_message("<repository>/<worktree> at <worktree_path>"),
-            "p/wt at /tmp/p/.lazywingman-worktrees/p/wt"
+            "p/wt at /tmp/p/.wingmux-worktrees/p/wt"
         );
     }
 

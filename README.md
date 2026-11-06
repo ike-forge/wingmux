@@ -1,15 +1,15 @@
-# LazyWingman
+# Wingmux
 
 A control centre for supervising coding agents (Claude Code, Codex, Mistral
 Vibe, …) across **multiple repositories and multiple worktrees in
 parallel**. See everything at a glance, jump into any agent with one
 keystroke, spin up and tear down worktrees instantly.
 
-LazyWingman always runs inside tmux, as a pane of your existing session — and
+Wingmux always runs inside tmux, as a pane of your existing session — and
 starts one for you when you launch it from a bare shell. Agent shells never
 pollute your tmux
 session: they live in their own dedicated tmux sessions
-(`wingman-session-<repository>`), invisible until you dock one beside the tree.
+(`wingmux-session-<repository>`), invisible until you dock one beside the tree.
 
 ```
 RepositoryA  (a git repo found by discovery)
@@ -24,7 +24,7 @@ RepositoryB
 ```
 
 - **Repository** = an existing local git repo. Imported and removed only;
-  never created or deleted by LazyWingman.
+  never created or deleted by Wingmux.
 - **Worktree** = a git worktree (created automatically) + at least one spawned
   shell running the default agent command.
 - **Shell** = a tmux window running a command inside the worktree —
@@ -46,14 +46,14 @@ teardown is automated.
 With Homebrew (macOS or Linux):
 
 ```sh
-brew install ike-forge/tap/lazywingman
+brew install ike-forge/tap/wingmux
 ```
 
 From source:
 
 ```sh
 cargo build --release
-# binary at target/release/lazywingman
+# binary at target/release/wingmux
 ```
 
 Requirements: Rust ≥ 1.85, `git`, `tmux` **≥ 3.0** — a shell's identity lives
@@ -61,7 +61,7 @@ on tmux pane options and is read back with `#{@user-option}` in a format,
 which 3.0 is the first release to interpolate. Developed against 3.7b.
 
 ```sh
-lazywingman
+wingmux
 ```
 
 Run it from a pane of your tmux session, or from a bare shell — from a bare
@@ -71,13 +71,13 @@ appears beside the tree; `Enter` puts the cursor in it, and getting back out
 is your own tmux binding (`<prefix> + ←` by default).
 
 First run writes an exhaustive, fully commented config to
-`$XDG_CONFIG_HOME/lazywingman/config.toml` (never overwriting an existing
+`$XDG_CONFIG_HOME/wingmux/config.toml` (never overwriting an existing
 one) and copies the built-in themes to
-`$XDG_CONFIG_HOME/lazywingman/themes/`.
+`$XDG_CONFIG_HOME/wingmux/themes/`.
 
-LazyWingman finds your repositories for you (see [Repository
+Wingmux finds your repositories for you (see [Repository
 discovery](#repository-discovery)), and repositories can carry their own
-committed `.lazywingman.toml` so a fresh clone is already configured (see
+committed `.wingmux.toml` so a fresh clone is already configured (see
 [Configuration](#configuration)).
 
 ## Keybindings
@@ -98,8 +98,8 @@ the help overlay (`?`).
 | `n` | new worktree (git worktree + branch + agent shell) — a prompt asks for the name and shows the **base branch** it will be cut from: the branch the repository's main checkout is on, unless `worktrees.base_branch` (or a per-repository override) names one. A second field says which **agent** the worktree's shells run, prefilled with the repository's own (`[defaults].agent`, unless the repository overrides it): `Tab` moves onto it, `↑`/`↓` walk the configured `[[agents]]` presets, and anything else typed there is taken as the command itself. So a name and `Enter` is still the whole flow, and `codex` beside a `claude` repository costs one `Tab` |
 | `a` | add a shell to the selected worktree — a picker asks what it runs: the worktree's own agent command first (the one it was created with, else the repository's; `Enter` takes it), then the other configured `[[agents]]` presets, then a **plain shell** that just drops you at your own `$SHELL` prompt with nothing sent to it (`j`/`k` moves, `1`-`9` pick directly, `Esc` closes). Anything else you want to run, you type in that plain shell. On a **repository** row, `a` starts (or enters) the repository's own inline shell — no picker |
 | `p` | **predefined messages** for the selected shell (or a one-shell worktree's row) — a modal of configured presets, each listed in full with its `<base_branch>`-style tokens already resolved (`j`/`k` moves, `Enter` sends, `1`-`9` send directly, `Esc` closes) |
-| `t` | **repository todo pad** — a scratch pad for the next steps you cannot start yet ("rebase the API worktree once the schema lands"). One per repository, shared by its worktrees: on any row of a repository, `t` opens that repository's pad. It splits off the bottom of the tree's column and takes half of it while you type, so neither the tree above nor the preview — or the docked agent — beside it is covered. `Esc` saves and hands the keyboard back to the tree, leaving the note on screen collapsed to its own height (five lines of text, a five-line panel; never more than the open half) and following the selection from repository to repository; an emptied pad takes the panel away with it. `ctrl-s` saves without leaving, and `ctrl-e` hands the file to your `$EDITOR` in a tmux window of its own — closing the editor reads it back in. Parked as plain text in `$XDG_STATE_HOME/lazywingman/todos/<escaped repository path>.md` (yours to edit with `$EDITOR` too) |
-| `T` | **global todo pad** — the same panel, one pad for the whole machine, for notes written about one repository and needed while looking at another. Stored in `$XDG_STATE_HOME/lazywingman/todo.md`. The parked panel shows whichever pad was opened last |
+| `t` | **repository todo pad** — a scratch pad for the next steps you cannot start yet ("rebase the API worktree once the schema lands"). One per repository, shared by its worktrees: on any row of a repository, `t` opens that repository's pad. It splits off the bottom of the tree's column and takes half of it while you type, so neither the tree above nor the preview — or the docked agent — beside it is covered. `Esc` saves and hands the keyboard back to the tree, leaving the note on screen collapsed to its own height (five lines of text, a five-line panel; never more than the open half) and following the selection from repository to repository; an emptied pad takes the panel away with it. `ctrl-s` saves without leaving, and `ctrl-e` hands the file to your `$EDITOR` in a tmux window of its own — closing the editor reads it back in. Parked as plain text in `$XDG_STATE_HOME/wingmux/todos/<escaped repository path>.md` (yours to edit with `$EDITOR` too) |
+| `T` | **global todo pad** — the same panel, one pad for the whole machine, for notes written about one repository and needed while looking at another. Stored in `$XDG_STATE_HOME/wingmux/todo.md`. The parked panel shows whichever pad was opened last |
 | `d` | on a worktree: delete it (kills windows, removes worktree; `f` = force when dirty or locked). On a shell row: close that shell (kills its window only — the worktree and its other shells stay). On a repository row: close its inline shell |
 | `r` | refresh — reconcile state against reality |
 | `R` | **reset the layout** — the dashboard's strip, every agent window and every holder back to their default proportions, after a stray drag or `resize-pane` pulled them out of shape. Nothing is undocked |
@@ -126,8 +126,8 @@ and `Enter` takes it, telling both sides.
 
 ## Configuration
 
-`$XDG_CONFIG_HOME/lazywingman/config.toml` — written on first run, and only if
-it isn't there already. It lists every setting LazyWingman understands, each
+`$XDG_CONFIG_HOME/wingmux/config.toml` — written on first run, and only if
+it isn't there already. It lists every setting Wingmux understands, each
 one commented out at its built-in default, so the file changes nothing until
 you edit it. Two comment styles tell the two kinds apart: `#key = value` (no
 space after the hash) is a real default — uncommenting it as-is is a no-op —
@@ -144,14 +144,14 @@ confirm_on_delete = true
 colors = "full"              # pane colours as-is; "foreground" drops backgrounds, "none" = plain text
 
 [worktrees]
-root = ""                    # default: <parent-of-repo>/.lazywingman-worktrees
+root = ""                    # default: <parent-of-repo>/.wingmux-worktrees
 base_branch = ""             # empty = the repo's current branch; a named one must exist
 delete_branch = true         # also delete the worktree branch on delete
 
 [discovery]
 scan_root = ""               # the scope: repositories inside this dir are listed; empty = cwd
 max_depth = 4                # how deep a discovery scan walks
-skip_dirs = [".git", "node_modules", "target", ".lazywingman-worktrees"]
+skip_dirs = [".git", "node_modules", "target", ".wingmux-worktrees"]
 
 [defaults]
 agent = "claude"             # `[[agents]]` preset new worktrees start with; the `n` popup's prefill
@@ -199,12 +199,12 @@ Configuration is layered, lowest to highest (closer wins key by key — maps
 merge deeply, lists are replaced outright):
 
 1. Built-in defaults
-2. Your config — `$XDG_CONFIG_HOME/lazywingman/config.toml`
-3. Repository-local — `.lazywingman.toml` in the working directory or the
+2. Your config — `$XDG_CONFIG_HOME/wingmux/config.toml`
+3. Repository-local — `.wingmux.toml` in the working directory or the
    nearest ancestor holding one (the search stops at a git repository root)
-4. Repository-local overrides — `.lazywingman.local.toml` next to it
+4. Repository-local overrides — `.wingmux.local.toml` next to it
    (gitignore this one; it wins over the committed repository file)
-5. The file you name — `lazywingman --config <path>` (or `LW_CONFIG=<path>`;
+5. The file you name — `wingmux --config <path>` (or `LW_CONFIG=<path>`;
    the flag wins over the env var)
 
 A repository-local file is meant to be committed — a teammate clones the repo
@@ -218,13 +218,13 @@ keys it leaves alone keep whatever the layers below resolved to. A file with
 one line in it is a valid `--config`:
 
 ```
-lazywingman --config ~/configs/slow-poll.toml
+wingmux --config ~/configs/slow-poll.toml
 ```
 
 Inspect the resolved config any time:
 
 ```
-lazywingman --config-dump
+wingmux --config-dump
 theme = "catppuccin-mocha"          # from user
 poll_interval_ms = 500              # from user
 worktrees.base_branch = "develop"   # from repository
@@ -245,7 +245,7 @@ next start without touching any state.
 
 ## Repository discovery
 
-LazyWingman lists exactly the repositories **inside the current path** — the
+Wingmux lists exactly the repositories **inside the current path** — the
 scope — and nothing else. Different scopes never mix; repositories you worked
 on elsewhere stay saved in state but are hidden until you start there
 again. There is no cache and no prompt: finding `.git` entries is a few
@@ -267,7 +267,7 @@ stats per directory, done live.
   tree appears immediately and fills in. Listing 200 repos costs 200
   directory stats, not 200 git calls.
 - **Discovery runs at startup**, not on a key. A repo created while
-  LazyWingman is running appears the next time you start it in that scope; `r`
+  Wingmux is running appears the next time you start it in that scope; `r`
   refreshes tmux state (windows, panes, worktrees), not the repo list. To add
   a repository that is not in the scope, declare it under `[[repositories]]`
   in `config.toml`.
@@ -278,7 +278,7 @@ stats per directory, done live.
 
 ### Themes
 
-`$XDG_CONFIG_HOME/lazywingman/themes/<name>.toml`. Colours are named roles
+`$XDG_CONFIG_HOME/wingmux/themes/<name>.toml`. Colours are named roles
 (`background`, `accent`, `tree_repository`, `status_waiting`, …) written as
 `#rrggbb` hex, an ANSI-16 name (`cyan`, `bright_black`, `gray`, …), or
 `default` (terminal default). Seven built-ins ship with the binary:
@@ -304,8 +304,8 @@ Press **`ctrl-t`** inside the TUI for a live theme picker: move with
 `j`/`k` (or `PgUp`/`PgDn`, `Home`/`End`) and the whole screen repaints with
 the new palette; `Enter` keeps the previewed theme, `Esc` restores the one
 you opened with. The pick is written to the `theme = ...` line of
-`~/.config/lazywingman/config.toml`, leaving the rest of the file as it was.
-A repository `.lazywingman.toml` or `--config` that sets `theme` still wins.
+`~/.config/wingmux/config.toml`, leaving the rest of the file as it was.
+A repository `.wingmux.toml` or `--config` that sets `theme` still wins.
 
 `NO_COLOR` (present and non-empty) switches to a monochrome render — every
 role resolves to the terminal default; the UI stays readable because meaning
@@ -345,7 +345,7 @@ where rows carry no colour of their own.)
 
 ### Agent status
 
-Every `poll_interval_ms`, LazyWingman captures each agent pane
+Every `poll_interval_ms`, Wingmux captures each agent pane
 (`capture-pane`) and classifies it: `dead` → the agent's own hook-reported
 state (`working` / `waiting` / `blocked`), while it is live → `ended` →
 `failed` → `waiting` → `working` → `waiting` anywhere → `idle`. A shell
@@ -364,7 +364,7 @@ command recognised as one of the two — the first token's file name must be
 exactly `claude` or `codex`; wrapper scripts and aliases stay on the regex
 heuristics above, like any other agent. Each gets the shape its CLI takes:
 
-- **Claude**: `--settings <state_dir>/lazywingman-activity-hooks.json`, a
+- **Claude**: `--settings <state_dir>/wingmux-activity-hooks.json`, a
   file merged **additively** on top of your own Claude settings — nothing
   is written there, nothing persists.
 - **Codex**: one `-c hooks.<Event>=…` override per event, which Codex adds
@@ -427,13 +427,13 @@ without hunting for the status word at the end of the row.
 
 ## How it works with tmux
 
-- LazyWingman detects its own coordinates (`TMUX` env, `display-message -t
-  pane`), and `exec`s into `tmux new-session -A -s lazywingman -- lazywingman`
+- Wingmux detects its own coordinates (`TMUX` env, `display-message -t
+  pane`), and `exec`s into `tmux new-session -A -s wingmux -- wingmux`
   when there are none — a launch from a bare shell ends up a tmux pane like
   any other. A second launch in the same folder attaches the dashboard already
   showing it (its window is stamped with the scope) rather than starting a
   rival one. Agent shells live in **dedicated sessions**, one per repository, named
-  deterministically `wingman-session-<repository>` — your own session is never
+  deterministically `wingmux-session-<repository>` — your own session is never
   touched. Each shell's identity and launch command live on its tmux pane
   (`@lw_*` options), so shells are rediscovered after a restart even if the
   state file is lost.
@@ -447,7 +447,7 @@ without hunting for the status word at the end of the row.
   the agent sees no `SIGWINCH` and does not repaint. Undocking is the same
   swap backwards, and quitting sends the pane home before taking the slot
   down.
-- **Pane navigation is yours.** LazyWingman binds no movement key and sets no
+- **Pane navigation is yours.** Wingmux binds no movement key and sets no
   chord in your tmux. The back-key it used to bind is retired: with the agent
   beside the tree there is no window to travel back from.
 - **New worktree**: the branch and worktree are cut from the repository's
@@ -459,8 +459,8 @@ without hunting for the status word at the end of the row.
 - **Predefined messages** are pasted to the selected pane via tmux
   paste-buffer with bracketed paste — multi-line prompts arrive as one
   paste, not as premature Enter presses.
-- State (`$XDG_STATE_HOME/lazywingman/state.json`) holds only what
-  LazyWingman recorded about the worktrees it created (name, creation time,
+- State (`$XDG_STATE_HOME/wingmux/state.json`) holds only what
+  Wingmux recorded about the worktrees it created (name, creation time,
   fork point, agent), keyed by path. Worktrees come from `git worktree list`.
   Shells are never written: every poll rebuilds them from `tmux list-panes`,
   so a shell is on screen exactly while its pane exists (and a worktree with
@@ -577,7 +577,7 @@ fresh cut.
 "Merged" is measured against the **local** base branch: a PR merged on the
 forge shows as ahead until that merge is in your local `main`. A
 squash-merged branch keeps commits the base does not have by object id, so
-it also reads as ahead. LazyWingman records the commit a worktree was cut
+it also reads as ahead. Wingmux records the commit a worktree was cut
 from when it creates it — a worktree it merely discovered (or one from a
 state file written before this existed) cannot tell "merged" from "new" and
 reads as new until it has commits of its own.
@@ -630,12 +630,12 @@ after one (the default `shell = "● "` has one baked in).
 
 Rows carry no counts — the tree is expanded by default, so the children *are*
 the count, and the repository icon says whether a folded repository holds
-anything. Missing repositories show `(missing)` dimmed. A worktree LazyWingman
+anything. Missing repositories show `(missing)` dimmed. A worktree Wingmux
 has no tmux window for is dimmed *whole* — see **Worktrees without a shell**
 below.
 
 **Worktrees without a shell**: every worktree `git worktree list` reports
-gets a row, whether LazyWingman created it or you did. A worktree it has no
+gets a row, whether Wingmux created it or you did. A worktree it has no
 tmux window for — one made by hand, or one whose agent shell you closed —
 has nothing to dock, send to or capture, so its row is drawn dimmed and
 selecting it says so in the preview instead of showing a pane. It is a
@@ -679,10 +679,10 @@ mise run fmt        # cargo fmt --check
 mise run lint       # cargo clippy --all-targets -- -D warnings
 mise run test       # unit tests + real-tmux integration tests (needs tmux)
 mise run gate       # fmt + lint + test — the pre-commit gate
-mise run install    # release build + link as ~/.local/bin/lazywingman-local
+mise run install    # release build + link as ~/.local/bin/wingmux-local
 ```
 
-Logs go to `$XDG_STATE_HOME/lazywingman/lazywingman.log` — never stdout
+Logs go to `$XDG_STATE_HOME/wingmux/wingmux.log` — never stdout
 (stdout belongs to the TUI).
 
 Design decisions — why each subsystem works the way it does — live in

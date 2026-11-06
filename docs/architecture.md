@@ -1,4 +1,4 @@
-# LazyWingman — architecture and design decisions
+# Wingmux — architecture and design decisions
 
 Why the app is built the way it is. Every entry is a decision that was not
 fixed by the spec, kept with its reason so it is not re-litigated by
@@ -21,11 +21,11 @@ the same commit as the change.
 
 ## State and persistence
 
-- State file: JSON at `$XDG_STATE_HOME/lazywingman/state.json` (state, not
+- State file: JSON at `$XDG_STATE_HOME/wingmux/state.json` (state, not
   data, is the semantically correct XDG dir for mutable runtime state).
 - Todo files: **plain text** — the global pad at
-  `$XDG_STATE_HOME/lazywingman/todo.md`, one per repository at
-  `$XDG_STATE_HOME/lazywingman/todos/<escaped repository path>.md`
+  `$XDG_STATE_HOME/wingmux/todo.md`, one per repository at
+  `$XDG_STATE_HOME/wingmux/todos/<escaped repository path>.md`
   (`src/todo.rs`). Not JSON: see "The todo pads" below.
 - **State schema v4**: `State.version = 4`. `load` reads `version` first and
   discards a well-formed file of any other version, starting empty and
@@ -64,7 +64,7 @@ the same commit as the change.
   until a refresh: a pane tmux no longer lists is no shell. A pane kept by
   `remain-on-exit` is still listed and still reads as dead.
 - **The repository path is on the pane, not a stored session name.** Two
-  repositories with one name get `wingman-session-<slug>` and
+  repositories with one name get `wingmux-session-<slug>` and
   `…-<hash of path>` in whichever order they spawned, so the name alone
   cannot be mapped back. `State::session_of` reads the owning session off the
   panes; a pane from an older build falls back to the slug, hash-suffixed
@@ -75,7 +75,7 @@ the same commit as the change.
   into the user `config.toml` (`config::save_theme`), editing that one line
   so comments and layout survive: the active line is replaced, else the
   documented `#theme = …` is uncommented in place. A higher layer
-  (`.lazywingman.toml`, `--config`) still wins at startup, and the toast says
+  (`.wingmux.toml`, `--config`) still wins at startup, and the toast says
   so.
 
 ## Discovery
@@ -119,7 +119,7 @@ the same commit as the change.
   plus two of the four statusbar slots on a repository row. What remains
   covers the cases: the scope is discovered at startup, and a repo outside it
   goes under `[[repositories]]` in `config.toml`. The deliberate loss: a repo
-  created WHILE LazyWingman runs no longer appears without a restart — `r`
+  created WHILE Wingmux runs no longer appears without a restart — `r`
   refreshes tmux state, not the repo list. Folding a rescan into `r` was
   considered and left out: `r` means "reconcile what I am showing against
   reality", and walking the filesystem is a different (and much more
@@ -131,7 +131,7 @@ the same commit as the change.
 ## Worktrees and deletion
 
 - Worktree root default:
-  `<parent of repo>/.lazywingman-worktrees/<repository>/<worktree>`.
+  `<parent of repo>/.wingmux-worktrees/<repository>/<worktree>`.
 - Worktree deletion: kill windows → `git worktree remove` (with `--force`
   offered in the confirm dialog when dirty or locked; git needs it twice
   for a locked worktree, which the warning line names with its reason) → drop from state. The branch
@@ -243,10 +243,10 @@ the same commit as the change.
 
 ## Shells and tmux sessions
 
-- **Agent shells live in dedicated tmux sessions** (`wingman-session-<repo>`),
+- **Agent shells live in dedicated tmux sessions** (`wingmux-session-<repo>`),
   per user feedback ("do not pollute my tmux session"): creating a worktree /
   adding a shell must not add windows to the user's session. One session per
-  repository, named `wingman-session-<sanitized-name>` (+ `-<hash8>` suffix on
+  repository, named `wingmux-session-<sanitized-name>` (+ `-<hash8>` suffix on
   collision), windows inside named `lw:<worktree>/<n>`; strict naming is what
   makes rediscovery after a crash/close possible (`list-sessions` +
   per-session `list-windows`). Killing the worktree's last window
@@ -314,7 +314,7 @@ the same commit as the change.
   the tree, and a `swap-pane` needs a pane of ours to swap into — which a plain
   terminal has not got. So `main::should_wrap` decides on two facts, not inside
   tmux and stdin is a tty, and `exec`s into
-  `tmux new-session -A -s lazywingman -- lazywingman <argv>`. `exec`, not
+  `tmux new-session -A -s wingmux -- wingmux <argv>`. `exec`, not
   spawn: one process, so signals and the exit code stay the shell's own. No
   recursion guard is needed — the tmux we exec into sets `TMUX`/`TMUX_PANE`,
   which is exactly what `Tmux::detect` reads.
@@ -337,7 +337,7 @@ the same commit as the change.
   - **`new-session -A` was the same bug by another door.** Given an existing
     session `-A` attaches to it and silently drops the command, so a wrapper
     session that outlived its dashboard would be attached to empty-handed. An
-    existing `lazywingman` session gets `new-window` instead; only a session
+    existing `wingmux` session gets `new-window` instead; only a session
     that does not exist yet is created with the command inline.
   - `Tmux::ensure_server` went with standalone mode: the wrapper session *is*
     the server, so there is no longer a boot with no server. `list-panes -a` on
@@ -666,20 +666,20 @@ duplication docking exists to end.
   - A Unix socket needs a listener thread in what is otherwise a synchronous
     TUI, plus a stale-socket lifecycle and a non-blocking client with a timeout
     — because a naive hook client would **block the agent** whenever
-    LazyWingman was down (the hook fires from inside Claude's own turn; a
+    Wingmux was down (the hook fires from inside Claude's own turn; a
     client that blocks trying to connect blocks the agent it's reporting on).
     It is also the only one of the rejected options that loses events outright
     while the dashboard is closed, rather than merely deferring them.
   - The pane option needs no daemon and no cleanup: the hook subcommand's
     entire write is one `tmux set-option` call, matching the existing rule that
-    all tmux interaction goes through the CLI. It survives a LazyWingman
+    all tmux interaction goes through the CLI. It survives a Wingmux
     restart with zero recovery code (read straight back out of the next
     `list-panes` call) and disappears with the pane, so nothing is ever left to
     reconcile or expire.
 - **Instrumentation is automatic, with no consent modal.** Disclosure comes
   from the injected flag itself: a new shell shows its command at the top of
   the pane, and it reads `claude --settings
-  '~/.local/state/lazywingman/lazywingman-activity-hooks.json'` — the settings
+  '~/.local/state/wingmux/wingmux-activity-hooks.json'` — the settings
   file is named so that line is self-explanatory. A first-run "hello/docs"
   modal explaining it may come later; it was explicitly out of scope.
   `[defaults] agent_hooks = true` is the opt-out. The enabling fact is that
@@ -688,7 +688,7 @@ duplication docking exists to end.
   shell changes no file the user owns.
 - **Codex is instrumented the same way, in the shape its CLI takes.** Both
   agents run a command per lifecycle event with the same JSON on stdin and
-  the pane's own `TMUX_PANE` in the environment, so `lazywingman hook
+  the pane's own `TMUX_PANE` in the environment, so `wingmux hook
   <Event>` and the whole overlay path are shared and only the installation
   differs: Codex has no settings-file flag, so the hooks go on the command
   line as `-c hooks.<Event>=…` overrides (`hooks::codex_overrides`),
@@ -839,7 +839,7 @@ duplication docking exists to end.
     *exactly* as it is for a fresh cut, so the two are indistinguishable
     from the base branch alone. Storing the commit the worktree was cut
     from makes "has it committed anything of its own?" answerable. A
-    reconciled worktree (one LazyWingman discovered rather than created)
+    reconciled worktree (one Wingmux discovered rather than created)
     has no fork point, falls back to the base branch, and reads a merged
     worktree as new — stated in the README rather than papered over.
   - **A vanished directory is a state, not an error** (user's call: "a
@@ -911,14 +911,14 @@ duplication docking exists to end.
   which is why `selection_fg` survives as a role.
 - **A worktree with no shell is dimmed, and that is the whole signal.**
   `ensure_worktrees` lists every worktree the repo has, so rows appear for
-  worktrees LazyWingman never created. The row state worth showing is not *who
+  worktrees Wingmux never created. The row state worth showing is not *who
   made it* but *whether there is a tmux window for it*: with no window there
   is nothing to dock, send to or capture, whoever made the worktree. So
   the predicate is derived — `shells.is_empty()`, honest because shells
   come from `list-panes` every poll — and NOT a persisted
-  `created_by_wingman` flag. A flag would have needed a schema field, a
+  `created_by_wingmux` flag. A flag would have needed a schema field, a
   migration for existing state files, and would still have lied about a
-  wingman-made worktree whose last shell was closed: same inertness, different
+  wingmux-made worktree whose last shell was closed: same inertness, different
   provenance. Derived also self-heals — `a` starts a shell and the row joins
   the rest with no state to fix up. The row mutes *whole* (the rule dead rows
   already follow) and the preview says why it is empty instead of showing the
@@ -1368,7 +1368,7 @@ duplication docking exists to end.
 ## Configuration
 
 - **Config layering**: defaults ← user config (config.toml) ←
-  `.lazywingman.toml` ← `.lazywingman.local.toml` (gitignored sibling) ← the
+  `.wingmux.toml` ← `.wingmux.local.toml` (gitignored sibling) ← the
   file named by `--config <path>` / `LW_CONFIG`. Merge is key by key: maps
   merge deeply per subkey, lists/scalars replace outright. The repository file
   is found walking upward from cwd, stopping at the first hit *and* at a

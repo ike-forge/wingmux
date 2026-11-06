@@ -114,7 +114,7 @@ mod tests {
             ".git".into(),
             "node_modules".into(),
             "target".into(),
-            ".lazywingman-worktrees".into(),
+            ".wingmux-worktrees".into(),
         ]
     }
 

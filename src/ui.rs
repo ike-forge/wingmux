@@ -421,7 +421,7 @@ fn row_color(theme: &ResolvedColors, dead: bool, live: Color) -> Color {
     if dead { theme.status_dead } else { live }
 }
 
-/// The colour a worktree row draws in. A worktree LazyWingman has no tmux
+/// The colour a worktree row draws in. A worktree Wingmux has no tmux
 /// window for gets muted whole: it cannot be docked, sent to or
 /// previewed, so the row is a listing and nothing more. `live` is the
 /// colour the span would otherwise take.
@@ -1359,7 +1359,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         // that does not exist.
         Text::from(
             "No agent shell for this worktree\n\n\
-             Wingman has no tmux window here, so there is nothing to\n\
+             Wingmux has no tmux window here, so there is nothing to\n\
              preview, dock or send to.\n\n\
              Press `a` to start a shell in this worktree.",
         )
@@ -3144,7 +3144,7 @@ mod tests {
         panic!("{needle:?} is not on screen");
     }
 
-    /// A worktree LazyWingman has no tmux window for cannot be docked,
+    /// A worktree Wingmux has no tmux window for cannot be docked,
     /// sent to or previewed. Its row mutes *whole* — the same "the eye
     /// skips it" rule a dead row follows — while a worktree with shells
     /// keeps the live colour.
@@ -3559,7 +3559,7 @@ mod tests {
             .map(|x| buf[(x, buf.area.height - 1)].symbol())
             .collect();
 
-        assert!(!last.contains("lazywingman"), "no app name: {last:?}");
+        assert!(!last.contains("wingmux"), "no app name: {last:?}");
         assert!(
             !last.contains("repositories"),
             "no repository count: {last:?}"

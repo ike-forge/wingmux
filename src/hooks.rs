@@ -3,7 +3,7 @@
 //!
 //! Both CLIs run a command per lifecycle event with the same JSON on stdin
 //! and the agent's own `TMUX_PANE` in the environment, so one
-//! `lazywingman hook <Event>` subcommand serves both and the event names
+//! `wingmux hook <Event>` subcommand serves both and the event names
 //! mean the same thing in each. Only the way the hooks are *installed*
 //! differs: Claude takes a settings file, Codex takes `-c` overrides.
 
@@ -30,7 +30,7 @@ impl Overlay {
 
     /// Parse a value read back from tmux. Only the three states a hook can
     /// emit are accepted: `dead`, `failed`, `ended` and `idle` are
-    /// LazyWingman's own judgements and must never arrive over the wire.
+    /// Wingmux's own judgements and must never arrive over the wire.
     pub fn parse(s: &str) -> Option<Overlay> {
         let (label, ts) = s.split_once(':')?;
         let status = match label {
@@ -122,7 +122,7 @@ pub fn run_hook(
 /// Name of the generated settings file. User-facing: it appears in the
 /// pane's visible command line and is the disclosure that instrumentation
 /// happened, so it must stay self-explanatory.
-pub const SETTINGS_FILE_NAME: &str = "lazywingman-activity-hooks.json";
+pub const SETTINGS_FILE_NAME: &str = "wingmux-activity-hooks.json";
 
 /// Claude events we subscribe to. `PreToolUse`, `SubagentStop` and
 /// `PreCompact` are deliberately absent: they add nothing the three states
@@ -198,7 +198,7 @@ pub fn settings_json(exe: &str, socket: Option<&str>) -> String {
 pub fn write_settings_file() -> crate::error::Result<PathBuf> {
     let exe = std::env::current_exe()
         .map_err(|e| crate::error::Error::Config(format!("cannot resolve own path: {e}")))?;
-    let socket = std::env::var("LAZYWINGMAN_TMUX_SOCKET")
+    let socket = std::env::var("WINGMUX_TMUX_SOCKET")
         .ok()
         .filter(|s| !s.is_empty());
     let json = settings_json(&exe.to_string_lossy(), socket.as_deref());
@@ -349,7 +349,7 @@ fn split_binary<'a>(command: &'a str, name: &str) -> Option<Split<'a>> {
 
 /// [`shell_quote`], but only when the token would otherwise be split or
 /// reinterpreted. The Codex overrides embed the hook command inside a TOML
-/// string inside a shell word, so quoting a plain `/home/u/bin/lazywingman`
+/// string inside a shell word, so quoting a plain `/home/u/bin/wingmux`
 /// that needs none turns into `'\''…'\''` in the pane's visible command
 /// line — three levels of escaping for nothing.
 fn shell_quote_if_needed(s: &str) -> String {
@@ -438,7 +438,7 @@ impl Instrumentation {
     pub fn prepare() -> crate::error::Result<Instrumentation> {
         let exe = std::env::current_exe()
             .map_err(|e| crate::error::Error::Config(format!("cannot resolve own path: {e}")))?;
-        let socket = std::env::var("LAZYWINGMAN_TMUX_SOCKET")
+        let socket = std::env::var("WINGMUX_TMUX_SOCKET")
             .ok()
             .filter(|s| !s.is_empty());
         Ok(Instrumentation {
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn settings_json_registers_exactly_the_subscribed_events() {
-        let s = settings_json("/opt/bin/lazywingman", None);
+        let s = settings_json("/opt/bin/wingmux", None);
         let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
         let hooks = v["hooks"].as_object().expect("hooks object");
         let mut keys: Vec<_> = hooks.keys().cloned().collect();
@@ -622,7 +622,7 @@ mod tests {
         let cmd = hooks["Stop"][0]["hooks"][0]["command"]
             .as_str()
             .expect("command string");
-        assert_eq!(cmd, "'/opt/bin/lazywingman' hook Stop");
+        assert_eq!(cmd, "'/opt/bin/wingmux' hook Stop");
         assert_eq!(
             hooks["Stop"][0]["hooks"][0]["type"].as_str(),
             Some("command")
@@ -635,7 +635,7 @@ mod tests {
     /// instead.
     #[test]
     fn settings_json_entries_carry_a_short_timeout() {
-        let s = settings_json("/opt/bin/lazywingman", None);
+        let s = settings_json("/opt/bin/wingmux", None);
         let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
         let hooks = v["hooks"].as_object().expect("hooks object");
         for (event, entry) in hooks {
@@ -649,42 +649,42 @@ mod tests {
 
     #[test]
     fn settings_json_passes_the_socket_through() {
-        let s = settings_json("/opt/bin/lazywingman", Some("lwtest"));
+        let s = settings_json("/opt/bin/wingmux", Some("lwtest"));
         let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
         assert_eq!(
             v["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
-            Some("'/opt/bin/lazywingman' --socket 'lwtest' hook Stop")
+            Some("'/opt/bin/wingmux' --socket 'lwtest' hook Stop")
         );
     }
 
-    /// `LAZYWINGMAN_TMUX_SOCKET` is user-controlled; a socket name
+    /// `WINGMUX_TMUX_SOCKET` is user-controlled; a socket name
     /// containing a space must not split into two argv tokens once Claude
     /// runs the generated command through a shell.
     #[test]
     fn settings_json_quotes_a_socket_containing_a_space() {
-        let s = settings_json("/opt/bin/lazywingman", Some("my socket"));
+        let s = settings_json("/opt/bin/wingmux", Some("my socket"));
         let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
         assert_eq!(
             v["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
-            Some("'/opt/bin/lazywingman' --socket 'my socket' hook Stop")
+            Some("'/opt/bin/wingmux' --socket 'my socket' hook Stop")
         );
     }
 
     #[test]
     fn instrument_inserts_the_flag_after_the_binary_not_at_the_end() {
-        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
+        let p = std::path::Path::new("/s/wingmux-activity-hooks.json");
         assert_eq!(
             instrument("claude", p),
-            "claude --settings '/s/lazywingman-activity-hooks.json'"
+            "claude --settings '/s/wingmux-activity-hooks.json'"
         );
         // A positional prompt must stay last.
         assert_eq!(
             instrument("claude --resume", p),
-            "claude --settings '/s/lazywingman-activity-hooks.json' --resume"
+            "claude --settings '/s/wingmux-activity-hooks.json' --resume"
         );
         assert_eq!(
             instrument("/usr/local/bin/claude -c", p),
-            "/usr/local/bin/claude --settings '/s/lazywingman-activity-hooks.json' -c"
+            "/usr/local/bin/claude --settings '/s/wingmux-activity-hooks.json' -c"
         );
     }
 
@@ -693,7 +693,7 @@ mod tests {
     /// falling back to the heuristics.
     #[test]
     fn non_claude_commands_are_left_untouched() {
-        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
+        let p = std::path::Path::new("/s/wingmux-activity-hooks.json");
         for cmd in [
             "codex",
             "codex exec --yolo",
@@ -713,7 +713,7 @@ mod tests {
     /// with it.
     #[test]
     fn codex_overrides_are_one_per_event_and_never_touch_the_hooks_table() {
-        let flags = codex_overrides("/bin/lazywingman", None);
+        let flags = codex_overrides("/bin/wingmux", None);
         assert_eq!(flags.len(), SUBSCRIBED_CODEX.len());
         for (flag, event) in flags.iter().zip(SUBSCRIBED_CODEX) {
             assert!(
@@ -721,7 +721,7 @@ mod tests {
                 "one override per event: {flag}"
             );
             assert!(
-                flag.contains(&format!("/bin/lazywingman hook {event}")),
+                flag.contains(&format!("/bin/wingmux hook {event}")),
                 "each runs its own event: {flag}"
             );
             assert!(
@@ -738,8 +738,8 @@ mod tests {
     /// The socket is named inline, like Claude's generated file names it.
     #[test]
     fn codex_overrides_carry_the_socket() {
-        let flags = codex_overrides("/bin/lazywingman", Some("lwtest"));
-        assert!(flags[0].contains("/bin/lazywingman --socket lwtest hook SessionStart"));
+        let flags = codex_overrides("/bin/wingmux", Some("lwtest"));
+        assert!(flags[0].contains("/bin/wingmux --socket lwtest hook SessionStart"));
     }
 
     /// A path needing no quoting is not quoted: the overrides are read by
@@ -748,11 +748,11 @@ mod tests {
     /// need it still gets it.
     #[test]
     fn codex_overrides_quote_only_what_needs_quoting() {
-        let plain = codex_overrides("/home/u/.local/bin/lazywingman", None);
-        assert!(plain[0].contains("command=\"/home/u/.local/bin/lazywingman hook SessionStart\""));
-        let spaced = codex_overrides("/opt/my agents/lazywingman", None);
+        let plain = codex_overrides("/home/u/.local/bin/wingmux", None);
+        assert!(plain[0].contains("command=\"/home/u/.local/bin/wingmux hook SessionStart\""));
+        let spaced = codex_overrides("/opt/my agents/wingmux", None);
         assert!(
-            spaced[0].contains(r"'\''/opt/my agents/lazywingman'\''"),
+            spaced[0].contains(r"'\''/opt/my agents/wingmux'\''"),
             "a path with a space is still quoted: {}",
             spaced[0]
         );
@@ -786,10 +786,10 @@ mod tests {
     /// takes, and anything else is handed on untouched.
     #[test]
     fn apply_dispatches_on_the_agent() {
-        let i = Instrumentation::for_test("/s/lazywingman-activity-hooks.json", "/bin/lw", None);
+        let i = Instrumentation::for_test("/s/wingmux-activity-hooks.json", "/bin/lw", None);
         assert_eq!(
             i.apply("claude --resume"),
-            "claude --settings '/s/lazywingman-activity-hooks.json' --resume"
+            "claude --settings '/s/wingmux-activity-hooks.json' --resume"
         );
         let codex = i.apply("codex");
         assert!(codex.starts_with("codex -c 'hooks.SessionStart="));
@@ -827,7 +827,7 @@ mod tests {
 
     #[test]
     fn already_instrumented_commands_are_not_instrumented_twice() {
-        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
+        let p = std::path::Path::new("/s/wingmux-activity-hooks.json");
         let once = instrument("claude", p);
         assert_eq!(instrument(&once, p), once);
     }
@@ -838,8 +838,8 @@ mod tests {
     /// exercised directly rather than only via a self-produced string.
     #[test]
     fn genuinely_already_instrumented_command_is_unchanged() {
-        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
-        let cmd = "claude --settings /elsewhere/lazywingman-activity-hooks.json --resume";
+        let p = std::path::Path::new("/s/wingmux-activity-hooks.json");
+        let cmd = "claude --settings /elsewhere/wingmux-activity-hooks.json --resume";
         assert_eq!(instrument(cmd, p), cmd);
     }
 
@@ -850,11 +850,11 @@ mod tests {
     /// defeating the milestone's core promise that hooks always fire.
     #[test]
     fn command_merely_mentioning_the_filename_still_gets_instrumented() {
-        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
-        let cmd = r#"claude "explain what lazywingman-activity-hooks.json is for""#;
+        let p = std::path::Path::new("/s/wingmux-activity-hooks.json");
+        let cmd = r#"claude "explain what wingmux-activity-hooks.json is for""#;
         assert_eq!(
             instrument(cmd, p),
-            r#"claude --settings '/s/lazywingman-activity-hooks.json' "explain what lazywingman-activity-hooks.json is for""#
+            r#"claude --settings '/s/wingmux-activity-hooks.json' "explain what wingmux-activity-hooks.json is for""#
         );
     }
 
@@ -864,11 +864,11 @@ mod tests {
     /// rejoining with a single space would silently collapse it.
     #[test]
     fn internal_spacing_in_the_prompt_is_preserved_byte_for_byte() {
-        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
+        let p = std::path::Path::new("/s/wingmux-activity-hooks.json");
         let cmd = "claude \"line one    line two\"";
         assert_eq!(
             instrument(cmd, p),
-            "claude --settings '/s/lazywingman-activity-hooks.json' \"line one    line two\""
+            "claude --settings '/s/wingmux-activity-hooks.json' \"line one    line two\""
         );
     }
 
@@ -879,15 +879,15 @@ mod tests {
     /// are recognised and instrumented.
     #[test]
     fn recognition_edge_cases() {
-        let p = std::path::Path::new("/s/lazywingman-activity-hooks.json");
+        let p = std::path::Path::new("/s/wingmux-activity-hooks.json");
         assert_eq!(instrument("   ", p), "   ");
         assert_eq!(
             instrument("./claude", p),
-            "./claude --settings '/s/lazywingman-activity-hooks.json'"
+            "./claude --settings '/s/wingmux-activity-hooks.json'"
         );
         assert_eq!(
             instrument("/usr/local/bin/claude/", p),
-            "/usr/local/bin/claude/ --settings '/s/lazywingman-activity-hooks.json'"
+            "/usr/local/bin/claude/ --settings '/s/wingmux-activity-hooks.json'"
         );
     }
 
@@ -895,7 +895,7 @@ mod tests {
     fn hook_ignores_unknown_events_without_touching_tmux() {
         // No tmux server needed: an Ignore action must not shell out. Built
         // via `testutil::tmux_inside` rather than `Tmux::detect()` so
-        // this test never reads TMUX/TMUX_PANE/LAZYWINGMAN_TMUX_SOCKET —
+        // this test never reads TMUX/TMUX_PANE/WINGMUX_TMUX_SOCKET —
         // other tests mutate those outside TMUX_TEST_LOCK, and this test
         // was the one place in the suite reading them unguarded.
         let tmux = crate::tmux::testutil::tmux_inside("lwtest-hooks-ignore");
@@ -915,10 +915,10 @@ mod tests {
     /// simply worked.
     #[test]
     fn instrument_quotes_a_settings_path_containing_a_space() {
-        let p = Path::new("/home/my user/.local/state/lazywingman/lazywingman-activity-hooks.json");
+        let p = Path::new("/home/my user/.local/state/wingmux/wingmux-activity-hooks.json");
         assert_eq!(
             instrument("claude", p),
-            "claude --settings '/home/my user/.local/state/lazywingman/lazywingman-activity-hooks.json'"
+            "claude --settings '/home/my user/.local/state/wingmux/wingmux-activity-hooks.json'"
         );
     }
 
@@ -928,11 +928,11 @@ mod tests {
     /// `$XDG_STATE_HOME`) breaks every hook invocation silently.
     #[test]
     fn settings_json_quotes_an_exe_path_containing_a_space() {
-        let s = settings_json("/opt/my bin/lazywingman", None);
+        let s = settings_json("/opt/my bin/wingmux", None);
         let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
         assert_eq!(
             v["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
-            Some("'/opt/my bin/lazywingman' hook Stop")
+            Some("'/opt/my bin/wingmux' hook Stop")
         );
     }
 
@@ -941,7 +941,7 @@ mod tests {
     /// after the first would double-instrument.
     #[test]
     fn idempotence_guard_recognises_a_quoted_already_instrumented_command() {
-        let p = Path::new("/home/my user/.local/state/lazywingman/lazywingman-activity-hooks.json");
+        let p = Path::new("/home/my user/.local/state/wingmux/wingmux-activity-hooks.json");
         let once = instrument("claude", p);
         assert_eq!(
             instrument(&once, p),

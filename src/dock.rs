@@ -102,7 +102,7 @@ impl ShellId {
     /// `session`.
     ///
     /// The repository field is the **session slug** — the session name minus
-    /// its `wingman-session-` prefix — because that is what already
+    /// its `wingmux-session-` prefix — because that is what already
     /// distinguishes two repositories whose names collide (the second one's
     /// session carries a hash suffix). Both components are sanitised the
     /// same way the window name is, so a stamp and a name backfilled from a
@@ -133,11 +133,11 @@ impl ShellId {
 
 /// What a holder pane says to whoever attaches to an agent session directly
 /// and finds a sleeping pane where their agent used to be.
-pub const HOLDER_NOTE: &str = "[LazyWingman] holder — this window's agent pane is docked in a dashboard. \
+pub const HOLDER_NOTE: &str = "[Wingmux] holder — this window's agent pane is docked in a dashboard. \
 It comes back here when it is undocked.";
 
 /// What the dashboard's slot says while nothing is docked in it.
-pub const SLOT_NOTE: &str = "[LazyWingman] slot — the selected agent's pane docks here.";
+pub const SLOT_NOTE: &str = "[Wingmux] slot — the selected agent's pane docks here.";
 
 /// Narrowest useful dashboard pane: below this the tree stops being
 /// readable, and a docked layout that cannot show the tree has no reason to
@@ -210,7 +210,7 @@ pub fn ensure_holders(tmux: &crate::tmux::Tmux, width: u16) -> usize {
     // window id -> (has a holder, holds something of ours)
     let mut windows: Vec<(String, bool, bool)> = Vec::new();
     for p in &panes {
-        if !crate::tmux::is_lazywingman_session(&p.session_name) {
+        if !crate::tmux::is_wingmux_session(&p.session_name) {
             continue;
         }
         match windows.iter_mut().find(|(w, _, _)| *w == p.window_id) {
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn a_shell_id_round_trips_through_its_option_values() {
         let id = ShellId {
-            repo: "lazywingman".into(),
+            repo: "wingmux".into(),
             worktree: "featureX".into(),
             index: 3,
         };
@@ -433,10 +433,10 @@ mod tests {
     /// names its own repository rather than colliding with the plain one.
     #[test]
     fn for_session_takes_the_session_slug_as_the_repository() {
-        let a = ShellId::for_session("wingman-session-app", "Feat One!", 0);
+        let a = ShellId::for_session("wingmux-session-app", "Feat One!", 0);
         assert_eq!(a.repo, "app");
         assert_eq!(a.worktree, "Feat-One");
-        let b = ShellId::for_session("wingman-session-app-1a2b3c4d", "feat", 0);
+        let b = ShellId::for_session("wingmux-session-app-1a2b3c4d", "feat", 0);
         assert_eq!(b.repo, "app-1a2b3c4d");
         assert_ne!(a.repo, b.repo);
     }
@@ -465,11 +465,11 @@ mod tests {
         with_tmux_server(|_sock, tmux| {
             let agent = tmux
                 .new_session(
-                    "wingman-session-o",
+                    "wingmux-session-o",
                     "lw:feat/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-o", "feat", 0),
+                    &ShellId::for_session("wingmux-session-o", "feat", 0),
                     HOLDER_W,
                 )
                 .expect("agent session");
@@ -527,11 +527,11 @@ mod tests {
         with_tmux_server(|_sock, tmux| {
             let agent = tmux
                 .new_session(
-                    "wingman-session-l",
+                    "wingmux-session-l",
                     "lw:feat/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-l", "feat", 0),
+                    &ShellId::for_session("wingmux-session-l", "feat", 0),
                     HOLDER_W,
                 )
                 .expect("agent session");

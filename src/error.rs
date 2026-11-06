@@ -1,4 +1,4 @@
-//! Central error type for LazyWingman.
+//! Central error type for Wingmux.
 //!
 //! Everything that can fail converges on [`Error`], so the TUI layer can
 //! surface a single error surface (usually via a popup or the log file).

@@ -1,7 +1,7 @@
 //! File logging.
 //!
 //! The TUI owns stdout/stderr, so *all* diagnostics go to
-//! `$XDG_STATE_HOME/lazywingman/lazywingman.log`. Nothing is ever written to
+//! `$XDG_STATE_HOME/wingmux/wingmux.log`. Nothing is ever written to
 //! stdout; startup failures are reported on stderr *before* the TUI takes
 //! over the terminal.
 
@@ -87,7 +87,7 @@ pub fn init() -> std::io::Result<()> {
     log::set_boxed_logger(Box::new(logger))
         .map_err(|e| std::io::Error::other(format!("logger already set: {e}")))?;
     log::set_max_level(LevelFilter::Info);
-    log::info!("=== lazywingman log session started ===");
+    log::info!("=== wingmux log session started ===");
     let _ = Level::Info; // keep Level import used
     Ok(())
 }

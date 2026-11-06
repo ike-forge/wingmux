@@ -1,4 +1,4 @@
-# Agent instructions — LazyWingman
+# Agent instructions — Wingmux
 
 Tmux-native control centre for supervising coding agents (Claude Code,
 Codex, Mistral Vibe, …) across multiple repositories and worktrees in
@@ -55,9 +55,9 @@ components.
 - **Gating command:** `mise run gate` (fmt --check && clippy -D warnings
   && test)
 - Install for local testing from anywhere: `mise run install` (release
-  build + symlink `~/.local/bin/lazywingman-local`)
+  build + symlink `~/.local/bin/wingmux-local`)
 - Start from a clean config: `mise run reset-config` (deletes
-  `$XDG_CONFIG_HOME/lazywingman` — `config.toml` and the theme copies —
+  `$XDG_CONFIG_HOME/wingmux` — `config.toml` and the theme copies —
   and lists what it removed first; the next run writes the defaults and
   the shipped themes back). `state.json` (worktree records) is untouched. Needed whenever a shipped theme or the default
   config changes: the on-disk copies are only written when absent, so an
@@ -93,7 +93,7 @@ write access to the tap. `release.yml` is generated: edit
 - Commit freely; **push at the end of every finished unit of work**
   (feature/change). Doc/planning commits may be pushed midway (optional).
   Never force-push or rewrite history.
-- Remote: `origin` → `git@github.com:ike-forge/lazywingman.git` (deploy key)
+- Remote: `origin` → `git@github.com:ike-forge/wingmux.git` (deploy key)
 
 ## Links out
 

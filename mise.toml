@@ -1,4 +1,4 @@
-# LazyWingman — driven by mise (the single task runner, per the global
+# Wingmux — driven by mise (the single task runner, per the global
 # task-runner rules). `mise install` is the complete setup step: it makes
 # sure the declared toolchain exists. `mise tasks` lists what can be run.
 
@@ -29,17 +29,17 @@ description = "Everything before a commit: fmt + clippy + tests"
 run = "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test"
 
 [tasks.install]
-description = "Build the release binary and link it into ~/.local/bin as `lazywingman-local`, alongside the brew binary"
-run = "cargo build --release && mkdir -p ~/.local/bin && ln -sf $PWD/target/release/lazywingman ~/.local/bin/lazywingman-local"
+description = "Build the release binary and link it into ~/.local/bin as `wingmux-local`, alongside the brew binary"
+run = "cargo build --release && mkdir -p ~/.local/bin && ln -sf $PWD/target/release/wingmux ~/.local/bin/wingmux-local"
 
 [tasks.reset-config]
 description = "Delete the local config dir (config.toml + theme copies) so the next run writes fresh defaults; leaves state.json alone"
 run = """
-dir="${XDG_CONFIG_HOME:-$HOME/.config}/lazywingman"
+dir="${XDG_CONFIG_HOME:-$HOME/.config}/wingmux"
 if [ -d "$dir" ]; then
   find "$dir" -maxdepth 2 -type f -print
   rm -rf "$dir"
-  echo "removed $dir — the next lazywingman run writes the defaults and the shipped themes back"
+  echo "removed $dir — the next wingmux run writes the defaults and the shipped themes back"
 else
   echo "nothing to do: $dir does not exist"
 fi

@@ -1,11 +1,11 @@
 //! XDG base directory resolution.
 //!
-//! LazyWingman stores:
-//!   - config:      `$XDG_CONFIG_HOME/lazywingman/config.toml`  (default `~/.config`)
-//!   - themes:      `$XDG_CONFIG_HOME/lazywingman/themes/*.toml`
-//!   - state:       `$XDG_STATE_HOME/lazywingman/state.json`    (default `~/.local/state`)
-//!   - logs:        `$XDG_STATE_HOME/lazywingman/lazywingman.log`
-//!   - cache:       `$XDG_CACHE_HOME/lazywingman/discovered.json` (default `~/.cache`)
+//! Wingmux stores:
+//!   - config:      `$XDG_CONFIG_HOME/wingmux/config.toml`  (default `~/.config`)
+//!   - themes:      `$XDG_CONFIG_HOME/wingmux/themes/*.toml`
+//!   - state:       `$XDG_STATE_HOME/wingmux/state.json`    (default `~/.local/state`)
+//!   - logs:        `$XDG_STATE_HOME/wingmux/wingmux.log`
+//!   - cache:       `$XDG_CACHE_HOME/wingmux/discovered.json` (default `~/.cache`)
 //!
 //! Falls back to the XDG defaults when the environment variables are unset,
 //! per the XDG Base Directory specification.
@@ -33,32 +33,32 @@ pub fn state_home() -> PathBuf {
         .unwrap_or_else(|| home().join(".local/state"))
 }
 
-/// LazyWingman config directory: `$XDG_CONFIG_HOME/lazywingman`.
+/// Wingmux config directory: `$XDG_CONFIG_HOME/wingmux`.
 pub fn config_dir() -> PathBuf {
-    config_home().join("lazywingman")
+    config_home().join("wingmux")
 }
 
-/// Config file path: `$XDG_CONFIG_HOME/lazywingman/config.toml`.
+/// Config file path: `$XDG_CONFIG_HOME/wingmux/config.toml`.
 pub fn config_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
-/// Themes directory: `$XDG_CONFIG_HOME/lazywingman/themes`.
+/// Themes directory: `$XDG_CONFIG_HOME/wingmux/themes`.
 pub fn themes_dir() -> PathBuf {
     config_dir().join("themes")
 }
 
-/// State directory: `$XDG_STATE_HOME/lazywingman`.
+/// State directory: `$XDG_STATE_HOME/wingmux`.
 pub fn state_dir() -> PathBuf {
-    state_home().join("lazywingman")
+    state_home().join("wingmux")
 }
 
-/// State file path: `$XDG_STATE_HOME/lazywingman/state.json`.
+/// State file path: `$XDG_STATE_HOME/wingmux/state.json`.
 pub fn state_path() -> PathBuf {
     state_dir().join("state.json")
 }
 
-/// A todo pad: `$XDG_STATE_HOME/lazywingman/todo.md` for the global one,
+/// A todo pad: `$XDG_STATE_HOME/wingmux/todo.md` for the global one,
 /// `…/todos/<escaped repository path>.md` per repository — see [`crate::todo`].
 pub fn todo_path(pad: &crate::todo::Pad) -> PathBuf {
     match pad {
@@ -69,9 +69,9 @@ pub fn todo_path(pad: &crate::todo::Pad) -> PathBuf {
     }
 }
 
-/// Log file path: `$XDG_STATE_HOME/lazywingman/lazywingman.log`.
+/// Log file path: `$XDG_STATE_HOME/wingmux/wingmux.log`.
 pub fn log_path() -> PathBuf {
-    state_dir().join("lazywingman.log")
+    state_dir().join("wingmux.log")
 }
 
 /// The user's own login shell — `$SHELL`, falling back to `bash` when the
@@ -293,16 +293,16 @@ mod tests {
             let tmp = std::env::temp_dir().join(format!("lwtest-{}", std::process::id()));
             assert_eq!(config_home(), tmp.join("config"));
             assert_eq!(state_home(), tmp.join("state"));
-            assert_eq!(config_path(), tmp.join("config/lazywingman/config.toml"));
-            assert_eq!(state_path(), tmp.join("state/lazywingman/state.json"));
+            assert_eq!(config_path(), tmp.join("config/wingmux/config.toml"));
+            assert_eq!(state_path(), tmp.join("state/wingmux/state.json"));
         });
     }
 
     #[test]
-    fn paths_are_under_lazywingman_dirs() {
+    fn paths_are_under_wingmux_dirs() {
         let cfg = config_path();
         assert_eq!(cfg.file_name().unwrap(), "config.toml");
-        assert_eq!(cfg.parent().unwrap().file_name().unwrap(), "lazywingman");
+        assert_eq!(cfg.parent().unwrap().file_name().unwrap(), "wingmux");
     }
 
     #[test]

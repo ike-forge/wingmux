@@ -1,7 +1,7 @@
 //! tmux integration via its CLI.
 //!
-//! LazyWingman supervises agent shells that live in DEDICATED tmux sessions
-//! (`wingman-session-<repository>`), never in the user's session — creating a
+//! Wingmux supervises agent shells that live in DEDICATED tmux sessions
+//! (`wingmux-session-<repository>`), never in the user's session — creating a
 //! worktree or shell must not pollute the dashboard's session. The dashboard
 //! itself is always a tmux pane (`main::should_wrap` execs into one when it
 //! is not), so `inside` is `Some` for the whole life of the TUI; it stays an
@@ -9,7 +9,7 @@
 //! that are not ours.
 //!
 //! All commands go through the `tmux` binary; nothing is shell-interpreted.
-//! A `-L <socket>` override is honoured via `$LAZYWINGMAN_TMUX_SOCKET` (used
+//! A `-L <socket>` override is honoured via `$WINGMUX_TMUX_SOCKET` (used
 //! by the integration tests and handy for multi-server setups).
 
 use std::path::Path;
@@ -18,7 +18,7 @@ use std::process::Command;
 use crate::dock::{self, ShellId};
 use crate::error::{Error, Result};
 
-/// Dashboard coordinates when LazyWingman itself runs inside tmux.
+/// Dashboard coordinates when Wingmux itself runs inside tmux.
 #[derive(Debug, Clone)]
 pub struct Inside {
     #[allow(dead_code)] // read once reconcile groups panes by session (Task 4)
@@ -74,7 +74,7 @@ pub struct PaneInfo {
 }
 
 /// One pane, seen only as furniture: where it sits and what kind of
-/// LazyWingman fixture (if any) it is. The holder backfill and the slot
+/// Wingmux fixture (if any) it is. The holder backfill and the slot
 /// lookup both need exactly this and nothing else, so they share one call.
 #[derive(Debug, Clone)]
 pub struct FurniturePane {
@@ -128,13 +128,13 @@ const SHELL_COMMANDS: &[&str] = &[
     "bash", "sh", "zsh", "fish", "dash", "ksh", "mksh", "ash", "tcsh", "csh", "nu",
 ];
 
-/// Prefix of every session LazyWingman owns (agent shells).
-pub const SESSION_PREFIX: &str = "wingman-session-";
-/// Prefix of every window LazyWingman owns inside an agent session.
+/// Prefix of every session Wingmux owns (agent shells).
+pub const SESSION_PREFIX: &str = "wingmux-session-";
+/// Prefix of every window Wingmux owns inside an agent session.
 pub const WINDOW_PREFIX: &str = "lw:";
 
 fn socket_override() -> Option<String> {
-    std::env::var("LAZYWINGMAN_TMUX_SOCKET")
+    std::env::var("WINGMUX_TMUX_SOCKET")
         .ok()
         .filter(|s| !s.is_empty())
 }
@@ -236,7 +236,7 @@ impl Tmux {
     }
 
     /// Deterministic agent-session name for a repository slug:
-    /// `wingman-session-<slug>`. On collisions the caller appends
+    /// `wingmux-session-<slug>`. On collisions the caller appends
     /// [`Self::hash_suffix`] to keep it unique.
     pub fn session_name(slug: &str) -> String {
         format!("{SESSION_PREFIX}{}", Self::sanitize(slug))
@@ -489,7 +489,7 @@ impl Tmux {
 
     // ---------------------------------------------------------- panes
 
-    /// Every LazyWingman shell on the server (one tmux call per poll).
+    /// Every Wingmux shell on the server (one tmux call per poll).
     ///
     /// A pane qualifies by **carrying an identity**, not by living in an
     /// agent session: a docked pane sits in the dashboard's own session, and
@@ -1115,7 +1115,7 @@ pub fn is_shell_command(cmd: &str) -> bool {
 }
 
 /// Is `name` one of our agent session names?
-pub fn is_lazywingman_session(name: &str) -> bool {
+pub fn is_wingmux_session(name: &str) -> bool {
     name.starts_with(SESSION_PREFIX)
 }
 
@@ -1126,7 +1126,7 @@ mod tests {
     #[test]
     fn session_and_window_names_are_deterministic_and_safe() {
         let s = Tmux::session_name("my repository");
-        assert_eq!(s, "wingman-session-my-repository");
+        assert_eq!(s, "wingmux-session-my-repository");
         let s2 = Tmux::session_name("my repository");
         assert_eq!(s, s2);
         // case is preserved: distinct names stay distinct (no silent merging)
@@ -1145,8 +1145,8 @@ mod tests {
 
     #[test]
     fn session_prefix_detection() {
-        assert!(is_lazywingman_session("wingman-session-foo"));
-        assert!(!is_lazywingman_session("work"));
+        assert!(is_wingmux_session("wingmux-session-foo"));
+        assert!(!is_wingmux_session("work"));
     }
 
     #[test]
@@ -1161,19 +1161,19 @@ mod tests {
 
     #[test]
     fn pane_line_parsing() {
-        let p = parse_pane_line("%3|@1|claude|0|wingman-session-p|p|feat|2|1||").unwrap();
+        let p = parse_pane_line("%3|@1|claude|0|wingmux-session-p|p|feat|2|1||").unwrap();
         assert_eq!(p.pane_id, "%3");
         assert_eq!(p.current_command, "claude");
         assert!(!p.dead);
         assert_eq!(p.window_id, "@1");
-        assert_eq!(p.session_name, "wingman-session-p");
+        assert_eq!(p.session_name, "wingmux-session-p");
         assert_eq!(
             p.shell,
-            Some(ShellId::for_session("wingman-session-p", "feat", 2))
+            Some(ShellId::for_session("wingmux-session-p", "feat", 2))
         );
         assert!(p.active);
         assert_eq!(p.docked_by, None);
-        let dead = parse_pane_line("%9|@1|sh|1|wingman-session-p|p|feat|2|0||").unwrap();
+        let dead = parse_pane_line("%9|@1|sh|1|wingmux-session-p|p|feat|2|0||").unwrap();
         assert!(dead.dead);
         assert!(!dead.active);
     }
@@ -1198,7 +1198,7 @@ mod tests {
     #[test]
     fn pane_line_parsing_keeps_the_overlay_verbatim() {
         let p = parse_pane_line(
-            "%3|@1|node|0|wingman-session-x|x|f|0|1|||0|0||claude|blocked:1755600000",
+            "%3|@1|node|0|wingmux-session-x|x|f|0|1|||0|0||claude|blocked:1755600000",
         )
         .expect("parses");
         assert_eq!(p.pane_id, "%3");
@@ -1215,7 +1215,7 @@ mod tests {
     fn an_escaped_command_cannot_desync_the_overlay() {
         let command = "codex | tee 100%\nlog";
         let line = format!(
-            "%3|@1|node|0|wingman-session-x|x|f|0|1|||0|0|{}|{}|a|b",
+            "%3|@1|node|0|wingmux-session-x|x|f|0|1|||0|0|{}|{}|a|b",
             escape_field("/w/a|b"),
             escape_field(command)
         );
@@ -1229,12 +1229,12 @@ mod tests {
     /// can never desync the parser.
     #[test]
     fn overlay_may_contain_the_field_separator() {
-        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1|||0|0|||a|b")
+        let p = parse_pane_line("%3|@1|claude|0|wingmux-session-x|x|f|0|1|||0|0|||a|b")
             .expect("parses");
         assert_eq!(p.overlay_raw, "a|b");
         assert_eq!(
             p.shell,
-            Some(ShellId::for_session("wingman-session-x", "f", 0))
+            Some(ShellId::for_session("wingmux-session-x", "f", 0))
         );
     }
 
@@ -1246,19 +1246,19 @@ mod tests {
     #[test]
     fn a_holder_or_slot_is_never_a_shell_however_it_was_stamped() {
         let holder =
-            parse_pane_line("%4|@1|sh|0|wingman-session-p|p|feat|0|0||1|").expect("parses");
+            parse_pane_line("%4|@1|sh|0|wingmux-session-p|p|feat|0|0||1|").expect("parses");
         assert_eq!(holder.shell, None, "a stamped holder is still furniture");
         assert_eq!(holder.pane_id, "%4", "and is still reported as a pane");
         let slot = parse_pane_line("%5|@0|sh|0|main|p|feat|0|0||1|").expect("parses");
         assert_eq!(slot.shell, None);
         let agent =
-            parse_pane_line("%6|@1|claude|0|wingman-session-p|p|feat|0|1|||").expect("parses");
+            parse_pane_line("%6|@1|claude|0|wingmux-session-p|p|feat|0|1|||").expect("parses");
         assert!(agent.shell.is_some(), "an unmarked pane is unaffected");
     }
 
     #[test]
     fn missing_overlay_field_is_empty_not_an_error() {
-        let p = parse_pane_line("%3|@1|claude|0|wingman-session-x|x|f|0|1||").expect("parses");
+        let p = parse_pane_line("%3|@1|claude|0|wingmux-session-x|x|f|0|1||").expect("parses");
         assert_eq!(p.overlay_raw, "");
     }
 
@@ -1273,11 +1273,11 @@ mod tests {
             // this is what a docked pane looks like from the poll's side.
             let agent = tmux
                 .new_session(
-                    "wingman-session-id",
+                    "wingmux-session-id",
                     "lw:feat/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-id", "feat", 0),
+                    &ShellId::for_session("wingmux-session-id", "feat", 0),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .expect("agent session");
@@ -1307,7 +1307,7 @@ mod tests {
             let got = &panes[0];
             assert_eq!(
                 got.shell,
-                Some(ShellId::for_session("wingman-session-id", "feat", 0))
+                Some(ShellId::for_session("wingmux-session-id", "feat", 0))
             );
 
             // Now move it into 'main' — a session that is not an agent
@@ -1322,7 +1322,7 @@ mod tests {
             assert_eq!(got.session_name, "main");
             assert_eq!(
                 got.shell,
-                Some(ShellId::for_session("wingman-session-id", "feat", 0)),
+                Some(ShellId::for_session("wingmux-session-id", "feat", 0)),
                 "identity travels with the pane"
             );
         });
@@ -1339,10 +1339,10 @@ mod tests {
     #[test]
     fn every_agent_window_is_born_with_a_holder() {
         with_tmux_server(|_sock, tmux| {
-            let id = ShellId::for_session("wingman-session-h", "feat", 0);
+            let id = ShellId::for_session("wingmux-session-h", "feat", 0);
             let first = tmux
                 .new_session(
-                    "wingman-session-h",
+                    "wingmux-session-h",
                     "lw:feat/0",
                     Path::new("/tmp"),
                     "bash",
@@ -1352,11 +1352,11 @@ mod tests {
                 .expect("session");
             let second = tmux
                 .new_window(
-                    "wingman-session-h",
+                    "wingmux-session-h",
                     "lw:feat/1",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-h", "feat", 1),
+                    &ShellId::for_session("wingmux-session-h", "feat", 1),
                     HOLDER_W,
                 )
                 .expect("window");
@@ -1432,11 +1432,11 @@ mod tests {
         with_tmux_server(|_sock, tmux| {
             let w = tmux
                 .new_session(
-                    "wingman-session-b",
+                    "wingmux-session-b",
                     "lw:feat/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-b", "feat", 0),
+                    &ShellId::for_session("wingmux-session-b", "feat", 0),
                     HOLDER_W,
                 )
                 .expect("session");
@@ -1518,7 +1518,7 @@ mod tests {
             tmux.set_window_option(&stale, dock::SCOPE_KEY, "/work/scope")
                 .unwrap();
             assert_eq!(
-                tmux.scope_window_state(&stale, "lazywingman").unwrap(),
+                tmux.scope_window_state(&stale, "wingmux").unwrap(),
                 ScopeWindow::Stale,
                 "a shell that once hosted a dashboard is not a dashboard"
             );
@@ -1544,7 +1544,7 @@ mod tests {
                 .to_string();
             tmux.set_pane_option(&slot, dock::SLOT_KEY, "1").unwrap();
             assert_eq!(
-                tmux.scope_window_state(&stale, "lazywingman").unwrap(),
+                tmux.scope_window_state(&stale, "wingmux").unwrap(),
                 ScopeWindow::Furniture,
                 "a slot left behind is worth splitting a dashboard back into"
             );
@@ -1628,11 +1628,11 @@ mod tests {
 
             let first = tmux
                 .new_session(
-                    "wingman-session-stamp",
+                    "wingmux-session-stamp",
                     "lw:feat/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-stamp", "feat", 0),
+                    &ShellId::for_session("wingmux-session-stamp", "feat", 0),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .expect("session");
@@ -1640,11 +1640,11 @@ mod tests {
 
             let second = tmux
                 .new_window(
-                    "wingman-session-stamp",
+                    "wingmux-session-stamp",
                     "lw:feat/1",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-stamp", "feat", 1),
+                    &ShellId::for_session("wingmux-session-stamp", "feat", 1),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .expect("window");
@@ -1701,11 +1701,11 @@ mod tests {
     fn pane_option_roundtrip_and_clear() {
         with_tmux_server(|sock, tmux| {
             tmux.new_session(
-                "wingman-session-opt",
+                "wingmux-session-opt",
                 "lw:feat/0",
                 std::path::Path::new("/tmp"),
                 "bash",
-                &ShellId::for_session("wingman-session-opt", "feat", 0),
+                &ShellId::for_session("wingmux-session-opt", "feat", 0),
                 crate::tmux::testutil::HOLDER_W,
             )
             .expect("session");
@@ -1742,11 +1742,11 @@ mod tests {
     fn hook_writes_and_clears_the_overlay_on_a_real_pane() {
         with_tmux_server(|_sock, tmux| {
             tmux.new_session(
-                "wingman-session-hook",
+                "wingmux-session-hook",
                 "lw:feat/0",
                 std::path::Path::new("/tmp"),
                 "bash",
-                &ShellId::for_session("wingman-session-hook", "feat", 0),
+                &ShellId::for_session("wingmux-session-hook", "feat", 0),
                 crate::tmux::testutil::HOLDER_W,
             )
             .expect("session");
@@ -1806,7 +1806,7 @@ mod tests {
     // Server setup lives in the shared `testutil` module (see below) so the
     // app-level handoff tests can reuse it — all tmux tests in the binary
     // must serialize on ONE lock, because they mutate process-global env
-    // vars (`LAZYWINGMAN_TMUX_SOCKET`, TMUX/TMUX_PANE).
+    // vars (`WINGMUX_TMUX_SOCKET`, TMUX/TMUX_PANE).
     use super::testutil::*;
 
     #[test]
@@ -1843,33 +1843,33 @@ mod tests {
     fn session_lifecycle_roundtrip() {
         with_tmux_server(|_sock, tmux| {
             // dashboard session "main" exists; no agent sessions yet
-            assert!(!tmux.session_exists("wingman-session-p"));
+            assert!(!tmux.session_exists("wingmux-session-p"));
             let sessions = tmux.list_sessions().unwrap();
-            assert!(sessions.iter().all(|s| s.name != "wingman-session-p"));
+            assert!(sessions.iter().all(|s| s.name != "wingmux-session-p"));
 
             // create the agent session with its first window
             let w0 = tmux
                 .new_session(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:feat/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-p", "feat", 0),
+                    &ShellId::for_session("wingmux-session-p", "feat", 0),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
             assert!(w0.window_id.starts_with('@'));
             assert!(w0.pane_id.starts_with('%'));
-            assert!(tmux.session_exists("wingman-session-p"));
+            assert!(tmux.session_exists("wingmux-session-p"));
 
             // a second window joins the session
             let w1 = tmux
                 .new_window(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:feat/1",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-p", "feat", 1),
+                    &ShellId::for_session("wingmux-session-p", "feat", 1),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
@@ -1889,7 +1889,7 @@ mod tests {
                     "display-message",
                     "-p",
                     "-t",
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "#{window_id}",
                 ])
                 .unwrap();
@@ -1897,9 +1897,9 @@ mod tests {
 
             // killing the LAST window destroys the session
             tmux.kill_window(&w0.window_id).unwrap();
-            assert!(tmux.session_exists("wingman-session-p"));
+            assert!(tmux.session_exists("wingmux-session-p"));
             tmux.kill_window(&w1.window_id).unwrap();
-            assert!(!tmux.session_exists("wingman-session-p"));
+            assert!(!tmux.session_exists("wingmux-session-p"));
         });
     }
 
@@ -1908,11 +1908,11 @@ mod tests {
         with_tmux_server(|_sock, tmux| {
             let w = tmux
                 .new_session(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:f/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-p", "f", 0),
+                    &ShellId::for_session("wingmux-session-p", "f", 0),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
@@ -1935,7 +1935,7 @@ mod tests {
 
             // kill the last window → session gone
             tmux.kill_window(&w.window_id).unwrap();
-            assert!(!tmux.session_exists("wingman-session-p"));
+            assert!(!tmux.session_exists("wingmux-session-p"));
         });
     }
 
@@ -1947,11 +1947,11 @@ mod tests {
         with_tmux_server(|_sock, tmux| {
             let w = tmux
                 .new_session(
-                    "wingman-session-s",
+                    "wingmux-session-s",
                     "lw:s/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-s", "s", 0),
+                    &ShellId::for_session("wingmux-session-s", "s", 0),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
@@ -1993,11 +1993,11 @@ mod tests {
         with_tmux_server(|_sock, tmux| {
             let w = tmux
                 .new_session(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:f/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-p", "f", 0),
+                    &ShellId::for_session("wingmux-session-p", "f", 0),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
@@ -2034,11 +2034,11 @@ mod tests {
         with_tmux_server(|_sock, tmux| {
             let w = tmux
                 .new_session(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:f/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-p", "f", 0),
+                    &ShellId::for_session("wingmux-session-p", "f", 0),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
@@ -2067,11 +2067,11 @@ mod tests {
             // run a command that exits immediately: window dies
             let w = tmux
                 .new_session(
-                    "wingman-session-p",
+                    "wingmux-session-p",
                     "lw:f/1",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-p", "f", 1),
+                    &ShellId::for_session("wingmux-session-p", "f", 1),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
@@ -2115,10 +2115,10 @@ mod tests {
     #[test]
     fn a_dock_swaps_both_panes_and_an_undock_swaps_them_back() {
         with_tmux_server(|_sock, tmux| {
-            let id = ShellId::for_session("wingman-session-d", "feat", 0);
+            let id = ShellId::for_session("wingmux-session-d", "feat", 0);
             let agent = tmux
                 .new_session(
-                    "wingman-session-d",
+                    "wingmux-session-d",
                     "lw:feat/0",
                     Path::new("/tmp"),
                     "bash",
@@ -2146,7 +2146,7 @@ mod tests {
             );
             assert_eq!(
                 at(&slot),
-                ("wingman-session-d".to_string(), agent.window_id.clone()),
+                ("wingmux-session-d".to_string(), agent.window_id.clone()),
                 "and the slot has gone to live where it came from"
             );
             assert_eq!(
@@ -2183,7 +2183,7 @@ mod tests {
 
             assert_eq!(
                 at_now(&tmux, &agent.pane_id),
-                ("wingman-session-d".to_string(), agent.window_id.clone()),
+                ("wingmux-session-d".to_string(), agent.window_id.clone()),
                 "the agent pane is home"
             );
             assert_eq!(
@@ -2221,11 +2221,11 @@ mod tests {
         with_tmux_server(|_sock, tmux| {
             let agent = tmux
                 .new_session(
-                    "wingman-session-f",
+                    "wingmux-session-f",
                     "lw:feat/0",
                     Path::new("/tmp"),
                     "bash",
-                    &ShellId::for_session("wingman-session-f", "feat", 0),
+                    &ShellId::for_session("wingmux-session-f", "feat", 0),
                     HOLDER_W,
                 )
                 .expect("agent session");
@@ -2268,7 +2268,7 @@ pub(crate) mod testutil {
 
     /// Run `f` against a throwaway tmux server on a unique socket.
     ///
-    /// Sets `LAZYWINGMAN_TMUX_SOCKET` and clears TMUX/TMUX_PANE (a fake
+    /// Sets `WINGMUX_TMUX_SOCKET` and clears TMUX/TMUX_PANE (a fake
     /// value makes the tmux client behave as a nested client and breaks
     /// session/window creation). The server is killed on the way out even if
     /// the test body panics.
@@ -2305,7 +2305,7 @@ pub(crate) mod testutil {
         // creation right after `new-session -d` can race window index 0.
         std::thread::sleep(std::time::Duration::from_millis(150));
         unsafe {
-            std::env::set_var("LAZYWINGMAN_TMUX_SOCKET", &sock);
+            std::env::set_var("WINGMUX_TMUX_SOCKET", &sock);
             std::env::remove_var("TMUX");
             std::env::remove_var("TMUX_PANE");
         }
