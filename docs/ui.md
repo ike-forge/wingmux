@@ -180,8 +180,8 @@ status bar, modal footer, help palette — is written the same way, `<key>
 from `[icons]` where a key has one (`↵`, `↑↓`). On a frame too narrow to
 hold them all the entries wrap onto a second bar row instead of losing
 their tail at the border. Notices ("worktree 'x' created",
-"dock failed: …") appear as a toast above the bar, wrapped to as many as
-three rows so a long error stays readable, and fade after a few
+"dock failed: …") appear as a toast at the bottom right of the left column, wrapped to as many as
+five rows so a long error stays readable, and fade after a few
 seconds. Only errors are drawn in the failure colour; an ordinary notice
 takes `title_fg`, so "worktree deleted" never reads as a problem; the log and the diagnostics overlay (`D`) keep the record.
 

@@ -1181,8 +1181,10 @@ duplication docking exists to end.
   (two rows is the ceiling — beyond that the tree loses more than the bar
   gains), and each entry's hit range carries the row it landed on, so a
   click on the wrapped row still runs its action. A toast wraps the same
-  way, up to three rows: errors are sentences, and a cut one names neither
-  what failed nor why.
+  way, up to five rows: errors are sentences, and a cut one names neither
+  what failed nor why. It sits in the left column in every layout — with an
+  agent docked the right side is a tmux pane the TUI cannot draw over, so
+  the left column is the one place a toast can always appear.
 - **One shape for every shortcut hint**: `<key> <action>` ("esc cancel"),
   joined by ` | `, with only the key in the accent colour, everywhere the
   app names a key — status bar, modal footers, help palette (`ui::Hint`,

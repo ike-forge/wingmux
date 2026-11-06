@@ -759,7 +759,10 @@ fn draw_split(f: &mut Frame, area: Rect, app: &mut App, tree_w: u16) {
 
     draw_left(f, tree, app);
     draw_preview(f, preview, app);
-    draw_toast(f, main, app);
+    // The toast lives in the left column: with an agent docked the preview
+    // is a tmux pane the TUI cannot draw over, so the left column is the
+    // only place it can always go.
+    draw_toast(f, tree, app);
     draw_statusbar(f, statusbar, app);
 }
 
@@ -1597,7 +1600,7 @@ fn truncate(text: &str, max: usize, ellipsis: &str) -> String {
 
 /// Rows of text a toast may take before it is cut — an error message runs
 /// to a sentence, a stack of them would cover the panel underneath.
-const TOAST_MAX_ROWS: usize = 3;
+const TOAST_MAX_ROWS: usize = 5;
 
 /// A transient notice, bottom-right above the statusbar. It expires on
 /// its own (see [`App::toast`]) and never covers an open overlay — the
@@ -1622,10 +1625,13 @@ fn draw_toast(f: &mut Frame, area: Rect, app: &App) {
     } else {
         theme.title_fg
     };
-    // Fit inside the frame: the text, plus borders and one space either
-    // side, capped at two thirds of the width. It floats one cell inside
-    // the panel below it, so no panel border is left half-covered.
-    let max_text = (area.width.saturating_sub(6)).min(area.width * 2 / 3) as usize;
+    // Fit inside the column: the text, plus borders and one space either
+    // side. Only a strip wider than the split tree is capped at two thirds;
+    // a narrower one needs every column, or a long error loses its tail.
+    // It floats one cell inside the panel below it, so no panel border is
+    // left half-covered.
+    let max_text = (area.width.saturating_sub(6))
+        .min((area.width * 2 / 3).max(TREE_MAX.saturating_sub(6))) as usize;
     if max_text < 8 || area.height < 5 {
         return;
     }
