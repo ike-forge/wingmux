@@ -68,6 +68,10 @@ pub const DEFAULT_CONFIG: &str = r#"# Wingmux configuration — written on first
 # Ask for confirmation before deleting a worktree.
 #confirm_on_delete = true
 
+# Command ctrl-g opens in a tmux popup on the selected repository or
+# worktree. The popup starts in that directory. Needs tmux 3.2 or newer.
+#lazygit = "lazygit"
+
 [preview]
 # How much of the agent's own colouring the preview panel shows. The pane is
 # captured with its escape sequences, so by default you see exactly what the
@@ -242,6 +246,8 @@ pub struct Config {
     pub theme: String,
     pub poll_interval_ms: u64,
     pub confirm_on_delete: bool,
+    /// What `ctrl-g` runs in a popup.
+    pub lazygit: String,
     pub preview: PreviewConfig,
     pub worktrees: WorktreeConfig,
     pub discovery: DiscoveryConfig,
@@ -691,6 +697,7 @@ impl Default for Config {
             theme: crate::theme::DEFAULT_THEME.into(),
             poll_interval_ms: 500,
             confirm_on_delete: true,
+            lazygit: "lazygit".into(),
             preview: PreviewConfig::default(),
             worktrees: WorktreeConfig {
                 root: String::new(),
@@ -905,6 +912,7 @@ const TOP_KEYS: &[&str] = &[
     "theme",
     "poll_interval_ms",
     "confirm_on_delete",
+    "lazygit",
     "preview",
     "tmux",
     "worktrees",
@@ -1189,6 +1197,7 @@ impl Config {
         line("theme", format!("\"{}\"", self.theme));
         line("poll_interval_ms", self.poll_interval_ms.to_string());
         line("confirm_on_delete", self.confirm_on_delete.to_string());
+        line("lazygit", format!("\"{}\"", self.lazygit));
         line(
             "preview.colors",
             format!("\"{}\"", self.preview.colors.as_str()),
@@ -1711,6 +1720,7 @@ fn deserialize_lenient(
         sources,
         diags,
     );
+    cfg.lazygit = take_str(merged, "lazygit", &cfg.lazygit, layer_paths, sources, diags);
 
     // sections — each field salvaged individually (one bad binding does not
     // drop the whole [tmux] block).

@@ -101,6 +101,7 @@ merge/PR automation. Only worktree teardown is automated.
 | `t` / `T` | repository / global todo pad |
 | `d` | delete worktree or close shell |
 | `r` / `R` | refresh / reset layout |
+| `ctrl-g` | lazygit popup on the selected repository or worktree |
 | `ctrl-t` | switch theme |
 | `?` | help |
 | `q` | quit |
@@ -115,6 +116,7 @@ with every setting at its default. A few you may want:
 
 ```toml
 theme = "catppuccin-mocha"   # ctrl-t switches live
+lazygit = "lazygit"          # ctrl-g command
 poll_interval_ms = 500
 
 [defaults]

@@ -561,6 +561,8 @@ pub enum BarAction {
     Dock,
     /// Back to the live tail from a preview parked in the scrollback.
     PreviewLive,
+    /// Open lazygit in a popup on the selected repository or worktree.
+    Lazygit,
 }
 
 /// The new-worktree popup's agent field: a `[[agents]]` preset name (or a
@@ -644,6 +646,10 @@ pub struct App {
     pub cfg: Config,
     pub theme: Theme,
     pub tmux: Option<Tmux>,
+    /// Configured lazygit command is on PATH. Checked once; the bar asks every frame.
+    pub lazygit_found: bool,
+    /// Popup client while lazygit is open; reconciled on exit.
+    lazygit: Option<std::process::Child>,
     pub state: State,
     pub sel: Sel,
     /// Repositories whose `git worktree list` is still owed, drained one per
@@ -828,6 +834,8 @@ fn recent_tail(capture: &str) -> String {
 impl App {
     pub fn new(cfg: Config, theme: Theme, tmux: Option<Tmux>) -> App {
         App {
+            lazygit_found: crate::util::command_exists(&cfg.lazygit),
+            lazygit: None,
             cfg,
             theme,
             tmux,
@@ -1847,6 +1855,79 @@ impl App {
             crate::todo::Pad::Global => &mut self.todo,
             crate::todo::Pad::Repo(path) => self.repo_todos.entry(path.clone()).or_default(),
         }
+    }
+
+    /// Main checkout for a repository row, the worktree dir for worktree and shell rows.
+    fn selected_dir(&self) -> Option<PathBuf> {
+        let repo = |ri: usize| self.state.repositories.get(ri);
+        match self.sel {
+            Sel::Repository(ri) => repo(ri).map(|r| r.path.clone()),
+            Sel::Worktree(ri, wi) | Sel::Shell(ri, wi, _) => repo(ri)
+                .and_then(|r| r.worktrees.get(wi))
+                .map(|w| w.path.clone()),
+        }
+    }
+
+    /// `ctrl-g`: lazygit in a tmux popup on the selected row's directory.
+    fn open_lazygit(&mut self) {
+        if !self.lazygit_found {
+            let cmd = self.cfg.lazygit.split_whitespace().next().unwrap_or("");
+            self.notify_err(format!("{cmd} is not installed — ctrl-g needs it"));
+            return;
+        }
+        if self.lazygit.is_some() {
+            return;
+        }
+        let Some(dir) = self.selected_dir() else {
+            self.notify("Select a repository or worktree first");
+            return;
+        };
+        let Some(tmux) = &self.tmux else {
+            self.notify_err("lazygit opens in a tmux popup; no tmux session");
+            return;
+        };
+        let Some(inside) = &tmux.inside else {
+            self.notify_err("lazygit opens in a tmux popup; no tmux session");
+            return;
+        };
+        match tmux.spawn_popup(&inside.pane_id, &dir, &self.cfg.lazygit) {
+            Ok(child) => self.lazygit = Some(child),
+            Err(e) => self.notify_err(format!("lazygit: {e}")),
+        }
+    }
+
+    /// A failed popup (tmux < 3.2 has no `display-popup`) is reported; a clean exit reconciles.
+    fn reap_lazygit(&mut self) {
+        let Some(child) = self.lazygit.as_mut() else {
+            return;
+        };
+        let status = match child.try_wait() {
+            Ok(None) => return,
+            Ok(Some(status)) => status,
+            Err(e) => {
+                log::warn!("lazygit popup: {e}");
+                self.lazygit = None;
+                return;
+            }
+        };
+        // `try_wait` above already reaped it.
+        #[allow(clippy::zombie_processes)]
+        let mut child = self.lazygit.take().expect("checked above");
+        if status.success() {
+            self.refresh();
+            return;
+        }
+        let mut err = String::new();
+        if let Some(mut pipe) = child.stderr.take() {
+            use std::io::Read;
+            let _ = pipe.read_to_string(&mut err);
+        }
+        let err = err.trim();
+        self.notify_err(if err.is_empty() {
+            "lazygit popup failed (needs tmux 3.2)".to_string()
+        } else {
+            format!("lazygit popup failed: {err}")
+        });
     }
 
     /// `t`: the pad of the selected row's repository.
@@ -3468,6 +3549,7 @@ impl App {
         // dashboard span-polled — spawning a `capture-pane` per shell per
         // frame, and retrying a failing dock ~90 times a second.
         self.last_poll = Instant::now();
+        self.reap_lazygit();
         // Independent of tmux (and of its own cadence) — the tree draws
         // the dirty flag whether or not a session exists.
         self.poll_worktree_state(false);
@@ -3623,6 +3705,14 @@ impl App {
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.quit = true;
+                true
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Consumed in every mode so `g` never reaches a text field
+                // or the first-item motion.
+                if matches!(self.mode, Mode::Normal) && self.visual.is_none() {
+                    self.open_lazygit();
+                }
                 true
             }
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -4532,6 +4622,7 @@ impl App {
                     self.dock_shell(ri, wi, si);
                 }
             }
+            BarAction::Lazygit => self.open_lazygit(),
             BarAction::Todo => self.open_repo_todo(),
             BarAction::TodoBack => self.close_todo(),
             BarAction::TodoEdit => self.edit_todo_externally(),
@@ -5900,6 +5991,47 @@ mod tests {
         for c in text.chars() {
             app.on_key(key(KeyCode::Char(c), false));
         }
+    }
+
+    /// Without lazygit, `ctrl-g` says so instead of doing nothing.
+    #[test]
+    fn ctrl_g_without_lazygit_says_so() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.lazygit_found = false;
+            app.on_key(key(KeyCode::Char('g'), true));
+            let toast = app.toast().expect("a notice");
+            assert!(
+                toast.error && toast.text.contains("not installed"),
+                "{toast:?}"
+            );
+            assert!(app.lazygit.is_none());
+        });
+    }
+
+    /// `ctrl-g` never reaches the first-item motion or a text field.
+    #[test]
+    fn ctrl_g_is_not_the_first_item_motion() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.lazygit_found = false;
+            app.sel = Sel::Worktree(0, 0);
+            app.on_key(key(KeyCode::Char('g'), true));
+            assert_eq!(app.sel, Sel::Worktree(0, 0));
+        });
+    }
+
+    /// Row → directory: repository checkout, worktree dir for worktree and shell rows.
+    #[test]
+    fn lazygit_dir_follows_the_selection() {
+        let mut app = app_with_shell();
+        app.sel = Sel::Repository(0);
+        assert_eq!(app.selected_dir(), Some(PathBuf::from("/tmp/p")));
+        app.sel = Sel::Worktree(0, 0);
+        let wt = app.state.repositories[0].worktrees[0].path.clone();
+        assert_eq!(app.selected_dir(), Some(wt.clone()));
+        app.sel = Sel::Shell(0, 0, 0);
+        assert_eq!(app.selected_dir(), Some(wt));
     }
 
     /// `t` puts the pad in the tree's own panel — no overlay — and `Esc`
