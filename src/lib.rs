@@ -7,30 +7,30 @@
 //! again (see `should_wrap`), because docking swaps the agent's real pane in
 //! beside the tree and a swap needs a pane to swap into.
 
-mod ansi;
-mod app;
-mod config;
-mod discovery;
-mod dock;
-mod error;
-mod git;
-mod hooks;
-mod logging;
-mod remover;
-mod state;
-mod status;
-mod theme;
-mod tmux;
-mod todo;
-mod ui;
-mod util;
+pub mod ansi;
+pub mod app;
+pub mod config;
+pub mod discovery;
+pub mod dock;
+pub mod error;
+pub mod git;
+pub mod hooks;
+pub mod logging;
+pub mod remover;
+pub mod state;
+pub mod status;
+pub mod theme;
+pub mod tmux;
+pub mod todo;
+pub mod ui;
+pub mod util;
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use error::Result;
 
-fn main() {
+pub fn run() {
     if let Err(e) = real_main() {
         // Before the TUI takes over, stderr is still safe.
         eprintln!("wingmux: {e}");

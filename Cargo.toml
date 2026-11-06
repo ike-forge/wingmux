@@ -10,12 +10,12 @@ homepage = "https://github.com/ike-forge/wingmux"
 
 [[bin]]
 name = "wingmux"
-path = "src/main.rs"
+path = "src/bin/wingmux.rs"
 
 # Short alias; cargo-dist ships every bin, so brew installs both.
 [[bin]]
 name = "wing"
-path = "src/main.rs"
+path = "src/bin/wing.rs"
 
 [package.metadata.dist]
 dist = true

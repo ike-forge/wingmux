@@ -605,7 +605,7 @@ impl<'de> Deserialize<'de> for IconsConfig {
     // An unknown `preset` falls back to `nerdfont` silently here, while
     // `SectionSalvage::salvage` below pushes a diagnostic for the same
     // case. Not an oversight: both paths resolve to the same values: this
-    // `Deserialize` impl is the strict `Config::from_str` path, which is
+    // `Deserialize` impl is the strict `Config::parse` path, which is
     // test-only and has no diagnostics vec by design; real config loading
     // always goes through `salvage`, which is where the diagnostic lives.
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
@@ -1150,7 +1150,7 @@ impl Config {
     /// Load from an explicit string (tests / previews). Strict on purpose —
     /// the lenient layered path is [`Self::load`]/[`Self::load_from`].
     #[allow(dead_code)]
-    pub fn from_str(text: &str) -> Result<Config> {
+    pub fn parse(text: &str) -> Result<Config> {
         let cfg: Config =
             toml::from_str(text).map_err(|e| Error::Config(format!("config parse: {e}")))?;
         cfg.validate();
@@ -2358,7 +2358,7 @@ mod tests {
     /// a user swaps the whole animation with a single key.
     #[test]
     fn a_spinner_override_is_split_into_frames() {
-        let cfg = Config::from_str("[icons]\nstatus_spinner = \"-\\\\|/\"\n").unwrap();
+        let cfg = Config::parse("[icons]\nstatus_spinner = \"-\\\\|/\"\n").unwrap();
         let frames: Vec<String> = cfg
             .icons
             .status_spinner
@@ -2392,8 +2392,7 @@ mod tests {
 
     #[test]
     fn icons_preset_and_per_key_override() {
-        let cfg =
-            Config::from_str("[icons]\npreset = \"unicode\"\nworktree_ahead = \"D\"\n").unwrap();
+        let cfg = Config::parse("[icons]\npreset = \"unicode\"\nworktree_ahead = \"D\"\n").unwrap();
         // the override wins...
         assert_eq!(cfg.icons.worktree_ahead.trim_end(), "D");
         // ...and the rest of the preset survives
@@ -2408,7 +2407,7 @@ mod tests {
 
     #[test]
     fn icons_default_when_absent() {
-        let cfg = Config::from_str("theme = \"gruvbox\"\n").unwrap();
+        let cfg = Config::parse("theme = \"gruvbox\"\n").unwrap();
         assert_eq!(cfg.icons, IconsConfig::preset("nerdfont"));
     }
 
@@ -2568,21 +2567,21 @@ mod tests {
 
     #[test]
     fn invalid_config_is_hard_error() {
-        assert!(Config::from_str("this is not toml {{{").is_err());
-        assert!(Config::from_str("theme = 42").is_err());
+        assert!(Config::parse("this is not toml {{{").is_err());
+        assert!(Config::parse("theme = 42").is_err());
     }
 
     #[test]
     fn unknown_keys_are_ignored() {
         let cfg =
-            Config::from_str("theme = \"gruvbox\"\nunknown_key = 1\n[nonexistent_section]\nx = 2")
+            Config::parse("theme = \"gruvbox\"\nunknown_key = 1\n[nonexistent_section]\nx = 2")
                 .unwrap();
         assert_eq!(cfg.theme, "gruvbox");
     }
 
     #[test]
     fn repositories_and_overrides_parse() {
-        let cfg = Config::from_str(
+        let cfg = Config::parse(
             r#"
             [[repositories]]
             path = "/tmp/repo"
@@ -2602,7 +2601,7 @@ mod tests {
 
     #[test]
     fn inline_agent_command_overrides_preset() {
-        let cfg = Config::from_str(
+        let cfg = Config::parse(
             r#"
             [[repositories]]
             path = "/tmp/repo"
@@ -2619,7 +2618,7 @@ mod tests {
 
     #[test]
     fn unknown_preset_falls_back_to_global_default() {
-        let cfg = Config::from_str(
+        let cfg = Config::parse(
             r#"
             [[repositories]]
             path = "/tmp/repo"
@@ -2636,7 +2635,7 @@ mod tests {
     /// none — command AND patterns, not just the command word.
     #[test]
     fn default_agent_names_the_preset_a_repository_falls_back_to() {
-        let cfg = Config::from_str("[defaults]\nagent = \"codex\"\n").unwrap();
+        let cfg = Config::parse("[defaults]\nagent = \"codex\"\n").unwrap();
         let a = cfg.agent_for(&RepositoryConfig::default());
         assert_eq!(a.command, "codex");
         assert!(a.patterns.waiting.iter().any(|w| w.contains("codex>")));
@@ -2645,8 +2644,8 @@ mod tests {
     /// A default naming no preset leaves `agent_command` as the last word.
     #[test]
     fn an_unknown_default_agent_falls_back_to_the_default_command() {
-        let cfg = Config::from_str("[defaults]\nagent = \"nope\"\nagent_command = \"mistral\"\n")
-            .unwrap();
+        let cfg =
+            Config::parse("[defaults]\nagent = \"nope\"\nagent_command = \"mistral\"\n").unwrap();
         assert_eq!(
             cfg.agent_for(&RepositoryConfig::default()).command,
             "mistral"
@@ -2680,22 +2679,22 @@ mod tests {
             PathBuf::from("/work/repositories/.wingmux-worktrees")
         );
         // absolute override
-        let cfg = Config::from_str("[worktrees]\nroot = \"/wt\"\n").unwrap();
+        let cfg = Config::parse("[worktrees]\nroot = \"/wt\"\n").unwrap();
         assert_eq!(cfg.worktree_root_for(repository), PathBuf::from("/wt"));
         // relative override → resolved against repository parent
-        let cfg = Config::from_str("[worktrees]\nroot = \"../wt\"\n").unwrap();
+        let cfg = Config::parse("[worktrees]\nroot = \"../wt\"\n").unwrap();
         assert_eq!(cfg.worktree_root_for(repository), PathBuf::from("/work/wt"));
     }
 
     #[test]
     fn base_branch_falls_back_to_global() {
-        let cfg = Config::from_str("[[repositories]]\npath = \"/x\"\n").unwrap();
+        let cfg = Config::parse("[[repositories]]\npath = \"/x\"\n").unwrap();
         assert_eq!(cfg.base_branch_for(&cfg.repositories[0]), "");
     }
 
     #[test]
     fn malformed_agents_are_skipped_not_fatal() {
-        let cfg = Config::from_str("[[agents]]\nname = \"\"\ncommand = \"\"\n").unwrap();
+        let cfg = Config::parse("[[agents]]\nname = \"\"\ncommand = \"\"\n").unwrap();
         let a = cfg.agent_for(&RepositoryConfig::default());
         assert_eq!(a.command, "claude");
     }
@@ -2707,14 +2706,14 @@ mod tests {
         assert_eq!(cfg.discovery.max_depth, 4);
         assert!(cfg.discovery.skip_dirs.iter().any(|d| d == "node_modules"));
         // a config without [discovery] parses with defaults
-        let cfg = Config::from_str("theme = \"ansi\"\n").unwrap();
+        let cfg = Config::parse("theme = \"ansi\"\n").unwrap();
         assert_eq!(cfg.discovery.max_depth, 4);
         assert_eq!(cfg.discovery.scan_root, "");
     }
 
     #[test]
     fn discovery_overrides_parse() {
-        let cfg = Config::from_str(
+        let cfg = Config::parse(
             r#"
             [discovery]
             scan_root = "/work"
@@ -2839,7 +2838,7 @@ mod tests {
     #[test]
     fn preview_colors_default_to_full_and_parse_every_mode() {
         assert_eq!(Config::default().preview.colors, PreviewColors::Full);
-        let mode = |text: &str| Config::from_str(text).unwrap().preview.colors;
+        let mode = |text: &str| Config::parse(text).unwrap().preview.colors;
         assert_eq!(mode("[preview]\ncolors = \"full\"\n"), PreviewColors::Full);
         assert_eq!(
             mode("[preview]\ncolors = \"foreground\"\n"),
@@ -2919,7 +2918,7 @@ mod tests {
     /// `Default for Config` without the written file following.
     #[test]
     fn uncommenting_default_config_reproduces_the_defaults() {
-        let cfg = Config::from_str(&uncomment_defaults(DEFAULT_CONFIG)).unwrap();
+        let cfg = Config::parse(&uncomment_defaults(DEFAULT_CONFIG)).unwrap();
         assert_eq!(format!("{cfg:?}"), format!("{:?}", Config::default()));
     }
 
@@ -2927,14 +2926,14 @@ mod tests {
     /// built-in defaults, so a first run behaves like no config at all.
     #[test]
     fn default_config_is_inert_as_written() {
-        let cfg = Config::from_str(DEFAULT_CONFIG).unwrap();
+        let cfg = Config::parse(DEFAULT_CONFIG).unwrap();
         assert_eq!(format!("{cfg:?}"), format!("{:?}", Config::default()));
     }
 
     /// The shipped default config parses and keeps the documented default.
     #[test]
     fn default_config_template_declares_full_preview_colors() {
-        let cfg = Config::from_str(DEFAULT_CONFIG).unwrap();
+        let cfg = Config::parse(DEFAULT_CONFIG).unwrap();
         assert_eq!(cfg.preview.colors, PreviewColors::Full);
     }
 
@@ -3303,7 +3302,7 @@ mod tests {
 
     #[test]
     fn configured_messages_replace_the_defaults() {
-        let cfg = Config::from_str(
+        let cfg = Config::parse(
             r#"
             [[messages]]
             text = "run the gate and push"
@@ -3439,7 +3438,7 @@ mod tests {
     /// `[[repositories]]` entry applies without anything to refresh.
     #[test]
     fn repository_settings_are_read_by_path() {
-        let mut cfg = Config::from_str(
+        let mut cfg = Config::parse(
             "[[repositories]]\npath = \"/work/app/\"\nbase_branch = \"trunk\"\nagent_command = \"codex\"\n",
         )
         .unwrap();
