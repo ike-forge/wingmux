@@ -793,6 +793,13 @@ impl Tmux {
     /// decision made against a poll-old answer is exactly the "swap a pane
     /// out from under someone mid-sentence" bug the guard exists to
     /// prevent.
+    /// Make tmux forward focus in/out reports to panes; without it the
+    /// tree never learns it lost the keyboard.
+    pub fn enable_focus_events(&self) -> Result<()> {
+        self.run(&["set-option", "-s", "focus-events", "on"])
+            .map(|_| ())
+    }
+
     pub fn pane_active(&self, pane_id: &str) -> Result<bool> {
         let out = self.run(&["display-message", "-p", "-t", pane_id, "#{pane_active}"])?;
         Ok(out.trim() == "1")

@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-    MouseButton, MouseEvent, MouseEventKind,
+    self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
@@ -656,6 +656,9 @@ pub struct App {
     pub cfg: Config,
     pub theme: Theme,
     pub tmux: Option<Tmux>,
+    /// The tree's pane holds the keyboard. Follows terminal focus events;
+    /// the panels dim their frame when it is false.
+    pub focused: bool,
     /// Configured lazygit command is on PATH. Checked once; the bar asks every frame.
     pub lazygit_found: bool,
     /// lazygit borrowing the slot; the agent docks back when it quits.
@@ -862,6 +865,7 @@ impl App {
             cfg,
             theme,
             tmux,
+            focused: true,
             state: State::default(),
             sel: Sel::Repository(0),
             pending_worktrees: std::collections::VecDeque::new(),
@@ -931,6 +935,9 @@ impl App {
             self.boot_discovery()?;
         }
         if let Some(tmux) = &self.tmux {
+            if let Err(e) = tmux.enable_focus_events() {
+                log::warn!("cannot enable focus events: {e}");
+            }
             // Before the first reconcile: a dashboard that died with a pane
             // docked left that pane in a session that does not own it, and
             // the tree must never render a shell in the wrong place.
@@ -5101,6 +5108,8 @@ fn term_init() -> ratatui::DefaultTerminal {
         // Not fatal: keyboard-only operation still works.
         log::error!("cannot enable mouse reporting: {e}");
     }
+    // Focus reports let the panels dim when the keyboard is elsewhere.
+    let _ = execute!(std::io::stdout(), EnableFocusChange);
     terminal
 }
 
@@ -5112,7 +5121,7 @@ fn term_restore() {
 }
 
 fn disable_mouse() {
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
 }
 
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
@@ -5178,6 +5187,8 @@ fn dispatch_event(app: &mut App, ev: Event) {
     match ev {
         Event::Key(key) => app.on_key(key),
         Event::Mouse(m) => app.on_mouse(m),
+        Event::FocusGained => app.focused = true,
+        Event::FocusLost => app.focused = false,
         _ => {}
     }
 }

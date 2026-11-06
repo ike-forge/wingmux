@@ -1226,6 +1226,10 @@ duplication docking exists to end.
   suffix: it named the implementation, not the panel. The tree title follows
   the tree's actual contents — `Repositories (n)`, counting only in-scope
   repositories, since out-of-scope ones have no rows.
+- **Panels dim when the pane loses the keyboard.** Borders drop to `border`
+  and titles to `dim`, as LazyGit does. The TUI reads terminal focus reports
+  (`EnableFocusChange`); tmux only forwards them with `focus-events on`, which
+  startup sets on the server.
 - **UI pass from the screenshots (rounded corners, bare titles, tree guides,
   icons).** Panels and popups use `BorderType::Rounded` (╭ ╮ ╰ ╯). Titles
   render foreground-only — no background fill under a panel/popup title

@@ -950,7 +950,15 @@ fn panel_block(
     icons: &crate::config::IconsConfig,
     title: &str,
     focused: bool,
+    active: bool,
 ) -> Block<'static> {
+    // Without the keyboard the whole frame recedes, borders and title.
+    let focused = focused && active;
+    let title_style = if active {
+        title_style(theme)
+    } else {
+        fg(theme.dim).add_modifier(Modifier::BOLD)
+    };
     let border = if focused {
         theme.border_focused
     } else {
@@ -960,7 +968,7 @@ fn panel_block(
         .borders(Borders::ALL)
         .border_type(border_type(icons))
         .border_style(fg(border))
-        .title(Span::styled(format!(" {title} "), title_style(theme)))
+        .title(Span::styled(format!(" {title} "), title_style))
 }
 
 fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
@@ -1182,7 +1190,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     // so out-of-scope ones must not be counted.
     let vis = app.visible_repositories();
     let title = format!("Repositories ({})", vis.len());
-    let block = panel_block(theme, &app.cfg.icons, &title, true);
+    let block = panel_block(theme, &app.cfg.icons, &title, true, app.focused);
     let list = List::new(items)
         .block(block)
         .highlight_style(bg(theme.selection_bg))
@@ -1243,7 +1251,7 @@ fn draw_todo(f: &mut Frame, area: Rect, app: &App) {
     } else {
         format!("Todo · {name}")
     };
-    let block = panel_block(theme, &app.cfg.icons, &title, focused);
+    let block = panel_block(theme, &app.cfg.icons, &title, focused, app.focused);
     let inner = block.inner(area);
     let mut lines: Vec<Line> = Vec::new();
     if buf.text().is_empty() {
@@ -1376,7 +1384,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         (n, None) => format!("Preview  {UP_ARROW}{n}"),
         (n, Some(who)) => format!("Preview  {UP_ARROW}{n}  leased by {who}"),
     };
-    let block = panel_block(theme, &app.cfg.icons, &title, off > 0);
+    let block = panel_block(theme, &app.cfg.icons, &title, off > 0, app.focused);
     let off = app.preview_offset();
     // Pane first, not tree position: a repository row has a pane to show
     // (its inline shell) without having a `(worktree, shell)` to be found
