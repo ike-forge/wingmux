@@ -5116,7 +5116,7 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(h, a)| h.label() == "a shell" && *a == BarAction::RepoShell),
+                .any(|(h, a)| h.label() == "a add shell" && *a == BarAction::RepoShell),
             "`a` is named: {:?}",
             entries.iter().map(|(h, _)| h.label()).collect::<Vec<_>>()
         );
