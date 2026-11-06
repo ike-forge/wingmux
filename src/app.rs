@@ -2695,7 +2695,9 @@ impl App {
         let want = self
             .selected_shell_pane()
             .filter(|p| self.leased_by(p).is_none());
-        if want == self.docked {
+        // Nothing wanted, nothing docked, but a slot left over (lazygit
+        // quit on a shell-less row) still has to go.
+        if want == self.docked && (want.is_some() || self.slot.is_none()) {
             return;
         }
         // Recorded before the attempt, not after: a decline must be
@@ -6186,6 +6188,34 @@ mod tests {
             assert!(tmux.pane_active(&own).unwrap(), "the tree has the keyboard");
             app.auto_dock(false);
             assert_eq!(app.docked.as_deref(), Some(pane.as_str()), "agent back");
+        });
+    }
+
+    /// On a row with no shell, quitting lazygit gives the space back to the
+    /// preview instead of leaving the parked slot beside it.
+    #[test]
+    fn lazygit_quit_on_a_shell_less_row_drops_the_slot() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_w, pane) = seed_repository_with_shell(&tmux, &mut app);
+            tmux.kill_pane(&pane).unwrap();
+            app.state.repositories[0].worktrees[0].shells.clear();
+            app.lazygit_found = true;
+            app.cfg.lazygit = "true".into();
+            look_at(&mut app, Sel::Worktree(0, 0));
+
+            app.on_key(key(KeyCode::Char('g'), true));
+            assert!(app.lazygit_open(), "{:?}", app.message);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while app.lazygit_open() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(100));
+                app.reap_lazygit();
+            }
+            assert!(!app.lazygit_open(), "the exit was noticed");
+            app.auto_dock(false);
+            assert_eq!(app.slot, None, "the slot is gone");
+            assert_eq!(app.find_slot(&tmux), None, "in tmux too");
         });
     }
 
