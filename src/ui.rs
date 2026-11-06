@@ -1347,11 +1347,12 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
         // says which.
         Text::from(format!(
             "No shell in this repository yet\n\n\
-             Press `a` to start one in the repository's own checkout\n\
-             ({}), for the commands you would otherwise run by\n\
-             hand: make, mise run …, cat config.\n\n\
+             Press `a` to start one in the repository's own checkout:\n\
+             {}\n\n\
+             Use it for commands you would otherwise run by hand,\n\
+             like make, mise run …, cat config.\n\n\
              It starts on the first press and stays until `d` closes it.",
-            app.cfg.base_branch_at(&repo.path),
+            repo.path.display(),
         ))
     } else if selected_worktree_has_no_shell(app) {
         // A worktree with no shell: there is no pane to capture, and the
