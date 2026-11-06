@@ -136,7 +136,7 @@ reads as new until it has commits of its own.
 | `separator` | ` | ` | ` | ` | ` | ` | between bar/help entries |
 | `warn` | `⚠` | `⚠` | `⚠` | startup diagnostics |
 | `ellipsis` | `…` | `…` | `…` | truncation marker |
-| `sync_spinner` | `◜◝◞◟` | same | — | frames cycled while a repository fetches |
+| `sync_spinner` | `◜◝◞◟` | same | — | frames cycled while a repository fetches or pushes |
 | `upstream_ahead` | `↑` | `↑` | `↑` | before the count of commits to push |
 | `upstream_behind` | `↓` | `↓` | `↓` | before the count of commits to pull |
 | `enter` | `↵` | `↵` | `↵` | the Enter key, in shortcut hints |

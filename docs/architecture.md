@@ -921,9 +921,12 @@ duplication docking exists to end.
   `elapsed / SPINNER_FRAME_MS % frames`, read once per frame from
   `App::started`, so there is no timer, no extra wakeup and no per-row
   state — and every working row animates in step, which reads as one
-  dashboard ticking rather than N unrelated ones. The frame lasts 120 ms
+  dashboard ticking rather than N unrelated ones. The frame lasts 240 ms
   against the event loop's ~100 ms redraw floor (`event_loop` caps its poll
-  timeout); a shorter frame would only stutter.
+  timeout); a shorter frame would only stutter. The repository row's sync
+  spinner (fetch or push in flight) turns twice as fast, 120 ms a frame: a
+  sync is short and a slow tick reads as stuck. While one runs the floor
+  drops to 50 ms (`SYNC_REDRAW_MS`); idle, the loop keeps its slower pace.
 - **Status colours are borrowed unless the state is one you act on**
   (user's call: "rework the colors", then "waiting yellow, blocked
   yellow/orange, ended purple"). Every role but `waiting` and `failed` is

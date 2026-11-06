@@ -307,6 +307,12 @@ fn status_color(theme: &ResolvedColors, st: Status) -> Color {
 /// last longer than that or the animation stutters at the redraw floor.
 const SPINNER_FRAME_MS: u128 = 240;
 
+/// The repository row's sync spinner runs at twice the working pace: a
+/// fetch or push is short, and a slow tick reads as stuck. The event loop
+/// drops its redraw floor to [`crate::app::SYNC_REDRAW_MS`] while one is in
+/// flight, so the faster frames do not stutter.
+pub(crate) const SYNC_SPINNER_FRAME_MS: u128 = SPINNER_FRAME_MS / 2;
+
 /// The frame of the working spinner at `elapsed`. Empty when the icon set
 /// defines no spinner (the `none` preset), which is also why this cannot
 /// index blindly.
@@ -315,13 +321,17 @@ fn spinner_frame(ic: &IconsConfig, elapsed: std::time::Duration) -> &str {
 }
 
 fn frame_at(frames: &[String], elapsed: std::time::Duration) -> &str {
+    frame_every(frames, elapsed, SPINNER_FRAME_MS)
+}
+
+fn frame_every(frames: &[String], elapsed: std::time::Duration, ms: u128) -> &str {
     if frames.is_empty() {
         return "";
     }
-    &frames[(elapsed.as_millis() / SPINNER_FRAME_MS) as usize % frames.len()]
+    &frames[(elapsed.as_millis() / ms) as usize % frames.len()]
 }
 
-/// The repository row's `↑ahead ↓behind` and fetch spinner. In sync, or
+/// The repository row's `↑ahead ↓behind` and sync spinner (fetch or push). In sync, or
 /// without an upstream, draws nothing; counts a failed fetch could not
 /// refresh are dimmed.
 fn upstream_spans(
@@ -351,8 +361,8 @@ fn upstream_spans(
             ));
         }
     }
-    let f = frame_at(&ic.sync_spinner, spin);
-    if app.fetcher.is_fetching(path) && !f.is_empty() {
+    let f = frame_every(&ic.sync_spinner, spin, SYNC_SPINNER_FRAME_MS);
+    if app.syncing(path) && !f.is_empty() {
         out.push(Span::styled(format!(" {f}"), fg(theme.dim)));
     }
     out
@@ -1449,8 +1459,12 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             let mut v = vec![
                 (h("add shell", "a"), RepoShell),
                 (h("worktree", "n"), NewWorktree),
-                (h("push", "p"), Push),
             ];
+            // Only with commits the upstream lacks: an entry that can only
+            // answer "nothing to push" is noise.
+            if app.pushable(ri) {
+                v.push((h("push", "p"), Push));
+            }
             if app.repo_shell_pane(ri).is_some() {
                 v.push((h("close", "d"), CloseRepoShell));
             }
@@ -3632,7 +3646,15 @@ mod tests {
         // overlay (bar: "worktree n" vs help: "new worktree", etc.).
         let mut app = seeded_app();
         let text = help_text(&mut app, 120, 80);
-        let app2 = seeded_app();
+        let mut app2 = seeded_app();
+        // Ahead of its upstream, or the bar leaves `push` out.
+        app2.divergence.insert(
+            "/tmp/repo-a".into(),
+            crate::git::Divergence {
+                ahead: 1,
+                behind: 0,
+            },
+        );
         for (entry, _) in crate::ui::bar_entries(&app2) {
             match entry.desc.as_str() {
                 "help" => assert!(text.contains("this help"), "bar 'help ?' ↔ help row"),
@@ -3709,6 +3731,44 @@ mod tests {
         let mut wide = seeded_app_with_shell();
         wide.sel = crate::app::Sel::Shell(0, 0, 0);
         assert_eq!(statusbar_h(&wide, 120), 1, "one row is enough at 120");
+    }
+
+    /// `push p` is offered only with commits the upstream lacks; `p`
+    /// without them says so instead of starting a push.
+    #[test]
+    fn push_is_offered_only_when_ahead() {
+        let has_push = |app: &App| {
+            bar_entries(app)
+                .iter()
+                .any(|(_, a)| matches!(a, BarAction::Push))
+        };
+        let mut app = seeded_app();
+        app.sel = crate::app::Sel::Repository(0);
+        assert!(!has_push(&app), "no divergence known: nothing to push");
+        app.divergence.insert(
+            "/tmp/repo-a".into(),
+            crate::git::Divergence {
+                ahead: 0,
+                behind: 2,
+            },
+        );
+        assert!(!has_push(&app), "only behind: nothing to push");
+        app.on_key(ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Char('p'),
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(!app.pusher.is_pushing(std::path::Path::new("/tmp/repo-a")));
+        assert!(
+            app.toast()
+                .is_some_and(|t| t.text.contains("nothing to push")),
+            "{:?}",
+            app.toast()
+        );
+        app.divergence
+            .get_mut(std::path::Path::new("/tmp/repo-a"))
+            .unwrap()
+            .ahead = 1;
+        assert!(has_push(&app), "a commit ahead: push");
     }
 
     /// A long error is a sentence: the toast wraps it rather than cutting
@@ -4509,6 +4569,7 @@ mod tests {
         // A frame outlives the event loop's ~100ms redraw floor, or the
         // animation would stutter instead of ticking.
         const { assert!(SPINNER_FRAME_MS > 100) };
+        const { assert!(SYNC_SPINNER_FRAME_MS > crate::app::SYNC_REDRAW_MS as u128) };
         assert_eq!(
             spinner_frame(&crate::config::IconsConfig::preset("none"), Duration::ZERO),
             "",

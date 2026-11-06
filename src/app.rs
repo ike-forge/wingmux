@@ -26,6 +26,9 @@ const RECENT_TAIL_LINES: usize = 10;
 /// longer — they are the ones worth reading.
 const TOAST_TTL: Duration = Duration::from_secs(4);
 const TOAST_TTL_ERR: Duration = Duration::from_secs(6);
+/// The event loop's redraw floor while a fetch or push runs: under
+/// [`crate::ui::SYNC_SPINNER_FRAME_MS`], so every sync spinner frame is drawn.
+pub(crate) const SYNC_REDRAW_MS: u64 = 50;
 
 /// How often the per-worktree states are recomputed. Each one shells
 /// out to git two or three times, so it runs on its own slow cadence rather
@@ -4204,10 +4207,38 @@ impl App {
         }
     }
 
+    /// A fetch or push is in flight for the repository at `path`.
+    pub(crate) fn syncing(&self, path: &std::path::Path) -> bool {
+        self.fetcher.is_fetching(path) || self.pusher.is_pushing(path)
+    }
+
+    /// Any fetch or push in flight — the event loop redraws faster then,
+    /// for the sync spinner.
+    fn any_syncing(&self) -> bool {
+        self.state
+            .repositories
+            .iter()
+            .any(|r| self.syncing(&r.path))
+    }
+
+    /// The repository's checkout has commits its upstream lacks.
+    pub(crate) fn pushable(&self, ri: usize) -> bool {
+        self.state
+            .repositories
+            .get(ri)
+            .filter(|r| !r.missing)
+            .and_then(|r| self.divergence.get(&r.path))
+            .is_some_and(|d| d.ahead > 0)
+    }
+
     /// Push the selected row's repository (its main checkout's branch).
     fn push_selected(&mut self) {
         let (Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, ..)) = self.sel;
         match self.state.repositories.get(ri) {
+            Some(r) if !r.missing && !self.pushable(ri) => {
+                let name = r.name.clone();
+                self.notify(format!("nothing to push in '{name}'"));
+            }
             Some(r) if !r.missing => {
                 let name = r.name.clone();
                 if self.pusher.submit(&r.path) {
@@ -5124,7 +5155,12 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
         let timeout = if loading {
             Duration::ZERO
         } else {
-            until_poll.min(Duration::from_millis(100))
+            let floor = if app.any_syncing() {
+                SYNC_REDRAW_MS
+            } else {
+                100
+            };
+            until_poll.min(Duration::from_millis(floor))
         };
         if event::poll(timeout)? {
             dispatch_event(app, event::read()?);
