@@ -92,6 +92,7 @@ tail — `help ?`, the way to everything that did not fit, sits at that end.
 | `a` | start (or enter) the repository's inline shell: a plain `$SHELL` in its own checkout (the base branch), docked beside the tree | `a` = attach; the same key that gives a worktree a shell |
 | `n` | new worktree (git worktree + branch cut from the repository's base branch, + a shell running the agent its second field names) | create action |
 | `d` | close the inline shell (kills its window; the repository, its worktrees and their agents stay). Absent until there is one to close | vim `d` destructive, confirms; an answer that cannot succeed is not offered |
+| `f` | fetch the repository's upstream, refreshing `↑ahead ↓behind`. Works from any row of the repository | LazyGit `f` = fetch |
 
 `Enter` does not start the shell. It used to, and since `Enter`, `l` and
 `→` all expand, every repository opened to look at its worktrees left a

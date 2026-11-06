@@ -78,6 +78,13 @@ want you. No patched font? Set
 `preset = "unicode"` for `▣`/`▤`/`▢` and `○`/`◆`/`✓`/`⊘`. Rows carry
 meaning in symbols, labels and position as well as colour.
 
+A repository row also shows its main checkout against the upstream, as
+LazyGit does: `↑2` commits to push, `↓5` to pull, nothing when in sync or
+without an upstream. The counts are in the accent colour, dimmed when the
+last fetch failed (offline, auth) and they may be stale. A small dim `◜◝◞◟`
+after them turns while a fetch runs. See [architecture](architecture.md#upstream-sync)
+for when fetches happen.
+
 Uncommitted changes are deliberately *not* in that icon — a branch with
 commits reads the same whether or not there is unsaved work on top. They
 still decide whether the delete confirm offers `f` (force).
@@ -129,6 +136,9 @@ reads as new until it has commits of its own.
 | `separator` | ` | ` | ` | ` | ` | ` | between bar/help entries |
 | `warn` | `⚠` | `⚠` | `⚠` | startup diagnostics |
 | `ellipsis` | `…` | `…` | `…` | truncation marker |
+| `sync_spinner` | `◜◝◞◟` | same | — | frames cycled while a repository fetches |
+| `upstream_ahead` | `↑` | `↑` | `↑` | before the count of commits to push |
+| `upstream_behind` | `↓` | `↓` | `↓` | before the count of commits to pull |
 | `enter` | `↵` | `↵` | `↵` | the Enter key, in shortcut hints |
 | `arrows` | `↑↓` | `↑↓` | `↑↓` | the arrow keys, in shortcut hints |
 | `border` | `rounded` | `rounded` | `rounded` | panel and popup frames |

@@ -12,8 +12,9 @@ the same commit as the change.
   `app`, `ui`.
 - No async runtime: single-threaded crossterm event loop, status polling on a
   timer inside the loop (tmux CLI calls are fast enough at 500ms cadence).
-  The one exception is `remover`: a worker thread for `git worktree remove`
-  (see Worktrees and deletion).
+  The exceptions are `remover`, a worker thread for `git worktree remove`
+  (see Worktrees and deletion), and `sync`, one thread per upstream fetch
+  (see Upstream sync).
 - ratatui 0.30 is the rendering stack (the crate was rewritten around
   ratatui-core / ratatui-widgets / ratatui-crossterm): `Color::Rgb` is a
   tuple, 256-colour is `Color::Indexed`, ANSI colors render as `38;5;0..15`
@@ -240,6 +241,35 @@ the same commit as the change.
   `Git::resolve_base_branch` call `create_worktree` makes, ONCE when the popup
   opens, so it cannot promise a base the creation then ignores and costs no
   git call per frame. A missing configured branch reads `<name> (not found)`.
+
+## Upstream sync
+
+The repository row shows `↑ahead ↓behind`: the main checkout's HEAD against
+its upstream, so a forgotten push or pull is visible before work starts.
+Worktrees get no counts: their branches merge into the local base and are
+pushed from there.
+
+- **Counting and fetching are split.** `rev-list --left-right --count
+  HEAD...@{upstream}` reads the remote-tracking ref: local, milliseconds,
+  works offline. It runs with the worktree-state poll (every 5 s) and after
+  each fetch. A `git push` moves the remote-tracking ref too, so `↑` is
+  right without any fetch.
+- **Fetches are rare.** Each repository once as it comes into scope
+  (`[sync].fetch_on_startup`), its repository again when a worktree is
+  created or deleted, and `f` on demand. No timer: a dashboard left open all
+  day must not poll every remote it knows.
+- **One ref.** `git fetch --no-tags <remote> <merge-ref>` of HEAD's
+  upstream only; a plain `fetch` on a large repository pulls every branch.
+- **At most `max_fetches` at once** (default 4): parallel ssh handshakes to
+  one host trip forge rate limits. `sync::Fetcher` starts one thread per
+  fetch from the event loop's poll, the rest wait in FIFO order.
+- **Git must never prompt.** A credential or passphrase prompt would write
+  over the TUI. `GIT_TERMINAL_PROMPT=0`, stdin null, `ssh -o BatchMode=yes`
+  unless the user set `GIT_SSH_COMMAND` or `core.sshCommand`, and the child
+  runs in its own process group: a tty read stops it instead of taking
+  keys, and the 30 s timeout kills it.
+- **Offline is normal.** A failed fetch keeps the last counts, dims them,
+  and logs the error; no toast.
 
 ## Shells and tmux sessions
 
@@ -1374,7 +1404,9 @@ duplication docking exists to end.
   repository root (`.git`) so a sibling repo's config is never inherited. Per
   the configuration rules, some keys are user-only and are rejected in the
   repository layers with a diagnostic (never silently applied):
-  `worktrees.root` and `discovery.scan_root` (machine paths).
+  `worktrees.root` and `discovery.scan_root` (machine paths), and `[sync]`
+  (network use is the user's call; it is also read once, before any
+  repository is known).
 - **`--config` is a layer on top, not a substitute for the user file**: it was
   asked for by hand, on this run, so it outranks every file found by
   convention — including the repository's, which is the reason to reach for it

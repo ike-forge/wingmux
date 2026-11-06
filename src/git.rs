@@ -4,8 +4,11 @@
 //! special characters are never interpreted by a shell. Errors carry git's
 //! stderr so the user sees the real reason (e.g. "branch already exists").
 
+use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
 
@@ -397,6 +400,91 @@ impl Git {
         Self::run_ok(dir, &["branch", "-D", branch])?;
         Ok(())
     }
+
+    /// HEAD against its upstream, from the remote-tracking ref as last
+    /// fetched: no network. `None` without an upstream or on a detached HEAD.
+    pub fn upstream_divergence(&self, dir: &Path) -> Option<Divergence> {
+        let out = Self::run_ok(
+            dir,
+            &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+        )
+        .ok()?;
+        let mut it = out.stdout.split_whitespace().map(str::parse::<usize>);
+        Some(Divergence {
+            ahead: it.next()?.ok()?,
+            behind: it.next()?.ok()?,
+        })
+    }
+
+    /// Fetch the one ref HEAD's branch tracks, updating its remote-tracking
+    /// ref. Nothing to fetch (detached, no upstream, local upstream) is `Ok`.
+    ///
+    /// Runs under a TUI that owns the terminal, so git must never prompt:
+    /// no terminal prompts, `BatchMode` ssh unless the user brought their
+    /// own ssh command, and its own process group, where a read of the tty
+    /// stops the child instead of stealing keys. Killed after `timeout`.
+    pub fn fetch_upstream(&self, dir: &Path, timeout: Duration) -> Result<()> {
+        let Ok(b) = Self::run_ok(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"]) else {
+            return Ok(());
+        };
+        let b = b.stdout.trim();
+        let get = |key: String| {
+            Self::run_ok(dir, &["config", "--get", &key])
+                .map(|o| o.stdout.trim().to_string())
+                .unwrap_or_default()
+        };
+        let remote = get(format!("branch.{b}.remote"));
+        let merge = get(format!("branch.{b}.merge"));
+        if remote.is_empty() || remote == "." || merge.is_empty() {
+            return Ok(());
+        }
+        let args = ["fetch", "--quiet", "--no-tags", &remote, &merge];
+        let mut c = Self::command(dir, &args);
+        c.env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        if std::env::var_os("GIT_SSH_COMMAND").is_none() && get("core.sshCommand".into()).is_empty()
+        {
+            c.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+        }
+        let mut child = c.spawn()?;
+        let start = Instant::now();
+        let status = loop {
+            if let Some(s) = child.try_wait()? {
+                break s;
+            }
+            if start.elapsed() >= timeout {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::Git(format!(
+                    "git fetch {remote} timed out after {}s",
+                    timeout.as_secs()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        if status.success() {
+            return Ok(());
+        }
+        let mut err = String::new();
+        if let Some(mut s) = child.stderr.take() {
+            let _ = s.read_to_string(&mut err);
+        }
+        Err(Error::Git(format!(
+            "git fetch {remote} failed: {}",
+            err.trim()
+        )))
+    }
+}
+
+/// Commits HEAD has that its upstream lacks (`ahead`, to push) and the
+/// reverse (`behind`, to pull).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Divergence {
+    pub ahead: usize,
+    pub behind: usize,
 }
 
 /// Parse `git worktree list --porcelain` output.
@@ -622,6 +710,54 @@ mod tests {
         let s = slugify(&mixed);
         assert!(!s.ends_with('-'));
         assert!(s.len() <= MAX_BRANCH_LEN);
+    }
+
+    /// Counts come from the remote-tracking ref alone; only a fetch moves
+    /// `behind`. A clone of a bare remote, with a second clone pushing.
+    #[test]
+    fn divergence_counts_locally_and_fetch_updates_behind() {
+        let (guard, origin) = temp_repo("origin");
+        let bare = guard.path().join("bare.git");
+        let clone = |name: &str| {
+            let p = guard.path().join(name);
+            run(guard.path(), &["clone", "-q", bare.to_str().unwrap(), name]);
+            run(&p, &["config", "user.name", "wm-test"]);
+            run(&p, &["config", "user.email", "wm-test@example.com"]);
+            p
+        };
+        run(
+            guard.path(),
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                origin.to_str().unwrap(),
+                "bare.git",
+            ],
+        );
+        let mine = clone("mine");
+        let theirs = clone("theirs");
+        let t = Duration::from_secs(10);
+
+        assert_eq!(Git.upstream_divergence(&mine), Some(Divergence::default()));
+        run(&mine, &["commit", "-q", "--allow-empty", "-m", "local"]);
+        run(&theirs, &["commit", "-q", "--allow-empty", "-m", "remote"]);
+        run(&theirs, &["push", "-q"]);
+        let d = Git.upstream_divergence(&mine).unwrap();
+        assert_eq!((d.ahead, d.behind), (1, 0), "no fetch yet");
+        Git.fetch_upstream(&mine, t).unwrap();
+        let d = Git.upstream_divergence(&mine).unwrap();
+        assert_eq!((d.ahead, d.behind), (1, 1));
+
+        // No upstream: nothing to count, nothing to fetch.
+        assert_eq!(Git.upstream_divergence(&origin), None);
+        Git.fetch_upstream(&origin, t).unwrap();
+        // An unreachable remote is an error, not a hang.
+        run(
+            &mine,
+            &["remote", "set-url", "origin", "/nonexistent/repo.git"],
+        );
+        assert!(Git.fetch_upstream(&mine, t).is_err());
     }
 
     #[test]

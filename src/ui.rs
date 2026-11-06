@@ -311,11 +311,51 @@ const SPINNER_FRAME_MS: u128 = 240;
 /// defines no spinner (the `none` preset), which is also why this cannot
 /// index blindly.
 fn spinner_frame(ic: &IconsConfig, elapsed: std::time::Duration) -> &str {
-    if ic.status_spinner.is_empty() {
+    frame_at(&ic.status_spinner, elapsed)
+}
+
+fn frame_at(frames: &[String], elapsed: std::time::Duration) -> &str {
+    if frames.is_empty() {
         return "";
     }
-    let i = (elapsed.as_millis() / SPINNER_FRAME_MS) as usize % ic.status_spinner.len();
-    &ic.status_spinner[i]
+    &frames[(elapsed.as_millis() / SPINNER_FRAME_MS) as usize % frames.len()]
+}
+
+/// The repository row's `↑ahead ↓behind` and fetch spinner. In sync, or
+/// without an upstream, draws nothing; counts a failed fetch could not
+/// refresh are dimmed.
+fn upstream_spans(
+    app: &App,
+    path: &std::path::Path,
+    spin: std::time::Duration,
+) -> Vec<Span<'static>> {
+    let theme = &app.theme.colors;
+    let ic = &app.cfg.icons;
+    let mut out = Vec::new();
+    if let Some(d) = app.divergence.get(path) {
+        let c = fg(if app.fetch_failed.contains(path) {
+            theme.dim
+        } else {
+            theme.accent
+        });
+        if d.ahead > 0 {
+            out.push(Span::styled(
+                format!(" {}{}", ic.upstream_ahead, d.ahead),
+                c,
+            ));
+        }
+        if d.behind > 0 {
+            out.push(Span::styled(
+                format!(" {}{}", ic.upstream_behind, d.behind),
+                c,
+            ));
+        }
+    }
+    let f = frame_at(&ic.sync_spinner, spin);
+    if app.fetcher.is_fetching(path) && !f.is_empty() {
+        out.push(Span::styled(format!(" {f}"), fg(theme.dim)));
+    }
+    out
 }
 
 /// The icon drawn in front of a status label, already padded to the shared
@@ -956,6 +996,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
         if repo.missing {
             spans.push(Span::styled(" (missing)", fg(theme.dim)));
         }
+        spans.extend(upstream_spans(app, &repo.path, spin));
         // A repository with an inline shell says so, and names the
         // base branch — what distinguishes it from the worktrees below.
         // A dead shell drops the marker altogether: the row is back to
@@ -1720,6 +1761,14 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             ),
             (&["n"], &["new worktree", "worktree + agent shell"]),
             (&["d"], &["close that shell", "the repository stays"]),
+            (
+                &["f"],
+                &[
+                    "fetch upstream",
+                    "refreshes ↑ahead ↓behind",
+                    "any row of it",
+                ],
+            ),
         ],
     ),
     (
@@ -2875,6 +2924,29 @@ mod tests {
             .collect()
     }
 
+    /// Only non-zero counts draw; a repository in sync stays bare.
+    #[test]
+    fn repository_row_shows_upstream_counts() {
+        let mut app = seeded_app();
+        app.viewport = (120, 40);
+        let a = app.state.repositories[0].path.clone();
+        let b = app.state.repositories[1].path.clone();
+        app.divergence.insert(
+            a,
+            crate::git::Divergence {
+                ahead: 2,
+                behind: 5,
+            },
+        );
+        app.divergence.insert(b, crate::git::Divergence::default());
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("repo-a ↑2 ↓5"), "{text}");
+        assert!(!text.contains("↑0") && !text.contains("↓0"));
+    }
+
     // ---- M18 Task 15 — the lease ----
 
     fn lease_on(app: &mut App, pane: &str, scope: &str) {
@@ -3366,6 +3438,7 @@ mod tests {
             "close shell",
             "predefined message",
             "refresh",
+            "fetch upstream",
             "reset the layout",
             "this help",
         ] {

@@ -92,6 +92,7 @@ merge/PR automation. Only worktree teardown is automated.
 | `t` / `T` | repository / global todo pad |
 | `d` | delete worktree or close shell |
 | `r` / `R` | refresh / reset layout |
+| `f` | fetch the repository's upstream (`↑ahead ↓behind` on its row) |
 | `ctrl-t` | switch theme |
 | `?` | help |
 | `q` | quit |
