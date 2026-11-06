@@ -183,7 +183,7 @@ pub const DEFAULT_CONFIG: &str = r#"# Wingmux configuration — written on first
 #separator = " | "               # between status-bar fields
 #warn = "⚠"                    # startup diagnostics indicator
 #ellipsis = "…"                # marks text truncated to fit
-#sync_spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"     # repository upstream fetch in flight
+#sync_spinner = "⣀⣤⣶⣾⣿⣾⣶⣤"     # repository upstream fetch in flight
 #upstream_ahead = "↑"           # commits to push, on a repository row
 #upstream_behind = "↓"          # commits to pull, on a repository row
 #enter = "↵"                   # names the Enter key in shortcut hints
@@ -472,7 +472,7 @@ impl IconsConfig {
             separator: " | ".into(),
             warn: "⚠".into(),
             ellipsis: "…".into(),
-            sync_spinner: frames("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+            sync_spinner: frames("⣀⣤⣶⣾⣿⣾⣶⣤"),
             upstream_ahead: "↑".into(),
             upstream_behind: "↓".into(),
             enter: "↵".into(),
