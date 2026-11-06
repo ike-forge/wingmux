@@ -19,6 +19,7 @@ pub mod logging;
 pub mod remover;
 pub mod state;
 pub mod status;
+pub mod sync;
 pub mod theme;
 pub mod tmux;
 pub mod todo;

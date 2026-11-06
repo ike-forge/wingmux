@@ -102,6 +102,14 @@ pub const DEFAULT_CONFIG: &str = r#"# Wingmux configuration — written on first
 # false to keep the branch behind after the worktree is gone.
 #delete_branch = true
 
+[sync]
+# Fetch each repository's upstream once at startup, so the repository row's
+# ↑ahead ↓behind counts are fresh. Off = counts only move on `f`, worktree
+# create/delete, or your own git commands. Counting itself never fetches.
+#fetch_on_startup = true
+# Fetches running at once; the rest queue.
+#max_fetches = 4
+
 [discovery]
 # The scope: only repositories inside this directory are listed (scopes never
 # mix). Empty = the directory Wingmux was started from. When you start
@@ -175,6 +183,9 @@ pub const DEFAULT_CONFIG: &str = r#"# Wingmux configuration — written on first
 #separator = " | "               # between status-bar fields
 #warn = "⚠"                    # startup diagnostics indicator
 #ellipsis = "…"                # marks text truncated to fit
+#sync_spinner = "◜◝◞◟"         # repository upstream fetch in flight
+#upstream_ahead = "↑"           # commits to push, on a repository row
+#upstream_behind = "↓"          # commits to pull, on a repository row
 #enter = "↵"                   # names the Enter key in shortcut hints
 #arrows = "↑↓"                  # names the arrow keys in shortcut hints
 
@@ -251,6 +262,7 @@ pub struct Config {
     pub preview: PreviewConfig,
     pub worktrees: WorktreeConfig,
     pub discovery: DiscoveryConfig,
+    pub sync: SyncConfig,
     pub defaults: DefaultsConfig,
     pub icons: IconsConfig,
     pub agents: Vec<AgentConfig>,
@@ -312,6 +324,23 @@ pub struct WorktreeConfig {
     pub root: String,
     pub base_branch: String,
     pub delete_branch: bool,
+}
+
+/// Upstream fetches behind the repository row's ahead/behind counts.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SyncConfig {
+    pub fetch_on_startup: bool,
+    pub max_fetches: usize,
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        SyncConfig {
+            fetch_on_startup: true,
+            max_fetches: 4,
+        }
+    }
 }
 
 /// Repository discovery: recursive scans for git repositories.
@@ -389,6 +418,11 @@ pub struct IconsConfig {
     pub separator: String,
     pub warn: String,
     pub ellipsis: String,
+    /// Frames of the repository row's fetch spinner; kept apart from
+    /// `status_spinner` so a fetch never reads as a working agent.
+    pub sync_spinner: Vec<String>,
+    pub upstream_ahead: String,
+    pub upstream_behind: String,
     /// Glyph standing for the Enter key in shortcut hints.
     pub enter: String,
     /// Glyph standing for the arrow keys in shortcut hints.
@@ -438,6 +472,9 @@ impl IconsConfig {
             separator: " | ".into(),
             warn: "⚠".into(),
             ellipsis: "…".into(),
+            sync_spinner: frames("◜◝◞◟"),
+            upstream_ahead: "↑".into(),
+            upstream_behind: "↓".into(),
             enter: "↵".into(),
             arrows: "↑↓".into(),
             border: BorderStyle::Rounded,
@@ -466,6 +503,7 @@ impl IconsConfig {
                 worktree_merged: String::new(),
                 worktree_deleted: String::new(),
                 status_spinner: Vec::new(),
+                sync_spinner: Vec::new(),
                 status_waiting: String::new(),
                 status_blocked: String::new(),
                 status_failed: String::new(),
@@ -569,6 +607,9 @@ struct IconsFile {
     separator: Option<String>,
     warn: Option<String>,
     ellipsis: Option<String>,
+    sync_spinner: Option<String>,
+    upstream_ahead: Option<String>,
+    upstream_behind: Option<String>,
     enter: Option<String>,
     arrows: Option<String>,
     border: Option<BorderStyle>,
@@ -600,6 +641,9 @@ impl Default for IconsFile {
             separator: None,
             warn: None,
             ellipsis: None,
+            sync_spinner: None,
+            upstream_ahead: None,
+            upstream_behind: None,
             enter: None,
             arrows: None,
             border: None,
@@ -643,6 +687,9 @@ impl<'de> Deserialize<'de> for IconsConfig {
             separator: f.separator.unwrap_or(b.separator),
             warn: f.warn.unwrap_or(b.warn),
             ellipsis: f.ellipsis.unwrap_or(b.ellipsis),
+            sync_spinner: f.sync_spinner.map(|s| frames(&s)).unwrap_or(b.sync_spinner),
+            upstream_ahead: f.upstream_ahead.unwrap_or(b.upstream_ahead),
+            upstream_behind: f.upstream_behind.unwrap_or(b.upstream_behind),
             enter: f.enter.unwrap_or(b.enter),
             arrows: f.arrows.unwrap_or(b.arrows),
             border: f.border.unwrap_or(b.border),
@@ -714,6 +761,7 @@ impl Default for Config {
                     ".wingmux-worktrees".into(),
                 ],
             },
+            sync: SyncConfig::default(),
             defaults: DefaultsConfig {
                 agent: "claude".into(),
                 agent_command: "claude".into(),
@@ -903,8 +951,10 @@ pub struct EffectiveAgent {
 /// \"not every setting is local-able\"). A repository-local file setting one of
 /// these gets a diagnostic and the key is ignored — never silently applied.
 const USER_ONLY_KEYS: &[(&str, &str)] = &[
-    ("worktrees", "root"),      // machine-specific path
-    ("discovery", "scan_root"), // machine-specific path
+    ("worktrees", "root"),        // machine-specific path
+    ("discovery", "scan_root"),   // machine-specific path
+    ("sync", "fetch_on_startup"), // read once, before any repository is known
+    ("sync", "max_fetches"),
 ];
 
 /// Known top-level keys (unknown keys are reported, never fatal).
@@ -917,6 +967,7 @@ const TOP_KEYS: &[&str] = &[
     "tmux",
     "worktrees",
     "discovery",
+    "sync",
     "defaults",
     "icons",
     "agents",
@@ -933,6 +984,7 @@ const PREVIEW_KEYS: &[&str] = &["colors"];
 const TMUX_KEYS: &[&str] = &[];
 const WORKTREES_KEYS: &[&str] = &["root", "base_branch", "delete_branch"];
 const DISCOVERY_KEYS: &[&str] = &["scan_root", "max_depth", "skip_dirs"];
+const SYNC_KEYS: &[&str] = &["fetch_on_startup", "max_fetches"];
 const DEFAULTS_KEYS: &[&str] = &["agent", "agent_command", "agent_shell", "agent_hooks"];
 const ICONS_KEYS: &[&str] = &[
     "preset",
@@ -957,6 +1009,9 @@ const ICONS_KEYS: &[&str] = &[
     "separator",
     "warn",
     "ellipsis",
+    "sync_spinner",
+    "upstream_ahead",
+    "upstream_behind",
     "enter",
     "arrows",
     "border",
@@ -1217,6 +1272,11 @@ impl Config {
         );
         line("discovery.max_depth", self.discovery.max_depth.to_string());
         line(
+            "sync.fetch_on_startup",
+            self.sync.fetch_on_startup.to_string(),
+        );
+        line("sync.max_fetches", self.sync.max_fetches.to_string());
+        line(
             "discovery.skip_dirs",
             format!(
                 "[{}]",
@@ -1337,6 +1397,18 @@ impl Config {
         line("icons.separator", format!("\"{}\"", self.icons.separator));
         line("icons.warn", format!("\"{}\"", self.icons.warn));
         line("icons.ellipsis", format!("\"{}\"", self.icons.ellipsis));
+        line(
+            "icons.sync_spinner",
+            format!("\"{}\"", self.icons.sync_spinner.join("")),
+        );
+        line(
+            "icons.upstream_ahead",
+            format!("\"{}\"", self.icons.upstream_ahead),
+        );
+        line(
+            "icons.upstream_behind",
+            format!("\"{}\"", self.icons.upstream_behind),
+        );
         line(
             "icons.border",
             format!(
@@ -1617,6 +1689,7 @@ fn report_unknown_keys(table: &toml::Table, file: &Path, diags: &mut Vec<String>
             "tmux" => Some(TMUX_KEYS),
             "worktrees" => Some(WORKTREES_KEYS),
             "discovery" => Some(DISCOVERY_KEYS),
+            "sync" => Some(SYNC_KEYS),
             "defaults" => Some(DEFAULTS_KEYS),
             "icons" => Some(ICONS_KEYS),
             _ => None,
@@ -1744,6 +1817,14 @@ fn deserialize_lenient(
         merged,
         "discovery",
         DiscoveryConfig::default(),
+        layer_paths,
+        sources,
+        diags,
+    );
+    cfg.sync = take_section(
+        merged,
+        "sync",
+        SyncConfig::default(),
         layer_paths,
         sources,
         diags,
@@ -1909,6 +1990,15 @@ impl SectionSalvage for DiscoveryConfig {
     }
 }
 
+impl SectionSalvage for SyncConfig {
+    fn salvage(t: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self {
+        SyncConfig {
+            fetch_on_startup: salvage_field(t, "fetch_on_startup", true, file, diags),
+            max_fetches: salvage_field(t, "max_fetches", 4usize, file, diags),
+        }
+    }
+}
+
 impl SectionSalvage for DefaultsConfig {
     fn salvage(t: &toml::Table, file: &str, diags: &mut Vec<String>) -> Self {
         DefaultsConfig {
@@ -1960,6 +2050,15 @@ impl SectionSalvage for IconsConfig {
             separator: salvage_field(t, "separator", b.separator, file, diags),
             warn: salvage_field(t, "warn", b.warn, file, diags),
             ellipsis: salvage_field(t, "ellipsis", b.ellipsis, file, diags),
+            sync_spinner: frames(&salvage_field(
+                t,
+                "sync_spinner",
+                b.sync_spinner.join(""),
+                file,
+                diags,
+            )),
+            upstream_ahead: salvage_field(t, "upstream_ahead", b.upstream_ahead, file, diags),
+            upstream_behind: salvage_field(t, "upstream_behind", b.upstream_behind, file, diags),
             enter: salvage_field(t, "enter", b.enter, file, diags),
             arrows: salvage_field(t, "arrows", b.arrows, file, diags),
             border: salvage_field(t, "border", b.border, file, diags),
@@ -2458,7 +2557,7 @@ mod tests {
             // number of fields actually accepted.
             assert_eq!(
                 ICONS_KEYS.len(),
-                25,
+                28,
                 "adding an icon key means adding it to ICONS_KEYS too"
             );
         });

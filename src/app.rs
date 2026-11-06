@@ -771,6 +771,17 @@ pub struct App {
     /// Worktree removals running off the loop; their rows stay until
     /// [`App::drain_removals`] applies the result.
     pub(crate) remover: crate::remover::Remover,
+    /// Upstream fetches behind the repository row's ahead/behind counts.
+    pub(crate) fetcher: crate::sync::Fetcher,
+    /// Repository path → HEAD against its upstream, refilled with
+    /// `wt_state` and after each fetch. Absent: no upstream.
+    pub(crate) divergence: HashMap<PathBuf, crate::git::Divergence>,
+    /// Repositories whose last fetch failed: their counts are stale.
+    pub(crate) fetch_failed: std::collections::HashSet<PathBuf>,
+    /// Fetch every repository once, as it comes into scope
+    /// (`[sync].fetch_on_startup`). Off in tests; `run()` sets it.
+    pub auto_fetch: bool,
+    fetch_seen: std::collections::HashSet<PathBuf>,
     /// Resolved base branch per repository path, refreshed with `wt_state`,
     /// so `<base_branch>` expands without a git call per frame.
     base_branches: HashMap<PathBuf, String>,
@@ -886,6 +897,11 @@ impl App {
             visual: None,
             editor: None,
             remover: Default::default(),
+            fetcher: Default::default(),
+            divergence: HashMap::new(),
+            fetch_failed: Default::default(),
+            auto_fetch: false,
+            fetch_seen: Default::default(),
         }
     }
 
@@ -2348,6 +2364,7 @@ impl App {
         self.clamp_sel();
         self.save_state()?;
         self.poll_worktree_state(true);
+        self.request_fetch(ri);
         self.notify(format!("worktree '{}' created", name));
         Ok(())
     }
@@ -2874,6 +2891,7 @@ impl App {
                     .map(|wi| (ri, wi))
             });
         if let Some((ri, wi)) = at {
+            self.request_fetch(ri);
             self.state.repositories[ri].worktrees.remove(wi);
             if let Some(v) = self.wt_expanded.get_mut(ri)
                 && wi < v.len()
@@ -3094,6 +3112,54 @@ impl App {
             })
             .collect();
         self.base_branches = bases;
+        let repos: Vec<PathBuf> = self
+            .visible_repositories()
+            .into_iter()
+            .map(|ri| &self.state.repositories[ri])
+            .filter(|r| !r.missing)
+            .map(|r| r.path.clone())
+            .collect();
+        for path in repos {
+            self.count_divergence(&path);
+        }
+    }
+
+    fn count_divergence(&mut self, path: &std::path::Path) {
+        match Git.upstream_divergence(path) {
+            Some(d) => self.divergence.insert(path.to_path_buf(), d),
+            None => self.divergence.remove(path),
+        };
+    }
+
+    /// Queue a fetch of the repository's upstream.
+    pub(crate) fn request_fetch(&mut self, ri: usize) {
+        if let Some(r) = self.state.repositories.get(ri).filter(|r| !r.missing) {
+            self.fetcher.submit(&r.path);
+        }
+    }
+
+    /// Queue the automatic fetches, apply finished ones, start queued ones.
+    pub fn poll_fetches(&mut self) {
+        if self.auto_fetch {
+            for ri in self.visible_repositories() {
+                let r = &self.state.repositories[ri];
+                if !r.missing && self.fetch_seen.insert(r.path.clone()) {
+                    self.fetcher.submit(&r.path);
+                }
+            }
+        }
+        for d in self.fetcher.poll(self.cfg.sync.max_fetches) {
+            match d.result {
+                Ok(()) => {
+                    self.fetch_failed.remove(&d.repo);
+                }
+                Err(e) => {
+                    log::warn!("fetch {}: {e}", d.repo.display());
+                    self.fetch_failed.insert(d.repo.clone());
+                }
+            }
+            self.count_divergence(&d.repo);
+        }
     }
 
     /// Is the worktree's worktree dirty? (drives the --force confirm option)
@@ -3553,6 +3619,7 @@ impl App {
         // Independent of tmux (and of its own cadence) — the tree draws
         // the dirty flag whether or not a session exists.
         self.poll_worktree_state(false);
+        self.poll_fetches();
         // Same reasoning, and before the early return below for the same
         // reason: a pad typed on a server that has gone away must still
         // reach the disk.
@@ -4045,9 +4112,23 @@ impl App {
             KeyCode::Char('r') => {
                 self.refresh();
             }
+            KeyCode::Char('f') => self.fetch_selected(),
             KeyCode::Char('R') => self.reset_layout(),
             KeyCode::Char('?') => self.open_help(),
             _ => {}
+        }
+    }
+
+    /// Fetch the selected row's repository.
+    fn fetch_selected(&mut self) {
+        let (Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, ..)) = self.sel;
+        match self.state.repositories.get(ri) {
+            Some(r) if !r.missing => {
+                let name = r.name.clone();
+                self.request_fetch(ri);
+                self.notify(format!("fetching '{name}'"));
+            }
+            _ => self.notify("Select a repository to fetch"),
         }
     }
 
@@ -4847,6 +4928,7 @@ pub fn scope_for(cfg: &Config, cwd: &std::path::Path) -> PathBuf {
 pub fn run(cfg: Config, theme: Theme, tmux: Tmux) -> Result<()> {
     let mut app = App::new(cfg, theme, Some(tmux));
     app.interactive_boot = true;
+    app.auto_fetch = app.cfg.sync.fetch_on_startup;
     if app.cfg.defaults.agent_hooks {
         match crate::hooks::Instrumentation::prepare() {
             Ok(i) => {

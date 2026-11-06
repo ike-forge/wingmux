@@ -17,6 +17,7 @@ Every action in full. The rule behind each key is in [`shortcuts.md`](shortcuts.
 | `T` | **global todo pad** — the same panel, one pad for the whole machine, for notes written about one repository and needed while looking at another. Stored in `$XDG_STATE_HOME/wingmux/todo.md`. The parked panel shows whichever pad was opened last |
 | `d` | on a worktree: delete it (kills windows, removes worktree; `f` = force when dirty or locked). On a shell row: close that shell (kills its window only — the worktree and its other shells stay). On a repository row: close its inline shell |
 | `r` | refresh — reconcile state against reality |
+| `f` | **fetch** the selected repository's upstream, from any of its rows. The repository row shows `↑ahead ↓behind` against it; each repository is also fetched once at startup (`[sync].fetch_on_startup`) and again when one of its worktrees is created or deleted |
 | `R` | **reset the layout** — the dashboard's strip, every agent window and every holder back to their default proportions, after a stray drag or `resize-pane` pulled them out of shape. Nothing is undocked |
 | `?` | help overlay (grouped, scrollable: `j`/`k`, `PgUp`/`PgDn`) |
 | `q` / `Esc` / `ctrl-c` | quit (ctrl-c works from any state) |

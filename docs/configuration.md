@@ -23,6 +23,10 @@ root = ""                    # default: <parent-of-repo>/.wingmux-worktrees
 base_branch = ""             # empty = the repo's current branch; a named one must exist
 delete_branch = true         # also delete the worktree branch on delete
 
+[sync]
+fetch_on_startup = true      # fetch each repository's upstream once, for its ↑ahead ↓behind
+max_fetches = 4              # fetches running at once; the rest queue
+
 [discovery]
 scan_root = ""               # the scope: repositories inside this dir are listed; empty = cwd
 max_depth = 4                # how deep a discovery scan walks
@@ -85,7 +89,8 @@ merge deeply, lists are replaced outright):
 A repository-local file is meant to be committed — a teammate clones the repo
 and is already configured. A few keys belong to the user, not the repository,
 and are **ignored in repository files with a diagnostic**: `worktrees.root`
-and `discovery.scan_root` (machine-specific paths). Set those in your user
+and `discovery.scan_root` (machine-specific paths), and `[sync]` (network
+use is your call, not the repository's). Set those in your user
 config — or in the file you pass to `--config`, which is you speaking too.
 
 `--config` is a layer, not a replacement: it is read last, so it wins, but the
