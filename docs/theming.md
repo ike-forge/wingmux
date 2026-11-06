@@ -1,5 +1,7 @@
 # Themes
 
+![Theme picker (ctrl-t)](img/themes.png)
+
 `$XDG_CONFIG_HOME/wingmux/themes/<name>.toml`. Colours are named roles
 (`background`, `accent`, `tree_repository`, `status_waiting`, …) written as
 `#rrggbb` hex, an ANSI-16 name (`cyan`, `bright_black`, `gray`, …), or

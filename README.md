@@ -5,20 +5,7 @@ Vibe, …) running **in parallel across repositories and git worktrees**. See
 every agent's state at a glance, jump into one with a keystroke, create and
 tear down worktrees instantly.
 
-```
-╭ Repositories (2) ────────╮╭ Preview ────────────────────────────╮
-│󰝰 repo-a                  ││ live view of the selected agent's    │
-│  ├─  login  ⏸ waiting   ││ pane, refreshed every poll          │
-│  └─  search             ││                                     │
-│     ├─ ● claude ⠹ working││                                     │
-│     └─ ● zsh ⏸ waiting   ││                                     │
-│󰉖 repo-b                  ││                                     │
-╰──────────────────────────╯╰─────────────────────────────────────╯
- n worktree · a shell · d delete · ? help
-```
-
-<!-- TODO screenshots: docs/img/hero.png (tree + docked agent), docs/img/new-worktree.gif (n → name → Enter),
-     docs/img/messages.png (p modal), docs/img/themes.gif (ctrl-t) -->
+![Wingmux tree with a docked agent](docs/img/hero.png)
 
 ## Why
 
@@ -59,10 +46,14 @@ Run it in a tmux pane, or from a bare shell — it starts a tmux session for
 itself. Then:
 
 1. `n` — name a new worktree; Wingmux cuts the branch and starts the agent.
+
+   ![New worktree popup](docs/img/new-worktree.png)
 2. `j` / `k` — move; the agent's pane docks beside the tree as you land on it.
 3. `Enter` — type into the agent. Get back with your tmux binding
    (`<prefix> + ←` by default).
 4. `p` — send a canned prompt ("continue", "run CI and push …").
+
+   ![Predefined messages](docs/img/messages.png)
 5. `d` — delete the worktree when its work is merged.
 
 Press `?` for every key.
