@@ -5,7 +5,7 @@
 //!
 //! `dead` (the pane is gone from tmux, or tmux says its process died) →
 //! the agent's own hook-reported state, when the pane carries a live
-//! `@lw_agent` overlay and an agent is still the foreground command (see
+//! `@wm_agent` overlay and an agent is still the foreground command (see
 //! [`OVERLAY_STALE_AFTER_SECS`] for the one case this is *not* trusted:
 //! stale AND the tail looks idle) → `ended` (the foreground command is a
 //! login shell) → `failed` (any line matches a failure pattern) →
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn a_finished_agent_session_reads_ended_not_waiting() {
         let p = Compiled::compile(&crate::config::builtin_patterns("claude").unwrap());
-        let tail = "\u{25cf} Wrote src/main.rs\n\u{276f} \n ~/projects/lw \u{e0b0} main \u{e0b0}";
+        let tail = "\u{25cf} Wrote src/main.rs\n\u{276f} \n ~/projects/wm \u{e0b0} main \u{e0b0}";
         assert_eq!(classify(&p, tail, Some(&pane("zsh", false))), Status::Ended);
     }
 

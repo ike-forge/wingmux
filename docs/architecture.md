@@ -50,11 +50,11 @@ the same commit as the change.
   directory is gone are dropped on load, since a worktree outside this run's
   scope is never pruned. A v4 file's records carry over, and the commands it
   recorded for shells are written once onto live panes that lack
-  `@lw_command` (`reconcile`). Anything older is discarded.
+  `@wm_command` (`reconcile`). Anything older is discarded.
 - **A pane carries its own identity.** `dock::ShellId` (repository slug,
-  worktree, shell index) is written onto the pane's `@lw_repo` /
-  `@lw_worktree` / `@lw_index` options at spawn, the launch command onto
-  `@lw_command` and the repository path onto `@lw_repo_path` (both escaped:
+  worktree, shell index) is written onto the pane's `@wm_repo` /
+  `@wm_worktree` / `@wm_index` options at spawn, the launch command onto
+  `@wm_command` and the repository path onto `@wm_repo_path` (both escaped:
   `list-panes -F` output is `|`-separated lines); pane options travel with the
   pane across windows and sessions. So shells are grouped by identity rather
   than by window name, and a window renamed by hand — or a pane sitting in a
@@ -247,7 +247,7 @@ the same commit as the change.
   per user feedback ("do not pollute my tmux session"): creating a worktree /
   adding a shell must not add windows to the user's session. One session per
   repository, named `wingmux-session-<sanitized-name>` (+ `-<hash8>` suffix on
-  collision), windows inside named `lw:<worktree>/<n>`; strict naming is what
+  collision), windows inside named `wm:<worktree>/<n>`; strict naming is what
   makes rediscovery after a crash/close possible (`list-sessions` +
   per-session `list-windows`). Killing the worktree's last window
   auto-destroys the session (verified against tmux 3.5a).
@@ -319,11 +319,11 @@ the same commit as the change.
   recursion guard is needed — the tmux we exec into sets `TMUX`/`TMUX_PANE`,
   which is exactly what `Tmux::detect` reads.
   - A second launch in the same folder must not race a rival dashboard beside
-    the first, so the dashboard's window announces its scope (`@lw_scope`,
+    the first, so the dashboard's window announces its scope (`@wm_scope`,
     stamped at startup) and the wrapper looks it up with one
     `list-windows -a`.
   - **The mark is not evidence that a dashboard is alive**, and reading it as
-    if it were was a real bug: nothing unwrites `@lw_scope`, and a TUI that
+    if it were was a real bug: nothing unwrites `@wm_scope`, and a TUI that
     quits in a shell pane hands that pane back to the shell — the window, the
     pane and the option all survive. Launching from a bare shell then attached
     the user to a tmux with no dashboard in it. `Tmux::scope_window_state`
@@ -364,7 +364,7 @@ and `cat config.toml` belong. So the row got a shell of its own.
   the tree for something the app never created and must never delete, and
   `d` on that row would then read as "delete the main checkout".
 - **The identity scheme is reused, not extended.** The pane is stamped
-  `@lw_repo` / `@lw_worktree` / `@lw_index` like every other shell, with
+  `@wm_repo` / `@wm_worktree` / `@wm_index` like every other shell, with
   `dock::REPO_WORKTREE` (`.repo`) as the worktree component. The sentinel
   is safe by construction: git refuses a ref whose path component begins
   with a dot, so no branch can sanitise to `.repo` and no worktree can
@@ -427,8 +427,8 @@ shell's **real** tmux pane sits beside the tree, so direct keys, copy-mode
 scrolling, search, selection and resize are tmux's own, confined to that pane,
 with nothing re-implemented. Four invariants hold the whole thing up.
 
-- **Pane options are identity.** A shell is its `@lw_repo` / `@lw_worktree` /
-  `@lw_index`, written at spawn and travelling with the pane across windows
+- **Pane options are identity.** A shell is its `@wm_repo` / `@wm_worktree` /
+  `@wm_index`, written at spawn and travelling with the pane across windows
   and sessions. Window names are labels; a pane's own options are what
   `reconcile` groups by, which is why a docked pane sitting in the dashboard's
   session is still found, and why renaming a window by hand costs nothing.
@@ -439,7 +439,7 @@ with nothing re-implemented. Four invariants hold the whole thing up.
   session are re-derived from `list-panes -a`.
 - **Anything shared between instances lives in tmux, and is re-read every
   poll.** Two dashboards have no channel to each other except the tmux server.
-  So the lease is a pane option (`@lw_docked`), never a field in the state
+  So the lease is a pane option (`@wm_docked`), never a field in the state
   file, and it is read fresh on every poll rather than cached across one.
 
 ### Why `swap-pane`, and not `join-pane`/`break-pane`
@@ -498,7 +498,7 @@ live lease **yields** and shows the preview instead; an explicit `Enter`
 undock-then-dock rather than a direct swap, so each instance keeps its own
 slot.
 
-A `@lw_docked` mark is only a lease while the dashboard pane it names is still
+A `@wm_docked` mark is only a lease while the dashboard pane it names is still
 alive: a mark left by an instance that crashed is wreckage, and treating it as
 a lease would fence the shell off for good.
 
@@ -514,16 +514,16 @@ duplication docking exists to end.
 
 - **Furniture is never a shell, whatever identity is written on it** (M18).
   `Tmux::list_panes` selects panes by identity, and the exclusion of holders
-  and slots used to rest on an assumption: furniture carries no `@lw_repo`,
+  and slots used to rest on an assumption: furniture carries no `@wm_repo`,
   so it cannot parse as a shell. A pre-v4 identity backfill falsified it —
   it stamped every unstamped pane sitting in a window still named
-  `lw:<worktree>/<n>`, and a holder is exactly that. Two panes then claimed
+  `wm:<worktree>/<n>`, and a holder is exactly that. Two panes then claimed
   one shell, `reconcile` kept whichever `list-panes -a` listed last, and a
   dashboard that picked the holder docked a sleeping placeholder and read the
   shell as `ended`. Which one won depended on session ordering, so the shell
   that broke was a *docked* one — its agent pane had moved to another session.
   That backfill is gone (see below), but the assumption it broke is not worth
-  re-betting on: `list_panes` now treats a `@lw_holder`/`@lw_slot` mark as
+  re-betting on: `list_panes` now treats a `@wm_holder`/`@wm_slot` mark as
   outranking any identity on the same pane, so the exclusion is structural and
   no future stamping path can reintroduce the bug.
 - **No migration path, by decision** (M18). There was a one-off upgrade —
@@ -566,13 +566,13 @@ duplication docking exists to end.
     pane, asked at the moment of the decision rather than cached from the
     last poll, because the answer changes the instant the user moves between
     panes.
-  - **The lease is a pane option, re-read every poll.** `@lw_docked` on the
+  - **The lease is a pane option, re-read every poll.** `@wm_docked` on the
     agent pane holds the docking dashboard's own pane id — the only thing two
     instances that know nothing of each other can both see. `App::refresh_leases`
     rebuilds `App::leases` from the poll's pane list, keeps only marks whose
     named dashboard pane is still alive (a mark from an instance that crashed
     is wreckage, and treating it as a lease would fence the shell off for
-    good), and resolves the holder's `@lw_scope` so the UI can say *whose* it
+    good), and resolves the holder's `@wm_scope` so the UI can say *whose* it
     is. A leased shell's row is muted whole and marked `leased`, the way a
     dead row mutes and for the same reason — it is not a row this instance
     brings on screen by looking at it. The preview keeps working (`capture-pane`
@@ -624,7 +624,7 @@ duplication docking exists to end.
   regex on `capture-pane` tail; `blocked` comes from an instrumented agent's
   own hook report; `idle` = default.
 - Classification order (see the module doc on `src/status.rs`): dead → the
-  agent's own hook-reported state, when the pane carries a live `@lw_agent`
+  agent's own hook-reported state, when the pane carries a live `@wm_agent`
   overlay AND an agent is still the foreground command → ended (the
   foreground command is a login shell) → failed → waiting if the LAST line
   matches a prompt pattern (the freshest signal) → working → waiting
@@ -762,7 +762,7 @@ duplication docking exists to end.
   panel. The index returns only where it earns its place: as a suffix when
   two shells of a worktree run the same program (`zsh #1`, `zsh #2`), and
   as the whole label for a pane spawned by an older build, which carries no
-  `@lw_command`.
+  `@wm_command`.
 - **Creating something reveals it.** `create_worktree` unfolds the
   repository it just added to, and gives the new worktree the same unfolded
   flag discovery gives the rows it finds. A collapsed repository emits no
@@ -1369,7 +1369,7 @@ duplication docking exists to end.
 
 - **Config layering**: defaults ← user config (config.toml) ←
   `.wingmux.toml` ← `.wingmux.local.toml` (gitignored sibling) ← the
-  file named by `--config <path>` / `LW_CONFIG`. Merge is key by key: maps
+  file named by `--config <path>` / `WINGMUX_CONFIG`. Merge is key by key: maps
   merge deeply per subkey, lists/scalars replace outright. The repository file
   is found walking upward from cwd, stopping at the first hit *and* at a
   repository root (`.git`) so a sibling repo's config is never inherited. Per
@@ -1382,7 +1382,7 @@ duplication docking exists to end.
   (a repository config you cannot edit is exactly what one wants to override).
   Making it *replace* the user layer instead, as it once did, meant a one-key
   override had to restate a whole config to avoid being beaten by the
-  repository file underneath it. `LW_CONFIG` names the same layer; `--config`
+  repository file underneath it. `WINGMUX_CONFIG` names the same layer; `--config`
   wins where both are given. A named file that does not exist is a diagnostic,
   not a failure — the layers below it are already a working config. First-run
   bootstrap still writes the default user file, because that layer is read

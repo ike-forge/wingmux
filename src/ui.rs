@@ -2752,8 +2752,8 @@ mod tests {
                 assert!(ok, "git {} failed", args.join(" "));
             };
             git(&["init", "-b", "main"]);
-            git(&["config", "user.name", "lw-test"]);
-            git(&["config", "user.email", "lw-test@example.com"]);
+            git(&["config", "user.name", "wm-test"]);
+            git(&["config", "user.email", "wm-test@example.com"]);
             std::fs::write(repo.join("readme.md"), "# t\n").unwrap();
             git(&["add", "."]);
             git(&["commit", "-m", "init"]);
@@ -2856,7 +2856,7 @@ mod tests {
                 shells: vec![crate::state::Shell {
                     command: None,
                     index: 0,
-                    window_name: "lw:wt/0".into(),
+                    window_name: "wm:wt/0".into(),
                     window_id: "@1".into(),
                     pane_id: "%1".into(),
                 }],
@@ -3092,7 +3092,7 @@ mod tests {
                 .map(|index| crate::state::Shell {
                     command: None,
                     index,
-                    window_name: format!("lw:{name}/{index}"),
+                    window_name: format!("wm:{name}/{index}"),
                     window_id: format!("@{index}"),
                     pane_id: format!("%{index}"),
                 })
@@ -3266,7 +3266,7 @@ mod tests {
         let shell = |i: usize| crate::state::Shell {
             command: None,
             index: i,
-            window_name: format!("lw:f/{i}"),
+            window_name: format!("wm:f/{i}"),
             window_id: format!("@{}", i + 1),
             pane_id: format!("%{i}"),
         };
@@ -3784,7 +3784,7 @@ mod tests {
         let shell = |i: usize| crate::state::Shell {
             command: None,
             index: i,
-            window_name: format!("lw:f/{i}"),
+            window_name: format!("wm:f/{i}"),
             window_id: format!("@{}", i + 1),
             pane_id: format!("%{i}"),
         };
@@ -3848,7 +3848,7 @@ mod tests {
         let shell = |i: usize| crate::state::Shell {
             command: None,
             index: i,
-            window_name: format!("lw:f/{i}"),
+            window_name: format!("wm:f/{i}"),
             window_id: format!("@{}", i + 7),
             pane_id: format!("%{i}"),
         };
@@ -3934,7 +3934,7 @@ mod tests {
                 shells: vec![crate::state::Shell {
                     command: None,
                     index: 0,
-                    window_name: "lw:f/0".into(),
+                    window_name: "wm:f/0".into(),
                     window_id: "@7".into(),
                     pane_id: "%0".into(),
                 }],
@@ -4018,7 +4018,7 @@ mod tests {
         let shell = |i: usize| crate::state::Shell {
             command: None,
             index: i,
-            window_name: format!("lw:f/{i}"),
+            window_name: format!("wm:f/{i}"),
             window_id: format!("@{}", i + 7),
             pane_id: format!("%{i}"),
         };
@@ -4292,7 +4292,7 @@ mod tests {
                     shells: vec![crate::state::Shell {
                         command: None,
                         index: 0,
-                        window_name: format!("lw:{name}/0"),
+                        window_name: format!("wm:{name}/0"),
                         window_id: "@1".into(),
                         pane_id: pane.into(),
                     }],
@@ -4344,7 +4344,7 @@ mod tests {
                     shells: vec![crate::state::Shell {
                         command: None,
                         index: 0,
-                        window_name: format!("lw:{name}/0"),
+                        window_name: format!("wm:{name}/0"),
                         window_id: "@1".into(),
                         pane_id: pane.into(),
                     }],
@@ -4934,7 +4934,7 @@ mod tests {
         app.state.repositories[0].shell = Some(crate::state::Shell {
             command: None,
             index: 0,
-            window_name: "lw:.repo/0".into(),
+            window_name: "wm:.repo/0".into(),
             window_id: "@9".into(),
             pane_id: "%9".into(),
         });
@@ -4956,7 +4956,7 @@ mod tests {
         app.state.repositories[0].shell = Some(crate::state::Shell {
             command: None,
             index: 0,
-            window_name: "lw:.repo/0".into(),
+            window_name: "wm:.repo/0".into(),
             window_id: "@9".into(),
             pane_id: "%9".into(),
         });
@@ -4993,7 +4993,7 @@ mod tests {
         app.state.repositories[0].shell = Some(crate::state::Shell {
             command: None,
             index: 0,
-            window_name: "lw:.repo/0".into(),
+            window_name: "wm:.repo/0".into(),
             window_id: "@9".into(),
             pane_id: "%9".into(),
         });
@@ -5074,7 +5074,7 @@ mod tests {
                 shells: vec![crate::state::Shell {
                     command: None,
                     index: 0,
-                    window_name: "lw:needs-me/0".into(),
+                    window_name: "wm:needs-me/0".into(),
                     window_id: "@7".into(),
                     pane_id: "%0".into(),
                 }],

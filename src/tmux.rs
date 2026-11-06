@@ -49,21 +49,21 @@ pub struct PaneInfo {
     /// it belongs to — [`Self::shell`] is the identity.
     #[allow(dead_code)] // reconcile groups panes by it (Task 4)
     pub session_name: String,
-    /// The shell this pane is, read back from its `@lw_*` options.
+    /// The shell this pane is, read back from its `@wm_*` options.
     pub shell: Option<ShellId>,
     /// Is this the active pane of its window?
     #[allow(dead_code)] // the focus guard reads it (Phase 4)
     pub active: bool,
-    /// While docked: the pane id of the dashboard holding it (`@lw_docked`).
+    /// While docked: the pane id of the dashboard holding it (`@wm_docked`).
     #[allow(dead_code)] // the lease reads it (Phase 5)
     pub docked_by: Option<String>,
-    /// Raw `@lw_agent` value, empty when the pane carries none. Parsed by
+    /// Raw `@wm_agent` value, empty when the pane carries none. Parsed by
     /// `hooks::Overlay::parse`; kept as a string here so tmux stays
     /// ignorant of what the value means.
     pub overlay_raw: String,
-    /// The launched command (`@lw_command`), unescaped.
+    /// The launched command (`@wm_command`), unescaped.
     pub command: Option<String>,
-    /// The repository path (`@lw_repo_path`), unescaped.
+    /// The repository path (`@wm_repo_path`), unescaped.
     pub repo_path: Option<std::path::PathBuf>,
     /// Is the cursor still at the home position, with nothing drawn yet?
     /// A shell that has not finished reading its rc files has printed no
@@ -81,11 +81,11 @@ pub struct FurniturePane {
     pub pane_id: String,
     pub window_id: String,
     pub session_name: String,
-    /// Carries `@lw_holder`.
+    /// Carries `@wm_holder`.
     pub holder: bool,
-    /// Carries `@lw_slot`.
+    /// Carries `@wm_slot`.
     pub slot: bool,
-    /// Carries a shell identity (`@lw_repo`) — an agent pane, wherever it
+    /// Carries a shell identity (`@wm_repo`) — an agent pane, wherever it
     /// currently sits.
     pub shell: bool,
 }
@@ -108,7 +108,7 @@ pub struct WindowRef {
     pub session_name: String,
 }
 
-/// What a window still carrying `@lw_scope` actually holds.
+/// What a window still carrying `@wm_scope` actually holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeWindow {
     /// A dashboard is running in it. Attach; never start a second one.
@@ -131,7 +131,7 @@ const SHELL_COMMANDS: &[&str] = &[
 /// Prefix of every session Wingmux owns (agent shells).
 pub const SESSION_PREFIX: &str = "wingmux-session-";
 /// Prefix of every window Wingmux owns inside an agent session.
-pub const WINDOW_PREFIX: &str = "lw:";
+pub const WINDOW_PREFIX: &str = "wm:";
 
 fn socket_override() -> Option<String> {
     std::env::var("WINGMUX_TMUX_SOCKET")
@@ -495,7 +495,7 @@ impl Tmux {
     /// agent session: a docked pane sits in the dashboard's own session, and
     /// a session-name filter would drop it from the poll, lose its status
     /// and prune it as dead. Conversely a pane that merely shares an agent
-    /// session — the user's own split, a holder — carries no `@lw_repo` and
+    /// session — the user's own split, a holder — carries no `@wm_repo` and
     /// is none of our business.
     ///
     /// **Furniture is never a shell**, whatever options it carries. The
@@ -504,7 +504,7 @@ impl Tmux {
     /// that stamps a pane by where it *sits* rather than by what it *is*
     /// can put a shell's identity on a holder, and then a dashboard docks
     /// the sleeping placeholder instead of the agent. So the exclusion is
-    /// structural now: a `@lw_holder` or `@lw_slot` mark outranks any
+    /// structural now: a `@wm_holder` or `@wm_slot` mark outranks any
     /// identity on the same pane.
     ///
     /// A server with no sessions yet yields an empty list, not an error.
@@ -781,7 +781,7 @@ impl Tmux {
 
     /// The scope announced by the window `pane_id` sits in, if it announces
     /// one. This is how a dashboard can name the *other* dashboard holding
-    /// a shell — `@lw_scope` is a window option, so asking a pane for it
+    /// a shell — `@wm_scope` is a window option, so asking a pane for it
     /// asks its window.
     pub fn pane_scope(&self, pane_id: &str) -> Option<String> {
         let fmt = format!("#{{{}}}", dock::SCOPE_KEY);
@@ -845,7 +845,7 @@ impl Tmux {
         }))
     }
 
-    /// What a window carrying `@lw_scope` actually holds *right now*.
+    /// What a window carrying `@wm_scope` actually holds *right now*.
     ///
     /// The mark is written at startup and nothing unwrites it, so its
     /// presence proves only that a dashboard was once here. The pane it was
@@ -879,7 +879,7 @@ impl Tmux {
         })
     }
 
-    /// Unset a window user option. Used to retract a stale `@lw_scope`, so
+    /// Unset a window user option. Used to retract a stale `@wm_scope`, so
     /// the next launch does not have to rediscover the same lie.
     pub fn clear_window_option(&self, window_id: &str, key: &str) -> Result<()> {
         self.run(&["set-option", "-w", "-u", "-t", window_id, key])?;
@@ -963,7 +963,7 @@ impl Tmux {
     /// paste (Claude Code, most REPLs) receives the multi-line text as one
     /// paste instead of a newline being interpreted as Enter.
     pub fn paste_keys(&self, pane_id: &str, text: &str, enter: bool) -> Result<()> {
-        const BUF: &str = "lw-paste";
+        const BUF: &str = "wm-paste";
         // Buffer names cannot contain the ':' character; text is fine.
         // Load the text, paste it (bracketed, delete after), then make
         // sure the buffer is gone even if -d was not enough.
@@ -1135,7 +1135,7 @@ mod tests {
         assert!(!s.contains(' '));
 
         let w = Tmux::window_name("Feat One!", 0);
-        assert_eq!(w, "lw:Feat-One/0");
+        assert_eq!(w, "wm:Feat-One/0");
         let w2 = Tmux::window_name("Feat One!", 0);
         assert_eq!(w, w2);
         assert!(w.starts_with(WINDOW_PREFIX));
@@ -1274,7 +1274,7 @@ mod tests {
             let agent = tmux
                 .new_session(
                     "wingmux-session-id",
-                    "lw:feat/0",
+                    "wm:feat/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-id", "feat", 0),
@@ -1343,7 +1343,7 @@ mod tests {
             let first = tmux
                 .new_session(
                     "wingmux-session-h",
-                    "lw:feat/0",
+                    "wm:feat/0",
                     Path::new("/tmp"),
                     "bash",
                     &id,
@@ -1353,7 +1353,7 @@ mod tests {
             let second = tmux
                 .new_window(
                     "wingmux-session-h",
-                    "lw:feat/1",
+                    "wm:feat/1",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-h", "feat", 1),
@@ -1433,7 +1433,7 @@ mod tests {
             let w = tmux
                 .new_session(
                     "wingmux-session-b",
-                    "lw:feat/0",
+                    "wm:feat/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-b", "feat", 0),
@@ -1629,7 +1629,7 @@ mod tests {
             let first = tmux
                 .new_session(
                     "wingmux-session-stamp",
-                    "lw:feat/0",
+                    "wm:feat/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-stamp", "feat", 0),
@@ -1641,7 +1641,7 @@ mod tests {
             let second = tmux
                 .new_window(
                     "wingmux-session-stamp",
-                    "lw:feat/1",
+                    "wm:feat/1",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-stamp", "feat", 1),
@@ -1702,7 +1702,7 @@ mod tests {
         with_tmux_server(|sock, tmux| {
             tmux.new_session(
                 "wingmux-session-opt",
-                "lw:feat/0",
+                "wm:feat/0",
                 std::path::Path::new("/tmp"),
                 "bash",
                 &ShellId::for_session("wingmux-session-opt", "feat", 0),
@@ -1743,7 +1743,7 @@ mod tests {
         with_tmux_server(|_sock, tmux| {
             tmux.new_session(
                 "wingmux-session-hook",
-                "lw:feat/0",
+                "wm:feat/0",
                 std::path::Path::new("/tmp"),
                 "bash",
                 &ShellId::for_session("wingmux-session-hook", "feat", 0),
@@ -1851,7 +1851,7 @@ mod tests {
             let w0 = tmux
                 .new_session(
                     "wingmux-session-p",
-                    "lw:feat/0",
+                    "wm:feat/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-p", "feat", 0),
@@ -1866,7 +1866,7 @@ mod tests {
             let w1 = tmux
                 .new_window(
                     "wingmux-session-p",
-                    "lw:feat/1",
+                    "wm:feat/1",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-p", "feat", 1),
@@ -1909,7 +1909,7 @@ mod tests {
             let w = tmux
                 .new_session(
                     "wingmux-session-p",
-                    "lw:f/0",
+                    "wm:f/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-p", "f", 0),
@@ -1927,11 +1927,11 @@ mod tests {
             assert!(!p.dead);
 
             // send a command and capture the output
-            tmux.send_keys(&w.pane_id, "echo lw-test-123", true)
+            tmux.send_keys(&w.pane_id, "echo wm-test-123", true)
                 .unwrap();
             std::thread::sleep(std::time::Duration::from_millis(300));
             let capture = tmux.capture_pane(&w.pane_id, 50).unwrap();
-            assert!(capture.contains("lw-test-123"), "capture: {capture}");
+            assert!(capture.contains("wm-test-123"), "capture: {capture}");
 
             // kill the last window → session gone
             tmux.kill_window(&w.window_id).unwrap();
@@ -1948,7 +1948,7 @@ mod tests {
             let w = tmux
                 .new_session(
                     "wingmux-session-s",
-                    "lw:s/0",
+                    "wm:s/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-s", "s", 0),
@@ -1957,13 +1957,13 @@ mod tests {
                 .unwrap();
             tmux.send_keys(
                 &w.pane_id,
-                "for i in $(seq 1 400); do echo lw-line-$i; done",
+                "for i in $(seq 1 400); do echo wm-line-$i; done",
                 true,
             )
             .unwrap();
             std::thread::sleep(std::time::Duration::from_millis(1500));
 
-            // exact line match: `lw-line-1` is a prefix of `lw-line-100`
+            // exact line match: `wm-line-1` is a prefix of `wm-line-100`
             let has = |cap: &str, needle: &str| {
                 cap.lines()
                     .any(|l| crate::ansi::strip(l).trim_end() == needle)
@@ -1971,14 +1971,14 @@ mod tests {
             let shallow = tmux.capture_pane(&w.pane_id, 50).unwrap();
             let full = tmux.capture_pane_full(&w.pane_id).unwrap();
 
-            assert!(has(&shallow, "lw-line-400"), "both end at the newest line");
-            assert!(has(&full, "lw-line-400"));
+            assert!(has(&shallow, "wm-line-400"), "both end at the newest line");
+            assert!(has(&full, "wm-line-400"));
             assert!(
-                !has(&shallow, "lw-line-1"),
+                !has(&shallow, "wm-line-1"),
                 "the poll's window stops well short of the start"
             );
             assert!(
-                has(&full, "lw-line-1"),
+                has(&full, "wm-line-1"),
                 "the full capture reaches the oldest line the pane holds"
             );
         });
@@ -1994,14 +1994,14 @@ mod tests {
             let w = tmux
                 .new_session(
                     "wingmux-session-p",
-                    "lw:f/0",
+                    "wm:f/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-p", "f", 0),
                     crate::tmux::testutil::HOLDER_W,
                 )
                 .unwrap();
-            tmux.send_keys(&w.pane_id, r#"printf '\033[31mlw-red\033[0m\n'"#, true)
+            tmux.send_keys(&w.pane_id, r#"printf '\033[31mwm-red\033[0m\n'"#, true)
                 .unwrap();
             std::thread::sleep(std::time::Duration::from_millis(300));
             let capture = tmux.capture_pane(&w.pane_id, 50).unwrap();
@@ -2010,17 +2010,17 @@ mod tests {
                 capture.contains("\x1b[31m"),
                 "capture must carry the pane's escapes: {capture:?}"
             );
-            assert!(crate::ansi::strip(&capture).contains("lw-red"));
+            assert!(crate::ansi::strip(&capture).contains("wm-red"));
 
             let text = crate::ansi::styled_text(&capture, crate::config::PreviewColors::Full);
-            // (the echoed command line also contains "lw-red", but as the
+            // (the echoed command line also contains "wm-red", but as the
             // literal text the shell was sent — only the pane's *output*
             // carries a real escape and comes back styled)
             assert!(
                 text.lines
                     .iter()
                     .flat_map(|l| l.spans.iter())
-                    .any(|s| s.content.contains("lw-red")
+                    .any(|s| s.content.contains("wm-red")
                         && s.style.fg == Some(ratatui::style::Color::Red)),
                 "coloured output must reach the preview: {capture:?}"
             );
@@ -2035,7 +2035,7 @@ mod tests {
             let w = tmux
                 .new_session(
                     "wingmux-session-p",
-                    "lw:f/0",
+                    "wm:f/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-p", "f", 0),
@@ -2055,7 +2055,7 @@ mod tests {
             // The paste buffer is cleaned up afterwards.
             let buffers = tmux.run_raw(&["list-buffers"]).unwrap_or_default();
             assert!(
-                !buffers.contains("lw-paste"),
+                !buffers.contains("wm-paste"),
                 "paste buffer must be deleted: {buffers}"
             );
         });
@@ -2068,7 +2068,7 @@ mod tests {
             let w = tmux
                 .new_session(
                     "wingmux-session-p",
-                    "lw:f/1",
+                    "wm:f/1",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-p", "f", 1),
@@ -2119,7 +2119,7 @@ mod tests {
             let agent = tmux
                 .new_session(
                     "wingmux-session-d",
-                    "lw:feat/0",
+                    "wm:feat/0",
                     Path::new("/tmp"),
                     "bash",
                     &id,
@@ -2222,7 +2222,7 @@ mod tests {
             let agent = tmux
                 .new_session(
                     "wingmux-session-f",
-                    "lw:feat/0",
+                    "wm:feat/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-f", "feat", 0),
@@ -2284,7 +2284,7 @@ pub(crate) mod testutil {
     fn with_tmux_server_locked(f: impl FnOnce(&str, Tmux)) {
         // Unique socket per invocation: zero cross-test server coupling.
         let n = SOCK_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let sock = format!("lwtest-{}-{n}", std::process::id());
+        let sock = format!("wmtest-{}-{n}", std::process::id());
         let status = Command::new("tmux")
             .args([
                 "-L",
@@ -2360,7 +2360,7 @@ pub(crate) mod testutil {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static N: AtomicUsize = AtomicUsize::new(0);
         format!(
-            "lwdead-{}-{}",
+            "wmdead-{}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         )

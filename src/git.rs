@@ -455,8 +455,8 @@ mod tests {
         let path = dir.path().join(name);
         fs::create_dir_all(&path).unwrap();
         run(&path, &["init", "-b", "main"]);
-        run(&path, &["config", "user.name", "lw-test"]);
-        run(&path, &["config", "user.email", "lw-test@example.com"]);
+        run(&path, &["config", "user.name", "wm-test"]);
+        run(&path, &["config", "user.email", "wm-test@example.com"]);
         fs::write(path.join("readme.md"), "# test\n").unwrap();
         run(&path, &["add", "."]);
         run(&path, &["commit", "-m", "initial"]);

@@ -42,7 +42,7 @@ fn main() {
 #[derive(Debug, Default)]
 struct Cli {
     /// `--config <path>`: an extra config layer on top of every other one
-    /// (higher than `LW_CONFIG`, which names the same layer).
+    /// (higher than `WINGMUX_CONFIG`, which names the same layer).
     config: Option<PathBuf>,
     /// `--config-dump`: print the effective config + layer provenance and
     /// exit without starting the TUI.
@@ -108,7 +108,7 @@ fn print_usage() {
          \x20                  wingmux/config.toml, then the repository's\n\
          \x20                  .wingmux.toml and .wingmux.local.toml),\n\
          \x20                  so it need only carry the keys it changes; the\n\
-         \x20                  LW_CONFIG env var names the same layer and\n\
+         \x20                  WINGMUX_CONFIG env var names the same layer and\n\
          \x20                  --config wins over it\n\
          \x20 --config-dump    print the effective config with the layer each\n\
          \x20                  key came from, then exit (no TUI)\n\
@@ -149,7 +149,7 @@ fn real_main() -> Result<()> {
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    // `--config` is the top layer; without it `load()` reads `LW_CONFIG`
+    // `--config` is the top layer; without it `load()` reads `WINGMUX_CONFIG`
     // into the same slot.
     let mut cfg = match cli.config {
         Some(ref p) => config::Config::load_from(&cwd, Some(p))?,

@@ -5,7 +5,7 @@
 //! meaning wherever it is — including while it is docked in the dashboard's
 //! own window, which is exactly where a window-name scheme loses track of it.
 //!
-//! Options are read back through `list-panes -F '#{@lw_repo}…'`; tmux
+//! Options are read back through `list-panes -F '#{@wm_repo}…'`; tmux
 //! reports an **unset** option as the empty string, so parsing must treat
 //! "unset" and "junk" the same way and simply decline.
 //!
@@ -32,27 +32,27 @@ use crate::error::{Error, Result};
 use crate::tmux::{SESSION_PREFIX, Tmux};
 
 /// Repository slug, on an agent pane.
-pub const REPO_KEY: &str = "@lw_repo";
+pub const REPO_KEY: &str = "@wm_repo";
 /// Worktree name, on an agent pane.
-pub const WORKTREE_KEY: &str = "@lw_worktree";
+pub const WORKTREE_KEY: &str = "@wm_worktree";
 /// Shell index (decimal), on an agent pane.
-pub const INDEX_KEY: &str = "@lw_index";
+pub const INDEX_KEY: &str = "@wm_index";
 /// The command the shell was launched with, escaped by `tmux::escape_field`,
 /// on an agent pane. The tree names the row by it; `pane_current_command`
 /// reads `node` for Claude Code.
-pub const COMMAND_KEY: &str = "@lw_command";
+pub const COMMAND_KEY: &str = "@wm_command";
 /// Absolute repository path, escaped, on an agent pane: what maps a shell to
 /// its repository when two repositories share a name.
-pub const REPO_PATH_KEY: &str = "@lw_repo_path";
+pub const REPO_PATH_KEY: &str = "@wm_repo_path";
 /// `1` on a holder pane — the placeholder that keeps an agent window alive
 /// while its agent pane is docked elsewhere.
-pub const HOLDER_KEY: &str = "@lw_holder";
+pub const HOLDER_KEY: &str = "@wm_holder";
 /// `1` on the dashboard's slot pane — the pane an agent is swapped into.
-pub const SLOT_KEY: &str = "@lw_slot";
+pub const SLOT_KEY: &str = "@wm_slot";
 /// While docked: the docking dashboard's own pane id, on the agent pane.
-pub const DOCKED_KEY: &str = "@lw_docked";
+pub const DOCKED_KEY: &str = "@wm_docked";
 /// Absolute scope path, on the dashboard *window*.
-pub const SCOPE_KEY: &str = "@lw_scope";
+pub const SCOPE_KEY: &str = "@wm_scope";
 
 /// The worktree component of a **repository shell** — the inline shell that
 /// runs in a repository's own checkout rather than in a worktree.
@@ -60,8 +60,8 @@ pub const SCOPE_KEY: &str = "@lw_scope";
 /// A sentinel, and a safe one: git refuses a ref whose path component
 /// begins with a dot, so no branch can ever sanitise to `.repo` and no
 /// worktree can collide with it. That is what lets the repository shell
-/// reuse the whole identity scheme — one `@lw_repo`/`@lw_worktree`/
-/// `@lw_index` stamp, found by the same `list-panes`, docked by the same
+/// reuse the whole identity scheme — one `@wm_repo`/`@wm_worktree`/
+/// `@wm_index` stamp, found by the same `list-panes`, docked by the same
 /// swap — without a second mechanism beside it.
 pub const REPO_WORKTREE: &str = ".repo";
 
@@ -466,7 +466,7 @@ mod tests {
             let agent = tmux
                 .new_session(
                     "wingmux-session-o",
-                    "lw:feat/0",
+                    "wm:feat/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-o", "feat", 0),
@@ -528,7 +528,7 @@ mod tests {
             let agent = tmux
                 .new_session(
                     "wingmux-session-l",
-                    "lw:feat/0",
+                    "wm:feat/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-l", "feat", 0),
@@ -564,7 +564,7 @@ mod tests {
             SCOPE_KEY,
         ];
         for k in keys {
-            assert!(k.starts_with("@lw_"), "{k} is not namespaced");
+            assert!(k.starts_with("@wm_"), "{k} is not namespaced");
         }
         let mut sorted = keys.to_vec();
         sorted.sort_unstable();

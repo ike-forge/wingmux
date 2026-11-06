@@ -204,7 +204,7 @@ merge deeply, lists are replaced outright):
    nearest ancestor holding one (the search stops at a git repository root)
 4. Repository-local overrides — `.wingmux.local.toml` next to it
    (gitignore this one; it wins over the committed repository file)
-5. The file you name — `wingmux --config <path>` (or `LW_CONFIG=<path>`;
+5. The file you name — `wingmux --config <path>` (or `WINGMUX_CONFIG=<path>`;
    the flag wins over the env var)
 
 A repository-local file is meant to be committed — a teammate clones the repo
@@ -435,7 +435,7 @@ without hunting for the status word at the end of the row.
   rival one. Agent shells live in **dedicated sessions**, one per repository, named
   deterministically `wingmux-session-<repository>` — your own session is never
   touched. Each shell's identity and launch command live on its tmux pane
-  (`@lw_*` options), so shells are rediscovered after a restart even if the
+  (`@wm_*` options), so shells are rediscovered after a restart even if the
   state file is lost.
 - All interaction goes through the tmux CLI (`new-session`, `new-window`,
   `send-keys`, `capture-pane`, `swap-pane`, `select-pane`, `kill-window`,

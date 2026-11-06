@@ -4,7 +4,7 @@
 //! a repository-local `.wingmux.toml` (searched upward from the working
 //! directory, stopping at the first hit / repository root), its ignored
 //! sibling `.wingmux.local.toml`, and — on top of all of them — the file
-//! named by `--config <path>` (or `LW_CONFIG`). On first run a fully
+//! named by `--config <path>` (or `WINGMUX_CONFIG`). On first run a fully
 //! commented default config is written (and built-in themes are copied into
 //! `themes/`).
 //!
@@ -27,7 +27,7 @@ pub const LAYER_DEFAULTS: &str = "defaults";
 pub const LAYER_USER: &str = "user";
 pub const LAYER_REPOSITORY: &str = "repository";
 pub const LAYER_LOCAL: &str = "local";
-/// The file named by `--config <path>` / `LW_CONFIG`: asked for by hand, on
+/// The file named by `--config <path>` / `WINGMUX_CONFIG`: asked for by hand, on
 /// this run, so it outranks every file found by convention.
 pub const LAYER_ARGUMENT: &str = "argument";
 
@@ -47,7 +47,7 @@ pub const DEFAULT_CONFIG: &str = r#"# Wingmux configuration — written on first
 # .wingmux.toml (searched upward from the working directory, stopping at
 # the repository root) and a gitignored .wingmux.local.toml next to it;
 # those layers override keys here. Above all of them sits the file named by
-# `wingmux --config <path>` (or LW_CONFIG) — an extra top layer for this
+# `wingmux --config <path>` (or WINGMUX_CONFIG) — an extra top layer for this
 # run, not a replacement for this file, so it need only carry the keys it
 # changes. Some keys are user-only and are ignored in repository files with a
 # diagnostic: worktrees.root and discovery.scan_root. Inspect the effective
@@ -1026,12 +1026,12 @@ impl Config {
     /// `.wingmux.toml` (searched upward from the working directory,
     /// stopping at the first hit / repository root) ← its gitignored sibling
     /// `.wingmux.local.toml` ← the file named by `--config <path>` /
-    /// `LW_CONFIG`. Higher layers win key by key (maps merge deeply, lists
+    /// `WINGMUX_CONFIG`. Higher layers win key by key (maps merge deeply, lists
     /// replace). A malformed file never prevents startup — the smallest
     /// addressable unit is dropped and reported in `Config.diagnostics`.
     pub fn load() -> Result<Config> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let argument = std::env::var_os("LW_CONFIG").map(PathBuf::from);
+        let argument = std::env::var_os("WINGMUX_CONFIG").map(PathBuf::from);
         Self::load_from(&cwd, argument.as_deref())
     }
 
@@ -1120,7 +1120,7 @@ impl Config {
             );
         }
 
-        // --- argument layer: `--config <path>` / `LW_CONFIG` ---------------
+        // --- argument layer: `--config <path>` / `WINGMUX_CONFIG` ---------------
         if let Some(path) = argument {
             if path.exists() {
                 layer(
@@ -3209,21 +3209,24 @@ mod tests {
         });
     }
 
-    /// `LW_CONFIG` names the same top layer as `--config`, read by the
+    /// `WINGMUX_CONFIG` names the same top layer as `--config`, read by the
     /// no-arg `load()`.
     #[test]
-    fn lw_config_env_is_the_argument_layer() {
+    fn wingmux_config_env_is_the_argument_layer() {
         with_fresh_xdg(|| {
             let root = tempfile::TempDir::new().unwrap();
             // the default XDG config exists with one theme
             load_user(root.path(), "theme = \"dracula\"\n");
-            // LW_CONFIG points elsewhere
+            // WINGMUX_CONFIG points elsewhere
             let custom = root.path().join("custom.toml");
             std::fs::write(&custom, "theme = \"ansi\"\n").unwrap();
-            unsafe { std::env::set_var("LW_CONFIG", &custom) };
+            unsafe { std::env::set_var("WINGMUX_CONFIG", &custom) };
             let cfg = Config::load().unwrap();
-            unsafe { std::env::remove_var("LW_CONFIG") };
-            assert_eq!(cfg.theme, "ansi", "LW_CONFIG must win over the XDG file");
+            unsafe { std::env::remove_var("WINGMUX_CONFIG") };
+            assert_eq!(
+                cfg.theme, "ansi",
+                "WINGMUX_CONFIG must win over the XDG file"
+            );
         });
     }
 

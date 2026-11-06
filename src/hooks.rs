@@ -11,7 +11,7 @@ use crate::status::Status;
 use std::path::{Path, PathBuf};
 
 /// tmux pane user option carrying the agent's self-reported state.
-pub const OVERLAY_KEY: &str = "@lw_agent";
+pub const OVERLAY_KEY: &str = "@wm_agent";
 
 /// What a hook wrote onto a pane: a state plus when it was written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -649,11 +649,11 @@ mod tests {
 
     #[test]
     fn settings_json_passes_the_socket_through() {
-        let s = settings_json("/opt/bin/wingmux", Some("lwtest"));
+        let s = settings_json("/opt/bin/wingmux", Some("wmtest"));
         let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
         assert_eq!(
             v["hooks"]["Stop"][0]["hooks"][0]["command"].as_str(),
-            Some("'/opt/bin/wingmux' --socket 'lwtest' hook Stop")
+            Some("'/opt/bin/wingmux' --socket 'wmtest' hook Stop")
         );
     }
 
@@ -738,8 +738,8 @@ mod tests {
     /// The socket is named inline, like Claude's generated file names it.
     #[test]
     fn codex_overrides_carry_the_socket() {
-        let flags = codex_overrides("/bin/wingmux", Some("lwtest"));
-        assert!(flags[0].contains("/bin/wingmux --socket lwtest hook SessionStart"));
+        let flags = codex_overrides("/bin/wingmux", Some("wmtest"));
+        assert!(flags[0].contains("/bin/wingmux --socket wmtest hook SessionStart"));
     }
 
     /// A path needing no quoting is not quoted: the overrides are read by
@@ -762,7 +762,7 @@ mod tests {
     /// takes a free-text positional prompt, like Claude.
     #[test]
     fn codex_flags_go_after_the_binary_and_the_rest_is_copied_verbatim() {
-        let out = instrument_codex("/usr/bin/codex  resume  --last", "/bin/lw", None);
+        let out = instrument_codex("/usr/bin/codex  resume  --last", "/bin/wm", None);
         assert!(out.starts_with("/usr/bin/codex -c 'hooks.SessionStart="));
         assert!(
             out.ends_with("  resume  --last"),
@@ -776,17 +776,17 @@ mod tests {
     #[test]
     fn only_codex_is_instrumented_and_only_once() {
         for cmd in ["claude", "codex-wrapper", "notcodex", "my-wrapper.sh", ""] {
-            assert_eq!(instrument_codex(cmd, "/bin/lw", None), cmd);
+            assert_eq!(instrument_codex(cmd, "/bin/wm", None), cmd);
         }
-        let once = instrument_codex("codex", "/bin/lw", None);
-        assert_eq!(instrument_codex(&once, "/bin/lw", None), once);
+        let once = instrument_codex("codex", "/bin/wm", None);
+        assert_eq!(instrument_codex(&once, "/bin/wm", None), once);
     }
 
     /// One `apply` covers both agents, each getting the shape its CLI
     /// takes, and anything else is handed on untouched.
     #[test]
     fn apply_dispatches_on_the_agent() {
-        let i = Instrumentation::for_test("/s/wingmux-activity-hooks.json", "/bin/lw", None);
+        let i = Instrumentation::for_test("/s/wingmux-activity-hooks.json", "/bin/wm", None);
         assert_eq!(
             i.apply("claude --resume"),
             "claude --settings '/s/wingmux-activity-hooks.json' --resume"
@@ -898,7 +898,7 @@ mod tests {
         // this test never reads TMUX/TMUX_PANE/WINGMUX_TMUX_SOCKET —
         // other tests mutate those outside TMUX_TEST_LOCK, and this test
         // was the one place in the suite reading them unguarded.
-        let tmux = crate::tmux::testutil::tmux_inside("lwtest-hooks-ignore");
+        let tmux = crate::tmux::testutil::tmux_inside("wmtest-hooks-ignore");
         let r = run_hook(
             "PreToolUse",
             "%nonexistent",

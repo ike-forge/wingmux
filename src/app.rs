@@ -40,7 +40,7 @@ const WT_STATE_INTERVAL: Duration = Duration::from_secs(5);
 /// and typing blind is still better than never starting the agent.
 const LAUNCH_GRACE: Duration = Duration::from_secs(8);
 
-/// Window name of the pad's `$EDITOR`. No `lw:` prefix: that marks the
+/// Window name of the pad's `$EDITOR`. No `wm:` prefix: that marks the
 /// windows agents live in, and this one holds no shell.
 const EDITOR_WINDOW: &str = "todo";
 
@@ -98,15 +98,15 @@ pub enum Sel {
 
 /// A shell docked in another Wingmux instance.
 ///
-/// Held only for the length of one poll: `@lw_docked` on the agent pane is
+/// Held only for the length of one poll: `@wm_docked` on the agent pane is
 /// the single source of truth, because it is the only thing two instances
 /// that know nothing of each other can both see.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lease {
-    /// The pane the other dashboard is drawing in — what `@lw_docked` holds,
+    /// The pane the other dashboard is drawing in — what `@wm_docked` holds,
     /// and what proves the lease is live rather than crash wreckage.
     pub dash_pane: String,
-    /// The scope that dashboard announces (`@lw_scope` on its window), when
+    /// The scope that dashboard announces (`@wm_scope` on its window), when
     /// it announces one. What lets us say *whose* it is rather than just
     /// that it is not ours.
     pub scope: Option<String>,
@@ -710,7 +710,7 @@ pub struct App {
     /// [`App::refresh_strip`]; `None` until tmux has been asked once.
     pub strip: Option<(u16, u16)>,
     /// The dashboard's slot pane, once one has been split off
-    /// ([`App::ensure_slot`]). Re-derived from `@lw_slot` rather than
+    /// ([`App::ensure_slot`]). Re-derived from `@wm_slot` rather than
     /// trusted: the user may close it by hand.
     pub slot: Option<String>,
     /// The agent pane currently docked in the slot, if any. Never trusted
@@ -720,7 +720,7 @@ pub struct App {
     /// [`App::reconcile_docked`].
     pub docked: Option<String>,
     /// Shells held by *another* dashboard, by agent pane id. Re-read from
-    /// `@lw_docked` on every poll and never cached across one — anything
+    /// `@wm_docked` on every poll and never cached across one — anything
     /// shared between instances lives in tmux, which is the only thing
     /// both instances can see.
     pub leases: HashMap<String, Lease>,
@@ -915,7 +915,7 @@ impl App {
     }
 
     /// The absolute scope this dashboard is showing — what its window
-    /// announces as `@lw_scope`, and what a second launch in the same folder
+    /// announces as `@wm_scope`, and what a second launch in the same folder
     /// looks itself up by. Absolute because a relative path means nothing to
     /// a process started in another directory.
     pub fn scope_path(&self) -> PathBuf {
@@ -1142,7 +1142,7 @@ impl App {
 
     /// Re-read the leases from the panes this poll just listed.
     ///
-    /// A `@lw_docked` mark is only evidence of a lease while the dashboard
+    /// A `@wm_docked` mark is only evidence of a lease while the dashboard
     /// pane it names is still alive: a mark left by an instance that
     /// crashed names a pane that is gone, and treating that as a lease
     /// would fence the shell off forever. The furniture list is only
@@ -4740,7 +4740,7 @@ fn now_str() -> String {
 ///
 /// Absolute and normalised, and a free function rather than a method,
 /// because the self-wrap needs it BEFORE an `App` exists: it is the key a
-/// second launch looks a running dashboard up by (`@lw_scope`), so the two
+/// second launch looks a running dashboard up by (`@wm_scope`), so the two
 /// must be computed exactly the same way.
 pub fn scope_for(cfg: &Config, cwd: &std::path::Path) -> PathBuf {
     let root = cfg.discovery.scan_root.trim();
@@ -4942,7 +4942,7 @@ mod tests {
         let w = tmux
             .new_session(
                 "wingmux-session-p",
-                "lw:wt/0",
+                "wm:wt/0",
                 Path::new("/tmp"),
                 "bash",
                 &crate::dock::ShellId::for_session("wingmux-session-p", "wt", 0),
@@ -4971,7 +4971,7 @@ mod tests {
                 shells: vec![Shell {
                     command: None,
                     index: 0,
-                    window_name: "lw:wt/0".into(),
+                    window_name: "wm:wt/0".into(),
                     window_id: w.window_id.clone(),
                     pane_id: w.pane_id.clone(),
                 }],
@@ -4981,7 +4981,7 @@ mod tests {
     }
 
     /// `agent_hooks = false` must be a real kill switch: even a pane that
-    /// still carries a live `@lw_agent` overlay (written by an earlier
+    /// still carries a live `@wm_agent` overlay (written by an earlier
     /// spawn, or by a second Wingmux instance) must classify purely
     /// from `capture-pane`, exactly as README/STATE promise. The overlay
     /// says `blocked`, which a foreground `cat` (not a shell, so the
@@ -5065,8 +5065,8 @@ mod tests {
         let p = root.join(name);
         std::fs::create_dir_all(&p).unwrap();
         git(&p, &["init", "-b", "main"]);
-        git(&p, &["config", "user.name", "lw-test"]);
-        git(&p, &["config", "user.email", "lw-test@example.com"]);
+        git(&p, &["config", "user.name", "wm-test"]);
+        git(&p, &["config", "user.email", "wm-test@example.com"]);
         std::fs::write(p.join("readme.md"), "# t\n").unwrap();
         git(&p, &["add", "."]);
         git(&p, &["commit", "-m", "init"]);
@@ -5869,7 +5869,7 @@ mod tests {
                 shells: vec![Shell {
                     command: None,
                     index: 0,
-                    window_name: "lw:wt/0".into(),
+                    window_name: "wm:wt/0".into(),
                     window_id: "@1".into(),
                     pane_id: "%1".into(),
                 }],
@@ -6306,7 +6306,7 @@ mod tests {
         app.state.repositories[0].worktrees[0].shells.push(Shell {
             command: None,
             index: 1,
-            window_name: "lw:wt/1".into(),
+            window_name: "wm:wt/1".into(),
             window_id: "@2".into(),
             pane_id: "%2".into(),
         });
@@ -6329,7 +6329,7 @@ mod tests {
             app.state.repositories[0].worktrees[0].shells.push(Shell {
                 command: None,
                 index: i,
-                window_name: format!("lw:wt/{i}"),
+                window_name: format!("wm:wt/{i}"),
                 window_id: format!("@{}", i + 1),
                 pane_id: format!("%{}", i + 1),
             });
@@ -6397,7 +6397,7 @@ mod tests {
         app.state.repositories[0].worktrees[0].shells.push(Shell {
             command: None,
             index: 1,
-            window_name: "lw:wt/1".into(),
+            window_name: "wm:wt/1".into(),
             window_id: "@2".into(),
             pane_id: "%2".into(),
         });
@@ -6420,7 +6420,7 @@ mod tests {
                     confirm.action
                 );
                 assert!(
-                    confirm.body.contains("lw:wt/1"),
+                    confirm.body.contains("wm:wt/1"),
                     "the confirm names the shell: {:?}",
                     confirm.body
                 );
@@ -6571,7 +6571,7 @@ mod tests {
         });
     }
 
-    /// The slot is located by its `@lw_slot` mark, never by index — the
+    /// The slot is located by its `@wm_slot` mark, never by index — the
     /// user may close it, or rearrange the window around it. A slot closed
     /// by hand is simply split again.
     #[test]
@@ -6762,7 +6762,7 @@ mod tests {
         let w = tmux
             .new_window(
                 "wingmux-session-p",
-                "lw:wt/1",
+                "wm:wt/1",
                 Path::new("/tmp"),
                 "bash",
                 &crate::dock::ShellId::for_session("wingmux-session-p", "wt", 1),
@@ -6772,7 +6772,7 @@ mod tests {
         app.state.repositories[0].worktrees[0].shells.push(Shell {
             command: None,
             index: 1,
-            window_name: "lw:wt/1".into(),
+            window_name: "wm:wt/1".into(),
             window_id: w.window_id.clone(),
             pane_id: w.pane_id.clone(),
         });
@@ -7061,7 +7061,7 @@ mod tests {
         });
     }
 
-    /// A `@lw_docked` mark left behind by an instance that crashed names a
+    /// A `@wm_docked` mark left behind by an instance that crashed names a
     /// pane that no longer exists. Reading that as a lease would fence the
     /// shell off from every dashboard for good.
     #[test]
@@ -7307,7 +7307,7 @@ mod tests {
         let w = tmux
             .new_window(
                 "wingmux-session-p",
-                "lw:wt/1",
+                "wm:wt/1",
                 Path::new("/tmp"),
                 "bash",
                 &crate::dock::ShellId::for_session("wingmux-session-p", "wt", 1),
@@ -7317,7 +7317,7 @@ mod tests {
         app.state.repositories[0].worktrees[0].shells.push(Shell {
             command: None,
             index: 1,
-            window_name: "lw:wt/1".into(),
+            window_name: "wm:wt/1".into(),
             window_id: w.window_id.clone(),
             pane_id: w.pane_id.clone(),
         });
@@ -7466,7 +7466,7 @@ mod tests {
     fn a_missing_repository_gets_no_inline_shell() {
         crate::util::testutil::with_fresh_xdg(|| {
             let mut app = app_with(tmux_nowhere());
-            seed_bare_repository(&mut app, std::path::Path::new("/tmp/lw-does-not-exist"));
+            seed_bare_repository(&mut app, std::path::Path::new("/tmp/wm-does-not-exist"));
 
             assert!(app.ensure_repo_shell(0).is_err());
             assert!(app.state.repositories[0].shell.is_none());
@@ -7810,7 +7810,7 @@ mod tests {
             let w2 = tmux
                 .new_window(
                     "wingmux-session-p",
-                    "lw:wt/1",
+                    "wm:wt/1",
                     Path::new("/tmp"),
                     "bash",
                     &crate::dock::ShellId::for_session("wingmux-session-p", "wt", 1),
@@ -7820,7 +7820,7 @@ mod tests {
             app.state.repositories[0].worktrees[0].shells.push(Shell {
                 command: None,
                 index: 1,
-                window_name: "lw:wt/1".into(),
+                window_name: "wm:wt/1".into(),
                 window_id: w2.window_id.clone(),
                 pane_id: w2.pane_id.clone(),
             });
@@ -7860,7 +7860,7 @@ mod tests {
             let w2 = tmux
                 .new_window(
                     "wingmux-session-p",
-                    "lw:wt/1",
+                    "wm:wt/1",
                     Path::new("/tmp"),
                     "bash",
                     &crate::dock::ShellId::for_session("wingmux-session-p", "wt", 1),
@@ -7870,7 +7870,7 @@ mod tests {
             app.state.repositories[0].worktrees[0].shells.push(Shell {
                 command: None,
                 index: 1,
-                window_name: "lw:wt/1".into(),
+                window_name: "wm:wt/1".into(),
                 window_id: w2.window_id.clone(),
                 pane_id: w2.pane_id.clone(),
             });
@@ -9157,10 +9157,10 @@ mod tests {
             app.sel = Sel::Shell(0, 0, 0);
             app.cfg.messages = vec![
                 crate::config::MessageConfig {
-                    text: "lw-first-message".into(),
+                    text: "wm-first-message".into(),
                 },
                 crate::config::MessageConfig {
-                    text: "lw-second-message".into(),
+                    text: "wm-second-message".into(),
                 },
             ];
 
@@ -9172,11 +9172,11 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(300));
             let capture = tmux.capture_pane(&pid, 50).unwrap();
             assert!(
-                capture.contains("lw-second-message"),
+                capture.contains("wm-second-message"),
                 "the selected entry was sent, capture: {capture}"
             );
             assert!(
-                !capture.contains("lw-first-message"),
+                !capture.contains("wm-first-message"),
                 "only the selected entry is sent, capture: {capture}"
             );
         });
@@ -9194,10 +9194,10 @@ mod tests {
             app.sel = Sel::Shell(0, 0, 0);
             app.cfg.messages = vec![
                 crate::config::MessageConfig {
-                    text: "lw-digit-one".into(),
+                    text: "wm-digit-one".into(),
                 },
                 crate::config::MessageConfig {
-                    text: "lw-digit-two".into(),
+                    text: "wm-digit-two".into(),
                 },
             ];
 
@@ -9208,7 +9208,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(300));
             let capture = tmux.capture_pane(&pid, 50).unwrap();
             assert!(
-                capture.contains("lw-digit-two"),
+                capture.contains("wm-digit-two"),
                 "digit 2 sent the second entry, capture: {capture}"
             );
 
@@ -9294,7 +9294,7 @@ mod tests {
             app.build_tree_flags();
             app.sel = Sel::Shell(0, 0, 0);
             app.cfg.messages = vec![crate::config::MessageConfig {
-                text: "lw-merge to <base_branch> now".into(),
+                text: "wm-merge to <base_branch> now".into(),
             }];
 
             app.on_key(key(KeyCode::Char('p'), false));
@@ -9303,7 +9303,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(300));
             let capture = tmux.capture_pane(&pid, 50).unwrap();
             assert!(
-                capture.contains("lw-merge to main now"),
+                capture.contains("wm-merge to main now"),
                 "the token is resolved before the paste, capture: {capture}"
             );
             assert!(
@@ -9495,7 +9495,7 @@ mod tests {
             let tmux = tmux_inside(sock);
             let mut app = app_with(tmux.clone());
             let (_wid, pid) = seed_repository_with_shell(&tmux, &mut app);
-            app.queue_launch(&pid, "echo lw-late-marker".into());
+            app.queue_launch(&pid, "echo wm-late-marker".into());
 
             app.panes.insert(
                 pid.clone(),
@@ -9514,7 +9514,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(300));
             let capture = tmux.capture_pane(&pid, 50).unwrap();
             assert!(
-                !capture.contains("lw-late-marker"),
+                !capture.contains("wm-late-marker"),
                 "nothing reached the pane, capture: {capture}"
             );
 
@@ -9524,7 +9524,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(300));
             let capture = tmux.capture_pane(&pid, 50).unwrap();
             assert!(
-                capture.contains("lw-late-marker"),
+                capture.contains("wm-late-marker"),
                 "a drawn prompt takes the command, capture: {capture}"
             );
         });
@@ -9544,7 +9544,7 @@ mod tests {
                         .path
                         .to_string_lossy()
                         .into_owned(),
-                    agent_command: Some("echo lw-default-marker".into()),
+                    agent_command: Some("echo wm-default-marker".into()),
                     ..Default::default()
                 });
                 app.state.repositories[0].worktrees[0].path = PathBuf::from("/tmp");
@@ -9562,7 +9562,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(300));
                 let capture = tmux.capture_pane(&pid, 50).unwrap();
                 assert!(
-                    capture.contains("lw-default-marker"),
+                    capture.contains("wm-default-marker"),
                     "the first entry runs the repository default, capture: {capture}"
                 );
             });
@@ -9583,7 +9583,7 @@ mod tests {
                         .path
                         .to_string_lossy()
                         .into_owned(),
-                    agent_command: Some("echo lw-default-marker".into()),
+                    agent_command: Some("echo wm-default-marker".into()),
                     ..Default::default()
                 });
                 app.state.repositories[0].worktrees[0].path = PathBuf::from("/tmp");
@@ -9609,7 +9609,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(300));
                 let capture = tmux.capture_pane(&pid, 50).unwrap();
                 assert!(
-                    !capture.contains("lw-default-marker"),
+                    !capture.contains("wm-default-marker"),
                     "a plain shell runs no agent, capture: {capture}"
                 );
             });

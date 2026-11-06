@@ -163,7 +163,7 @@ pub mod testutil {
     /// `tmux::testutil` — and the fixtures nest in BOTH orders: some tests
     /// wrap a tmux server around `with_fresh_xdg`, others the reverse. Two
     /// threads could therefore take one lock each and wait for the other,
-    /// hanging the whole suite (no timeout) with an orphaned `lwtest-*`
+    /// hanging the whole suite (no timeout) with an orphaned `wmtest-*`
     /// tmux server behind it. A single lock cannot invert; it only has to
     /// survive the nesting, which is what `DEPTH` is for.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -209,7 +209,7 @@ pub mod testutil {
     }
 
     fn with_fresh_xdg_locked<R>(f: impl FnOnce() -> R) -> R {
-        let base = std::env::temp_dir().join(format!("lwtest-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("wmtest-{}", std::process::id()));
         let cfg = base.join("config");
         let state = base.join("state");
         let cache = base.join("cache");
@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn xdg_defaults_used_when_env_unset() {
         testutil::with_fresh_xdg(|| {
-            let tmp = std::env::temp_dir().join(format!("lwtest-{}", std::process::id()));
+            let tmp = std::env::temp_dir().join(format!("wmtest-{}", std::process::id()));
             assert_eq!(config_home(), tmp.join("config"));
             assert_eq!(state_home(), tmp.join("state"));
             assert_eq!(config_path(), tmp.join("config/wingmux/config.toml"));

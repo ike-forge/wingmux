@@ -51,7 +51,7 @@ components.
 - Format: `mise run fmt` (cargo fmt --check)
 - Lint: `mise run lint` (cargo clippy -- -D warnings)
 - Test: `mise run test` (cargo test; tmux integration tests run headless
-  with `tmux -L lwtest`)
+  with `tmux -L wmtest`)
 - **Gating command:** `mise run gate` (fmt --check && clippy -D warnings
   && test)
 - Install for local testing from anywhere: `mise run install` (release

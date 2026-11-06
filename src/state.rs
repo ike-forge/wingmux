@@ -25,7 +25,7 @@ pub struct State {
     pub repositories: Vec<Repository>,
     records: BTreeMap<PathBuf, WorktreeRecord>,
     /// Shell commands a v4 file recorded, keyed by (worktree or repository
-    /// path, shell index): written onto panes spawned before `@lw_command`
+    /// path, shell index): written onto panes spawned before `@wm_command`
     /// by the first [`State::reconcile`].
     legacy_commands: HashMap<(PathBuf, usize), String>,
 }
@@ -83,11 +83,11 @@ impl Worktree {
 #[derive(Debug, Clone)]
 pub struct Shell {
     pub index: usize,
-    /// The command the shell was started with (`@lw_command`). Launched, not
+    /// The command the shell was started with (`@wm_command`). Launched, not
     /// running: `#{pane_current_command}` reads `node` for Claude Code and
     /// `zsh` once an agent exits. `None` for a pane spawned by an older build.
     pub command: Option<String>,
-    /// Human-facing label (`lw:<worktree>/<index>`), not an identity.
+    /// Human-facing label (`wm:<worktree>/<index>`), not an identity.
     pub window_name: String,
     /// Where the pane is, as of the last poll.
     pub window_id: String,
@@ -364,7 +364,7 @@ impl State {
             .map(|(_, id)| format!("{SESSION_PREFIX}{}", id.repo))
     }
 
-    /// Which repository a shell pane belongs to: by its `@lw_repo_path`, else
+    /// Which repository a shell pane belongs to: by its `@wm_repo_path`, else
     /// — a pane from an older build — by the session slug, hash-suffixed first
     /// because that form is unambiguous.
     fn repo_for_pane(&self, pane: &PaneInfo, id: &ShellId) -> Option<usize> {
@@ -534,7 +534,7 @@ mod tests {
         Shell {
             index,
             command: command.map(str::to_string),
-            window_name: format!("lw:wt/{index}"),
+            window_name: format!("wm:wt/{index}"),
             window_id: format!("@{index}"),
             pane_id: format!("%{index}"),
         }
@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn window_name_is_the_human_facing_label() {
-        assert_eq!(crate::tmux::Tmux::window_name("wt-one", 2), "lw:wt-one/2");
+        assert_eq!(crate::tmux::Tmux::window_name("wt-one", 2), "wm:wt-one/2");
     }
 
     /// A shell whose pane is gone draws nothing: the stale `● main` a
@@ -584,7 +584,7 @@ mod tests {
         assert!(s.repositories[0].worktrees[0].shells.is_empty());
     }
 
-    /// Identity and command come off the pane; a pane with no `@lw_command`
+    /// Identity and command come off the pane; a pane with no `@wm_command`
     /// keeps the command this run last saw at that position.
     #[test]
     fn sync_builds_shells_from_panes() {
@@ -700,12 +700,12 @@ mod tests {
                     "name": "p", "path": "/tmp/p", "base_branch": "main",
                     "agent_command": "claude", "agent_shell": "bash",
                     "session_name": "wingmux-session-p",
-                    "shell": {"index": 0, "command": "zsh", "window_name": "lw:.repo/0"},
+                    "shell": {"index": 0, "command": "zsh", "window_name": "wm:.repo/0"},
                     "worktrees": [
                         {"name": "Kept", "branch": "kept", "path": dir.path(),
                          "created_at": "then", "base_commit": "f00", "agent_command": "codex",
-                         "shells": [{"index": 1, "command": "codex --x", "window_name": "lw:kept/1"}]},
-                        {"name": "Gone", "branch": "gone", "path": "/nonexistent/lw-gone",
+                         "shells": [{"index": 1, "command": "codex --x", "window_name": "wm:kept/1"}]},
+                        {"name": "Gone", "branch": "gone", "path": "/nonexistent/wm-gone",
                          "created_at": "", "shells": []}
                     ]
                 }]
@@ -753,8 +753,8 @@ mod tests {
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         run_git(&repo, &["init", "-b", "main"]);
-        run_git(&repo, &["config", "user.name", "lw-test"]);
-        run_git(&repo, &["config", "user.email", "lw-test@example.com"]);
+        run_git(&repo, &["config", "user.name", "wm-test"]);
+        run_git(&repo, &["config", "user.email", "wm-test@example.com"]);
         std::fs::write(repo.join("readme.md"), "# t\n").unwrap();
         run_git(&repo, &["add", "."]);
         run_git(&repo, &["commit", "-m", "init"]);
@@ -821,7 +821,7 @@ mod tests {
             let w = tmux
                 .new_session(
                     "wingmux-session-p",
-                    "lw:.repo/0",
+                    "wm:.repo/0",
                     Path::new("/tmp"),
                     "bash",
                     &id,
@@ -853,7 +853,7 @@ mod tests {
             let a = tmux
                 .new_session(
                     "wingmux-session-p",
-                    "lw:wt/0",
+                    "wm:wt/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-p", "wt", 0),
@@ -863,7 +863,7 @@ mod tests {
             let b = tmux
                 .new_window(
                     "wingmux-session-p",
-                    "lw:wt/1",
+                    "wm:wt/1",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-p", "wt", 1),
@@ -904,7 +904,7 @@ mod tests {
             let a = tmux
                 .new_session(
                     "wingmux-session-p",
-                    "lw:wt/0",
+                    "wm:wt/0",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-p", "wt", 0),
@@ -914,7 +914,7 @@ mod tests {
             let b = tmux
                 .new_window(
                     "wingmux-session-p",
-                    "lw:wt/1",
+                    "wm:wt/1",
                     Path::new("/tmp"),
                     "bash",
                     &ShellId::for_session("wingmux-session-p", "wt", 1),
@@ -946,7 +946,7 @@ mod tests {
             let w = tmux
                 .new_session(
                     "wingmux-session-p",
-                    "lw:feat/0",
+                    "wm:feat/0",
                     Path::new("/tmp"),
                     "bash",
                     &id,
