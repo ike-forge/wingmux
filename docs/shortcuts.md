@@ -36,7 +36,7 @@ subtracted), recomputed every frame from the stored viewport.
 | `T` | open the global todo pad, in the same panel | shifted pair of `t`: the same subject, the wider scope |
 | `r` | refresh — reconcile state against tmux reality | LazyGit/Docker `r` = refresh |
 | `R` | reset the layout — dashboard strip, agent windows and holders back to their default proportions | shifted pair of `r`: the same subject (put reality back in step), the heavier repair on the shifted key. `r` stays refresh because that is the tradition's binding |
-| `ctrl-g` | lazygit in a tmux popup on the selected repository (main checkout) or worktree; shell rows use their worktree. Reconciles on close | ctrl layer, because `g` is first-item. Bar entry only when `lazygit` is on PATH; help shows it muted otherwise and the key says it is missing. Needs tmux 3.2 |
+| `ctrl-g` | lazygit in the panel beside the tree (in place of the docked agent) on the selected repository (main checkout) or worktree; shell rows use their worktree. Pressed again it focuses lazygit; on quit the agent docks back and the tree reconciles | ctrl layer, because `g` is first-item. Bar entry only when `lazygit` is on PATH; help shows it muted otherwise and the key says it is missing. Not a popup: tmux overlays swallow the prefix |
 | `ctrl-t` | live theme picker (preview on move, Enter keeps, Esc restores) | ctrl layer; picker lists built-ins first |
 | `?` | open the grouped help overlay (the palette) | palette key; `?` is never rebound |
 | `Esc` (preview parked) | back to the live tail | leave innermost first |

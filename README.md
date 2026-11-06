@@ -93,7 +93,7 @@ merge/PR automation. Only worktree teardown is automated.
 | `d` | delete worktree or close shell |
 | `r` / `R` | refresh / reset layout |
 | `f` | fetch the repository's upstream (`↑ahead ↓behind` on its row) |
-| `ctrl-g` | lazygit popup on the selected repository or worktree |
+| `ctrl-g` | lazygit beside the tree on the selected repository or worktree |
 | `ctrl-t` | switch theme |
 | `?` | help |
 | `q` | quit |

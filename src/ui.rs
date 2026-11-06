@@ -91,7 +91,7 @@ pub(crate) fn tree_width(viewport: (u16, u16)) -> Option<u16> {
 pub(crate) fn tier(app: &App) -> Tier {
     let tier = tier_impl(app.viewport.0, app.viewport.1);
     match tier {
-        Tier::Wide | Tier::Split if app.docked.is_some() => Tier::TreeOnly,
+        Tier::Wide | Tier::Split if app.docked.is_some() || app.lazygit_open() => Tier::TreeOnly,
         _ => tier,
     }
 }
@@ -1837,7 +1837,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             ),
             (
                 &["ctrl-g"],
-                &["lazygit", "popup on the selected repository or worktree"],
+                &[
+                    "lazygit",
+                    "beside the tree on the selected repository or worktree",
+                ],
             ),
             (&["ctrl-t"], &["change theme", "live picker"]),
             (&["?"], &["this help", "palette"]),

@@ -191,6 +191,16 @@ pub fn park_command(note: &str) -> String {
     )
 }
 
+/// What the slot runs while lazygit borrows it: `command`, then signal
+/// `channel` and go back to being a sleeping slot.
+pub fn lazygit_command(command: &str, channel: &str) -> String {
+    format!(
+        "{command}; tmux wait-for -S {}; {}",
+        sh_quote(channel),
+        park_command(SLOT_NOTE)
+    )
+}
+
 /// Give every agent window a holder it is missing — the backfill for
 /// windows spawned before holders existed, and the repair for a holder the
 /// user closed by hand.
