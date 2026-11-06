@@ -841,7 +841,7 @@ duplication docking exists to end.
     from makes "has it committed anything of its own?" answerable. A
     reconciled worktree (one Wingmux discovered rather than created)
     has no fork point, falls back to the base branch, and reads a merged
-    worktree as new — stated in the README rather than papered over.
+    worktree as new — stated in `docs/ui.md` rather than papered over.
   - **A vanished directory is a state, not an error** (user's call: "a
     gone directory should not just be unknown but rather deleted").
     `Git::worktree_state` checks the path before it runs git and answers
@@ -1151,7 +1151,7 @@ duplication docking exists to end.
 - **One shape for every shortcut hint**: `<key> <action>` ("esc cancel"),
   joined by ` | `, with only the key in the accent colour, everywhere the
   app names a key — status bar, modal footers, help palette (`ui::Hint`,
-  `ui::hint_line`). Key first is the lazygit/lazycassandra convention, and
+  `ui::hint_line`). Key first is the lazygit convention, and
   one shape means learning the bar teaches the modals. Keys with a glyph form (`enter`, `arrows`) resolve
   through `[icons]`, so the `ascii` preset spells them out.
 - **Every modal is padded and ends with its shortcuts**: `MODAL_PADDING`
@@ -1272,7 +1272,7 @@ duplication docking exists to end.
 ## Input, mouse and accessibility
 
 - Keybindings: hardcoded vim-ish set (documented in the help overlay,
-  `docs/shortcuts.md` and README); no keybinding is configurable
+  `docs/shortcuts.md` and `docs/usage.md`); no keybinding is configurable
   (cheap win, avoids clashing with the user's tmux bindings).
 - **Accessibility**: one dispatch layer above all modes handles
   PageUp/PageDown/Home/End + ctrl-d/u/f/b + ctrl-c; `g`/`G` stay normal-mode
@@ -1348,9 +1348,8 @@ duplication docking exists to end.
   invisible — the difference is hue, which only ΔE sees. ANSI-named roles
   (`ansi.toml`) have no measurable value and are skipped.
 - **Hint keys have their own `shortcut` role**, borrowing `accent` when
-  unset. The Catppuccin flavours and `dracula` set it to the yellow
-  lazycassandra uses for the same job, so the two apps mark keys alike per
-  theme; `accent` keeps the focused-field label. The ΔE test measures
+  unset. The Catppuccin flavours and `dracula` set it to yellow;
+  `accent` keeps the focused-field label. The ΔE test measures
   `shortcut`, the colour actually printed beside the description.
 - **`ctrl-t` is a live theme picker**: it previews as the cursor moves (the
   whole screen repaints via the same load path), Enter keeps, Esc restores the

@@ -1,5 +1,5 @@
 //! Agent hook instrumentation — Claude Code and Codex (see
-//! `docs/superpowers/specs/2026-08-19-semantic-agent-monitoring-design.md`).
+//! `docs/agent-status.md`).
 //!
 //! Both CLIs run a command per lifecycle event with the same JSON on stdin
 //! and the agent's own `TMUX_PANE` in the environment, so one

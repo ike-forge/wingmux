@@ -1,8 +1,7 @@
 # Shortcuts
 
 Every binding in Wingmux lives in one key table (`App::on_key` in
-`src/app.rs`), follows the global TUI rules (`/opt/data/agents-common-instructions/tui/`,
-LazyGit / LazyDocker / vim tradition), and is listed here — current state,
+`src/app.rs`), follows the LazyGit / LazyDocker / vim TUI tradition, and is listed here — current state,
 not a wishlist. Update this file in the same commit as any binding change.
 
 The same words are used in the help overlay (`?`), the contextual statusbar
