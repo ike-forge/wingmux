@@ -8,6 +8,15 @@ description = "Tmux-native control centre for supervising coding agents across r
 repository = "https://github.com/ike-forge/wingmux"
 homepage = "https://github.com/ike-forge/wingmux"
 
+[[bin]]
+name = "wingmux"
+path = "src/main.rs"
+
+# Short alias; cargo-dist ships every bin, so brew installs both.
+[[bin]]
+name = "wing"
+path = "src/main.rs"
+
 [package.metadata.dist]
 dist = true
 

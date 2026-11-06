@@ -55,7 +55,7 @@ components.
 - **Gating command:** `mise run gate` (fmt --check && clippy -D warnings
   && test)
 - Install for local testing from anywhere: `mise run install` (release
-  build + symlink `~/.local/bin/wingmux-local`)
+  build + symlinks `~/.local/bin/wingmux-local` and `wing-local`)
 - Start from a clean config: `mise run reset-config` (deletes
   `$XDG_CONFIG_HOME/wingmux` — `config.toml` and the theme copies —
   and lists what it removed first; the next run writes the defaults and

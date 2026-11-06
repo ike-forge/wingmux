@@ -29,8 +29,8 @@ description = "Everything before a commit: fmt + clippy + tests"
 run = "cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test"
 
 [tasks.install]
-description = "Build the release binary and link it into ~/.local/bin as `wingmux-local`, alongside the brew binary"
-run = "cargo build --release && mkdir -p ~/.local/bin && ln -sf $PWD/target/release/wingmux ~/.local/bin/wingmux-local"
+description = "Build the release binaries and link them into ~/.local/bin as `wingmux-local` and `wing-local`, alongside the brew binaries"
+run = "cargo build --release && mkdir -p ~/.local/bin && ln -sf $PWD/target/release/wingmux ~/.local/bin/wingmux-local && ln -sf $PWD/target/release/wing ~/.local/bin/wing-local"
 
 [tasks.reset-config]
 description = "Delete the local config dir (config.toml + theme copies) so the next run writes fresh defaults; leaves state.json alone"
