@@ -1444,7 +1444,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         // closes it, and only appears once there is one to close.
         Sel::Repository(ri) => {
             let mut v = vec![
-                (h("shell", "a"), RepoShell),
+                (h("add shell", "a"), RepoShell),
                 (h("worktree", "n"), NewWorktree),
                 (h("push", "p"), Push),
             ];
@@ -1460,14 +1460,14 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         Sel::Worktree(ri, wi) if app.solo_shell(ri, wi).is_some() => vec![
             (h("dock", "Enter"), Dock),
             (h("messages", "m"), PredefinedSend),
-            (h("shell", "a"), AddShell),
+            (h("add shell", "a"), AddShell),
             (h("select", "v"), VisualStart),
             (h("delete", "d"), DeleteWorktree),
             (h("help", "?"), Help),
         ],
         Sel::Worktree(..) => vec![
             (h("worktree", "n"), NewWorktree),
-            (h("shell", "a"), AddShell),
+            (h("add shell", "a"), AddShell),
             (h("select", "v"), VisualStart),
             (h("delete", "d"), DeleteWorktree),
             (h("help", "?"), Help),
@@ -3635,7 +3635,7 @@ mod tests {
                     "bar 'messages m' ↔ help row"
                 ),
                 "worktree" => assert!(text.contains("new worktree"), "bar 'worktree n' ↔ help"),
-                "shell" => assert!(text.contains("add shell"), "bar 'shell a' ↔ help"),
+                "add shell" => assert!(text.contains("add shell"), "bar 'add shell a' ↔ help"),
                 "delete" => assert!(text.contains("delete worktree"), "bar 'delete d' ↔ help"),
                 "dock" => assert!(text.contains("dock the shell"), "bar 'dock ↵' ↔ help"),
                 "select" => assert!(text.contains("select rows"), "bar 'select v' ↔ help"),
