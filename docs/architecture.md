@@ -1351,13 +1351,16 @@ duplication docking exists to end.
   unset. The Catppuccin flavours and `dracula` set it to yellow;
   `accent` keeps the focused-field label. The ΔE test measures
   `shortcut`, the colour actually printed beside the description.
-- **`ctrl-g` runs lazygit in a `display-popup`**, not a pane or window: modal,
-  nothing to reconcile in the layout, and the same floating-window shape as
-  nvim's `<leader>gg`. `g` is first-item, so the chord lives in the ctrl layer.
-  `display-popup` blocks, so the client is spawned and polled; on a clean exit
-  the tree reconciles (lazygit may have committed or switched branch). A failed
-  client (tmux < 3.2) surfaces its stderr as a toast. Availability is checked
-  once against `$PATH`: absent, the bar omits the entry and help shows it muted.
+- **`ctrl-g` runs lazygit in the slot**, not a `display-popup`: a popup is a
+  tmux overlay, which takes every key before the key tables, so the prefix is
+  dead while it is open. The docked agent is sent home, the slot is respawned
+  on `lazygit; tmux wait-for -S <channel>; <park>`, and a spawned `wait-for`
+  client is polled. On its exit (or the slot vanishing) the tree is focused,
+  reconciled, and dock-on-look puts the selected shell back. While lazygit
+  holds the slot nothing docks: looking is skipped and `Enter` refuses.
+  `ctrl-g` again focuses it. `g` is first-item, so the chord lives in the ctrl
+  layer. Availability is checked once against `$PATH`: absent, the bar omits
+  the entry and help shows it muted.
 - **`ctrl-t` is a live theme picker**: it previews as the cursor moves (the
   whole screen repaints via the same load path), Enter keeps, Esc restores the
   theme it opened with. Built-ins list first (stable order), then user themes.

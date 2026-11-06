@@ -68,8 +68,8 @@ pub const DEFAULT_CONFIG: &str = r#"# Wingmux configuration — written on first
 # Ask for confirmation before deleting a worktree.
 #confirm_on_delete = true
 
-# Command ctrl-g opens in a tmux popup on the selected repository or
-# worktree. The popup starts in that directory. Needs tmux 3.2 or newer.
+# Command ctrl-g runs beside the tree, in the selected repository or
+# worktree's directory. The agent docks back when it exits.
 #lazygit = "lazygit"
 
 [preview]

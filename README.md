@@ -92,7 +92,7 @@ merge/PR automation. Only worktree teardown is automated.
 | `t` / `T` | repository / global todo pad |
 | `d` | delete worktree or close shell |
 | `r` / `R` | refresh / reset layout |
-| `ctrl-g` | lazygit popup on the selected repository or worktree |
+| `ctrl-g` | lazygit beside the tree on the selected repository or worktree |
 | `ctrl-t` | switch theme |
 | `?` | help |
 | `q` | quit |

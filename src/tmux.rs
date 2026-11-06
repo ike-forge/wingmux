@@ -220,18 +220,21 @@ impl Tmux {
         self.run(args)
     }
 
-    /// `display-popup` blocks until the popup closes, so the caller polls the
-    /// returned client. Needs tmux 3.2; older servers fail fast on stderr.
-    pub fn spawn_popup(&self, target: &str, cwd: &Path, command: &str) -> Result<Child> {
+    /// Restart `pane` on `command` in `cwd`, killing what it ran.
+    pub fn respawn_pane(&self, pane: &str, cwd: &Path, command: &str) -> Result<()> {
+        let cwd = cwd.to_string_lossy();
+        self.run(&["respawn-pane", "-k", "-t", pane, "-c", &cwd, command])?;
+        Ok(())
+    }
+
+    /// A `wait-for` client: exits once `channel` is signalled. tmux keeps
+    /// the signal when nobody waits yet, so the order is free.
+    pub fn spawn_wait_for(&self, channel: &str) -> Result<Child> {
         base_command(&self.socket)
-            .args(["display-popup", "-E", "-w", "90%", "-h", "90%", "-t"])
-            .arg(target)
-            .arg("-d")
-            .arg(cwd)
-            .arg(command)
+            .args(["wait-for", channel])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| Error::Tmux(format!("cannot run tmux: {e}")))
     }
