@@ -452,6 +452,12 @@ impl Git {
         Self::run_unattended(dir, &["push", "--quiet"], timeout)
     }
 
+    /// Pull HEAD's upstream with a rebase (`git pull --rebase`), never an
+    /// implicit merge. Same no-prompt guarantees as [`Git::push_upstream`].
+    pub fn pull_upstream(&self, dir: &Path, timeout: Duration) -> Result<()> {
+        Self::run_unattended(dir, &["pull", "--quiet", "--rebase"], timeout)
+    }
+
     /// Run a networked git command that must never prompt or take the tty.
     fn run_unattended(dir: &Path, args: &[&str], timeout: Duration) -> Result<()> {
         let verb = args[0];
@@ -800,6 +806,24 @@ mod tests {
 
         // No upstream: the user asked for a push, so say it failed.
         assert!(Git.push_upstream(&origin, t).is_err());
+
+        // A second clone pulls what the first pushed.
+        let other = origin.parent().unwrap().join("other");
+        run(
+            origin.parent().unwrap(),
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                other.to_str().unwrap(),
+            ],
+        );
+        run(&mine, &["commit", "-q", "--allow-empty", "-m", "y"]);
+        Git.push_upstream(&mine, t).unwrap();
+        run(&other, &["fetch", "-q"]);
+        assert_eq!(Git.upstream_divergence(&other).unwrap().behind, 1);
+        Git.pull_upstream(&other, t).unwrap();
+        assert_eq!(Git.upstream_divergence(&other).unwrap().behind, 0);
     }
 
     #[test]

@@ -1470,8 +1470,11 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             ];
             // Only with commits the upstream lacks: an entry that can only
             // answer "nothing to push" is noise.
+            if app.pullable(ri) {
+                v.push((h("pull", "p"), Pull));
+            }
             if app.pushable(ri) {
-                v.push((h("push", "p"), Push));
+                v.push((h("push", "P"), Push));
             }
             if app.repo_shell_pane(ri).is_some() {
                 v.push((h("close", "d"), CloseRepoShell));
@@ -3741,7 +3744,7 @@ mod tests {
         assert_eq!(statusbar_h(&wide, 120), 1, "one row is enough at 120");
     }
 
-    /// `push p` is offered only with commits the upstream lacks; `p`
+    /// `push P` is offered only with commits the upstream lacks; `P`
     /// without them says so instead of starting a push.
     #[test]
     fn push_is_offered_only_when_ahead() {
@@ -3762,7 +3765,7 @@ mod tests {
         );
         assert!(!has_push(&app), "only behind: nothing to push");
         app.on_key(ratatui::crossterm::event::KeyEvent::new(
-            ratatui::crossterm::event::KeyCode::Char('p'),
+            ratatui::crossterm::event::KeyCode::Char('P'),
             ratatui::crossterm::event::KeyModifiers::NONE,
         ));
         assert!(!app.pusher.is_pushing(std::path::Path::new("/tmp/repo-a")));
@@ -3777,6 +3780,44 @@ mod tests {
             .unwrap()
             .ahead = 1;
         assert!(has_push(&app), "a commit ahead: push");
+    }
+
+    /// `pull p` is offered only with commits to pull; `p` without them
+    /// says so instead of starting a pull.
+    #[test]
+    fn pull_is_offered_only_when_behind() {
+        let has_pull = |app: &App| {
+            bar_entries(app)
+                .iter()
+                .any(|(_, a)| matches!(a, BarAction::Pull))
+        };
+        let mut app = seeded_app();
+        app.sel = crate::app::Sel::Repository(0);
+        assert!(!has_pull(&app), "no divergence known: nothing to pull");
+        app.divergence.insert(
+            "/tmp/repo-a".into(),
+            crate::git::Divergence {
+                ahead: 1,
+                behind: 0,
+            },
+        );
+        assert!(!has_pull(&app), "only ahead: nothing to pull");
+        app.on_key(ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Char('p'),
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(!app.puller.is_pushing(std::path::Path::new("/tmp/repo-a")));
+        assert!(
+            app.toast()
+                .is_some_and(|t| t.text.contains("nothing to pull")),
+            "{:?}",
+            app.toast()
+        );
+        app.divergence
+            .get_mut(std::path::Path::new("/tmp/repo-a"))
+            .unwrap()
+            .behind = 1;
+        assert!(has_pull(&app), "a commit behind: pull");
     }
 
     /// A long error is a sentence: the toast wraps it rather than cutting

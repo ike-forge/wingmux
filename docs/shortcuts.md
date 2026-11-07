@@ -94,7 +94,8 @@ tail — `help ?`, the way to everything that did not fit, sits at that end.
 | `n` | new worktree (git worktree + branch cut from the repository's base branch, + a shell running the agent its second field names) | create action |
 | `d` | close the inline shell (kills its window; the repository, its worktrees and their agents stay). Absent until there is one to close | vim `d` destructive, confirms; an answer that cannot succeed is not offered |
 | `f` | fetch the repository's upstream, refreshing `↑ahead ↓behind`. Works from any row of the repository | LazyGit `f` = fetch |
-| `p` | `git push` the repository's checkout to its upstream, off the event loop. Works from any row of the repository; the row's sync spinner turns while it runs and the result is a toast. The bar offers it only when the checkout is ahead of its upstream; without commits to push, `p` says so | LazyGit `P` = push, kept lower-case: no pull key competes for it |
+| `p` | `git pull --rebase` the repository's checkout from its upstream, off the event loop. Works from any row of the repository; the row's sync spinner turns while it runs and the result is a toast. The bar offers it only when the checkout is behind its upstream; otherwise `p` says there is nothing to pull | LazyGit `p` = pull |
+| `P` | `git push` the repository's checkout to its upstream, same mechanics. The bar offers it only when the checkout is ahead of its upstream; otherwise `P` says there is nothing to push | LazyGit `P` = push |
 
 `Enter` does not start the shell. It used to, and since `Enter`, `l` and
 `→` all expand, every repository opened to look at its worktrees left a

@@ -77,38 +77,50 @@ impl Fetcher {
     }
 }
 
-/// Slower than a fetch: a push may run pre-push hooks.
+/// Slower than a fetch: a push may run pre-push hooks, a pull a merge.
 const PUSH_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// User-initiated pushes, one thread each, never queued behind fetches.
+/// User-initiated pushes or pulls, one thread each, never queued behind
+/// fetches.
 pub struct Pusher {
+    run: fn(&Path) -> Result<()>,
+    verb: &'static str,
     running: Vec<PathBuf>,
     tx: Sender<Done>,
     rx: Receiver<Done>,
 }
 
-impl Default for Pusher {
-    fn default() -> Self {
+impl Pusher {
+    pub fn push() -> Self {
+        Self::new("push", |d| Git.push_upstream(d, PUSH_TIMEOUT))
+    }
+
+    pub fn pull() -> Self {
+        Self::new("pull", |d| Git.pull_upstream(d, PUSH_TIMEOUT))
+    }
+
+    fn new(verb: &'static str, run: fn(&Path) -> Result<()>) -> Self {
         let (tx, rx) = mpsc::channel();
         Pusher {
+            run,
+            verb,
             running: Vec::new(),
             tx,
             rx,
         }
     }
-}
 
-impl Pusher {
-    /// Start a push; false when one is already running for the repository.
+    /// Start the operation; false when one is already running for the
+    /// repository.
     pub fn submit(&mut self, repo: &Path) -> bool {
         if self.is_pushing(repo) {
             return false;
         }
         self.running.push(repo.to_path_buf());
-        let (repo, tx) = (repo.to_path_buf(), self.tx.clone());
+        let (repo, tx, run, verb) = (repo.to_path_buf(), self.tx.clone(), self.run, self.verb);
         std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(|| Git.push_upstream(&repo, PUSH_TIMEOUT))
-                .unwrap_or_else(|_| Err(Error::Git("push thread panicked".into())));
+            let result = std::panic::catch_unwind(|| run(&repo))
+                .unwrap_or_else(|_| Err(Error::Git(format!("{verb} thread panicked"))));
             let _ = tx.send(Done { repo, result });
         });
         true
