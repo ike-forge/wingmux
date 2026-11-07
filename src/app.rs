@@ -800,6 +800,9 @@ pub struct App {
     /// (`[sync].fetch_on_startup`). Off in tests; `run()` sets it.
     pub auto_fetch: bool,
     fetch_seen: std::collections::HashSet<PathBuf>,
+    /// Startup fetches in flight: spinner only, no label, so a long
+    /// repository list does not fill the tree with "fetching".
+    quiet_fetches: std::collections::HashSet<PathBuf>,
     /// Resolved base branch per repository path, refreshed with `wt_state`,
     /// so `<base_branch>` expands without a git call per frame.
     base_branches: HashMap<PathBuf, String>,
@@ -922,6 +925,7 @@ impl App {
             divergence: HashMap::new(),
             fetch_failed: Default::default(),
             auto_fetch: false,
+            quiet_fetches: Default::default(),
             fetch_seen: Default::default(),
         }
     }
@@ -3205,6 +3209,8 @@ impl App {
     /// Queue a fetch of the repository's upstream.
     pub(crate) fn request_fetch(&mut self, ri: usize) {
         if let Some(r) = self.state.repositories.get(ri).filter(|r| !r.missing) {
+            // Asked for after all: name it.
+            self.quiet_fetches.remove(&r.path);
             self.fetcher.submit(&r.path);
         }
     }
@@ -3215,11 +3221,13 @@ impl App {
             for ri in self.visible_repositories() {
                 let r = &self.state.repositories[ri];
                 if !r.missing && self.fetch_seen.insert(r.path.clone()) {
+                    self.quiet_fetches.insert(r.path.clone());
                     self.fetcher.submit(&r.path);
                 }
             }
         }
         for d in self.fetcher.poll(self.cfg.sync.max_fetches) {
+            self.quiet_fetches.remove(&d.repo);
             match d.result {
                 Ok(()) => {
                     self.fetch_failed.remove(&d.repo);
@@ -4238,12 +4246,14 @@ impl App {
 
     /// What the in-flight sync of the repository at `path` is doing, for the
     /// label beside the spinner. A user-started push or pull wins over a
-    /// background fetch.
+    /// background fetch; a startup fetch has none (empty).
     pub(crate) fn sync_label(&self, path: &std::path::Path) -> &'static str {
         if self.pusher.is_pushing(path) {
             "pushing"
         } else if self.puller.is_pushing(path) {
             "pulling"
+        } else if self.quiet_fetches.contains(path) {
+            ""
         } else {
             "fetching"
         }

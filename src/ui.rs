@@ -364,7 +364,12 @@ fn upstream_spans(
     let f = frame_every(&ic.sync_spinner, spin, SYNC_SPINNER_FRAME_MS);
     if app.syncing(path) && !f.is_empty() {
         let label = app.sync_label(path);
-        out.push(Span::styled(format!(" {f} {label}"), fg(theme.dim)));
+        let text = if label.is_empty() {
+            format!(" {f}")
+        } else {
+            format!(" {f} {label}")
+        };
+        out.push(Span::styled(text, fg(theme.dim)));
     }
     out
 }
