@@ -268,8 +268,9 @@ pushed from there.
   unless the user set `GIT_SSH_COMMAND` or `core.sshCommand`, and the child
   runs in its own process group: a tty read stops it instead of taking
   keys, and the 30 s timeout kills it.
-- **`p` pushes on demand.** `sync::Pusher` runs a plain `git push` on its own
-  thread, under the same no-prompt rules as fetches but not queued behind
+- **`P` pushes and `p` pulls on demand.** `sync::Pusher` (one instance per
+  verb) runs a plain `git push`, or `git pull --rebase` (never an implicit
+  merge, whatever `pull.rebase` says), on its own thread, under the same no-prompt rules as fetches but not queued behind
   them or capped: the user asked for it now. The toast reports the outcome and
   the counts are re-read, so `↑` drops without a fetch. No upstream is an
   error here, unlike for fetch.

@@ -555,6 +555,7 @@ pub enum BarAction {
     AddShell,
     PredefinedSend,
     Push,
+    Pull,
     DeleteWorktree,
     DeleteShell,
     /// Start a visual selection of shells (`v`).
@@ -786,8 +787,10 @@ pub struct App {
     pub(crate) remover: crate::remover::Remover,
     /// Upstream fetches behind the repository row's ahead/behind counts.
     pub(crate) fetcher: crate::sync::Fetcher,
-    /// `p` on a repository: pushes in flight.
+    /// `P` on a repository: pushes in flight.
     pub(crate) pusher: crate::sync::Pusher,
+    /// `p` on a repository: pulls in flight.
+    pub(crate) puller: crate::sync::Pusher,
     /// Repository path → HEAD against its upstream, refilled with
     /// `wt_state` and after each fetch. Absent: no upstream.
     pub(crate) divergence: HashMap<PathBuf, crate::git::Divergence>,
@@ -914,7 +917,8 @@ impl App {
             editor: None,
             remover: Default::default(),
             fetcher: Default::default(),
-            pusher: Default::default(),
+            pusher: crate::sync::Pusher::push(),
+            puller: crate::sync::Pusher::pull(),
             divergence: HashMap::new(),
             fetch_failed: Default::default(),
             auto_fetch: false,
@@ -3227,6 +3231,14 @@ impl App {
             }
             self.count_divergence(&d.repo);
         }
+        for d in self.puller.poll() {
+            let name = self.repo_display_name(&d.repo);
+            match d.result {
+                Ok(()) => self.notify(format!("pulled '{name}'")),
+                Err(e) => self.notify_err(format!("pull '{name}': {e}")),
+            }
+            self.count_divergence(&d.repo);
+        }
         for d in self.pusher.poll() {
             let name = self.repo_display_name(&d.repo);
             match d.result {
@@ -4179,7 +4191,8 @@ impl App {
             KeyCode::Char('n') => self.open_new_worktree(),
             KeyCode::Char('a') => self.open_add_shell(),
             KeyCode::Char('m') => self.open_messages(),
-            KeyCode::Char('p') => self.push_selected(),
+            KeyCode::Char('p') => self.pull_selected(),
+            KeyCode::Char('P') => self.push_selected(),
             KeyCode::Char('t') => self.open_repo_todo(),
             KeyCode::Char('T') => self.open_todo(crate::todo::Pad::Global),
             KeyCode::Char('d') => match self.sel {
@@ -4218,7 +4231,9 @@ impl App {
 
     /// A fetch or push is in flight for the repository at `path`.
     pub(crate) fn syncing(&self, path: &std::path::Path) -> bool {
-        self.fetcher.is_fetching(path) || self.pusher.is_pushing(path)
+        self.fetcher.is_fetching(path)
+            || self.pusher.is_pushing(path)
+            || self.puller.is_pushing(path)
     }
 
     /// Any fetch or push in flight — the event loop redraws faster then,
@@ -4238,6 +4253,34 @@ impl App {
             .filter(|r| !r.missing)
             .and_then(|r| self.divergence.get(&r.path))
             .is_some_and(|d| d.ahead > 0)
+    }
+
+    /// The repository's checkout has commits its upstream has and it lacks.
+    pub(crate) fn pullable(&self, ri: usize) -> bool {
+        self.state
+            .repositories
+            .get(ri)
+            .filter(|r| !r.missing)
+            .and_then(|r| self.divergence.get(&r.path))
+            .is_some_and(|d| d.behind > 0)
+    }
+
+    /// Pull the selected row's repository (its main checkout's branch).
+    fn pull_selected(&mut self) {
+        let (Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, ..)) = self.sel;
+        match self.state.repositories.get(ri) {
+            Some(r) if !r.missing && !self.pullable(ri) => {
+                let name = r.name.clone();
+                self.notify(format!("nothing to pull in '{name}'"));
+            }
+            Some(r) if !r.missing => {
+                let name = r.name.clone();
+                if self.puller.submit(&r.path) {
+                    self.notify(format!("pulling '{name}'"));
+                }
+            }
+            _ => self.notify("Select a repository to pull"),
+        }
     }
 
     /// Push the selected row's repository (its main checkout's branch).
@@ -4809,6 +4852,7 @@ impl App {
             BarAction::NewWorktree => self.open_new_worktree(),
             BarAction::AddShell => self.open_add_shell(),
             BarAction::PredefinedSend => self.open_messages(),
+            BarAction::Pull => self.pull_selected(),
             BarAction::Push => self.push_selected(),
             BarAction::DeleteWorktree => self.confirm_delete_worktree(),
             BarAction::DeleteShell => self.confirm_delete_shell(),
