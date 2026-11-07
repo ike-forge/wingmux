@@ -331,7 +331,7 @@ fn frame_every(frames: &[String], elapsed: std::time::Duration, ms: u128) -> &st
     &frames[(elapsed.as_millis() / ms) as usize % frames.len()]
 }
 
-/// The repository row's `↑ahead ↓behind` and sync spinner (fetch or push). In sync, or
+/// The repository row's `↑ahead ↓behind` and sync spinner and verb (fetching, pushing, pulling). In sync, or
 /// without an upstream, draws nothing; counts a failed fetch could not
 /// refresh are dimmed.
 fn upstream_spans(
@@ -363,7 +363,8 @@ fn upstream_spans(
     }
     let f = frame_every(&ic.sync_spinner, spin, SYNC_SPINNER_FRAME_MS);
     if app.syncing(path) && !f.is_empty() {
-        out.push(Span::styled(format!(" {f}"), fg(theme.dim)));
+        let label = app.sync_label(path);
+        out.push(Span::styled(format!(" {f} {label}"), fg(theme.dim)));
     }
     out
 }

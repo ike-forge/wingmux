@@ -4236,6 +4236,19 @@ impl App {
             || self.puller.is_pushing(path)
     }
 
+    /// What the in-flight sync of the repository at `path` is doing, for the
+    /// label beside the spinner. A user-started push or pull wins over a
+    /// background fetch.
+    pub(crate) fn sync_label(&self, path: &std::path::Path) -> &'static str {
+        if self.pusher.is_pushing(path) {
+            "pushing"
+        } else if self.puller.is_pushing(path) {
+            "pulling"
+        } else {
+            "fetching"
+        }
+    }
+
     /// Any fetch or push in flight — the event loop redraws faster then,
     /// for the sync spinner.
     fn any_syncing(&self) -> bool {
