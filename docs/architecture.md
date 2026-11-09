@@ -267,7 +267,7 @@ pushed from there.
   over the TUI. `GIT_TERMINAL_PROMPT=0`, stdin null, `ssh -o BatchMode=yes`
   unless the user set `GIT_SSH_COMMAND` or `core.sshCommand`, and the child
   runs in its own process group: a tty read stops it instead of taking
-  keys, and the 30 s timeout kills it.
+  keys, and the 10 s fetch timeout kills the whole group (ssh and the https helper included).
 - **`P` pushes and `p` pulls on demand.** `sync::Pusher` (one instance per
   verb) runs a plain `git push`, or `git pull --rebase` (never an implicit
   merge, whatever `pull.rebase` says), on its own thread, under the same no-prompt rules as fetches but not queued behind

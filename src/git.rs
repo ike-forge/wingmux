@@ -480,6 +480,13 @@ impl Git {
                 break s;
             }
             if start.elapsed() >= timeout {
+                // Kill the whole group: `git` alone dying leaves ssh or
+                // git-remote-https holding the connection open.
+                let _ = Command::new("kill")
+                    .args(["-KILL", "--", &format!("-{}", child.id())])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(Error::Git(format!(

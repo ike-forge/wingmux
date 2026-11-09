@@ -13,8 +13,8 @@ use crate::error::{Error, Result};
 use crate::git::Git;
 
 /// Long enough for a slow remote, short enough that a black-holed one
-/// gives its slot back.
-const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+/// (corporate proxy, VPN down) gives its slot back quickly.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Done {
     pub repo: PathBuf,
