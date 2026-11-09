@@ -81,7 +81,8 @@ meaning in symbols, labels and position as well as colour.
 A repository row also shows its main checkout against the upstream, as
 LazyGit does: `↑2` commits to push, `↓5` to pull, nothing when in sync or
 without an upstream. The counts are in the accent colour, dimmed when the
-last fetch failed (offline, auth) and they may be stale. A small dim `◇◈◆◈`
+last fetch failed (offline, timeout, auth) and they may be stale; a dim
+`sync_failed` icon marks the failure. A small dim `◇◈◆◈`
 after them turns while a fetch runs. See [architecture](architecture.md#upstream-sync)
 for when fetches happen.
 
@@ -139,6 +140,7 @@ reads as new until it has commits of its own.
 | `sync_spinner` | `◇◈◆◈` | same | — | frames cycled, followed by `fetching`, `pushing` or `pulling`, while a repository syncs (the startup fetches show the spinner alone) |
 | `upstream_ahead` | `↑` | `↑` | `↑` | before the count of commits to push |
 | `upstream_behind` | `↓` | `↓` | `↓` | before the count of commits to pull |
+| `sync_failed` | `󰖪` | `✗` | — | after the counts while the last fetch failed (offline, timeout, auth); clears on the next success |
 | `enter` | `↵` | `↵` | `↵` | the Enter key, in shortcut hints |
 | `arrows` | `↑↓` | `↑↓` | `↑↓` | the arrow keys, in shortcut hints |
 | `border` | `rounded` | `rounded` | `rounded` | panel and popup frames |

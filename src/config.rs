@@ -186,6 +186,7 @@ pub const DEFAULT_CONFIG: &str = r#"# Wingmux configuration — written on first
 #sync_spinner = "◇◈◆◈"     # repository upstream fetch in flight
 #upstream_ahead = "↑"           # commits to push, on a repository row
 #upstream_behind = "↓"          # commits to pull, on a repository row
+#sync_failed = "󰖪"              # last fetch failed (offline, timeout, auth)
 #enter = "↵"                   # names the Enter key in shortcut hints
 #arrows = "↑↓"                  # names the arrow keys in shortcut hints
 
@@ -423,6 +424,7 @@ pub struct IconsConfig {
     pub sync_spinner: Vec<String>,
     pub upstream_ahead: String,
     pub upstream_behind: String,
+    pub sync_failed: String,
     /// Glyph standing for the Enter key in shortcut hints.
     pub enter: String,
     /// Glyph standing for the arrow keys in shortcut hints.
@@ -475,6 +477,7 @@ impl IconsConfig {
             sync_spinner: frames("◇◈◆◈"),
             upstream_ahead: "↑".into(),
             upstream_behind: "↓".into(),
+            sync_failed: "󰖪".into(),
             enter: "↵".into(),
             arrows: "↑↓".into(),
             border: BorderStyle::Rounded,
@@ -492,6 +495,7 @@ impl IconsConfig {
                 status_blocked: "⏹".into(),
                 status_failed: "✖".into(),
                 status_ended: "⏸".into(),
+                sync_failed: "✗".into(),
                 ..nerdfont
             },
             "none" => IconsConfig {
@@ -504,6 +508,7 @@ impl IconsConfig {
                 worktree_deleted: String::new(),
                 status_spinner: Vec::new(),
                 sync_spinner: Vec::new(),
+                sync_failed: String::new(),
                 status_waiting: String::new(),
                 status_blocked: String::new(),
                 status_failed: String::new(),
@@ -610,6 +615,7 @@ struct IconsFile {
     sync_spinner: Option<String>,
     upstream_ahead: Option<String>,
     upstream_behind: Option<String>,
+    sync_failed: Option<String>,
     enter: Option<String>,
     arrows: Option<String>,
     border: Option<BorderStyle>,
@@ -644,6 +650,7 @@ impl Default for IconsFile {
             sync_spinner: None,
             upstream_ahead: None,
             upstream_behind: None,
+            sync_failed: None,
             enter: None,
             arrows: None,
             border: None,
@@ -690,6 +697,7 @@ impl<'de> Deserialize<'de> for IconsConfig {
             sync_spinner: f.sync_spinner.map(|s| frames(&s)).unwrap_or(b.sync_spinner),
             upstream_ahead: f.upstream_ahead.unwrap_or(b.upstream_ahead),
             upstream_behind: f.upstream_behind.unwrap_or(b.upstream_behind),
+            sync_failed: f.sync_failed.unwrap_or(b.sync_failed),
             enter: f.enter.unwrap_or(b.enter),
             arrows: f.arrows.unwrap_or(b.arrows),
             border: f.border.unwrap_or(b.border),
@@ -1012,6 +1020,7 @@ const ICONS_KEYS: &[&str] = &[
     "sync_spinner",
     "upstream_ahead",
     "upstream_behind",
+    "sync_failed",
     "enter",
     "arrows",
     "border",
@@ -1408,6 +1417,10 @@ impl Config {
         line(
             "icons.upstream_behind",
             format!("\"{}\"", self.icons.upstream_behind),
+        );
+        line(
+            "icons.sync_failed",
+            format!("\"{}\"", self.icons.sync_failed),
         );
         line(
             "icons.border",
@@ -2059,6 +2072,7 @@ impl SectionSalvage for IconsConfig {
             )),
             upstream_ahead: salvage_field(t, "upstream_ahead", b.upstream_ahead, file, diags),
             upstream_behind: salvage_field(t, "upstream_behind", b.upstream_behind, file, diags),
+            sync_failed: salvage_field(t, "sync_failed", b.sync_failed, file, diags),
             enter: salvage_field(t, "enter", b.enter, file, diags),
             arrows: salvage_field(t, "arrows", b.arrows, file, diags),
             border: salvage_field(t, "border", b.border, file, diags),
@@ -2557,7 +2571,7 @@ mod tests {
             // number of fields actually accepted.
             assert_eq!(
                 ICONS_KEYS.len(),
-                28,
+                29,
                 "adding an icon key means adding it to ICONS_KEYS too"
             );
         });

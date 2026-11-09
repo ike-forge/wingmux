@@ -361,6 +361,9 @@ fn upstream_spans(
             ));
         }
     }
+    if app.fetch_failed.contains(path) && !app.syncing(path) && !ic.sync_failed.is_empty() {
+        out.push(Span::styled(format!(" {}", ic.sync_failed), fg(theme.dim)));
+    }
     let f = frame_every(&ic.sync_spinner, spin, SYNC_SPINNER_FRAME_MS);
     if app.syncing(path) && !f.is_empty() {
         let label = app.sync_label(path);
