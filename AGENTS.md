@@ -51,5 +51,4 @@ the four targets, creates the GitHub release and pushes the formula to
 
 - Conventional commits, one per finished change (`feat: …`, `fix: …`,
   `chore: …`); plain `git commit`, no identity overrides.
-- Push at the end of each finished unit of work. Never force-push or
-  rewrite history.
+- Never push unless the user asks. Never force-push or rewrite history.
