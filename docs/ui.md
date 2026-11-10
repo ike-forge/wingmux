@@ -140,7 +140,7 @@ reads as new until it has commits of its own.
 | `sync_spinner` | `◇◈◆◈` | same | — | frames cycled, followed by `fetching`, `pushing` or `pulling`, while a repository syncs (the startup fetches show the spinner alone) |
 | `upstream_ahead` | `↑` | `↑` | `↑` | before the count of commits to push |
 | `upstream_behind` | `↓` | `↓` | `↓` | before the count of commits to pull |
-| `sync_failed` | `󰖪` | `✗` | — | after the counts while the last fetch failed (offline, timeout, auth); clears on the next success |
+| `sync_failed` | `󰖪` | `✗` | — | after the counts while the last fetch failed (offline, timeout, auth); clears on the next successful fetch, push or pull |
 | `enter` | `↵` | `↵` | `↵` | the Enter key, in shortcut hints |
 | `arrows` | `↑↓` | `↑↓` | `↑↓` | the arrow keys, in shortcut hints |
 | `border` | `rounded` | `rounded` | `rounded` | panel and popup frames |

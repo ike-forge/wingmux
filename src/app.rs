@@ -3242,7 +3242,11 @@ impl App {
         for d in self.puller.poll() {
             let name = self.repo_display_name(&d.repo);
             match d.result {
-                Ok(()) => self.notify(format!("pulled '{name}'")),
+                Ok(()) => {
+                    // The remote answered: the last fetch's failure is stale.
+                    self.fetch_failed.remove(&d.repo);
+                    self.notify(format!("pulled '{name}'"));
+                }
                 Err(e) => self.notify_err(format!("pull '{name}': {e}")),
             }
             self.count_divergence(&d.repo);
@@ -3250,7 +3254,10 @@ impl App {
         for d in self.pusher.poll() {
             let name = self.repo_display_name(&d.repo);
             match d.result {
-                Ok(()) => self.notify(format!("pushed '{name}'")),
+                Ok(()) => {
+                    self.fetch_failed.remove(&d.repo);
+                    self.notify(format!("pushed '{name}'"));
+                }
                 Err(e) => self.notify_err(format!("push '{name}': {e}")),
             }
             self.count_divergence(&d.repo);
