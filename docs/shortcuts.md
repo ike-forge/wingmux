@@ -94,8 +94,8 @@ tail — `help ?`, the way to everything that did not fit, sits at that end.
 | `n` | new worktree (git worktree + branch cut from the repository's base branch, + a shell running the agent its second field names) | create action |
 | `d` | close the inline shell (kills its window; the repository, its worktrees and their agents stay). Absent until there is one to close | vim `d` destructive, confirms; an answer that cannot succeed is not offered |
 | `f` | fetch the repository's upstream, refreshing `↑ahead ↓behind`. Works from any row of the repository | LazyGit `f` = fetch |
-| `p` | `git pull --rebase` the repository's checkout from its upstream, off the event loop. Works from any row of the repository; the row's sync spinner turns while it runs and the result is a toast. The bar offers it only when the checkout is behind its upstream; otherwise `p` says there is nothing to pull | LazyGit `p` = pull |
-| `P` | `git push` the repository's checkout to its upstream, same mechanics. The bar offers it only when the checkout is ahead of its upstream; otherwise `P` says there is nothing to push | LazyGit `P` = push |
+| `p` | `git pull --rebase` the repository's checkout from its upstream, off the event loop. Works from any row of the repository; the row's sync spinner turns while it runs and the result is a toast. The bar offers it only when the checkout is behind its upstream; the key itself always pulls, since wingmux's divergence may be stale | LazyGit `p` = pull |
+| `P` | `git push` the repository's checkout to its upstream, same mechanics. The bar offers it only when the checkout is ahead of its upstream; the key itself always pushes, since wingmux's divergence may be stale | LazyGit `P` = push |
 | `.` | hide the repository: it folds into the hidden row at the bottom of the tree. On a hidden repository, unhides it. Repository rows only | dotfile convention: `A` → `.A` hides a folder |
 | `v` | start a repository selection: `j`/`k` extend it, `.` hides every marked repository | vim visual mode; the anchor's kind is the selection's kind |
 
