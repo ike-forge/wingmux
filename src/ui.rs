@@ -1565,7 +1565,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         // closes it, and only appears once there is one to close.
         Sel::Repository(ri) => {
             let mut v = vec![
-                (h("add shell", "a"), RepoShell),
+                (h("shell", "a"), RepoShell),
                 (h("worktree", "n"), NewWorktree),
             ];
             // Only with commits the upstream lacks: an entry that can only
@@ -1593,14 +1593,14 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         Sel::Worktree(ri, wi) if app.solo_shell(ri, wi).is_some() => vec![
             (h("dock", "Enter"), Dock),
             (h("messages", "m"), PredefinedSend),
-            (h("add shell", "a"), AddShell),
+            (h("shell", "a"), AddShell),
             (h("select", "v"), VisualStart),
             (h("delete", "d"), DeleteWorktree),
             (h("help", "?"), Help),
         ],
         Sel::Worktree(..) => vec![
             (h("worktree", "n"), NewWorktree),
-            (h("add shell", "a"), AddShell),
+            (h("shell", "a"), AddShell),
             (h("select", "v"), VisualStart),
             (h("delete", "d"), DeleteWorktree),
             (h("help", "?"), Help),
@@ -3791,7 +3791,7 @@ mod tests {
                     "bar 'messages m' ↔ help row"
                 ),
                 "worktree" => assert!(text.contains("new worktree"), "bar 'worktree n' ↔ help"),
-                "add shell" => assert!(text.contains("add shell"), "bar 'add shell a' ↔ help"),
+                "shell" => assert!(text.contains("add shell"), "bar 'shell a' ↔ help"),
                 "delete" => assert!(text.contains("delete worktree"), "bar 'delete d' ↔ help"),
                 "dock" => assert!(text.contains("dock the shell"), "bar 'dock ↵' ↔ help"),
                 "select" => assert!(text.contains("select rows"), "bar 'select v' ↔ help"),
@@ -5353,7 +5353,7 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(h, a)| h.label() == "a add shell" && *a == BarAction::RepoShell),
+                .any(|(h, a)| h.label() == "a shell" && *a == BarAction::RepoShell),
             "`a` is named: {:?}",
             entries.iter().map(|(h, _)| h.label()).collect::<Vec<_>>()
         );
