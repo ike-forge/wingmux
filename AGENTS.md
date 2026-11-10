@@ -34,7 +34,8 @@ Driven by mise (`mise.toml`); toolchain Rust 1.97 with rustfmt and clippy.
 
 ## Releases
 
-Run the `Prepare release` workflow on `main` with a version: it bumps
+Run the `Prepare release` workflow on `main` (default: next patch; pick
+`minor`/`major` or give an exact version): it bumps
 `Cargo.toml`, tags, and dispatches `release.yml` (cargo-dist), which builds
 the four targets, creates the GitHub release and pushes the formula to
 `ike-forge/homebrew-tap` (needs the `HOMEBREW_TAP_TOKEN` secret).

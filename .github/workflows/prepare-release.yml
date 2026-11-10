@@ -3,10 +3,18 @@ name: Prepare release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: Version to release, without the leading v (e.g. 0.2.0)
+      bump:
+        description: Part of the current version to increment
         required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+      version:
+        description: Exact version instead of a bump (e.g. 1.0.0-rc.1); leave empty to bump
+        required: false
         type: string
+
+run-name: Release ${{ inputs.version || inputs.bump }}
 
 permissions:
   contents: write
@@ -18,18 +26,30 @@ concurrency:
 
 jobs:
   prepare:
-    name: Tag v${{ inputs.version }} and start the release
+    name: Tag and start the release
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ inputs.version }}
+      BUMP: ${{ inputs.bump }}
+      INPUT_VERSION: ${{ inputs.version }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Validate version
+      - name: Resolve version
         run: |
+          current=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            IFS=. read -r major minor patch <<< "${current%%-*}"
+            case "$BUMP" in
+              major) VERSION="$((major + 1)).0.0" ;;
+              minor) VERSION="$major.$((minor + 1)).0" ;;
+              patch) VERSION="$major.$minor.$((patch + 1))" ;;
+            esac
+          fi
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::'$VERSION' is not a semver version"
             exit 1
@@ -38,6 +58,8 @@ jobs:
             echo "::error::tag v$VERSION already exists"
             exit 1
           fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Releasing v$VERSION (current: $current)" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Require a green CI run on this commit
         run: |
