@@ -1887,6 +1887,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             (&["d"], &["close that shell", "the repository stays"]),
             (
                 &["p"],
+                &["pull", "git pull --rebase of the checkout", "any row of it"],
+            ),
+            (
+                &["P"],
                 &["push", "git push of the checkout", "any row of it"],
             ),
             (
@@ -3750,12 +3754,12 @@ mod tests {
         let mut app = seeded_app();
         let text = help_text(&mut app, 120, 80);
         let mut app2 = seeded_app();
-        // Ahead of its upstream, or the bar leaves `push` out.
+        // Diverged both ways, or the bar leaves `pull` and `push` out.
         app2.divergence.insert(
             "/tmp/repo-a".into(),
             crate::git::Divergence {
                 ahead: 1,
-                behind: 0,
+                behind: 1,
             },
         );
         for (entry, _) in crate::ui::bar_entries(&app2) {
@@ -3774,7 +3778,8 @@ mod tests {
                 "live" => assert!(text.contains("live tail"), "bar 'live Esc' ↔ help"),
                 "todo" => assert!(text.contains("todo pad"), "bar 'todo t' ↔ help"),
                 "lazygit" => assert!(text.contains("lazygit"), "bar 'lazygit ctrl-g' ↔ help"),
-                "push" => assert!(text.contains("git push"), "bar 'push p' ↔ help"),
+                "push" => assert!(text.contains("git push"), "bar 'push P' ↔ help"),
+                "pull" => assert!(text.contains("git pull"), "bar 'pull p' ↔ help"),
                 "hide" | "unhide" => {
                     assert!(text.contains("hide repository"), "bar '. hide' ↔ help")
                 }
