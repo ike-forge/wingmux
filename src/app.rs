@@ -97,6 +97,18 @@ pub enum Sel {
     Repository(usize),
     Worktree(usize, usize),
     Shell(usize, usize, usize),
+    /// The row the hidden repositories fold into.
+    Hidden,
+}
+
+impl Sel {
+    /// The repository a row belongs to; `None` on the hidden row.
+    pub fn repo(self) -> Option<usize> {
+        match self {
+            Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, ..) => Some(ri),
+            Sel::Hidden => None,
+        }
+    }
 }
 
 /// A shell docked in another Wingmux instance.
@@ -574,6 +586,10 @@ pub enum BarAction {
     PreviewLive,
     /// Open lazygit in the slot on the selected repository or worktree.
     Lazygit,
+    /// Hide or unhide the selected repository (`.`).
+    ToggleHidden,
+    /// Unfold or fold the hidden row (`Enter`).
+    HiddenFold,
 }
 
 /// The new-worktree popup's agent field: a `[[agents]]` preset name (or a
@@ -671,6 +687,8 @@ pub struct App {
     pub pending_worktrees: std::collections::VecDeque<usize>,
     pub repo_expanded: Vec<bool>,
     pub wt_expanded: Vec<Vec<bool>>,
+    /// The hidden row is unfolded: its repositories are listed under it.
+    pub hidden_open: bool,
     pub mode: Mode,
     pub panes: HashMap<String, PaneInfo>,
     /// Spawn commands owed to shells that are not ready to be typed into
@@ -877,6 +895,7 @@ impl App {
             pending_worktrees: std::collections::VecDeque::new(),
             repo_expanded: Vec::new(),
             wt_expanded: Vec::new(),
+            hidden_open: false,
             mode: Mode::Normal,
             panes: HashMap::new(),
             pending_launches: Vec::new(),
@@ -1502,7 +1521,11 @@ impl App {
         // scopes with a wild number of repos, not a cost guard: the
         // `git worktree list` each unfolded repository owes is queued and
         // drained in the background (see `boot_discovery_from`).
-        let vis = self.visible_repositories();
+        let vis: Vec<usize> = self
+            .visible_repositories()
+            .into_iter()
+            .filter(|&ri| !self.is_hidden(ri))
+            .collect();
         let expand = vis.len() <= UNFOLD_CAP;
         self.repo_expanded = self
             .state
@@ -1536,6 +1559,101 @@ impl App {
             .filter(|(_, p)| !scoped || p.path.starts_with(&self.scope_root))
             .map(|(i, _)| i)
             .collect()
+    }
+
+    /// The repository the dashboard was started inside. Its hide flag is
+    /// ignored: it is the scope, not one repository among others.
+    pub(crate) fn is_scope_repo(&self, ri: usize) -> bool {
+        self.scope_root.as_os_str() != "."
+            && self
+                .state
+                .repositories
+                .get(ri)
+                .is_some_and(|r| self.scope_root.starts_with(&r.path))
+    }
+
+    pub(crate) fn is_hidden(&self, ri: usize) -> bool {
+        self.state
+            .repositories
+            .get(ri)
+            .is_some_and(|r| self.state.hidden.contains(&r.path))
+            && !self.is_scope_repo(ri)
+    }
+
+    /// Hidden repositories in scope, in tree order.
+    pub(crate) fn hidden_repositories(&self) -> Vec<usize> {
+        self.visible_repositories()
+            .into_iter()
+            .filter(|&ri| self.is_hidden(ri))
+            .collect()
+    }
+
+    /// The tree's top-level rows: the shown repositories, then the hidden
+    /// row and, while it is unfolded, the hidden repositories under it.
+    pub(crate) fn top_rows(&self) -> Vec<Sel> {
+        let (hidden, shown): (Vec<usize>, Vec<usize>) = self
+            .visible_repositories()
+            .into_iter()
+            .partition(|&ri| self.is_hidden(ri));
+        let mut rows: Vec<Sel> = shown.into_iter().map(Sel::Repository).collect();
+        if !hidden.is_empty() {
+            rows.push(Sel::Hidden);
+            if self.hidden_open {
+                rows.extend(hidden.into_iter().map(Sel::Repository));
+            }
+        }
+        rows
+    }
+
+    /// Repositories with a row on screen.
+    fn listed_repositories(&self) -> Vec<usize> {
+        self.top_rows()
+            .into_iter()
+            .filter_map(|r| match r {
+                Sel::Repository(ri) => Some(ri),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `.`: fold the selected repository into the hidden row, or bring it
+    /// back out. The cursor stays on the row while it is still listed and
+    /// otherwise moves to the next one.
+    fn toggle_hidden(&mut self) {
+        let ri = match self.sel {
+            Sel::Repository(ri) => ri,
+            Sel::Hidden => return self.notify("Select a hidden repository to unhide it"),
+            _ => return self.notify("Only repositories hide — select the repository row"),
+        };
+        if self.is_scope_repo(ri) {
+            return self.notify("The repository you started in cannot be hidden");
+        }
+        let Some(path) = self.state.repositories.get(ri).map(|r| r.path.clone()) else {
+            return;
+        };
+        let before = self.visible_nodes();
+        let at = before.iter().position(|n| *n == self.sel).unwrap_or(0);
+        if !self.state.hidden.remove(&path) {
+            self.state.hidden.insert(path);
+            if let Some(e) = self.repo_expanded.get_mut(ri) {
+                *e = false;
+            }
+        }
+        if self.hidden_repositories().is_empty() {
+            self.hidden_open = false;
+        }
+        let after = self.visible_nodes();
+        if !after.contains(&self.sel) {
+            self.sel = before[at..]
+                .iter()
+                .chain(before[..at].iter().rev())
+                .find(|n| after.contains(n))
+                .copied()
+                .unwrap_or(Sel::Repository(0));
+        }
+        if let Err(e) = self.save_state() {
+            self.fail(&e);
+        }
     }
 
     /// Lazily load a repository's worktrees (the expensive part of
@@ -1616,9 +1734,12 @@ impl App {
     /// All visible tree nodes in display order (scope-filtered).
     fn visible_nodes(&self) -> Vec<Sel> {
         let mut v = Vec::new();
-        for ri in self.visible_repositories() {
+        for top in self.top_rows() {
+            v.push(top);
+            let Sel::Repository(ri) = top else {
+                continue;
+            };
             let repo = &self.state.repositories[ri];
-            v.push(Sel::Repository(ri));
             if !self.repo_expanded.get(ri).copied().unwrap_or(false) {
                 continue;
             }
@@ -1712,6 +1833,7 @@ impl App {
                 }
             }
             Sel::Shell(ri, wi, si) => self.dock_shell(ri, wi, si),
+            Sel::Hidden => self.hidden_open = !self.hidden_open,
         }
     }
 
@@ -1722,8 +1844,11 @@ impl App {
                     && *e
                 {
                     *e = false;
+                } else if self.is_hidden(ri) {
+                    self.sel = Sel::Hidden;
                 }
             }
+            Sel::Hidden => self.hidden_open = false,
             Sel::Worktree(ri, wi) => {
                 let fexp = self
                     .wt_expanded
@@ -1765,7 +1890,7 @@ impl App {
             match *node {
                 Sel::Worktree(ri, wi) => marks.worktrees.push((ri, wi)),
                 Sel::Shell(ri, wi, si) => marks.shells.push((ri, wi, si)),
-                Sel::Repository(_) => {}
+                Sel::Repository(_) | Sel::Hidden => {}
             }
         }
         let wts = marks.worktrees.clone();
@@ -1774,7 +1899,7 @@ impl App {
     }
 
     fn start_visual(&mut self) {
-        if matches!(self.sel, Sel::Repository(_)) {
+        if matches!(self.sel, Sel::Repository(_) | Sel::Hidden) {
             self.notify("Select a worktree or shell to start a selection");
         } else {
             self.visual = Some(self.sel);
@@ -1880,9 +2005,7 @@ impl App {
     /// Path of the repository the selected row belongs to — a worktree or
     /// shell row counts as its repository's.
     fn selected_repo_path(&self) -> Option<PathBuf> {
-        let ri = match self.sel {
-            Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, ..) => ri,
-        };
+        let ri = self.sel.repo()?;
         self.state.repositories.get(ri).map(|r| r.path.clone())
     }
 
@@ -1908,6 +2031,7 @@ impl App {
     fn selected_dir(&self) -> Option<PathBuf> {
         let repo = |ri: usize| self.state.repositories.get(ri);
         match self.sel {
+            Sel::Hidden => None,
             Sel::Repository(ri) => repo(ri).map(|r| r.path.clone()),
             Sel::Worktree(ri, wi) | Sel::Shell(ri, wi, _) => repo(ri)
                 .and_then(|r| r.worktrees.get(wi))
@@ -3188,7 +3312,7 @@ impl App {
             .collect();
         self.base_branches = bases;
         let repos: Vec<PathBuf> = self
-            .visible_repositories()
+            .listed_repositories()
             .into_iter()
             .map(|ri| &self.state.repositories[ri])
             .filter(|r| !r.missing)
@@ -3220,7 +3344,7 @@ impl App {
         if self.auto_fetch {
             for ri in self.visible_repositories() {
                 let r = &self.state.repositories[ri];
-                if !r.missing && self.fetch_seen.insert(r.path.clone()) {
+                if !r.missing && !self.is_hidden(ri) && self.fetch_seen.insert(r.path.clone()) {
                     self.quiet_fetches.insert(r.path.clone());
                     self.fetcher.submit(&r.path);
                 }
@@ -3504,6 +3628,7 @@ impl App {
     /// agent-command prompt.
     pub fn add_shell_choices(&self) -> Vec<ShellChoice> {
         let (ri, wi) = match self.sel {
+            Sel::Hidden => return Vec::new(),
             Sel::Repository(ri) => (ri, None),
             Sel::Worktree(ri, wi) | Sel::Shell(ri, wi, _) => (ri, Some(wi)),
         };
@@ -3577,7 +3702,7 @@ impl App {
     pub(crate) fn open_new_worktree(&mut self) {
         let ri = match self.sel {
             Sel::Repository(ri) | Sel::Worktree(ri, _) => ri,
-            Sel::Shell(..) => {
+            Sel::Shell(..) | Sel::Hidden => {
                 self.notify("Select a repository to add a worktree");
                 return;
             }
@@ -4225,6 +4350,7 @@ impl App {
                 self.refresh();
             }
             KeyCode::Char('f') => self.fetch_selected(),
+            KeyCode::Char('.') => self.toggle_hidden(),
             KeyCode::Char('R') => self.reset_layout(),
             KeyCode::Char('?') => self.open_help(),
             _ => {}
@@ -4233,7 +4359,9 @@ impl App {
 
     /// Fetch the selected row's repository.
     fn fetch_selected(&mut self) {
-        let (Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, ..)) = self.sel;
+        let Some(ri) = self.sel.repo() else {
+            return self.notify("Select a repository to fetch");
+        };
         match self.state.repositories.get(ri) {
             Some(r) if !r.missing => {
                 let name = r.name.clone();
@@ -4297,7 +4425,9 @@ impl App {
 
     /// Pull the selected row's repository (its main checkout's branch).
     fn pull_selected(&mut self) {
-        let (Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, ..)) = self.sel;
+        let Some(ri) = self.sel.repo() else {
+            return self.notify("Select a repository to pull");
+        };
         match self.state.repositories.get(ri) {
             Some(r) if !r.missing && !self.pullable(ri) => {
                 let name = r.name.clone();
@@ -4315,7 +4445,9 @@ impl App {
 
     /// Push the selected row's repository (its main checkout's branch).
     fn push_selected(&mut self) {
-        let (Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, ..)) = self.sel;
+        let Some(ri) = self.sel.repo() else {
+            return self.notify("Select a repository to push");
+        };
         match self.state.repositories.get(ri) {
             Some(r) if !r.missing && !self.pushable(ri) => {
                 let name = r.name.clone();
@@ -4905,6 +5037,8 @@ impl App {
                 }
             }
             BarAction::Lazygit => self.open_lazygit(),
+            BarAction::ToggleHidden => self.toggle_hidden(),
+            BarAction::HiddenFold => self.expand_or_attach(),
             BarAction::Todo => self.open_repo_todo(),
             BarAction::TodoBack => self.close_todo(),
             BarAction::TodoEdit => self.edit_todo_externally(),
@@ -10126,5 +10260,123 @@ mod tests {
         );
         app.on_key(key(KeyCode::Char('g'), false));
         assert!(matches!(app.mode, Mode::AddShell { index: 0 }));
+    }
+
+    // ------------------------------------------------------------ hidden
+
+    fn press(app: &mut App, c: char) {
+        app.on_key(key(KeyCode::Char(c), false));
+    }
+
+    #[test]
+    fn dot_folds_a_repository_into_the_hidden_row_and_moves_on() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_repositories(3);
+            press(&mut app, '.');
+            assert!(app.state.hidden.contains(Path::new("/tmp/p0")));
+            assert_eq!(
+                app.visible_nodes(),
+                vec![Sel::Repository(1), Sel::Repository(2), Sel::Hidden]
+            );
+            assert_eq!(
+                app.sel,
+                Sel::Repository(1),
+                "the cursor moves to the next row"
+            );
+        });
+    }
+
+    #[test]
+    fn enter_on_the_hidden_row_lists_them_and_dot_unhides() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_repositories(3);
+            press(&mut app, '.');
+            app.sel = Sel::Hidden;
+            app.on_key(key(KeyCode::Enter, false));
+            assert_eq!(
+                app.visible_nodes(),
+                vec![
+                    Sel::Repository(1),
+                    Sel::Repository(2),
+                    Sel::Hidden,
+                    Sel::Repository(0)
+                ]
+            );
+            app.sel = Sel::Repository(0);
+            press(&mut app, '.');
+            assert!(app.state.hidden.is_empty());
+            assert_eq!(
+                app.sel,
+                Sel::Repository(0),
+                "the unhidden row keeps the cursor"
+            );
+            assert!(
+                !app.visible_nodes().contains(&Sel::Hidden),
+                "no row for none"
+            );
+            assert!(!app.hidden_open, "the next hide starts folded");
+        });
+    }
+
+    #[test]
+    fn h_climbs_from_a_hidden_repository_to_the_row_and_folds_it() {
+        let mut app = app_with_repositories(2);
+        app.state.hidden.insert("/tmp/p1".into());
+        app.build_tree_flags();
+        app.hidden_open = true;
+        app.sel = Sel::Repository(1);
+        press(&mut app, 'h');
+        assert_eq!(app.sel, Sel::Hidden);
+        press(&mut app, 'h');
+        assert!(!app.hidden_open);
+        assert_eq!(app.visible_nodes(), vec![Sel::Repository(0), Sel::Hidden]);
+    }
+
+    #[test]
+    fn the_repository_started_in_ignores_its_hide_flag() {
+        let mut app = app_with_repositories(1);
+        app.scope_root = "/tmp/p0".into();
+        app.state.hidden.insert("/tmp/p0".into());
+        assert_eq!(app.visible_nodes(), vec![Sel::Repository(0)]);
+        press(&mut app, '.');
+        assert!(app.state.hidden.contains(Path::new("/tmp/p0")), "untouched");
+        assert_eq!(app.visible_nodes(), vec![Sel::Repository(0)]);
+    }
+
+    #[test]
+    fn dot_on_a_worktree_hides_nothing() {
+        let mut app = app_with_shell();
+        app.sel = Sel::Worktree(0, 0);
+        press(&mut app, '.');
+        assert!(app.state.hidden.is_empty());
+    }
+
+    #[test]
+    fn hidden_repositories_start_folded_and_do_not_count_toward_the_cap() {
+        let mut app = app_with(tmux_nowhere());
+        for i in 0..UNFOLD_CAP + 2 {
+            app.state.repositories.push(Repository {
+                name: format!("p{i}"),
+                path: PathBuf::from(format!("/tmp/p{i}")),
+                missing: false,
+                shell: None,
+                worktrees: vec![],
+            });
+        }
+        app.state.hidden.insert("/tmp/p0".into());
+        app.state.hidden.insert("/tmp/p1".into());
+        app.build_tree_flags();
+        assert!(!app.repo_expanded[0] && !app.repo_expanded[1]);
+        assert!(app.repo_expanded[2..].iter().all(|e| *e));
+    }
+
+    #[test]
+    fn hidden_repositories_are_not_fetched_at_startup() {
+        let mut app = app_with_repositories(2);
+        app.state.hidden.insert("/tmp/p1".into());
+        app.auto_fetch = true;
+        app.poll_fetches();
+        assert!(app.fetch_seen.contains(Path::new("/tmp/p0")));
+        assert!(!app.fetch_seen.contains(Path::new("/tmp/p1")));
     }
 }

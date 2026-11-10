@@ -84,7 +84,8 @@ the same commit as the change.
 - **Discovery is scope-based, live, and lazy.** The tree does not list every
   repository ever discovered — that mixed scopes. The scope is the startup
   directory (or `[discovery].scan_root`): only repositories inside it get
-  rows. Nothing about repositories is persisted, so the scan is the list. When you
+  rows. Nothing about repositories is persisted but the hidden set, so the
+  scan is the list. When you
   start INSIDE a git repo, that repo is the scope and its row always shows,
   so the user can see where they are. Everything unfolds by default up to
   `UNFOLD_CAP = 30` repositories in scope (see "The tree"). There is no
@@ -128,6 +129,15 @@ the same commit as the change.
 - **No "remove repository" action**: a repository is a discovered repo, not
   app state worth curating — removing it only made the tree drift from the
   scope until the next scan brought it back.
+- **Hiding folds, it does not filter.** `.` moves a repository into one
+  `Sel::Hidden` row at the bottom of the tree rather than dropping it from
+  the list: a filter you forget about hides an agent that is waiting on you,
+  and the folded row names the most urgent status it holds. The set is
+  `state.json`'s `hidden` key, by path, added without a schema bump so an
+  older build keeps its worktree records; paths that are no longer
+  directories drop at load. The repository the scope sits inside ignores
+  the flag. Hidden repositories skip the startup fetch and the divergence
+  poll while folded.
 
 ## Worktrees and deletion
 

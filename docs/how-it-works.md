@@ -33,7 +33,8 @@
   paste, not as premature Enter presses.
 - State (`$XDG_STATE_HOME/wingmux/state.json`) holds only what
   Wingmux recorded about the worktrees it created (name, creation time,
-  fork point, agent), keyed by path. Worktrees come from `git worktree list`.
+  fork point, agent), keyed by path, and the repositories hidden with `.`.
+  Worktrees come from `git worktree list`.
   Shells are never written: every poll rebuilds them from `tmux list-panes`,
   so a shell is on screen exactly while its pane exists (and a worktree with
   a live shell but no entry is rebuilt from its pane's cwd + git metadata).

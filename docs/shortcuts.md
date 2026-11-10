@@ -96,6 +96,7 @@ tail — `help ?`, the way to everything that did not fit, sits at that end.
 | `f` | fetch the repository's upstream, refreshing `↑ahead ↓behind`. Works from any row of the repository | LazyGit `f` = fetch |
 | `p` | `git pull --rebase` the repository's checkout from its upstream, off the event loop. Works from any row of the repository; the row's sync spinner turns while it runs and the result is a toast. The bar offers it only when the checkout is behind its upstream; otherwise `p` says there is nothing to pull | LazyGit `p` = pull |
 | `P` | `git push` the repository's checkout to its upstream, same mechanics. The bar offers it only when the checkout is ahead of its upstream; otherwise `P` says there is nothing to push | LazyGit `P` = push |
+| `.` | hide the repository: it folds into the hidden row at the bottom of the tree. On a hidden repository, unhides it. Repository rows only | dotfile convention: `A` → `.A` hides a folder |
 
 `Enter` does not start the shell. It used to, and since `Enter`, `l` and
 `→` all expand, every repository opened to look at its worktrees left a
@@ -113,6 +114,31 @@ sent to it; the window already *is* the shell.
 `m` is unbound on a repository row. The predefined messages are
 written as agent prompts, and a command you want a shell to run is a command
 you type in it.
+
+### Hidden repositories
+
+`.` on a repository row folds it, with its worktrees and shells, into one
+muted row at the bottom of the tree (`2 hidden`). Its agents keep running;
+hiding is not deleting, which is why the key is not `d`. Folded, the row
+names the most urgent status among the shells it hides (`1 waiting`), so an
+agent that needs you cannot drop out of sight.
+
+| Key | Meaning | Rule satisfied |
+|---|---|---|
+| `Enter` / `l` on the hidden row | list the hidden repositories under it, muted | "open / drill into"; the row is a fold like any repository |
+| `h` on the hidden row | fold it again | vim `h` = collapse |
+| `h` on a collapsed hidden repository | jump to the hidden row | vim `h` = parent |
+| `.` on a hidden repository | unhide it | the same key undoes itself |
+
+`.` is refused on worktree and shell rows (only repositories hide) and on the
+repository the dashboard was started inside, whose hide flag is ignored: it
+is the scope. Hidden repositories are not fetched at startup, start
+collapsed, and do not count toward the 30-repository unfold limit. The set
+is kept in the state file by path, so a renamed or new folder shows up, and
+a deleted one is dropped silently.
+
+`H` was considered and rejected: a shifted key here is the stronger form of
+its lowercase key (`t`/`T`, `r`/`R`, `p`/`P`), and `h` is collapse.
 
 ### Worktree selected
 

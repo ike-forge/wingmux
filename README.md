@@ -94,6 +94,7 @@ merge/PR automation. Only worktree teardown is automated.
 | `d` | delete worktree or close shell |
 | `r` / `R` | refresh / reset layout |
 | `f` | fetch the repository's upstream (`↑ahead ↓behind` on its row) |
+| `.` | hide / unhide a repository (`Enter` on the `N hidden` row lists them) |
 | `ctrl-g` | lazygit beside the tree on the selected repository or worktree |
 | `ctrl-t` | switch theme |
 | `?` | help |

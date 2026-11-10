@@ -26,6 +26,12 @@ stats per directory, done live.
   refreshes tmux state (windows, panes, worktrees), not the repo list. To add
   a repository that is not in the scope, declare it under `[[repositories]]`
   in `config.toml`.
+- **Hidden repositories**: `.` folds a repository into the `N hidden` row at
+  the bottom of the tree (see [shortcuts](shortcuts.md#hidden-repositories)).
+  Discovery still lists it; it is only drawn there, starts collapsed and is
+  not fetched at startup. The hidden set lives in the state file, keyed by
+  path: a new or renamed folder is visible, a deleted one is dropped. When you
+  start inside a repository, its own hide flag is ignored.
 - **Missing repositories**: a repository whose path stops being a git repo
   while the dashboard runs shows `(missing)` dimmed after `r` and
   re-activates when the path is a repo again. The next start does not list

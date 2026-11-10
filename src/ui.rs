@@ -1003,10 +1003,17 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let marked = app.visual_marks();
     let mut row: usize = 0;
 
-    // Scope-filtered: only repositories inside the current path get rows.
-    let vis = app.visible_repositories();
-    for ri in vis {
+    for top in app.top_rows() {
+        let Sel::Repository(ri) = top else {
+            items.push(ListItem::new(Line::from(hidden_row_spans(app, spin))));
+            if app.sel == Sel::Hidden {
+                sel_row = Some(row);
+            }
+            row += 1;
+            continue;
+        };
         let repo = &app.state.repositories[ri];
+        let hidden = app.is_hidden(ri);
         let expanded = app.repo_expanded.get(ri).copied().unwrap_or(false);
         // The folder glyph carries the disclosure state, which is why
         // repository rows draw no separate ▸/▾ marker. An empty
@@ -1019,9 +1026,14 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             &ic.repository
         };
         let pdead = repository_dead(app, repo);
+        let name_color = if hidden {
+            theme.dim
+        } else {
+            row_color(theme, pdead, theme.tree_repository)
+        };
         let mut spans = vec![Span::styled(
             format!("{icon}{}", repo.name),
-            fg(row_color(theme, pdead, theme.tree_repository)).add_modifier(Modifier::BOLD),
+            fg(name_color).add_modifier(Modifier::BOLD),
         )];
         if repo.missing {
             spans.push(Span::styled(" (missing)", fg(theme.dim)));
@@ -1195,10 +1207,9 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    // The count follows the tree: only in-scope repositories have rows,
-    // so out-of-scope ones must not be counted.
-    let vis = app.visible_repositories();
-    let title = format!("Repositories ({})", vis.len());
+    // Hidden repositories are counted on their own row, not here.
+    let shown = app.visible_repositories().len() - app.hidden_repositories().len();
+    let title = format!("Repositories ({shown})");
     let block = panel_block(theme, &app.cfg.icons, &title, true, app.focused);
     let list = List::new(items)
         .block(block)
@@ -1207,6 +1218,49 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let mut state = ListState::default();
     state.select(sel_row);
     f.render_stateful_widget(list, area, &mut state);
+}
+
+/// The row hidden repositories fold into. The folder glyph carries the
+/// disclosure state, as on a repository row. Folded, it names the most
+/// urgent status among the shells it hides, so an agent waiting on the user
+/// cannot drop out of sight.
+fn hidden_row_spans(app: &App, spin: std::time::Duration) -> Vec<Span<'static>> {
+    let theme = &app.theme.colors;
+    let ic = &app.cfg.icons;
+    let hidden = app.hidden_repositories();
+    let icon = if app.hidden_open {
+        &ic.repository_open
+    } else {
+        &ic.repository
+    };
+    let mut spans = vec![Span::styled(
+        format!("{icon}{} hidden", hidden.len()),
+        fg(theme.dim),
+    )];
+    if app.hidden_open {
+        return spans;
+    }
+    let statuses: Vec<Status> = hidden
+        .iter()
+        .map(|&ri| &app.state.repositories[ri])
+        .flat_map(|r| {
+            r.shell
+                .iter()
+                .chain(r.worktrees.iter().flat_map(|w| w.shells.iter()))
+        })
+        .map(|sh| shell_status(app, sh))
+        .collect();
+    let urgent = [Status::Blocked, Status::Waiting, Status::Failed]
+        .into_iter()
+        .find(|st| statuses.contains(st));
+    if let Some(st) = urgent {
+        let n = statuses.iter().filter(|s| **s == st).count();
+        spans.push(Span::styled(
+            format!("  {}{n} {}", status_icon(ic, st, spin), st.label()),
+            fg(status_color(theme, st)),
+        ));
+    }
+    spans
 }
 
 /// The todo pad, at the bottom of the tree's column.
@@ -1425,6 +1479,18 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
              It starts on the first press and stays until `d` closes it.",
             repo.path.display(),
         ))
+    } else if app.sel == Sel::Hidden {
+        let names: Vec<String> = app
+            .hidden_repositories()
+            .into_iter()
+            .map(|ri| format!("  {}", app.state.repositories[ri].name))
+            .collect();
+        Text::from(format!(
+            "Hidden repositories\n\n{}\n\n\
+             Enter lists them under this row; `.` on one unhides it.\n\
+             They are not fetched at startup.",
+            names.join("\n"),
+        ))
     } else if selected_worktree_has_no_shell(app) {
         // A worktree with no shell: there is no pane to capture, and the
         // generic hint below would send the user hunting for a child row
@@ -1470,6 +1536,14 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         ];
     }
     let mut entries = match app.sel {
+        Sel::Hidden => {
+            let word = if app.hidden_open {
+                "fold hidden"
+            } else {
+                "show hidden"
+            };
+            return vec![(h(word, "Enter"), HiddenFold), (h("help", "?"), Help)];
+        }
         // `a` starts (or re-enters) the repository's inline shell; `d`
         // closes it, and only appears once there is one to close.
         Sel::Repository(ri) => {
@@ -1487,6 +1561,11 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             }
             if app.repo_shell_pane(ri).is_some() {
                 v.push((h("close", "d"), CloseRepoShell));
+            }
+            if app.is_hidden(ri) {
+                v.push((h("unhide", "."), ToggleHidden));
+            } else if !app.is_scope_repo(ri) {
+                v.push((h("hide", "."), ToggleHidden));
             }
             v.push((h("help", "?"), Help));
             v
@@ -1817,6 +1896,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                     "refreshes ↑ahead ↓behind",
                     "any row of it",
                 ],
+            ),
+            (
+                &["."],
+                &["hide repository", "Enter on the hidden row shows them"],
             ),
         ],
     ),
@@ -3692,6 +3775,9 @@ mod tests {
                 "todo" => assert!(text.contains("todo pad"), "bar 'todo t' ↔ help"),
                 "lazygit" => assert!(text.contains("lazygit"), "bar 'lazygit ctrl-g' ↔ help"),
                 "push" => assert!(text.contains("git push"), "bar 'push p' ↔ help"),
+                "hide" | "unhide" => {
+                    assert!(text.contains("hide repository"), "bar '. hide' ↔ help")
+                }
                 other => panic!("unmapped bar entry: {other:?}"),
             }
         }
@@ -4350,7 +4436,7 @@ mod tests {
             "short frame must advertise scrolling: {short:?}"
         );
         let mut app = seeded_app();
-        let tall = help_text(&mut app, 120, 80);
+        let tall = help_text(&mut app, 120, 100);
         assert!(
             !tall.contains("j/k scroll"),
             "tall frame fits everything: {tall:?}"
@@ -5702,5 +5788,69 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn hidden_repositories_fold_into_one_row_that_names_a_waiting_agent() {
+        let mut app = seeded_app_with_shell();
+        let pane = app.state.repositories[0].worktrees[0].shells[0]
+            .pane_id
+            .clone();
+        app.statuses.insert(pane, Status::Waiting);
+        app.state
+            .hidden
+            .insert(app.state.repositories[0].path.clone());
+        app.build_tree_flags();
+        // Off the hidden row: its preview names what it hides.
+        app.sel = Sel::Repository(1);
+        let render = |app: &mut App| {
+            let backend = ratatui::backend::TestBackend::new(120, 40);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw(f, app)).unwrap();
+            buffer_text(&terminal)
+        };
+        let text = render(&mut app);
+        let row = text
+            .lines()
+            .find(|l| l.contains("1 hidden"))
+            .unwrap_or_else(|| panic!("hidden row: {text}"));
+        assert!(row.contains("1 waiting"), "row reads: {row:?}");
+        assert!(
+            !text.contains("repo-a"),
+            "the hidden repository has no row: {text}"
+        );
+        assert!(text.contains("Repositories (1)"), "{text}");
+
+        app.hidden_open = true;
+        let text = render(&mut app);
+        assert!(text.contains("repo-a"), "listed under the row: {text}");
+        let row = text.lines().find(|l| l.contains("1 hidden")).unwrap();
+        assert!(
+            !row.contains("waiting"),
+            "unfolded, the rows speak for themselves"
+        );
+    }
+
+    #[test]
+    fn the_hidden_row_counts_as_one_rendered_row() {
+        let mut app = seeded_app();
+        app.state.hidden.insert("/tmp/repo-a".into());
+        app.hidden_open = true;
+        app.build_tree_flags();
+        let expected = app.visible_nodes_len_for_test();
+        assert_eq!(expected, 3);
+        let (w, h) = (120u16, 40u16);
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let tw = tree_width((w, h)).unwrap();
+        let non_empty = (1..h - 2)
+            .filter(|&y| {
+                let inner: String = (1..tw - 1).map(|x| buf[(x, y)].symbol()).collect();
+                !inner.trim().is_empty()
+            })
+            .count();
+        assert_eq!(non_empty, expected);
     }
 }
