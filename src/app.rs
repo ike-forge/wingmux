@@ -4478,10 +4478,6 @@ impl App {
             return self.notify("Select a repository to pull");
         };
         match self.state.repositories.get(ri) {
-            Some(r) if !r.missing && !self.pullable(ri) => {
-                let name = r.name.clone();
-                self.notify(format!("nothing to pull in '{name}'"));
-            }
             Some(r) if !r.missing => {
                 let name = r.name.clone();
                 if self.puller.submit(&r.path) {
@@ -4498,10 +4494,6 @@ impl App {
             return self.notify("Select a repository to push");
         };
         match self.state.repositories.get(ri) {
-            Some(r) if !r.missing && !self.pushable(ri) => {
-                let name = r.name.clone();
-                self.notify(format!("nothing to push in '{name}'"));
-            }
             Some(r) if !r.missing => {
                 let name = r.name.clone();
                 if self.pusher.submit(&r.path) {

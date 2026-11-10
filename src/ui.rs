@@ -3865,8 +3865,8 @@ mod tests {
         assert_eq!(statusbar_h(&wide, 120), 1, "one row is enough at 120");
     }
 
-    /// `push P` is offered only with commits the upstream lacks; `P`
-    /// without them says so instead of starting a push.
+    /// `push P` is offered only with commits the upstream lacks; the key
+    /// pushes regardless.
     #[test]
     fn push_is_offered_only_when_ahead() {
         let has_push = |app: &App| {
@@ -3889,10 +3889,8 @@ mod tests {
             ratatui::crossterm::event::KeyCode::Char('P'),
             ratatui::crossterm::event::KeyModifiers::NONE,
         ));
-        assert!(!app.pusher.is_pushing(std::path::Path::new("/tmp/repo-a")));
         assert!(
-            app.toast()
-                .is_some_and(|t| t.text.contains("nothing to push")),
+            app.toast().is_some_and(|t| t.text.contains("pushing")),
             "{:?}",
             app.toast()
         );
@@ -3903,8 +3901,8 @@ mod tests {
         assert!(has_push(&app), "a commit ahead: push");
     }
 
-    /// `pull p` is offered only with commits to pull; `p` without them
-    /// says so instead of starting a pull.
+    /// `pull p` is offered only with commits to pull; the key pulls
+    /// regardless.
     #[test]
     fn pull_is_offered_only_when_behind() {
         let has_pull = |app: &App| {
@@ -3927,10 +3925,8 @@ mod tests {
             ratatui::crossterm::event::KeyCode::Char('p'),
             ratatui::crossterm::event::KeyModifiers::NONE,
         ));
-        assert!(!app.puller.is_pushing(std::path::Path::new("/tmp/repo-a")));
         assert!(
-            app.toast()
-                .is_some_and(|t| t.text.contains("nothing to pull")),
+            app.toast().is_some_and(|t| t.text.contains("pulling")),
             "{:?}",
             app.toast()
         );
