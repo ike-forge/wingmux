@@ -643,6 +643,9 @@ pub struct Confirm {
 /// A visual selection resolved to what `d` does to it.
 #[derive(Debug, Clone, Default)]
 pub struct Marks {
+    /// Set only by a selection started on a repository row, which marks
+    /// nothing else.
+    pub repositories: Vec<usize>,
     pub worktrees: Vec<(usize, usize)>,
     pub shells: Vec<(usize, usize, usize)>,
 }
@@ -1617,9 +1620,11 @@ impl App {
     }
 
     /// `.`: fold the selected repository into the hidden row, or bring it
-    /// back out. The cursor stays on the row while it is still listed and
-    /// otherwise moves to the next one.
+    /// back out.
     fn toggle_hidden(&mut self) {
+        if self.visual.is_some() {
+            return self.hide_marked();
+        }
         let ri = match self.sel {
             Sel::Repository(ri) => ri,
             Sel::Hidden => return self.notify("Select a hidden repository to unhide it"),
@@ -1628,15 +1633,44 @@ impl App {
         if self.is_scope_repo(ri) {
             return self.notify("The repository you started in cannot be hidden");
         }
-        let Some(path) = self.state.repositories.get(ri).map(|r| r.path.clone()) else {
-            return;
-        };
+        self.set_hidden(&[ri], !self.is_hidden(ri));
+    }
+
+    /// `.` over a repository selection: hide every marked repository, or
+    /// unhide them when all of them are hidden already.
+    fn hide_marked(&mut self) {
+        let mut marks = self.visual_marks();
+        if marks.repositories.is_empty() {
+            return self.notify("Only repositories hide — start the selection on one");
+        }
+        self.visual = None;
+        marks.repositories.retain(|&ri| !self.is_scope_repo(ri));
+        let hide = !marks.repositories.iter().all(|&ri| self.is_hidden(ri));
+        let n = marks.repositories.len();
+        self.set_hidden(&marks.repositories, hide);
+        let verb = if hide { "hid" } else { "unhid" };
+        self.notify(format!(
+            "{verb} {n} repositor{}",
+            if n == 1 { "y" } else { "ies" }
+        ));
+    }
+
+    /// Hide or unhide `ris`. The cursor stays on its row while it is still
+    /// listed and otherwise moves to the next one.
+    fn set_hidden(&mut self, ris: &[usize], hide: bool) {
         let before = self.visible_nodes();
         let at = before.iter().position(|n| *n == self.sel).unwrap_or(0);
-        if !self.state.hidden.remove(&path) {
-            self.state.hidden.insert(path);
-            if let Some(e) = self.repo_expanded.get_mut(ri) {
-                *e = false;
+        for &ri in ris {
+            let Some(path) = self.state.repositories.get(ri).map(|r| r.path.clone()) else {
+                continue;
+            };
+            if hide {
+                self.state.hidden.insert(path);
+                if let Some(e) = self.repo_expanded.get_mut(ri) {
+                    *e = false;
+                }
+            } else {
+                self.state.hidden.remove(&path);
             }
         }
         if self.hidden_repositories().is_empty() {
@@ -1886,7 +1920,18 @@ impl App {
         ) else {
             return marks;
         };
-        for node in &nodes[a.min(c)..=a.max(c)] {
+        let range = &nodes[a.min(c)..=a.max(c)];
+        if matches!(anchor, Sel::Repository(_)) {
+            marks.repositories = range
+                .iter()
+                .filter_map(|n| match n {
+                    Sel::Repository(ri) => Some(*ri),
+                    _ => None,
+                })
+                .collect();
+            return marks;
+        }
+        for node in range {
             match *node {
                 Sel::Worktree(ri, wi) => marks.worktrees.push((ri, wi)),
                 Sel::Shell(ri, wi, si) => marks.shells.push((ri, wi, si)),
@@ -1899,8 +1944,8 @@ impl App {
     }
 
     fn start_visual(&mut self) {
-        if matches!(self.sel, Sel::Repository(_) | Sel::Hidden) {
-            self.notify("Select a worktree or shell to start a selection");
+        if self.sel == Sel::Hidden {
+            self.notify("Select a repository, worktree or shell to start a selection");
         } else {
             self.visual = Some(self.sel);
         }
@@ -1911,7 +1956,11 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.move_sel(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
             KeyCode::Char('v') | KeyCode::Esc => self.visual = None,
+            KeyCode::Char('d') if matches!(self.visual, Some(Sel::Repository(_))) => {
+                self.notify("Repositories are not deleted — `.` hides the selection")
+            }
             KeyCode::Char('d') => self.confirm_delete_marked(),
+            KeyCode::Char('.') => self.hide_marked(),
             KeyCode::Char('q') => self.quit = true,
             _ => {}
         }
@@ -7004,11 +7053,75 @@ mod tests {
 
     /// Repository rows cannot anchor a selection.
     #[test]
-    fn v_on_a_repository_row_starts_nothing() {
+    fn a_selection_started_on_a_repository_marks_only_repositories() {
         let mut app = app_with_shell();
+        app.state.repositories.push(Repository {
+            name: "q".into(),
+            path: PathBuf::from("/tmp/q"),
+            missing: false,
+            shell: None,
+            worktrees: vec![],
+        });
+        app.build_tree_flags();
         app.sel = Sel::Repository(0);
         app.on_key(key(KeyCode::Char('v'), false));
-        assert!(app.visual.is_none());
+        app.on_key(key(KeyCode::Char('G'), false));
+        let marks = app.visual_marks();
+        assert_eq!(marks.repositories, vec![0, 1]);
+        assert!(marks.worktrees.is_empty() && marks.shells.is_empty());
+
+        app.on_key(key(KeyCode::Char('d'), false));
+        assert!(matches!(app.mode, Mode::Normal), "d deletes nothing here");
+    }
+
+    #[test]
+    fn a_selection_started_on_a_worktree_skips_repositories() {
+        let mut app = app_with_shell();
+        app.sel = Sel::Worktree(0, 0);
+        app.on_key(key(KeyCode::Char('v'), false));
+        app.on_key(key(KeyCode::Char('g'), false));
+        let marks = app.visual_marks();
+        assert!(marks.repositories.is_empty());
+        assert_eq!(marks.worktrees, vec![(0, 0)]);
+    }
+
+    #[test]
+    fn dot_over_a_repository_selection_hides_them_all_then_unhides() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_repositories(4);
+            app.sel = Sel::Repository(1);
+            press(&mut app, 'v');
+            press(&mut app, 'j');
+            press(&mut app, '.');
+            assert!(app.visual.is_none());
+            assert_eq!(
+                app.visible_nodes(),
+                vec![Sel::Repository(0), Sel::Repository(3), Sel::Hidden]
+            );
+            assert_eq!(app.sel, Sel::Repository(3));
+
+            app.sel = Sel::Hidden;
+            app.on_key(key(KeyCode::Enter, false));
+            app.sel = Sel::Repository(1);
+            press(&mut app, 'v');
+            press(&mut app, 'j');
+            press(&mut app, '.');
+            assert!(app.state.hidden.is_empty(), "all hidden, so . unhides");
+        });
+    }
+
+    #[test]
+    fn dot_over_a_mixed_selection_hides_the_rest() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_repositories(2);
+            app.state.hidden.insert("/tmp/p1".into());
+            app.hidden_open = true;
+            app.sel = Sel::Repository(0);
+            press(&mut app, 'v');
+            press(&mut app, 'G');
+            press(&mut app, '.');
+            assert_eq!(app.state.hidden.len(), 2);
+        });
     }
 
     /// `d` is contextual: on a shell row it closes that shell, on a

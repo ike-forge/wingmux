@@ -1061,7 +1061,12 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 mark_leased(theme, &mut spans);
             }
         }
-        items.push(ListItem::new(Line::from(spans)));
+        let item = ListItem::new(Line::from(spans));
+        items.push(if marked.repositories.contains(&ri) {
+            item.style(bg(theme.selection_bg))
+        } else {
+            item
+        });
         if app.sel == Sel::Repository(ri) {
             sel_row = Some(row);
         }
@@ -1529,6 +1534,18 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             (h("editor", "ctrl-e"), TodoEdit),
         ];
     }
+    if matches!(app.visual, Some(Sel::Repository(_))) {
+        let marks = app.visual_marks();
+        let word = if marks.repositories.iter().all(|&ri| app.is_hidden(ri)) {
+            "unhide"
+        } else {
+            "hide"
+        };
+        return vec![
+            (h(word, "."), ToggleHidden),
+            (h("cancel", "Esc"), VisualCancel),
+        ];
+    }
     if app.visual.is_some() {
         return vec![
             (h("delete", "d"), DeleteMarked),
@@ -1904,6 +1921,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             (
                 &["."],
                 &["hide repository", "Enter on the hidden row shows them"],
+            ),
+            (
+                &["v"],
+                &["select repositories", "j/k extends", ". hides them all"],
             ),
         ],
     ),

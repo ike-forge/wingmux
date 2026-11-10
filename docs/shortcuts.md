@@ -97,6 +97,7 @@ tail — `help ?`, the way to everything that did not fit, sits at that end.
 | `p` | `git pull --rebase` the repository's checkout from its upstream, off the event loop. Works from any row of the repository; the row's sync spinner turns while it runs and the result is a toast. The bar offers it only when the checkout is behind its upstream; otherwise `p` says there is nothing to pull | LazyGit `p` = pull |
 | `P` | `git push` the repository's checkout to its upstream, same mechanics. The bar offers it only when the checkout is ahead of its upstream; otherwise `P` says there is nothing to push | LazyGit `P` = push |
 | `.` | hide the repository: it folds into the hidden row at the bottom of the tree. On a hidden repository, unhides it. Repository rows only | dotfile convention: `A` → `.A` hides a folder |
+| `v` | start a repository selection: `j`/`k` extend it, `.` hides every marked repository | vim visual mode; the anchor's kind is the selection's kind |
 
 `Enter` does not start the shell. It used to, and since `Enter`, `l` and
 `→` all expand, every repository opened to look at its worktrees left a
@@ -161,16 +162,26 @@ its lowercase key (`t`/`T`, `r`/`R`, `p`/`P`), and `h` is collapse.
 
 ### Visual selection
 
-`v` works on worktree and shell rows. Each row in the range gets what its
-own `d` does: a worktree row deletes the worktree, a shell row closes the
-shell (shells of a worktree that goes anyway are not counted twice).
-Repository rows in the range are skipped. Every other action is per-row, so
-those keys are swallowed rather than acting on the cursor row alone.
+The row `v` starts on decides what the selection holds; the two kinds never
+mix.
+
+- **Started on a worktree or shell row**: each row in the range gets what its
+  own `d` does: a worktree row deletes the worktree, a shell row closes the
+  shell (shells of a worktree that goes anyway are not counted twice).
+  Repository rows in the range are skipped.
+- **Started on a repository row**: only repository rows are marked, and `.`
+  hides them all — or unhides them, when every one is hidden already. `d`
+  does nothing: repositories are never deleted, and closing a run of inline
+  shells is not worth a second meaning for the key.
+
+Every other action is per-row, so those keys are swallowed rather than
+acting on the cursor row alone.
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
 | `j` / `k` / arrows | extend or shrink | vim motions |
-| `d` | one confirm for everything marked; `f` forces when any worktree is dirty or locked | vim `d` on a selection; confirms, same `y`/`d`/`f` as a single delete |
+| `d` | worktree selection: one confirm for everything marked; `f` forces when any worktree is dirty or locked | vim `d` on a selection; confirms, same `y`/`d`/`f` as a single delete |
+| `.` | repository selection: hide every marked repository, or unhide them all when none is shown | the same key as on one row |
 | `v` / `Esc` | drop the selection | `Esc` closes every overlay |
 | `q` | quit | unconditional quit |
 
@@ -413,7 +424,7 @@ An inert key is a decision, not an omission.
   bindings, whatever the user has them set to; re-implementing any of them
   would mean emulating the agent's terminal, which is the exact thing
   docking exists to stop doing.
-- `y` — no yank. `v` selects rows for bulk delete.
+- `y` — no yank. `v` selects rows for bulk delete or bulk hide.
 - `:` — no command language; every action already has a key.
 - `e` — still unbound: `ctrl-e` opens `$EDITOR` on a todo pad, and only
   inside the pad, where a bare `e` is text. A plain `e` on the tree would
