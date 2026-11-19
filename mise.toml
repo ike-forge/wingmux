@@ -33,13 +33,13 @@ description = "Build the release binaries and link them into ~/.local/bin as `wi
 run = "cargo build --release && mkdir -p ~/.local/bin && ln -sf $PWD/target/release/wingmux ~/.local/bin/wingmux-local && ln -sf $PWD/target/release/wing ~/.local/bin/wing-local"
 
 [tasks.reset-config]
-description = "Delete the local config dir (config.toml + theme copies) so the next run writes fresh defaults; leaves state.json alone"
+description = "Delete the local config dir (config.toml + user themes) so the next run uses defaults; leaves state.json alone"
 run = """
 dir="${XDG_CONFIG_HOME:-$HOME/.config}/wingmux"
 if [ -d "$dir" ]; then
   find "$dir" -maxdepth 2 -type f -print
   rm -rf "$dir"
-  echo "removed $dir — the next wingmux run writes the defaults and the shipped themes back"
+  echo "removed $dir — the next wingmux run uses the defaults"
 else
   echo "nothing to do: $dir does not exist"
 fi
