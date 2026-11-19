@@ -1157,6 +1157,19 @@ pub fn is_wingmux_session(name: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// `scope_window_state` once `exe` had time to start: a pane reports
+    /// its shell until the exec lands, which a slow CI runner shows.
+    fn state_once_started(tmux: &Tmux, win: &str, exe: &str) -> ScopeWindow {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let st = tmux.scope_window_state(win, exe).unwrap();
+            if st == ScopeWindow::Live || std::time::Instant::now() > deadline {
+                return st;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     #[test]
     fn session_and_window_names_are_deterministic_and_safe() {
         let s = Tmux::session_name("my repository");
@@ -1600,7 +1613,7 @@ mod tests {
                 .trim()
                 .to_string();
             assert_eq!(
-                tmux.scope_window_state(&live, "sleep").unwrap(),
+                state_once_started(&tmux, &live, "sleep"),
                 ScopeWindow::Live,
                 "the foreground command is the only live proof there is"
             );
@@ -1634,7 +1647,7 @@ mod tests {
                 .unwrap();
             assert!(win.starts_with('@'));
             assert_eq!(
-                tmux.scope_window_state(&win, "sleep").unwrap(),
+                state_once_started(&tmux, &win, "sleep"),
                 ScopeWindow::Live,
                 "the window must be running what it was asked to run"
             );
