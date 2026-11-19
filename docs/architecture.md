@@ -158,7 +158,7 @@ the same commit as the change.
   `branch -D`, and the I/O is disk-bound anyway.
   - The row stays until the job reports back, drawn as `deleting` with the
     spinner, and `d`/`a` on it are refused. Dropping it up front would
-    hide a failure and let `n` reuse the path mid-removal.
+    hide a failure and let `w` reuse the path mid-removal.
   - Results are applied by path, and only in normal mode with no visual
     selection: popups and visual marks hold worktree indices that dropping
     a row would shift onto a different worktree. The cursor index is
@@ -168,7 +168,7 @@ the same commit as the change.
 - **The agent is chosen per worktree, in the popup that creates it.** A
   worktree is one unit of work, and which agent runs it is a property of
   that work, not of the repository holding it — a codex worktree beside a
-  claude one is the ordinary case, not a reconfiguration. So `n` grew a
+  claude one is the ordinary case, not a reconfiguration. So `w` grew a
   second field (`Mode::Input.agent`, `Tab` between the two) rather than a
   setting elsewhere: the choice is made where the worktree is made, and
   costs nothing to anyone who does not make it, because the field is
@@ -816,7 +816,7 @@ duplication docking exists to end.
   created would not be drawn and `clamp_sel` would drop the selection back to
   the first row — the creation would read as a no-op. It bites hardest on an
   *empty* repository: its icon is the outline glyph whatever its fold flag
-  says, so `l` on it toggles a state nothing renders, and `n` right after
+  says, so `l` on it toggles a state nothing renders, and `w` right after
   would then create into a repository the user believes is open.
 
 - **Tree rows carry no counts** (`(2 worktrees)`, `[2 shells]` are gone): the

@@ -45,7 +45,7 @@ wingmux
 Run it in a tmux pane, or from a bare shell — it starts a tmux session for
 itself. Then:
 
-1. `n` — name a new worktree; Wingmux cuts the branch and starts the agent.
+1. `w` — name a new worktree; Wingmux cuts the branch and starts the agent.
 
    ![New worktree popup](docs/img/new-worktree.png)
 2. `j` / `k` — move; the agent's pane docks beside the tree as you land on it.
@@ -86,7 +86,7 @@ merge/PR automation. Only worktree teardown is automated.
 | `j` / `k`, `g` / `G` | move, first / last |
 | `h` / `l` | collapse / expand |
 | `Enter` | put the cursor in the docked agent pane |
-| `n` | new worktree |
+| `w` | new worktree |
 | `a` | add a shell to a worktree |
 | `m` | send a predefined message |
 | `p` / `P` | pull / push the selected repository |

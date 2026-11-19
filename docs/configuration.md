@@ -33,7 +33,7 @@ max_depth = 4                # how deep a discovery scan walks
 skip_dirs = [".git", "node_modules", "target", ".wingmux-worktrees"]
 
 [defaults]
-agent = "claude"             # `[[agents]]` preset new worktrees start with; the `n` popup's prefill
+agent = "claude"             # `[[agents]]` preset new worktrees start with; the `w` popup's prefill
 agent_command = "claude"     # command behind it, when `agent` names no preset
 agent_shell = "bash"       # shell agent windows run under; a plain shell uses your $SHELL instead
 agent_hooks = true           # instrument recognised `claude`/`codex` commands for accurate status

@@ -164,6 +164,31 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     p
 }
 
+/// Byte range of the first match of `pat` in `hay`, vim smartcase: an
+/// all-lowercase pattern ignores case, one with a capital does not.
+pub fn find_smartcase(hay: &str, pat: &str) -> Option<std::ops::Range<usize>> {
+    if pat.is_empty() {
+        return None;
+    }
+    let fold = !pat.chars().any(char::is_uppercase);
+    let eq = |a: char, b: char| {
+        if fold {
+            a.to_lowercase().eq(b.to_lowercase())
+        } else {
+            a == b
+        }
+    };
+    hay.char_indices().find_map(|(start, _)| {
+        let mut rest = hay[start..].chars();
+        let mut end = start;
+        for pc in pat.chars() {
+            let hc = rest.next().filter(|&hc| eq(hc, pc))?;
+            end += hc.len_utf8();
+        }
+        Some(start..end)
+    })
+}
+
 #[cfg(test)]
 pub mod testutil {
     //! Shared helpers so env-mutating tests don't race each other. All tests
@@ -246,6 +271,18 @@ pub mod testutil {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn find_smartcase_folds_only_lowercase_patterns() {
+        use super::find_smartcase as f;
+        assert_eq!(f("Wingmux", "ming"), None);
+        assert_eq!(f("Wingmux", "wing"), Some(0..4));
+        assert_eq!(f("Wingmux", "MUX"), None);
+        assert_eq!(f("WingMUX", "MUX"), Some(4..7));
+        assert_eq!(f("wingmux", "W"), None);
+        assert_eq!(f("café-bar", "é-b"), Some(3..7));
+        assert_eq!(f("anything", ""), None);
+    }
+
     use super::*;
 
     /// `$VISUAL` wins over `$EDITOR`, and a variable set to nothing is not
