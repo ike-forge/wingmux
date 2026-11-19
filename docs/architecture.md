@@ -1354,8 +1354,8 @@ duplication docking exists to end.
 
 ## Themes
 
-- Themes are TOML files in `themes/`, embedded via `include_str!` and copied to
-  the config dir on first run so the user can edit them. Truecolor when the
+- Themes are TOML files in `themes/`, embedded via `include_str!`; a same-named
+  file in the user's `themes/` dir overrides one. Truecolor when the
   terminal supports it, else 24-bit values quantize to xterm-256; `ansi.toml`
   uses only ANSI-16 colours.
 - **Truecolor detection does not stop at `COLORTERM`.** tmux exports it in its
@@ -1450,15 +1450,13 @@ duplication docking exists to end.
   override had to restate a whole config to avoid being beaten by the
   repository file underneath it. `WINGMUX_CONFIG` names the same layer; `--config`
   wins where both are given. A named file that does not exist is a diagnostic,
-  not a failure — the layers below it are already a working config. First-run
-  bootstrap still writes the default user file, because that layer is read
-  either way now.
-- **The written config is exhaustive and inert**: on first run — and only when
-  the file is absent — `DEFAULT_CONFIG` is written out with *every* key the
-  loader recognises, each commented at its built-in default. Defaults
-  therefore live in exactly one place (`Default for Config`); the file is
-  documentation, not a second source of truth, so a user who never edits it
-  silently inherits later default changes. Two comment styles keep this
+  not a failure — the layers below it are already a working config.
+- **Nothing is written on startup**: an absent file means defaults; a present
+  one is the user's settings. Defaults live in exactly one place
+  (`Default for Config`). `docs/config.example.toml` lists *every* key the
+  loader recognises, each commented at its built-in default — documentation,
+  not a second source of truth. `ctrl-t` on an absent file writes only
+  `theme = …`. Two comment styles keep this
   machine-checkable: `#key = value` (no space) is a real default, `# text` is
   prose or an example with no default (`[[repositories]]`,
   `[[agents]].shell`). Plain section headers (`[preview]`, `[icons]`, …) are
@@ -1488,7 +1486,7 @@ duplication docking exists to end.
   deeply, lists are replaced outright"). The four defaults — continue, merge
   to `<base_branch>` and drop the worktree, run CI and push the branch to origin,
   summarise the work so far: unblock, integrate, publish, take stock — therefore only apply when no layer mentions
-  `[[messages]]`, and they are written out (commented) on first run, so editing
+  `[[messages]]`, and the example config lists them (commented), so editing
   them is editing a visible list, not fighting an invisible one. Three because
   the modal gives entries `1`-`9` a single-key shortcut and a picker earns
   nothing by listing near-duplicates.

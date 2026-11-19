@@ -105,8 +105,10 @@ preview. All keys, in full: [`docs/usage.md`](docs/usage.md).
 
 ## Configuration
 
-First run writes a fully commented `$XDG_CONFIG_HOME/wingmux/config.toml`
-with every setting at its default. A few you may want:
+Wingmux writes no config on startup; without `$XDG_CONFIG_HOME/wingmux/config.toml`
+every setting is at its default.
+[`docs/config.example.toml`](docs/config.example.toml) lists them all,
+commented. A few you may want:
 
 ```toml
 theme = "catppuccin-mocha"   # ctrl-t switches live

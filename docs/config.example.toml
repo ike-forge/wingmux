@@ -1,0 +1,219 @@
+# Wingmux configuration — optional: without it every setting is at its
+# default. Copy to $XDG_CONFIG_HOME/wingmux/config.toml
+# (default ~/.config/wingmux) to edit.
+#
+# Every setting Wingmux understands is listed below, commented out at
+# its built-in default — so this file changes nothing until you edit it.
+# Two comment styles are used: `#key = value` (no space after the hash) is
+# a real default, and uncommenting it as-is is a no-op; `# text` (hash then
+# space) is prose, or an example with no default behind it. Section headers
+# like [preview] are left active on purpose, so uncommenting a single key
+# under one is enough.
+#
+# This file is the USER layer. A repository can also carry a committed
+# .wingmux.toml (searched upward from the working directory, stopping at
+# the repository root) and a gitignored .wingmux.local.toml next to it;
+# those layers override keys here. Above all of them sits the file named by
+# `wingmux --config <path>` (or WINGMUX_CONFIG) — an extra top layer for this
+# run, not a replacement for this file, so it need only carry the keys it
+# changes. Some keys are user-only and are ignored in repository files with a
+# diagnostic: worktrees.root and discovery.scan_root. Inspect the effective
+# config with `wingmux --config-dump`. A malformed config never prevents
+# startup — the smallest bad unit is dropped and reported once in a startup
+# diagnostics overlay.
+
+# Theme to use. Built-ins: "catppuccin-mocha", "catppuccin-macchiato",
+# "catppuccin-frappe", "catppuccin-latte", "dracula", "gruvbox", "ansi".
+# Drop your own theme into ~/.config/wingmux/themes/<name>.toml
+# Press ctrl-t inside the TUI to switch themes live; the pick is written to
+# this key.
+#theme = "catppuccin-mocha"
+
+# How often (ms) agent panes are polled for status + preview.
+#poll_interval_ms = 500
+
+# Ask for confirmation before deleting a worktree.
+#confirm_on_delete = true
+
+# Command ctrl-g runs beside the tree, in the selected repository or
+# worktree's directory. The agent docks back when it exits.
+#lazygit = "lazygit"
+
+[preview]
+# How much of the agent's own colouring the preview panel shows. The pane is
+# captured with its escape sequences, so by default you see exactly what the
+# agent painted — spinners, diffs, syntax highlighting.
+#   "full"       — every colour exactly as the pane emits it
+#   "foreground" — text colours kept, background colours dropped (the panel
+#                  keeps the theme's background; also "no-background")
+#   "none"       — raw text, no colours at all (also "text")
+#colors = "full"
+
+[tmux]
+# Nothing to set here any more. `back_key` was retired: it bound a chord
+# that jumped from an agent window back to the dashboard window, and with
+# docking the agent's pane sits beside the tree, so "back to the dashboard"
+# is a move between two panes of one window — `<prefix> + ←` by default,
+# and the user's own binding rather than one Wingmux sets behind their
+# back. A config still carrying it is told so and otherwise ignored.
+
+[worktrees]
+# Root directory for the worktrees. Absolute path, or relative to the
+# repository's parent directory. Empty = <repository-parent>/.wingmux-worktrees
+#root = ""
+# Branch that worktree branches are cut from. Empty = the branch the
+# repository's main checkout is on. A named branch that doesn't exist makes
+# worktree creation fail rather than silently cut from something else.
+#base_branch = ""
+# Also delete the worktree branch when the worktree is removed. Set to
+# false to keep the branch behind after the worktree is gone.
+#delete_branch = true
+
+[sync]
+# Fetch each repository's upstream once at startup, so the repository row's
+# ↑ahead ↓behind counts are fresh. Off = counts only move on `f`, worktree
+# create/delete, or your own git commands. Counting itself never fetches.
+#fetch_on_startup = true
+# Fetches running at once; the rest queue.
+#max_fetches = 4
+
+[discovery]
+# The scope: only repositories inside this directory are listed (scopes never
+# mix). Empty = the directory Wingmux was started from. When you start
+# inside a git repo, that repo is the scope and its worktrees are shown
+# flat (no repository row). The scan is live (no cache) and runs at startup.
+#scan_root = ""
+# Maximum subdirectory depth of a scan (0 = the scan root itself only).
+#max_depth = 4
+# Directory names skipped during a scan. Hidden directories (names starting
+# with '.') are always skipped; worktree `.git` files are never treated as
+# repositories (their main repo covers them).
+#skip_dirs = [".git", "node_modules", "target", ".wingmux-worktrees"]
+
+[defaults]
+# Agent preset (a `[[agents]]` name) new worktrees start with. It is what
+# the `n` popup's agent field is prefilled with, and what a repository
+# without its own `agent` runs.
+#agent = "claude"
+# Agent command spawned in a worktree shell unless a repository, a preset
+# or a worktree overrides it. Only reached when `agent` names no preset.
+#agent_command = "claude"
+# Shell used for agent windows.
+#agent_shell = "bash"
+# Inject lifecycle hooks into recognised `claude` and `codex` commands, so
+# status is read from the agent's own events instead of guessed from regex
+# patterns on the pane's output. Claude gets `--settings <generated file>`,
+# Codex `-c hooks.<Event>=...` overrides; both are visible in the pane's
+# command line and neither writes to your own agent config. Codex asks you
+# to trust the hooks the first time ("Hooks need review" -> t); it is asked
+# once, not once per worktree. Set to false to disable and always use the
+# regex heuristics.
+#agent_hooks = true
+
+[icons]
+# Glyph set to start from: "nerdfont" (a patched font), "unicode" (no
+# patched font needed) or "none" (no row icons).
+#preset = "nerdfont"
+
+# Every key below overrides the preset glyph by glyph. An empty string
+# draws nothing. `guide_branch`/`guide_last` are padded as a pair, and the
+# three `repository*` states, the four `worktree_*` states and the
+# `status_*` icons (spinner frames included) each as a group, so names stay
+# aligned when one of them is empty. `shell`,
+# `cursor`, `separator`, `warn` and `ellipsis` have no sibling to pad
+# against and are used verbatim — add your own
+# trailing space if you want a gap after one (the default `shell` below
+# already has one baked in). The values shown are the "nerdfont" preset.
+#repository = "󰉋"              # repository holding worktrees, collapsed
+#repository_open = "󰝰"         # ...the same repository, expanded
+#repository_empty = "󰉖"        # repository with no worktrees yet
+#worktree_new = ""            # untouched: no commits, clean tree
+#worktree_ahead = ""          # commits not in the base yet, or dirty
+#worktree_merged = ""         # all in the base branch, clean tree
+#worktree_deleted = "󰗨"        # its directory is gone; only `d` is left
+# One agent status icon each, drawn in front of the status label. The
+# spinner is a string of frames, one character per animation step, cycled
+# while an agent is working; `idle` and `dead` are blank on purpose, so a
+# state you cannot act on stays quiet.
+#status_spinner = "⣾⣷⣯⣟⡿⢿⣻⣽" # agent is working
+#status_waiting = "󰏤"          # agent is parked at its prompt
+#status_blocked = "󰓛"          # agent is asking for permission
+#status_failed = ""           # the agent reported a failure
+#status_ended = ""            # the agent exited, a shell is left
+#status_idle = ""              # agent running, state unrecognised
+#status_dead = ""              # the pane is gone
+#shell = "● "                  # a shell inside a worktree
+#cursor = "▌"                  # marks the selected row
+#guide_branch = "├─"            # tree guide, more siblings below
+#guide_last = "└─"              # tree guide, last sibling
+#guide_vertical = "│"          # tree guide, carried down a column
+#separator = " | "               # between status-bar fields
+#warn = "⚠"                    # startup diagnostics indicator
+#ellipsis = "…"                # marks text truncated to fit
+#sync_spinner = "◇◈◆◈"     # repository upstream fetch in flight
+#upstream_ahead = "↑"           # commits to push, on a repository row
+#upstream_behind = "↓"          # commits to pull, on a repository row
+#sync_failed = "󰖪"              # last fetch failed (offline, timeout, auth)
+#enter = "↵"                   # names the Enter key in shortcut hints
+#arrows = "↑↓"                  # names the arrow keys in shortcut hints
+
+# Popup and panel borders. Not a glyph: ratatui owns the corner set.
+# "rounded" | "plain".
+#border = "rounded"
+
+# Predefined messages, offered by the `m` modal on a selected shell:
+# pick one and it is sent to the agent exactly as if you had typed it.
+# The modal lists each entry's `text` verbatim, so what you read is what
+# the agent gets. These tokens are resolved against the selected shell
+# first: <base_branch>, <branch>, <worktree>, <repository>,
+# <worktree_path>; anything else in angle brackets is sent as written.
+# Defining any [[messages]] entry replaces this whole list, like every
+# other list in this file. Entries 1-9 keep a single-key shortcut in the
+# modal. The four below are the built-in defaults.
+#[[messages]]
+#text = "continue"
+
+#[[messages]]
+#text = "merge to LOCAL <base_branch>"
+
+#[[messages]]
+#text = "run CI, push <branch> to origin (no force-push)"
+
+#[[messages]]
+#text = "summarise what you've changed and what's still left"
+
+# Agent presets, selectable per repository via `agent = "<name>"`.
+# The `patterns` regexes are matched against the tail of a pane's capture
+# to classify its status (working / waiting / failed). Order of checks:
+# dead > ended > failed > waiting > working > idle. Defining any [[agents]]
+# entry replaces this whole list; the two below are the built-in defaults.
+#[[agents]]
+#name = "claude"
+#command = "claude"
+# Optional per-preset shell; omitted, [defaults].agent_shell is used.
+# shell = "zsh"
+#[agents.patterns]
+#working = ["Thinking", "Running", "Reading", "Writing", "Searching",
+#"Applying", "Planning", "Creating", "Editing", "Executing", "Progress",
+#"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "●", "▰"]
+#waiting = ["What would you like to do", "❯", "›", "(q) to quit",
+#"q to quit", "> $"]
+#failed = ["✖", "Error:", "error:", "exited with code", "Fatal", "failed"]
+
+#[[agents]]
+#name = "codex"
+#command = "codex"
+#[agents.patterns]
+#working = ["Working", "Reading", "Writing", "Running", "Thinking",
+#"Exploring", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "▌"]
+#waiting = ["❯", "›", "codex>", "> $"]
+#failed = ["Error", "error:", "✖"]
+
+# Repositories declared by hand — the way to list a repo that discovery does not
+# find (outside the scope). Discovered repositories live in state.json instead.
+# There is no default list; the block below is an example only.
+# [[repositories]]
+# path = "/absolute/path/to/repo"
+# base_branch = "main"       # optional: override [worktrees].base_branch
+# agent = "claude"           # optional: preset from [[agents]]
+# agent_command = "codex exec --yolo"  # optional: inline override

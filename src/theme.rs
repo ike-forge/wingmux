@@ -1,10 +1,8 @@
 //! Theme loading and colour resolution.
 //!
-//! Themes are TOML files describing named colour roles. Three built-ins ship
-//! with the binary (`dracula`, `gruvbox`, `ansi`) and are copied into
-//! `$XDG_CONFIG_HOME/wingmux/themes/` on first run so the user can edit
-//! them; any `<name>.toml` in that directory overrides the built-in of the
-//! same name.
+//! Themes are TOML files describing named colour roles. Built-ins ship in
+//! the binary; any `<name>.toml` in `$XDG_CONFIG_HOME/wingmux/themes/`
+//! overrides the built-in of the same name.
 //!
 //! Colours may be specified as `"#rrggbb"` hex, an ANSI-16 name
 //! (`black`..`white`, `bright_black`.., `gray`), or `"default"` (terminal
@@ -421,20 +419,6 @@ pub const BUILTIN_THEMES: [(&str, &str); 7] = [
 /// The default theme (config `theme = ...` when unset).
 pub const DEFAULT_THEME: &str = "catppuccin-mocha";
 
-/// Copy built-in themes into the user themes dir if they don't exist yet.
-pub fn ensure_builtin_themes() -> Result<()> {
-    let dir = crate::util::themes_dir();
-    std::fs::create_dir_all(&dir)?;
-    for (name, content) in BUILTIN_THEMES {
-        let path = dir.join(format!("{name}.toml"));
-        if !path.exists() {
-            std::fs::write(&path, content)?;
-            log::info!("wrote built-in theme to {}", path.display());
-        }
-    }
-    Ok(())
-}
-
 /// Resolve and load a theme by name: user themes dir first, then built-ins.
 /// Honour `NO_COLOR`: when set, every role resolves to the terminal default.
 pub fn load(name: &str, truecolor: bool) -> Result<Theme> {
@@ -768,23 +752,20 @@ mod tests {
     }
 
     #[test]
-    fn builtins_copied_to_user_dir() {
+    fn builtins_load_without_a_themes_dir() {
         crate::util::testutil::with_fresh_xdg(|| {
-            ensure_builtin_themes().unwrap();
             for (name, _) in BUILTIN_THEMES {
-                let p = crate::util::themes_dir().join(format!("{name}.toml"));
-                assert!(p.exists(), "theme {name} should be copied");
+                load(name, true).unwrap();
             }
-            // idempotent
-            ensure_builtin_themes().unwrap();
+            assert!(!crate::util::themes_dir().exists());
         });
     }
 
     #[test]
     fn user_theme_overrides_builtin() {
         crate::util::testutil::with_fresh_xdg(|| {
-            ensure_builtin_themes().unwrap();
             let dir = crate::util::themes_dir();
+            std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(
                 dir.join("dracula.toml"),
                 include_str!("../themes/ansi.toml")
@@ -1078,8 +1059,8 @@ mod tests {
     #[test]
     fn available_names_list_builtins_first_then_user_themes() {
         crate::util::testutil::with_fresh_xdg(|| {
-            ensure_builtin_themes().unwrap();
             let dir = crate::util::themes_dir();
+            std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("mytheme.toml"), "name = \"mytheme\"\n").unwrap();
             std::fs::write(dir.join("ztheme.toml"), "name = \"ztheme\"\n").unwrap();
             // a user file shadowing a built-in name must not be duplicated

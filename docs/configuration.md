@@ -1,9 +1,10 @@
 # Configuration
 
-`$XDG_CONFIG_HOME/wingmux/config.toml` — written on first run, and only if
-it isn't there already. It lists every setting Wingmux understands, each
-one commented out at its built-in default, so the file changes nothing until
-you edit it. Two comment styles tell the two kinds apart: `#key = value` (no
+`$XDG_CONFIG_HOME/wingmux/config.toml` — optional; Wingmux never creates it
+on startup, and without it every setting is at its default. `ctrl-t` writes
+just the `theme` line into it. [`config.example.toml`](config.example.toml)
+lists every setting, each commented out at its built-in default; copy it there
+to start editing. Two comment styles tell the two kinds apart: `#key = value` (no
 space after the hash) is a real default — uncommenting it as-is is a no-op —
 while `# text` is prose, or an example with no default behind it
 (`[[repositories]]`). Section headers like `[preview]` are left active so
