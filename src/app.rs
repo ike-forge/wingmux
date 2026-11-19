@@ -607,7 +607,7 @@ pub enum BarAction {
 
 /// The new-worktree popup's agent field: a `[[agents]]` preset name (or a
 /// command typed verbatim), prefilled with what the repository already
-/// runs so the common case is still `n`, a name, `Enter`. `focused` is
+/// runs so the common case is still `w`, a name, `Enter`. `focused` is
 /// which of the two fields the keys go to — `Tab` flips it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentField {
@@ -863,8 +863,7 @@ pub struct App {
     /// Visual-mode anchor (`v`): the shells on the rows between it and
     /// `sel` are the selection.
     pub visual: Option<Sel>,
-    /// The committed `/` pattern. While set, `n`/`N` step through matches
-    /// instead of creating a worktree; `Esc` clears it.
+    /// The committed `/` pattern `n`/`N` step through; `Esc` clears it.
     pub search: Option<String>,
     /// The pad handed to `$EDITOR` (`ctrl-e`): the window running it, and
     /// which pad it holds. The poll that finds the window gone reads the
@@ -4491,7 +4490,7 @@ impl App {
     /// `n` / `N`: the next / previous row matching the committed pattern.
     fn search_step(&mut self, forward: bool) {
         let Some(pat) = self.search.clone() else {
-            return;
+            return self.notify("No search — `/` starts one");
         };
         match self.find_row(&pat, self.sel, forward) {
             Some((hit, wrapped)) => {
@@ -4550,11 +4549,10 @@ impl App {
             KeyCode::Char('h') | KeyCode::Left => self.collapse_or_up(),
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.expand_or_attach(),
             KeyCode::Char('/') => self.open_search(),
-            // vim's `n` after a search; `Esc` hands it back to "new worktree".
-            KeyCode::Char('n') if self.search.is_some() => self.search_step(true),
+            KeyCode::Char('n') => self.search_step(true),
             KeyCode::Char('N') => self.search_step(false),
             KeyCode::Char('y') => self.yank_path(),
-            KeyCode::Char('n') => self.open_new_worktree(),
+            KeyCode::Char('w') => self.open_new_worktree(),
             KeyCode::Char('a') => self.open_add_shell(),
             KeyCode::Char('m') => self.open_messages(),
             KeyCode::Char('p') => self.pull_selected(),
@@ -6692,7 +6690,6 @@ mod tests {
         );
         app.on_key(key(KeyCode::Char('N'), false));
         assert_eq!(app.sel, Sel::Repository(3), "wraps to the bottom");
-        assert!(matches!(app.mode, Mode::Normal), "n did not open a prompt");
 
         app.on_key(key(KeyCode::Esc, false));
         assert_eq!(app.search, None);

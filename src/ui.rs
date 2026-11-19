@@ -1592,7 +1592,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         Sel::Repository(ri) => {
             let mut v = vec![
                 (h("shell", "a"), RepoShell),
-                (h("worktree", "n"), NewWorktree),
+                (h("worktree", "w"), NewWorktree),
             ];
             // Only with commits the upstream lacks: an entry that can only
             // answer "nothing to push" is noise.
@@ -1625,7 +1625,7 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             (h("help", "?"), Help),
         ],
         Sel::Worktree(..) => vec![
-            (h("worktree", "n"), NewWorktree),
+            (h("worktree", "w"), NewWorktree),
             (h("shell", "a"), AddShell),
             (h("select", "v"), VisualStart),
             (h("delete", "d"), DeleteWorktree),
@@ -1664,10 +1664,8 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         };
         entries[slot] = (h("take", key), entries[slot].1);
     }
-    // A committed search owns `n`: the bar trades "new worktree" for the
-    // match motions, and leads with them.
+    // The match motions lead the bar while a search is kept.
     if app.search.is_some() {
-        entries.retain(|(_, a)| *a != NewWorktree);
         entries.splice(
             0..0,
             [
@@ -1971,7 +1969,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                     "starts on first press",
                 ],
             ),
-            (&["n"], &["new worktree", "worktree + agent shell"]),
+            (&["w"], &["new worktree", "worktree + agent shell"]),
             (&["d"], &["close that shell", "the repository stays"]),
             (
                 &["p"],
@@ -2002,7 +2000,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
     (
         "worktrees",
         &[
-            (&["n"], &["new worktree"]),
+            (&["w"], &["new worktree"]),
             (
                 &["a"],
                 &["add shell", "picks the agent or a plain shell", "1-9 pick"],
@@ -3842,7 +3840,7 @@ mod tests {
     #[test]
     fn bar_entries_and_help_share_wording() {
         // For every bar entry, the action's word appears in the help
-        // overlay (bar: "worktree n" vs help: "new worktree", etc.).
+        // overlay (bar: "worktree w" vs help: "new worktree", etc.).
         let mut app = seeded_app();
         let text = help_text(&mut app, 120, 80);
         let mut app2 = seeded_app();
@@ -3861,7 +3859,7 @@ mod tests {
                     text.contains("predefined message"),
                     "bar 'messages m' ↔ help row"
                 ),
-                "worktree" => assert!(text.contains("new worktree"), "bar 'worktree n' ↔ help"),
+                "worktree" => assert!(text.contains("new worktree"), "bar 'worktree w' ↔ help"),
                 "shell" => assert!(text.contains("add shell"), "bar 'shell a' ↔ help"),
                 "delete" => assert!(text.contains("delete worktree"), "bar 'delete d' ↔ help"),
                 "dock" => assert!(text.contains("dock the shell"), "bar 'dock ↵' ↔ help"),
