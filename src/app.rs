@@ -201,6 +201,12 @@ pub enum Mode {
         buf: TextBuf,
         pad: crate::todo::Pad,
     },
+    /// `/` search being typed: the cursor follows the first match after
+    /// `origin` as the pattern grows, and `Esc` puts it back there.
+    Search {
+        text: String,
+        origin: Sel,
+    },
 }
 
 /// A multiline text buffer for the todo pads: lines + a cursor
@@ -590,6 +596,13 @@ pub enum BarAction {
     ToggleHidden,
     /// Unfold or fold the hidden row (`Enter`).
     HiddenFold,
+    /// Run the `/` pattern being typed (`Enter`).
+    SearchRun,
+    /// Leave the `/` prompt, or drop the committed pattern (`Esc`).
+    SearchCancel,
+    /// Next / previous match of the committed pattern (`n` / `N`).
+    SearchNext,
+    SearchPrev,
 }
 
 /// The new-worktree popup's agent field: a `[[agents]]` preset name (or a
@@ -850,6 +863,9 @@ pub struct App {
     /// Visual-mode anchor (`v`): the shells on the rows between it and
     /// `sel` are the selection.
     pub visual: Option<Sel>,
+    /// The committed `/` pattern. While set, `n`/`N` step through matches
+    /// instead of creating a worktree; `Esc` clears it.
+    pub search: Option<String>,
     /// The pad handed to `$EDITOR` (`ctrl-e`): the window running it, and
     /// which pad it holds. The poll that finds the window gone reads the
     /// file back in and clears this.
@@ -939,6 +955,7 @@ impl App {
             todo_global_parked: false,
             todo_dirty: None,
             visual: None,
+            search: None,
             editor: None,
             remover: Default::default(),
             fetcher: Default::default(),
@@ -4359,7 +4376,161 @@ impl App {
                     _ => {}
                 }
             }
+            Mode::Search { text, origin } => match key.code {
+                KeyCode::Esc => {
+                    self.sel = *origin;
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Enter => {
+                    let text = std::mem::take(text);
+                    let origin = *origin;
+                    self.mode = Mode::Normal;
+                    self.commit_search(text, origin);
+                }
+                KeyCode::Backspace if text.is_empty() => {
+                    self.sel = *origin;
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                    let (text, origin) = (text.clone(), *origin);
+                    self.incremental_search(&text, origin);
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    text.push(c);
+                    let (text, origin) = (text.clone(), *origin);
+                    self.incremental_search(&text, origin);
+                }
+                _ => {}
+            },
             Mode::Normal => self.on_key_normal(key),
+        }
+    }
+
+    /// The pattern the tree highlights: the one being typed, else the
+    /// committed one.
+    pub(crate) fn search_pattern(&self) -> Option<&str> {
+        match &self.mode {
+            Mode::Search { text, .. } => Some(text.as_str()),
+            _ => self.search.as_deref(),
+        }
+        .filter(|p| !p.is_empty())
+    }
+
+    /// The name a row is searched by — what the tree prints for it.
+    pub(crate) fn search_label(&self, node: Sel) -> Option<String> {
+        let repo = self.state.repositories.get(node.repo()?)?;
+        match node {
+            Sel::Repository(_) => Some(repo.name.clone()),
+            Sel::Worktree(_, wi) => repo.worktrees.get(wi).map(|w| w.name.clone()),
+            Sel::Shell(_, wi, si) => repo
+                .worktrees
+                .get(wi)
+                .and_then(|w| w.shells.get(si))
+                .map(|s| s.label()),
+            Sel::Hidden => None,
+        }
+    }
+
+    /// The first visible row matching `pat` after (or before) `from`,
+    /// wrapping; `from` itself comes last. The flag says whether it wrapped.
+    fn find_row(&self, pat: &str, from: Sel, forward: bool) -> Option<(Sel, bool)> {
+        let nodes = self.visible_nodes();
+        let n = nodes.len();
+        let at = nodes.iter().position(|x| *x == from).unwrap_or(0);
+        (1..=n).find_map(|k| {
+            let i = if forward {
+                (at + k) % n
+            } else {
+                (at + n - k % n) % n
+            };
+            let hit = self
+                .search_label(nodes[i])
+                .is_some_and(|l| crate::util::find_smartcase(&l, pat).is_some());
+            hit.then_some((nodes[i], if forward { i <= at } else { i >= at }))
+        })
+    }
+
+    fn open_search(&mut self) {
+        self.mode = Mode::Search {
+            text: String::new(),
+            origin: self.sel,
+        };
+    }
+
+    fn incremental_search(&mut self, pat: &str, origin: Sel) {
+        self.sel = match self.find_row(pat, origin, true) {
+            Some((hit, _)) if !pat.is_empty() => hit,
+            _ => origin,
+        };
+    }
+
+    /// `Enter` on the search prompt. An empty pattern repeats the last one,
+    /// as in vim.
+    fn commit_search(&mut self, text: String, origin: Sel) {
+        let pat = if text.is_empty() {
+            match self.search.clone() {
+                Some(p) => p,
+                None => return,
+            }
+        } else {
+            text
+        };
+        match self.find_row(&pat, origin, true) {
+            Some((hit, _)) => {
+                self.sel = hit;
+                self.search = Some(pat);
+            }
+            None => {
+                self.sel = origin;
+                self.notify(format!("No match for '{pat}'"));
+            }
+        }
+    }
+
+    /// `n` / `N`: the next / previous row matching the committed pattern.
+    fn search_step(&mut self, forward: bool) {
+        let Some(pat) = self.search.clone() else {
+            return;
+        };
+        match self.find_row(&pat, self.sel, forward) {
+            Some((hit, wrapped)) => {
+                self.sel = hit;
+                if wrapped {
+                    self.notify(if forward {
+                        "Search hit bottom, continuing at top"
+                    } else {
+                        "Search hit top, continuing at bottom"
+                    });
+                }
+            }
+            None => self.notify(format!("No match for '{pat}'")),
+        }
+    }
+
+    /// `y`: the selected row's path into the tmux buffer and the clipboard.
+    /// Shell rows give their worktree's path — the directory they run in.
+    fn yank_path(&mut self) {
+        let path = self.sel.repo().and_then(|ri| {
+            let repo = self.state.repositories.get(ri)?;
+            match self.sel {
+                Sel::Worktree(_, wi) | Sel::Shell(_, wi, _) => {
+                    repo.worktrees.get(wi).map(|w| w.path.clone())
+                }
+                _ => Some(repo.path.clone()),
+            }
+        });
+        let Some(path) = path else {
+            return self.notify("Select a repository, worktree or shell to copy its path");
+        };
+        let path = path.to_string_lossy().into_owned();
+        let res = match self.tmux.as_ref() {
+            Some(t) => t.copy(&path),
+            None => return self.notify_err("Copying needs tmux"),
+        };
+        match res {
+            Ok(()) => self.notify(format!("Copied {path}")),
+            Err(e) => self.notify_err(format!("Copy failed: {e}")),
         }
     }
 
@@ -4372,11 +4543,17 @@ impl App {
             // Innermost first: Esc leaves the parked preview before it
             // leaves the app. `q` stays the unconditional quit.
             KeyCode::Esc if self.preview_offset() > 0 => self.preview_live(),
+            KeyCode::Esc if self.search.is_some() => self.search = None,
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Char('j') | KeyCode::Down => self.move_sel(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
             KeyCode::Char('h') | KeyCode::Left => self.collapse_or_up(),
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.expand_or_attach(),
+            KeyCode::Char('/') => self.open_search(),
+            // vim's `n` after a search; `Esc` hands it back to "new worktree".
+            KeyCode::Char('n') if self.search.is_some() => self.search_step(true),
+            KeyCode::Char('N') => self.search_step(false),
+            KeyCode::Char('y') => self.yank_path(),
             KeyCode::Char('n') => self.open_new_worktree(),
             KeyCode::Char('a') => self.open_add_shell(),
             KeyCode::Char('m') => self.open_messages(),
@@ -4920,6 +5097,19 @@ impl App {
             }
             return;
         }
+        // The search prompt lives in the statusbar: its entries stay
+        // clickable, a click anywhere else is `Esc`.
+        if matches!(self.mode, Mode::Search { .. }) {
+            match self
+                .bar_hits
+                .iter()
+                .find(|(x0, x1, by, _)| *by == y && *x0 <= x && x < *x1)
+            {
+                Some((_, _, _, action)) => self.run_bar_action(*action),
+                None => self.on_key(KeyEvent::from(KeyCode::Esc)),
+            }
+            return;
+        }
         // Overlays: a click outside dismisses them (accessibility rule);
         // a click inside keeps keyboard as the way in. The theme picker is
         // the exception: clicking a theme row selects + previews it, and a
@@ -5051,6 +5241,13 @@ impl App {
     fn run_bar_action(&mut self, action: BarAction) {
         match action {
             BarAction::Help => self.open_help(),
+            BarAction::SearchRun => self.on_key(KeyEvent::from(KeyCode::Enter)),
+            BarAction::SearchCancel if matches!(self.mode, Mode::Search { .. }) => {
+                self.on_key(KeyEvent::from(KeyCode::Esc))
+            }
+            BarAction::SearchCancel => self.search = None,
+            BarAction::SearchNext => self.search_step(true),
+            BarAction::SearchPrev => self.search_step(false),
             BarAction::PreviewLive => self.preview_live(),
             BarAction::NewWorktree => self.open_new_worktree(),
             BarAction::AddShell => self.open_add_shell(),
@@ -6450,6 +6647,109 @@ mod tests {
                 KeyModifiers::NONE
             },
         )
+    }
+
+    // ----------------------------------------------------------- search
+
+    fn named(names: &[&str]) -> App {
+        let mut app = app_with_repositories(names.len());
+        for (r, n) in app.state.repositories.iter_mut().zip(names) {
+            r.name = n.to_string();
+        }
+        app
+    }
+
+    #[test]
+    fn search_moves_as_typed_and_esc_restores_the_origin() {
+        let mut app = named(&["alpha", "beta", "gamma", "delta"]);
+        app.on_key(key(KeyCode::Char('/'), false));
+        typed(&mut app, "ta");
+        assert_eq!(app.sel, Sel::Repository(1), "first match after the cursor");
+        typed(&mut app, "x");
+        assert_eq!(app.sel, Sel::Repository(0), "no match: back at the origin");
+        app.on_key(key(KeyCode::Backspace, false));
+        app.on_key(key(KeyCode::Esc, false));
+        assert_eq!(app.sel, Sel::Repository(0));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.search, None);
+    }
+
+    #[test]
+    fn n_and_shift_n_cycle_matches_and_esc_hands_n_back() {
+        let mut app = named(&["alpha", "beta", "gamma", "delta"]);
+        app.on_key(key(KeyCode::Char('/'), false));
+        typed(&mut app, "ta");
+        app.on_key(key(KeyCode::Enter, false));
+        assert_eq!(app.search.as_deref(), Some("ta"));
+        assert_eq!(app.sel, Sel::Repository(1));
+        app.on_key(key(KeyCode::Char('n'), false));
+        assert_eq!(app.sel, Sel::Repository(3));
+        app.on_key(key(KeyCode::Char('n'), false));
+        assert_eq!(app.sel, Sel::Repository(1), "wraps to the top");
+        assert!(
+            app.toast()
+                .is_some_and(|t| t.text.contains("continuing at top"))
+        );
+        app.on_key(key(KeyCode::Char('N'), false));
+        assert_eq!(app.sel, Sel::Repository(3), "wraps to the bottom");
+        assert!(matches!(app.mode, Mode::Normal), "n did not open a prompt");
+
+        app.on_key(key(KeyCode::Esc, false));
+        assert_eq!(app.search, None);
+        assert!(!app.quit, "the first Esc only ends the search");
+    }
+
+    #[test]
+    fn search_is_smartcase_and_an_empty_enter_repeats_the_last_pattern() {
+        let mut app = named(&["Api", "web", "api-docs"]);
+        app.on_key(key(KeyCode::Char('/'), false));
+        typed(&mut app, "A");
+        app.on_key(key(KeyCode::Enter, false));
+        app.on_key(key(KeyCode::Char('n'), false));
+        assert_eq!(app.sel, Sel::Repository(0), "only 'Api' has a capital A");
+        app.search = None;
+        app.on_key(key(KeyCode::Char('/'), false));
+        app.on_key(key(KeyCode::Enter, false));
+        assert_eq!(app.search, None, "nothing to repeat");
+        app.search = Some("docs".into());
+        app.on_key(key(KeyCode::Char('/'), false));
+        app.on_key(key(KeyCode::Enter, false));
+        assert_eq!(app.sel, Sel::Repository(2));
+    }
+
+    #[test]
+    fn a_search_without_match_keeps_the_cursor_and_commits_nothing() {
+        let mut app = named(&["alpha", "beta"]);
+        app.sel = Sel::Repository(1);
+        app.on_key(key(KeyCode::Char('/'), false));
+        typed(&mut app, "zzz");
+        app.on_key(key(KeyCode::Enter, false));
+        assert_eq!(app.sel, Sel::Repository(1));
+        assert_eq!(app.search, None);
+        assert!(app.toast().is_some_and(|t| t.text.contains("No match")));
+    }
+
+    #[test]
+    fn y_copies_the_selected_path_into_the_tmux_buffer() {
+        with_tmux_server(|_sock, tmux| {
+            let mut app = app_with(tmux);
+            app.state.repositories = app_with_shell().state.repositories;
+            app.build_tree_flags();
+            app.sel = Sel::Repository(0);
+            let buffer = |app: &App| {
+                app.tmux
+                    .as_ref()
+                    .unwrap()
+                    .run_raw(&["show-buffer"])
+                    .unwrap()
+            };
+            app.on_key(key(KeyCode::Char('y'), false));
+            assert_eq!(buffer(&app), "/tmp/p");
+            app.repo_expanded[0] = true;
+            app.sel = Sel::Worktree(0, 0);
+            app.on_key(key(KeyCode::Char('y'), false));
+            assert_eq!(buffer(&app), "/tmp/p/.wingmux-worktrees/p/wt");
+        });
     }
 
     // ------------------------------------------------------------- todo

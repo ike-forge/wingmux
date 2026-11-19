@@ -686,6 +686,14 @@ impl Tmux {
         Ok(())
     }
 
+    /// Put `text` in a paste buffer and, via `-w` (tmux 3.2+), the outer
+    /// terminal's clipboard. Below 3.2 only the buffer is set.
+    pub fn copy(&self, text: &str) -> Result<()> {
+        self.run(&["set-buffer", "-w", "--", text])
+            .or_else(|_| self.run(&["set-buffer", "--", text]))?;
+        Ok(())
+    }
+
     /// Kill one pane. Killing a window's last pane kills the window, so
     /// this is only ever aimed at furniture that has a neighbour.
     pub fn kill_pane(&self, pane_id: &str) -> Result<()> {

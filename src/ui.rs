@@ -594,7 +594,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         // The pad draws no overlay: it is the left panel (see
         // `draw_left`), so there is nothing on top and nothing to dismiss.
-        Mode::Normal | Mode::Todo { .. } => {}
+        // The search prompt is drawn in the statusbar.
+        Mode::Normal | Mode::Todo { .. } | Mode::Search { .. } => {}
     }
     // The body/footer rule goes on last, over the blank row every modal
     // reserves above its shortcuts. One place, so no overlay can forget
@@ -980,6 +981,24 @@ fn panel_block(
         .title(Span::styled(format!(" {title} "), title_style))
 }
 
+/// `name` in `style`, the part matching the search pattern reversed.
+fn search_spans(app: &App, name: &str, style: Style) -> Vec<Span<'static>> {
+    let hit = app
+        .search_pattern()
+        .and_then(|p| crate::util::find_smartcase(name, p));
+    match hit {
+        Some(r) => vec![
+            Span::styled(name[..r.start].to_string(), style),
+            Span::styled(
+                name[r.clone()].to_string(),
+                style.add_modifier(Modifier::REVERSED),
+            ),
+            Span::styled(name[r.end..].to_string(), style),
+        ],
+        None => vec![Span::styled(name.to_string(), style)],
+    }
+}
+
 fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme.colors;
     let ic = &app.cfg.icons;
@@ -1031,10 +1050,9 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
         } else {
             row_color(theme, pdead, theme.tree_repository)
         };
-        let mut spans = vec![Span::styled(
-            format!("{icon}{}", repo.name),
-            fg(name_color).add_modifier(Modifier::BOLD),
-        )];
+        let name_style = fg(name_color).add_modifier(Modifier::BOLD);
+        let mut spans = vec![Span::styled(icon.to_string(), name_style)];
+        spans.extend(search_spans(app, &repo.name, name_style));
         if repo.missing {
             spans.push(Span::styled(" (missing)", fg(theme.dim)));
         }
@@ -1113,14 +1131,17 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                         worktree_color(theme, wt, fdead, worktree_state_color(theme, wstate))
                     }),
                 ),
-                Span::styled(
-                    wt.name.clone(),
-                    fg(if settled {
-                        theme.dim
-                    } else {
-                        worktree_color(theme, wt, fdead, theme.tree_worktree)
-                    }),
-                ),
+            ];
+            wt_spans.extend(search_spans(
+                app,
+                &wt.name,
+                fg(if settled {
+                    theme.dim
+                } else {
+                    worktree_color(theme, wt, fdead, theme.tree_worktree)
+                }),
+            ));
+            wt_spans.extend([
                 // A settled row drops the status altogether: once the work
                 // is merged (or the directory is gone) the only thing left
                 // to do is remove the worktree, and what the agent inside
@@ -1141,7 +1162,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     // are one row below, each with its own status.
                     None => Span::raw(""),
                 },
-            ];
+            ]);
             // A folded worktree row IS its shell, so it carries the shell's
             // lease too.
             if solo.is_some_and(|si| shell_leased(app, &wt.shells[si]).is_some()) {
@@ -1184,17 +1205,16 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                 if wt.shells.iter().filter(|o| o.label() == label).count() > 1 {
                     label = format!("{label} #{}", sh.index);
                 }
-                let mut sh_spans = vec![
-                    Span::styled(
-                        format!("{guide}{}{label}", ic.shell),
-                        fg(row_color(theme, st == Status::Dead, theme.tree_shell)),
-                    ),
+                let sh_style = fg(row_color(theme, st == Status::Dead, theme.tree_shell));
+                let mut sh_spans = vec![Span::styled(format!("{guide}{}", ic.shell), sh_style)];
+                sh_spans.extend(search_spans(app, &label, sh_style));
+                sh_spans.extend([
                     Span::raw(" "),
                     Span::styled(
                         format!("{}{}", status_icon(ic, st, spin), st.label()),
                         fg(status_color(theme, st)),
                     ),
-                ];
+                ]);
                 if shell_leased(app, sh).is_some() {
                     mark_leased(theme, &mut sh_spans);
                 }
@@ -1534,6 +1554,12 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             (h("editor", "ctrl-e"), TodoEdit),
         ];
     }
+    if matches!(app.mode, Mode::Search { .. }) {
+        return vec![
+            (h("search", "Enter"), SearchRun),
+            (h("cancel", "Esc"), SearchCancel),
+        ];
+    }
     if matches!(app.visual, Some(Sel::Repository(_))) {
         let marks = app.visual_marks();
         let word = if marks.repositories.iter().all(|&ri| app.is_hidden(ri)) {
@@ -1638,6 +1664,19 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         };
         entries[slot] = (h("take", key), entries[slot].1);
     }
+    // A committed search owns `n`: the bar trades "new worktree" for the
+    // match motions, and leads with them.
+    if app.search.is_some() {
+        entries.retain(|(_, a)| *a != NewWorktree);
+        entries.splice(
+            0..0,
+            [
+                (h("next", "n"), SearchNext),
+                (h("prev", "N"), SearchPrev),
+                (h("end search", "Esc"), SearchCancel),
+            ],
+        );
+    }
     // A parked preview is a state you can be stuck in — the way out leads
     // the bar, where the eye lands first.
     if app.preview_offset() > 0 {
@@ -1656,10 +1695,23 @@ fn draw_statusbar(f: &mut Frame, area: Rect, app: &mut App) {
     let sp = sep(&app.cfg.icons);
     let mut hits: Vec<(u16, u16, u16, BarAction)> = Vec::new();
     let mut lines: Vec<Line> = Vec::new();
+    // The `/` prompt leads the first row, vim's command line; its hints
+    // follow it.
+    let prompt = match &app.mode {
+        Mode::Search { text, .. } => Some(format!("/{text}")),
+        _ => None,
+    };
     for (row, entries) in bar_packing(app, area.width).into_iter().enumerate() {
         let mut spans: Vec<Span> = vec![Span::raw(" ")];
         let mut cx: u16 = 1;
         let y = area.y + row as u16;
+        if let Some(p) = prompt.as_ref().filter(|_| row == 0) {
+            spans.push(Span::styled(p.clone(), fg(theme.foreground)));
+            cx += UnicodeWidthStr::width(p.as_str()) as u16;
+            f.set_cursor_position(Position::new(area.x + cx, y));
+            spans.push(Span::raw("   "));
+            cx += 3;
+        }
         for (i, (entry, action)) in entries.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled(sp, fg(theme.dim)));
@@ -1703,7 +1755,10 @@ fn bar_packing(app: &App, width: u16) -> Vec<Vec<(Hint, BarAction)>> {
     let sep_w = UnicodeWidthStr::width(sep(&app.cfg.icons));
     let mut rows: Vec<Vec<(Hint, BarAction)>> = Vec::new();
     let mut row: Vec<(Hint, BarAction)> = Vec::new();
-    let mut used = 0usize;
+    let mut used = match &app.mode {
+        Mode::Search { text, .. } => UnicodeWidthStr::width(text.as_str()) + 4,
+        _ => 0,
+    };
     for e in entries {
         let w = UnicodeWidthStr::width(e.0.label().as_str());
         let need = if row.is_empty() { w } else { w + sep_w };
@@ -1887,6 +1942,22 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             (&["g/G", "Home/End"], &["first / last item"]),
             (&["PgUp/PgDn", "ctrl-u/d"], &["half page"]),
             (&["ctrl-f/b"], &["full page"]),
+            (
+                &["/"],
+                &["search", "names of the rows shown", "Esc cancels"],
+            ),
+            (
+                &["n/N"],
+                &["next / prev match", "after a search", "Esc ends the search"],
+            ),
+            (
+                &["y"],
+                &[
+                    "copy path",
+                    "repository or worktree",
+                    "tmux buffer + clipboard",
+                ],
+            ),
         ],
     ),
     (
@@ -3801,12 +3872,40 @@ mod tests {
                 "lazygit" => assert!(text.contains("lazygit"), "bar 'lazygit ctrl-g' ↔ help"),
                 "push" => assert!(text.contains("git push"), "bar 'push P' ↔ help"),
                 "pull" => assert!(text.contains("git pull"), "bar 'pull p' ↔ help"),
+                "next" | "prev" => assert!(text.contains("next / prev match")),
+                "end search" => assert!(text.contains("Esc ends the search")),
                 "hide" | "unhide" => {
                     assert!(text.contains("hide repository"), "bar '. hide' ↔ help")
                 }
                 other => panic!("unmapped bar entry: {other:?}"),
             }
         }
+    }
+
+    /// The `/` prompt is the statusbar's first row, and the match is
+    /// marked in the tree.
+    #[test]
+    fn search_prompt_sits_in_the_statusbar_and_marks_the_match() {
+        let mut app = seeded_app();
+        app.mode = Mode::Search {
+            text: "po-b".into(),
+            origin: Sel::Repository(0),
+        };
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let last: String = (0..buf.area.width)
+            .map(|x| buf[(x, buf.area.height - 1)].symbol())
+            .collect();
+        assert!(last.starts_with(" /po-b"), "{last:?}");
+        assert!(last.contains("cancel"), "{last:?}");
+        let marked: String = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+            .filter(|&p| buf[p].modifier.contains(Modifier::REVERSED))
+            .map(|p| buf[p].symbol().to_string())
+            .collect();
+        assert_eq!(marked, "po-b");
     }
 
     /// The statusbar carries the shortcuts and nothing else: no app name,

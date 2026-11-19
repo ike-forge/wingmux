@@ -24,6 +24,19 @@ overlays) → active overlay → text input → focused panel → global binding
 | `ctrl-d` / `ctrl-u` | half page down / up | vim motion |
 | `ctrl-f` / `ctrl-b` | full page down / up | vim motion (optional, page keys cover it) |
 | `Home` / `End` | first / last item | accessibility: same as `g`/`G` |
+| `/` | search the visible rows by name; the cursor follows the first match after it as you type. `Enter` keeps the pattern, `Esc` (or `Backspace` on an empty prompt) puts the cursor back | vim search; smartcase |
+| `n` / `N` | next / previous match of the kept pattern, wrapping with a toast | vim `n`/`N` |
+
+A search, not a filter: every row stays on screen, the matched text is shown
+reversed, and `n`/`N` move through the matches. The prompt is the
+statusbar's first row, vim's command line. Only rows on screen are
+searched — a worktree in a collapsed repository is not.
+
+`n` is "new worktree" until a search is kept, and "next match" from then on:
+vim's `n` only means anything after a `/`, and the alternative was a second
+key for next match that nobody's fingers know. The bar shows `next n` in
+place of `worktree n` while it holds, and `Esc` ends the search — before it
+quits — so `n` is new worktree again.
 
 Page size = the tree's visible rows (statusbar and panel borders
 subtracted), recomputed every frame from the stored viewport.
@@ -38,8 +51,10 @@ subtracted), recomputed every frame from the stored viewport.
 | `R` | reset the layout — dashboard strip, agent windows and holders back to their default proportions | shifted pair of `r`: the same subject (put reality back in step), the heavier repair on the shifted key. `r` stays refresh because that is the tradition's binding |
 | `ctrl-g` | lazygit in the panel beside the tree (in place of the docked agent) on the selected repository (main checkout) or worktree; shell rows use their worktree. Pressed again it focuses lazygit; on quit the agent docks back and the tree reconciles | ctrl layer, because `g` is first-item. Bar entry only when `lazygit` is on PATH; help shows it muted otherwise and the key says it is missing. Not a popup: tmux overlays swallow the prefix |
 | `ctrl-t` | live theme picker (preview on move, Enter keeps, Esc restores) | ctrl layer; picker lists built-ins first |
+| `y` | copy the selected row's path — the repository's, or the worktree's (shell rows too) — with `tmux set-buffer -w`: the tmux buffer, and the terminal clipboard where tmux forwards it (3.2+, `set-clipboard` not `off`) | vim yank |
 | `?` | open the grouped help overlay (the palette) | palette key; `?` is never rebound |
 | `Esc` (preview parked) | back to the live tail | leave innermost first |
+| `Esc` (search kept) | end the search; `n` is new worktree again | leave innermost first |
 | `q` / `Esc` | quit | "do not rebind these" |
 | `ctrl-c` | quit from ANY state (even inside a popup / text input) | accessibility: quit always; consumed before mode handlers |
 
@@ -404,8 +419,8 @@ view below the split tier.
 
 An inert key is a decision, not an omission.
 
-- `/` — no search/filter panel exists yet (the tree is small; statuses are
-  classified automatically). When a filter lands it takes `/` per the rules.
+- a filter — `/` searches instead. A filter hides rows, and a hidden row can
+  be an agent waiting on you (the reason `.` folds rather than drops).
 - `Tab` / `Shift-Tab` — no panel cycling: the two focusable panels (the tree
   and the todo pad below it) are each reached by name — `t`/`T` into the pad,
   `Esc` back — and the detail/preview panes are display-only. In the pad,
@@ -424,7 +439,6 @@ An inert key is a decision, not an omission.
   bindings, whatever the user has them set to; re-implementing any of them
   would mean emulating the agent's terminal, which is the exact thing
   docking exists to stop doing.
-- `y` — no yank. `v` selects rows for bulk delete or bulk hide.
 - `:` — no command language; every action already has a key.
 - `e` — still unbound: `ctrl-e` opens `$EDITOR` on a todo pad, and only
   inside the pad, where a bare `e` is text. A plain `e` on the tree would
