@@ -29,6 +29,11 @@ heuristics above, like any other agent. Each gets the shape its CLI takes:
   the command, so it is asked once, not once per worktree. Until you answer,
   Codex declines to run them and the pane falls back to the regex guess.
 
+The hook commands name the `$PATH` entry that points at the running
+binary (e.g. Homebrew's `bin/wing` symlink), not the versioned install dir
+it resolves to, so agents started before an upgrade keep working. Off
+`$PATH` the resolved path is used.
+
 Either way the hooks report the agent's real state onto the pane as it
 happens, ahead of the regex guess, and instrumentation is disclosed rather
 than hidden: an instrumented pane's command line shows the flags it was

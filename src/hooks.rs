@@ -193,11 +193,36 @@ pub fn settings_json(exe: &str, socket: Option<&str>) -> String {
     serde_json::json!({ "hooks": hooks }).to_string()
 }
 
+/// Path to bake into hook commands. `current_exe` resolves symlinks, which
+/// pins versioned install dirs (Homebrew Cellar, Nix store) that vanish on
+/// upgrade; prefer the unresolved `$PATH` entry that points at this binary.
+fn stable_exe() -> crate::error::Result<PathBuf> {
+    let real = std::env::current_exe()
+        .map_err(|e| crate::error::Error::Config(format!("cannot resolve own path: {e}")))?;
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    Ok(find_on_path(&real, &path).unwrap_or(real))
+}
+
+/// First `$PATH` entry named like `real` or like `argv[0]` that resolves to
+/// `real`, returned unresolved.
+fn find_on_path(real: &Path, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    let target = real.canonicalize().ok()?;
+    let mut names = vec![real.file_name()?.to_owned()];
+    let argv0 = std::env::args_os()
+        .next()
+        .and_then(|a| Path::new(&a).file_name().map(|n| n.to_owned()));
+    if let Some(n) = argv0.filter(|n| !names.contains(n)) {
+        names.push(n);
+    }
+    std::env::split_paths(path)
+        .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
+        .find(|c| c.canonicalize().is_ok_and(|r| r == target))
+}
+
 /// Regenerate the settings file. Called once at startup so a moved binary
 /// or a changed socket self-heals.
 pub fn write_settings_file() -> crate::error::Result<PathBuf> {
-    let exe = std::env::current_exe()
-        .map_err(|e| crate::error::Error::Config(format!("cannot resolve own path: {e}")))?;
+    let exe = stable_exe()?;
     let socket = std::env::var("WINGMUX_TMUX_SOCKET")
         .ok()
         .filter(|s| !s.is_empty());
@@ -436,8 +461,7 @@ impl Instrumentation {
     /// need. Fails only when the settings file cannot be written — the one
     /// part with a filesystem to disagree with.
     pub fn prepare() -> crate::error::Result<Instrumentation> {
-        let exe = std::env::current_exe()
-            .map_err(|e| crate::error::Error::Config(format!("cannot resolve own path: {e}")))?;
+        let exe = stable_exe()?;
         let socket = std::env::var("WINGMUX_TMUX_SOCKET")
             .ok()
             .filter(|s| !s.is_empty());
@@ -478,6 +502,35 @@ impl Instrumentation {
 mod tests {
     use super::*;
     use crate::status::Status;
+
+    #[test]
+    fn find_on_path_returns_the_unresolved_symlink() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cellar = tmp.path().join("Cellar/0.3.0/bin");
+        let bin = tmp.path().join("bin");
+        let other = tmp.path().join("other");
+        for d in [&cellar, &bin, &other] {
+            std::fs::create_dir_all(d).expect("mkdir");
+        }
+        let real = cellar.join("wing");
+        std::fs::write(&real, "").expect("write");
+        symlink(&real, bin.join("wing")).expect("symlink");
+        // Same name, different file: must not match.
+        std::fs::write(other.join("wing"), "").expect("write");
+
+        let path = std::env::join_paths([&other, &bin]).expect("join");
+        assert_eq!(find_on_path(&real, &path), Some(bin.join("wing")));
+    }
+
+    #[test]
+    fn find_on_path_none_when_binary_is_off_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("wing");
+        std::fs::write(&real, "").expect("write");
+        let path = std::env::join_paths([tmp.path().join("nowhere")]).expect("join");
+        assert_eq!(find_on_path(&real, &path), None);
+    }
 
     #[test]
     fn overlay_round_trips() {
