@@ -601,7 +601,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // reserves above its shortcuts. One place, so no overlay can forget
     // it — the same discipline as `MODAL_PADDING`.
     if let Some(rect) = app.popup_area {
-        draw_footer_rule(f, rect, &app.theme.colors, hint_rows);
+        draw_footer_rule(f, rect, popup_border(app), hint_rows);
     }
 }
 
@@ -884,12 +884,22 @@ fn popup_block(
     icons: &crate::config::IconsConfig,
     title: impl Into<String>,
 ) -> Block<'static> {
+    framed_block(icons, fg(theme.popup_border), title_style(theme), title)
+}
+
+/// [`popup_block`] with its border and title styles given.
+fn framed_block(
+    icons: &crate::config::IconsConfig,
+    border: Style,
+    title_style: Style,
+    title: impl Into<String>,
+) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(border_type(icons))
-        .border_style(fg(theme.popup_border))
+        .border_style(border)
         .padding(MODAL_PADDING)
-        .title(Span::styled(title.into(), title_style(theme)))
+        .title(Span::styled(title.into(), title_style))
 }
 
 /// The content rect of a modal: inside the border AND [`MODAL_PADDING`].
@@ -920,7 +930,7 @@ pub(crate) const MODAL_FOOTER_H: usize = 2;
 /// hint line, so no sizing math changes — and only the symbol and the
 /// foreground are written, leaving each cell's background as the modal
 /// drew it (some overlays fill `popup_bg`, some do not).
-fn draw_footer_rule(f: &mut Frame, area: Rect, theme: &ResolvedColors, hint_rows: usize) {
+fn draw_footer_rule(f: &mut Frame, area: Rect, color: Color, hint_rows: usize) {
     // Two borders plus the hint rows: a modal this short has no body to
     // divide from its footer.
     if (area.height as usize) < 3 + hint_rows || area.width < 2 {
@@ -935,7 +945,17 @@ fn draw_footer_rule(f: &mut Frame, area: Rect, theme: &ResolvedColors, hint_rows
             _ if x == right => "\u{2524}",
             _ => "\u{2500}",
         };
-        buf[(x, y)].set_symbol(symbol).set_fg(theme.popup_border);
+        buf[(x, y)].set_symbol(symbol).set_fg(color);
+    }
+}
+
+/// The open modal's frame colour: the failure colour for a confirm whose
+/// answer cannot be taken back (a push), so it does not read like a delete
+/// of something local.
+fn popup_border(app: &App) -> Color {
+    match &app.mode {
+        Mode::Confirm { confirm } if confirm.action.alarming() => app.theme.colors.status_failed,
+        _ => app.theme.colors.popup_border,
     }
 }
 
@@ -1567,10 +1587,17 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
         } else {
             "hide"
         };
-        return vec![
-            (h(word, "."), ToggleHidden),
-            (h("cancel", "Esc"), VisualCancel),
-        ];
+        let mut v = vec![(h(word, "."), ToggleHidden)];
+        // As on one row: only when the last fetch counted something to do.
+        let marks = app.sync_marks();
+        if marks.iter().any(|&ri| app.pullable(ri)) {
+            v.push((h("pull all", "p"), Pull));
+        }
+        if marks.iter().any(|&ri| app.pushable(ri)) {
+            v.push((h("push all", "P"), Push));
+        }
+        v.push((h("cancel", "Esc"), VisualCancel));
+        return v;
     }
     if app.visual.is_some() {
         return vec![
@@ -1993,7 +2020,12 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             ),
             (
                 &["v"],
-                &["select repositories", "j/k extends", ". hides them all"],
+                &[
+                    "select repositories",
+                    "j/k extends, g v G takes all",
+                    ". hides them all",
+                    "p pull all, P push all (confirm with P)",
+                ],
             ),
         ],
     ),
@@ -2754,7 +2786,13 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Popup {
     // app, so listing it beside `n` costs a word and teaches nothing.
     let mut hints = Vec::new();
     if let Some(yl) = &confirm.yes_label {
-        hints.push(hint(ic, yl, "y/d"));
+        let keys: Vec<String> = confirm
+            .action
+            .yes_keys()
+            .iter()
+            .map(char::to_string)
+            .collect();
+        hints.push(hint(ic, yl, &keys.join("/")));
     }
     if let Some(fl) = &confirm.force_label {
         hints.push(hint(ic, fl, "f"));
@@ -2797,7 +2835,17 @@ fn draw_confirm(f: &mut Frame, app: &App) -> Popup {
     let hint_rows = footer.len();
     lines.extend(footer);
     let title_text = format!(" {} ", confirm.title);
-    let block = popup_block(theme, ic, title_text.clone());
+    let block = if confirm.action.alarming() {
+        let alarm = fg(theme.status_failed);
+        framed_block(
+            ic,
+            alarm,
+            alarm.add_modifier(Modifier::BOLD),
+            title_text.clone(),
+        )
+    } else {
+        popup_block(theme, ic, title_text.clone())
+    };
     let popup_style = on(theme.popup_fg, theme.popup_bg);
     let area = dialog_rect(
         f.area(),
@@ -4886,6 +4934,72 @@ mod tests {
             "and is emphasised: {:?}",
             cell.modifier
         );
+    }
+
+    /// A push over a selection is framed in the failure colour and offers
+    /// only `P`; a pull keeps the popup's own frame and `y/p`.
+    #[test]
+    fn a_push_all_confirm_is_framed_in_the_failure_colour() {
+        for push in [true, false] {
+            let mut app = seeded_app();
+            app.mode = Mode::Confirm {
+                confirm: Confirm {
+                    title: if push { "Push All" } else { "Pull All" }.into(),
+                    body: "2 repositories?".into(),
+                    yes_label: Some(if push { "push" } else { "pull" }.into()),
+                    warning: None,
+                    force_label: None,
+                    action: ConfirmAction::SyncMarked {
+                        push,
+                        repositories: vec![0, 1],
+                    },
+                },
+            };
+            let backend = ratatui::backend::TestBackend::new(120, 40);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let rows = buffer_rows(&terminal);
+            let footer = if push { "P push" } else { "y/p pull" };
+            assert!(
+                rows.iter().any(|r| r.contains(footer)),
+                "{footer:?} missing: {rows:?}"
+            );
+            let area = app.popup_area.unwrap();
+            let corner = &terminal.backend().buffer()[(area.x, area.y)];
+            let want = if push {
+                app.theme.colors.status_failed
+            } else {
+                app.theme.colors.popup_border
+            };
+            assert_eq!(corner.fg, want, "push = {push}");
+        }
+    }
+
+    /// Over a repository selection the bar names the batch: `pull all`,
+    /// `push all`, each only when a marked repository has something to do.
+    #[test]
+    fn a_repository_selection_offers_pull_and_push_all() {
+        let mut app = seeded_app();
+        app.sel = Sel::Repository(0);
+        app.visual = Some(Sel::Repository(0));
+        app.sel = Sel::Repository(1);
+        let descs = |app: &App| -> Vec<String> {
+            crate::ui::bar_entries(app)
+                .into_iter()
+                .map(|(h, _)| h.desc)
+                .collect()
+        };
+        assert!(!descs(&app).iter().any(|d| d.ends_with(" all")));
+        app.divergence.insert(
+            "/tmp/repo-b".into(),
+            crate::git::Divergence {
+                ahead: 2,
+                behind: 1,
+            },
+        );
+        let d = descs(&app);
+        assert!(d.contains(&"pull all".to_string()), "{d:?}");
+        assert!(d.contains(&"push all".to_string()), "{d:?}");
     }
 
     /// The cursor row tints its background and nothing else. Repainting the

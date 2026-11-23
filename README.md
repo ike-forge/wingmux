@@ -89,7 +89,7 @@ merge/PR automation. Only worktree teardown is automated.
 | `w` | new worktree |
 | `a` | add a shell to a worktree |
 | `m` | send a predefined message |
-| `p` / `P` | pull / push the selected repository |
+| `p` / `P` | pull / push the selected repository; over a repository selection (`g v G`), all of them, after a confirm |
 | `t` / `T` | repository / global todo pad |
 | `d` | delete worktree or close shell |
 | `r` / `R` | refresh / reset layout |

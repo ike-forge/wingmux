@@ -284,6 +284,12 @@ pushed from there.
   them or capped: the user asked for it now. The toast reports the outcome and
   the counts are re-read, so `↑` drops without a fetch. No upstream is an
   error here, unlike for fetch.
+- **`p` / `P` over a repository selection run in parallel and report once.**
+  A `sync::Batch` per verb holds the paths still out; the last one back
+  toasts `pushed 2 · failed 1 (repo-e)`, errors go to the log. Ten toasts
+  would replace each other before they could be read. Push-all confirms
+  only with `P` and is framed in `status_failed`: it is the one batch that
+  leaves the machine, so a reflex `y` must not answer it.
 - **Offline is normal.** A failed fetch keeps the last counts, dims them,
   and logs the error; no toast.
 

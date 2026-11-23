@@ -193,6 +193,13 @@ impl Git {
         }
     }
 
+    /// HEAD's upstream as git abbreviates it (`origin/main`); `None`
+    /// without one.
+    pub fn upstream_name(&self, dir: &Path) -> Option<String> {
+        let out = Self::run_ok(dir, &["rev-parse", "--abbrev-ref", "@{upstream}"]).ok()?;
+        Some(out.stdout.trim().to_string()).filter(|s| !s.is_empty())
+    }
+
     /// Does the branch exist locally?
     pub fn branch_exists(&self, dir: &Path, branch: &str) -> bool {
         Self::run(

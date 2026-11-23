@@ -99,6 +99,12 @@ impl Pusher {
         Self::new("pull", |d| Git.pull_upstream(d, PUSH_TIMEOUT))
     }
 
+    /// Runs `run` instead of git (tests only).
+    #[cfg(test)]
+    pub fn fake(verb: &'static str, run: fn(&Path) -> Result<()>) -> Self {
+        Self::new(verb, run)
+    }
+
     fn new(verb: &'static str, run: fn(&Path) -> Result<()>) -> Self {
         let (tx, rx) = mpsc::channel();
         Pusher {
@@ -140,6 +146,40 @@ impl Pusher {
     }
 }
 
+/// Pulls or pushes started together, reported together: one toast for a
+/// selection of ten, not ten toasts replacing each other.
+#[derive(Debug, Default)]
+pub struct Batch {
+    pub pending: std::collections::HashSet<PathBuf>,
+    pub ok: usize,
+    /// Names, in the order they came back.
+    pub failed: Vec<String>,
+}
+
+impl Batch {
+    pub fn record(&mut self, repo: &Path, name: String, ok: bool) {
+        self.pending.remove(repo);
+        if ok {
+            self.ok += 1;
+        } else {
+            self.failed.push(name);
+        }
+    }
+
+    /// `pushed 3 · failed 1 (repo-e)`; the errors are in the log.
+    pub fn summary(&self, done: &str) -> String {
+        let mut s = format!("{done} {}", self.ok);
+        if !self.failed.is_empty() {
+            s += &format!(
+                " · failed {} ({}) — see the log",
+                self.failed.len(),
+                self.failed.join(", ")
+            );
+        }
+        s
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +197,21 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         out
+    }
+
+    #[test]
+    fn a_batch_summary_names_only_the_failures() {
+        let mut b = Batch::default();
+        for r in ["a", "b", "c"] {
+            b.pending.insert(r.into());
+        }
+        b.record(Path::new("a"), "a".into(), true);
+        b.record(Path::new("b"), "b".into(), false);
+        assert!(!b.pending.is_empty());
+        b.record(Path::new("c"), "c".into(), true);
+        assert!(b.pending.is_empty());
+        assert_eq!(b.summary("pushed"), "pushed 2 · failed 1 (b) — see the log");
+        assert_eq!(Batch::default().summary("pulled"), "pulled 0");
     }
 
     #[test]

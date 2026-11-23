@@ -110,7 +110,7 @@ tail — `help ?`, the way to everything that did not fit, sits at that end.
 | `p` | `git pull --rebase` the repository's checkout from its upstream, off the event loop. Works from any row of the repository; the row's sync spinner turns while it runs and the result is a toast. The bar offers it only when the checkout is behind its upstream; the key itself always pulls, since wingmux's divergence may be stale | LazyGit `p` = pull |
 | `P` | `git push` the repository's checkout to its upstream, same mechanics. The bar offers it only when the checkout is ahead of its upstream; the key itself always pushes, since wingmux's divergence may be stale | LazyGit `P` = push |
 | `.` | hide the repository: it folds into the hidden row at the bottom of the tree. On a hidden repository, unhides it. Repository rows only | dotfile convention: `A` → `.A` hides a folder |
-| `v` | start a repository selection: `j`/`k` extend it, `.` hides every marked repository | vim visual mode; the anchor's kind is the selection's kind |
+| `v` | start a repository selection: `j`/`k` extend it, `.` hides every marked repository, `p`/`P` pull/push them all | vim visual mode; the anchor's kind is the selection's kind |
 
 `Enter` does not start the shell. It used to, and since `Enter`, `l` and
 `→` all expand, every repository opened to look at its worktrees left a
@@ -182,10 +182,13 @@ mix.
   own `d` does: a worktree row deletes the worktree, a shell row closes the
   shell (shells of a worktree that goes anyway are not counted twice).
   Repository rows in the range are skipped.
-- **Started on a repository row**: only repository rows are marked, and `.`
-  hides them all — or unhides them, when every one is hidden already. `d`
-  does nothing: repositories are never deleted, and closing a run of inline
-  shells is not worth a second meaning for the key.
+- **Started on a repository row**: only repository rows are marked. `.`
+  hides them all — or unhides them, when every one is hidden already — and
+  `p`/`P` pull or push them all, after a confirm. `g v G` marks every
+  repository, vim's `ggVG`. Hidden repositories are skipped by `p`/`P`, as
+  they are by the startup fetch. `d` does nothing: repositories are never
+  deleted, and closing a run of inline shells is not worth a second meaning
+  for the key.
 
 Every other action is per-row, so those keys are swallowed rather than
 acting on the cursor row alone.
@@ -195,6 +198,8 @@ acting on the cursor row alone.
 | `j` / `k` / arrows | extend or shrink | vim motions |
 | `d` | worktree selection: one confirm for everything marked; `f` forces when any worktree is dirty or locked | vim `d` on a selection; confirms, same `y`/`d`/`f` as a single delete |
 | `.` | repository selection: hide every marked repository, or unhide them all when none is shown | the same key as on one row |
+| `p` | repository selection: confirm, then `git pull --rebase` every marked repository. The bar reads `pull all`, shown when any of them is behind | the same key as on one row |
+| `P` | repository selection: confirm, then `git push` every marked repository. The bar reads `push all`, shown when any of them is ahead | the same key as on one row |
 | `v` / `Esc` | drop the selection | `Esc` closes every overlay |
 | `q` | quit | unconditional quit |
 
@@ -286,13 +291,20 @@ a docked agent). While it is up, the dashboard keeps running in its own
 window; closing the editor returns to it, and the next poll reads the file
 back into the pad.
 
-## Confirm dialogs (delete worktree / close shell)
+## Confirm dialogs (delete worktree / close shell / pull all / push all)
 
 | Key | Meaning | Rule satisfied |
 |---|---|---|
-| `y` / `d` | confirm (only when the plain answer can succeed) | confirm, object named in prompt; `d` re-pressed = vim `dd` |
+| `y` / `d` | confirm a delete or close (only when the plain answer can succeed) | confirm, object named in prompt; `d` re-pressed = vim `dd` |
+| `y` / `p` | confirm pull all | the action key re-pressed, as `dd` |
+| `P` | confirm push all — the only key that does | a push leaves the machine; a reflex `y` must not answer it |
 | `n` / `Esc` / `q` | abort (default) | confirmation defaults to "no"; the footer spells only `n` — `Esc` closes every overlay |
 | `f` | confirm with force (only when offered, e.g. dirty worktree) | destructive variant, offered not assumed |
+
+Pull all and push all list each repository with its route
+(`main → origin/main`) and its `↑`/`↓` count. Push all is framed in the
+failure colour. Both run on every listed repository, not only those the
+last fetch counted, and report one summary toast.
 
 `Enter` is deliberately **unbound** here. It means "open / drill into"
 everywhere else in the app, so it is the key the fingers press by reflex —

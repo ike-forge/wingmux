@@ -683,6 +683,29 @@ pub enum ConfirmAction {
     },
     /// Delete everything a visual selection covers.
     DeleteMarked(Marks),
+    /// Pull (or push, with `push`) every marked repository.
+    SyncMarked {
+        push: bool,
+        repositories: Vec<usize>,
+    },
+}
+
+impl ConfirmAction {
+    /// The keys that give the plain answer. A push is the one answer that
+    /// leaves the machine, so only `P` itself confirms it: a reflex `y`
+    /// cannot.
+    pub fn yes_keys(&self) -> &'static [char] {
+        match self {
+            ConfirmAction::SyncMarked { push: true, .. } => &['P'],
+            ConfirmAction::SyncMarked { push: false, .. } => &['y', 'p'],
+            _ => &['y', 'd'],
+        }
+    }
+
+    /// Drawn in the failure colour: the answer cannot be taken back.
+    pub fn alarming(&self) -> bool {
+        matches!(self, ConfirmAction::SyncMarked { push: true, .. })
+    }
 }
 
 pub struct App {
@@ -825,6 +848,9 @@ pub struct App {
     pub(crate) pusher: crate::sync::Pusher,
     /// `p` on a repository: pulls in flight.
     pub(crate) puller: crate::sync::Pusher,
+    /// The `p` / `P` over a selection still running, reported as one toast.
+    pull_batch: Option<crate::sync::Batch>,
+    push_batch: Option<crate::sync::Batch>,
     /// Repository path → HEAD against its upstream, refilled with
     /// `wt_state` and after each fetch. Absent: no upstream.
     pub(crate) divergence: HashMap<PathBuf, crate::git::Divergence>,
@@ -960,6 +986,8 @@ impl App {
             fetcher: Default::default(),
             pusher: crate::sync::Pusher::push(),
             puller: crate::sync::Pusher::pull(),
+            pull_batch: None,
+            push_batch: None,
             divergence: HashMap::new(),
             fetch_failed: Default::default(),
             auto_fetch: false,
@@ -1977,6 +2005,8 @@ impl App {
             }
             KeyCode::Char('d') => self.confirm_delete_marked(),
             KeyCode::Char('.') => self.hide_marked(),
+            KeyCode::Char('p') => self.confirm_sync_marked(false),
+            KeyCode::Char('P') => self.confirm_sync_marked(true),
             KeyCode::Char('q') => self.quit = true,
             _ => {}
         }
@@ -3429,27 +3459,51 @@ impl App {
             self.count_divergence(&d.repo);
         }
         for d in self.puller.poll() {
-            let name = self.repo_display_name(&d.repo);
-            match d.result {
-                Ok(()) => {
-                    // The remote answered: the last fetch's failure is stale.
-                    self.fetch_failed.remove(&d.repo);
-                    self.notify(format!("pulled '{name}'"));
-                }
-                Err(e) => self.notify_err(format!("pull '{name}': {e}")),
-            }
-            self.count_divergence(&d.repo);
+            self.sync_done(d, false);
         }
         for d in self.pusher.poll() {
-            let name = self.repo_display_name(&d.repo);
-            match d.result {
-                Ok(()) => {
-                    self.fetch_failed.remove(&d.repo);
-                    self.notify(format!("pushed '{name}'"));
-                }
-                Err(e) => self.notify_err(format!("push '{name}': {e}")),
+            self.sync_done(d, true);
+        }
+    }
+
+    /// A pull or push came back: toast it, or count it towards its batch
+    /// and toast the batch once it is complete.
+    fn sync_done(&mut self, d: crate::sync::Done, push: bool) {
+        let name = self.repo_display_name(&d.repo);
+        let (done, verb) = if push {
+            ("pushed", "push")
+        } else {
+            ("pulled", "pull")
+        };
+        if d.result.is_ok() {
+            // The remote answered: the last fetch's failure is stale.
+            self.fetch_failed.remove(&d.repo);
+        }
+        self.count_divergence(&d.repo);
+        let slot = if push {
+            &mut self.push_batch
+        } else {
+            &mut self.pull_batch
+        };
+        if let Some(batch) = slot.as_mut().filter(|b| b.pending.contains(&d.repo)) {
+            if let Err(e) = &d.result {
+                log::warn!("{verb} '{name}': {e}");
             }
-            self.count_divergence(&d.repo);
+            batch.record(&d.repo, name, d.result.is_ok());
+            if !batch.pending.is_empty() {
+                return;
+            }
+            let batch = slot.take().expect("batch checked above");
+            let text = batch.summary(done);
+            return if batch.failed.is_empty() {
+                self.notify(text)
+            } else {
+                self.notify_err(text)
+            };
+        }
+        match d.result {
+            Ok(()) => self.notify(format!("{done} '{name}'")),
+            Err(e) => self.notify_err(format!("{verb} '{name}': {e}")),
         }
     }
 
@@ -4260,7 +4314,9 @@ impl App {
                 // is deliberately NOT bound: it is the app's "open / drill
                 // in" key everywhere else, and a destructive answer must
                 // not sit under the key the fingers press by reflex.
-                KeyCode::Char('y') | KeyCode::Char('d') if confirm.yes_label.is_some() => {
+                KeyCode::Char(c)
+                    if confirm.yes_label.is_some() && confirm.action.yes_keys().contains(&c) =>
+                {
                     let action = confirm.action.clone();
                     self.mode = Mode::Normal;
                     self.run_confirm(action, false);
@@ -4649,6 +4705,9 @@ impl App {
 
     /// Pull the selected row's repository (its main checkout's branch).
     fn pull_selected(&mut self) {
+        if self.visual.is_some() {
+            return self.confirm_sync_marked(false);
+        }
         let Some(ri) = self.sel.repo() else {
             return self.notify("Select a repository to pull");
         };
@@ -4665,6 +4724,9 @@ impl App {
 
     /// Push the selected row's repository (its main checkout's branch).
     fn push_selected(&mut self) {
+        if self.visual.is_some() {
+            return self.confirm_sync_marked(true);
+        }
         let Some(ri) = self.sel.repo() else {
             return self.notify("Select a repository to push");
         };
@@ -4677,6 +4739,110 @@ impl App {
             }
             _ => self.notify("Select a repository to push"),
         }
+    }
+
+    /// The marked repositories a pull or push can run on: hidden ones are
+    /// left out, as they are from the startup fetch, and so are missing ones.
+    pub(crate) fn sync_marks(&self) -> Vec<usize> {
+        self.visual_marks()
+            .repositories
+            .into_iter()
+            .filter(|&ri| !self.is_hidden(ri) && !self.state.repositories[ri].missing)
+            .collect()
+    }
+
+    /// `p` / `P` over a repository selection: list what each marked
+    /// repository would pull or push, and ask. Every one runs on yes, not
+    /// only those the last fetch counted as behind or ahead, for the same
+    /// reason the single-row keys do: the counts may be stale.
+    fn confirm_sync_marked(&mut self, push: bool) {
+        let verb = if push { "push" } else { "pull" };
+        if !matches!(self.visual, Some(Sel::Repository(_))) {
+            return self.notify(format!(
+                "Only repositories {verb} — start the selection on one"
+            ));
+        }
+        let repositories = self.sync_marks();
+        self.visual = None;
+        if repositories.is_empty() {
+            return self.notify(format!(
+                "Nothing to {verb} — hidden repositories are skipped"
+            ));
+        }
+        let lines: Vec<String> = repositories
+            .iter()
+            .map(|&ri| {
+                let r = &self.state.repositories[ri];
+                let route = match (Git.current_branch(&r.path).ok(), Git.upstream_name(&r.path)) {
+                    (Some(b), Some(u)) if push => format!("{b} → {u}"),
+                    (Some(b), Some(u)) => format!("{u} → {b}"),
+                    _ => "no upstream".to_string(),
+                };
+                let count = match self.divergence.get(&r.path) {
+                    Some(d) if push && d.ahead > 0 => format!("  ↑{}", d.ahead),
+                    Some(d) if !push && d.behind > 0 => format!("  ↓{}", d.behind),
+                    _ => String::new(),
+                };
+                format!("  {}  {route}{count}", r.name)
+            })
+            .collect();
+        let n = repositories.len();
+        let noun = if n == 1 { "repository" } else { "repositories" };
+        let (title, warning) = if push {
+            ("Push All", Some("Commits leave this machine".to_string()))
+        } else {
+            ("Pull All", None)
+        };
+        self.mode = Mode::Confirm {
+            confirm: Confirm {
+                title: title.into(),
+                body: format!(
+                    "{} {n} {noun}?\n{}",
+                    if push { "Push" } else { "Pull --rebase" },
+                    lines.join("\n")
+                ),
+                yes_label: Some(verb.into()),
+                warning,
+                force_label: None,
+                action: ConfirmAction::SyncMarked { push, repositories },
+            },
+        };
+    }
+
+    /// Start a pull or push on each repository; one toast reports the lot
+    /// once the last one is back (see [`crate::sync::Batch`]).
+    fn sync_marked(&mut self, push: bool, repositories: &[usize]) {
+        let paths: Vec<PathBuf> = repositories
+            .iter()
+            .filter_map(|&ri| self.state.repositories.get(ri))
+            .filter(|r| !r.missing)
+            .map(|r| r.path.clone())
+            .collect();
+        let (runner, batch) = if push {
+            (&mut self.pusher, &mut self.push_batch)
+        } else {
+            (&mut self.puller, &mut self.pull_batch)
+        };
+        let batch = batch.get_or_insert_with(Default::default);
+        let mut started = 0;
+        for p in paths {
+            if runner.submit(&p) {
+                batch.pending.insert(p);
+                started += 1;
+            }
+        }
+        if batch.pending.is_empty() {
+            if push {
+                self.push_batch = None;
+            } else {
+                self.pull_batch = None;
+            }
+        }
+        let verb = if push { "pushing" } else { "pulling" };
+        self.notify(format!(
+            "{verb} {started} repositor{}",
+            if started == 1 { "y" } else { "ies" }
+        ));
     }
 
     /// Open the grouped help overlay (the palette) at its top. Also used
@@ -5449,6 +5615,10 @@ impl App {
             } => self.delete_shell(repository, worktree, shell),
             ConfirmAction::CloseRepoShell { repository } => self.delete_repo_shell(repository),
             ConfirmAction::DeleteMarked(marks) => self.delete_marked(marks, force),
+            ConfirmAction::SyncMarked { push, repositories } => {
+                self.sync_marked(push, &repositories);
+                Ok(())
+            }
         };
         if let Err(e) = res {
             self.fail(&e);
@@ -7397,6 +7567,93 @@ mod tests {
             press(&mut app, '.');
             assert!(app.state.hidden.is_empty(), "all hidden, so . unhides");
         });
+    }
+
+    /// Drain both runners until neither has anything in flight.
+    fn settle_syncs(app: &mut App) {
+        let start = Instant::now();
+        while app.pull_batch.is_some() || app.push_batch.is_some() {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "syncs never finished"
+            );
+            app.poll_fetches();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn fake_runners(app: &mut App) {
+        app.puller = crate::sync::Pusher::fake("pull", |_| Ok(()));
+        app.pusher = crate::sync::Pusher::fake("push", |p| {
+            if p.ends_with("p1") {
+                Err(Error::Git("rejected".into()))
+            } else {
+                Ok(())
+            }
+        });
+    }
+
+    /// `g v G p` pulls every shown repository behind one confirm, and the
+    /// result comes back as one toast.
+    #[test]
+    fn p_over_a_repository_selection_confirms_then_pulls_them_all() {
+        let mut app = app_with_repositories(3);
+        fake_runners(&mut app);
+        for c in ['g', 'v', 'G', 'p'] {
+            press(&mut app, c);
+        }
+        let Mode::Confirm { confirm } = &app.mode else {
+            panic!("p must ask first: {:?}", app.mode);
+        };
+        assert_eq!(confirm.title, "Pull All");
+        assert!(!confirm.action.alarming());
+        assert!(app.visual.is_none());
+        press(&mut app, 'y');
+        assert!(matches!(app.mode, Mode::Normal));
+        settle_syncs(&mut app);
+        assert_eq!(app.message.as_ref().unwrap().text, "pulled 3");
+    }
+
+    /// A push leaves the machine: `y` does not answer it, only `P` does,
+    /// and a failure is named in the one toast.
+    #[test]
+    fn push_over_a_selection_answers_only_to_p() {
+        let mut app = app_with_repositories(3);
+        fake_runners(&mut app);
+        for c in ['g', 'v', 'G', 'P'] {
+            press(&mut app, c);
+        }
+        let Mode::Confirm { confirm } = &app.mode else {
+            panic!("P must ask first: {:?}", app.mode);
+        };
+        assert_eq!(confirm.title, "Push All");
+        assert!(confirm.action.alarming());
+        for c in ['y', 'p', 'd'] {
+            press(&mut app, c);
+            assert!(
+                matches!(app.mode, Mode::Confirm { .. }),
+                "{c} must not push"
+            );
+        }
+        press(&mut app, 'P');
+        assert!(matches!(app.mode, Mode::Normal));
+        settle_syncs(&mut app);
+        let toast = app.message.as_ref().unwrap();
+        assert!(toast.error);
+        assert_eq!(toast.text, "pushed 2 · failed 1 (p1) — see the log");
+    }
+
+    /// Hidden repositories are left out of a pull, as they are out of the
+    /// startup fetch, even when the unfolded hidden row is in the range.
+    #[test]
+    fn a_sync_selection_skips_hidden_repositories() {
+        let mut app = app_with_repositories(3);
+        app.state.hidden.insert("/tmp/p1".into());
+        app.hidden_open = true;
+        app.sel = Sel::Repository(0);
+        press(&mut app, 'v');
+        press(&mut app, 'G');
+        assert_eq!(app.sync_marks(), vec![0, 2]);
     }
 
     #[test]
