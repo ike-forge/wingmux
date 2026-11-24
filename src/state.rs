@@ -2,8 +2,8 @@
 //!
 //! `$XDG_STATE_HOME/wingmux/state.json` holds only facts no other system
 //! keeps: per worktree path, the name typed in the popup, when it was created,
-//! the fork point and the agent picked; and the repository paths hidden with
-//! `.`. Everything else is rebuilt — repositories
+//! the fork point and the agent picked; the repository and folder paths
+//! hidden with `.`; and whether the tree is drawn as folders. Everything else is rebuilt — repositories
 //! from the scan and `[[repositories]]`, their base branch and agent from config
 //! and git, worktrees from `git worktree list`, and shells from `list-panes` on
 //! every poll ([`State::sync_shells`]).
@@ -28,6 +28,12 @@ pub struct State {
     /// Repository paths folded into the tree's hidden row. Keyed by path, so a
     /// renamed folder comes back visible.
     pub hidden: BTreeSet<PathBuf>,
+    /// Folder paths hidden with `.` in the folder view: every repository
+    /// below one is hidden, including ones that appear later.
+    pub hidden_folders: BTreeSet<PathBuf>,
+    /// The tree is drawn as folders rather than one flat list. Global, not
+    /// per scope.
+    pub folder_view: bool,
     /// Shell commands a v4 file recorded, keyed by (worktree or repository
     /// path, shell index): written onto panes spawned before `@wm_command`
     /// by the first [`State::reconcile`].
@@ -137,6 +143,9 @@ impl State {
                 // Additive key, so no version bump: an older build reading the
                 // file keeps its worktree records.
                 state.hidden = serde_json::from_value(raw["hidden"].clone()).unwrap_or_default();
+                state.hidden_folders =
+                    serde_json::from_value(raw["hidden_folders"].clone()).unwrap_or_default();
+                state.folder_view = raw["folder_view"].as_bool().unwrap_or(false);
             }
             4 => state.read_v4(&raw),
             _ => log::warn!(
@@ -146,6 +155,7 @@ impl State {
         }
         state.records.retain(|p, _| p.is_dir());
         state.hidden.retain(|p| p.is_dir());
+        state.hidden_folders.retain(|p| p.is_dir());
         Ok(state)
     }
 
@@ -194,6 +204,8 @@ impl State {
             "version": STATE_VERSION,
             "worktrees": &self.records,
             "hidden": &self.hidden,
+            "hidden_folders": &self.hidden_folders,
+            "folder_view": self.folder_view,
         });
         let text =
             serde_json::to_string_pretty(&stored).map_err(|e| Error::State(e.to_string()))?;
@@ -1030,6 +1042,25 @@ mod tests {
             let loaded = State::load().expect("load");
             assert!(loaded.hidden.contains(kept.path()));
             assert!(!loaded.hidden.contains(&gone_path));
+        });
+    }
+
+    #[test]
+    fn hidden_folders_and_the_folder_view_survive_a_save() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let kept = tempfile::TempDir::new().unwrap();
+            let mut s = State::default();
+            s.hidden_folders.insert(kept.path().to_path_buf());
+            s.hidden_folders.insert("/no/such/folder".into());
+            s.folder_view = true;
+            s.save().expect("save");
+
+            let loaded = State::load().expect("load");
+            assert!(loaded.folder_view);
+            assert_eq!(
+                loaded.hidden_folders.into_iter().collect::<Vec<_>>(),
+                vec![kept.path().to_path_buf()]
+            );
         });
     }
 

@@ -1042,14 +1042,30 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     let marked = app.visual_marks();
     let mut row: usize = 0;
 
-    for top in app.top_rows() {
-        let Sel::Repository(ri) = top else {
-            items.push(ListItem::new(Line::from(hidden_row_spans(app, spin))));
-            if app.sel == Sel::Hidden {
-                sel_row = Some(row);
+    for (top, depth) in app.top_rows() {
+        // The folder view nests a repository's whole subtree two columns
+        // per folder, the step the worktree guides already use.
+        let indent = Span::raw("  ".repeat(depth));
+        let ri = match top {
+            Sel::Repository(ri) => ri,
+            Sel::Folder(fi, hidden) => {
+                let mut spans = vec![indent];
+                spans.extend(folder_row_spans(app, fi, hidden, spin));
+                items.push(ListItem::new(Line::from(spans)));
+                if app.sel == top {
+                    sel_row = Some(row);
+                }
+                row += 1;
+                continue;
             }
-            row += 1;
-            continue;
+            _ => {
+                items.push(ListItem::new(Line::from(hidden_row_spans(app, spin))));
+                if app.sel == Sel::Hidden {
+                    sel_row = Some(row);
+                }
+                row += 1;
+                continue;
+            }
         };
         let repo = &app.state.repositories[ri];
         let hidden = app.is_hidden(ri);
@@ -1071,7 +1087,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             row_color(theme, pdead, theme.tree_repository)
         };
         let name_style = fg(name_color).add_modifier(Modifier::BOLD);
-        let mut spans = vec![Span::styled(icon.to_string(), name_style)];
+        let mut spans = vec![indent.clone(), Span::styled(icon.to_string(), name_style)];
         spans.extend(search_spans(app, &repo.name, name_style));
         if repo.missing {
             spans.push(Span::styled(" (missing)", fg(theme.dim)));
@@ -1137,6 +1153,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             };
             let icon_span = ficon.to_string();
             let mut wt_spans = vec![
+                indent.clone(),
                 Span::styled(
                     prefix,
                     fg(worktree_color(theme, wt, fdead, theme.tree_worktree)),
@@ -1226,7 +1243,10 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     label = format!("{label} #{}", sh.index);
                 }
                 let sh_style = fg(row_color(theme, st == Status::Dead, theme.tree_shell));
-                let mut sh_spans = vec![Span::styled(format!("{guide}{}", ic.shell), sh_style)];
+                let mut sh_spans = vec![
+                    indent.clone(),
+                    Span::styled(format!("{guide}{}", ic.shell), sh_style),
+                ];
                 sh_spans.extend(search_spans(app, &label, sh_style));
                 sh_spans.extend([
                     Span::raw(" "),
@@ -1282,10 +1302,48 @@ fn hidden_row_spans(app: &App, spin: std::time::Duration) -> Vec<Span<'static>> 
         format!("{icon}{} hidden", hidden.len()),
         fg(theme.dim),
     )];
-    if app.hidden_open {
-        return spans;
+    if !app.hidden_open {
+        spans.extend(urgent_span(app, &hidden, spin));
     }
-    let statuses: Vec<Status> = hidden
+    spans
+}
+
+/// A folder row of the folder view, on its side of the hidden row. Folded,
+/// it names the most urgent status below it, as the hidden row does.
+fn folder_row_spans(
+    app: &App,
+    fi: usize,
+    hidden: bool,
+    spin: std::time::Duration,
+) -> Vec<Span<'static>> {
+    let theme = &app.theme.colors;
+    let ic = &app.cfg.icons;
+    let Some(folder) = app.folders.folders.get(fi) else {
+        return Vec::new();
+    };
+    let folded = app.folded.contains(&Sel::Folder(fi, hidden));
+    let icon = if folded {
+        &ic.repository
+    } else {
+        &ic.repository_open
+    };
+    let style = fg(if hidden { theme.dim } else { theme.foreground });
+    let mut spans = vec![Span::styled(icon.to_string(), style)];
+    spans.extend(search_spans(app, &folder.label, style));
+    spans.push(Span::styled("/", style));
+    if folded {
+        spans.extend(urgent_span(app, &app.folder_repositories(fi, hidden), spin));
+    }
+    spans
+}
+
+/// The most urgent status among the shells of `repos`, with its count, for
+/// a row that folds them out of sight: an agent waiting on the user must
+/// not drop out of view with them.
+fn urgent_span(app: &App, repos: &[usize], spin: std::time::Duration) -> Option<Span<'static>> {
+    let theme = &app.theme.colors;
+    let ic = &app.cfg.icons;
+    let statuses: Vec<Status> = repos
         .iter()
         .map(|&ri| &app.state.repositories[ri])
         .flat_map(|r| {
@@ -1295,17 +1353,14 @@ fn hidden_row_spans(app: &App, spin: std::time::Duration) -> Vec<Span<'static>> 
         })
         .map(|sh| shell_status(app, sh))
         .collect();
-    let urgent = [Status::Blocked, Status::Waiting, Status::Failed]
+    let st = [Status::Blocked, Status::Waiting, Status::Failed]
         .into_iter()
-        .find(|st| statuses.contains(st));
-    if let Some(st) = urgent {
-        let n = statuses.iter().filter(|s| **s == st).count();
-        spans.push(Span::styled(
-            format!("  {}{n} {}", status_icon(ic, st, spin), st.label()),
-            fg(status_color(theme, st)),
-        ));
-    }
-    spans
+        .find(|st| statuses.contains(st))?;
+    let n = statuses.iter().filter(|s| **s == st).count();
+    Some(Span::styled(
+        format!("  {}{n} {}", status_icon(ic, st, spin), st.label()),
+        fg(status_color(theme, st)),
+    ))
 }
 
 /// The todo pad, at the bottom of the tree's column.
@@ -1536,6 +1591,16 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App) {
              They are not fetched at startup.",
             names.join("\n"),
         ))
+    } else if let Sel::Folder(fi, _) = app.sel {
+        let folder = &app.folders.folders[fi];
+        let hidden = app.folder_repositories(fi, true).len();
+        Text::from(format!(
+            "{}\n\n{} repositories, {hidden} hidden\n\n\
+             `.` hides the folder: every repository in it, and every one\n\
+             that appears in it later. `` ` `` switches to the flat list.",
+            folder.path.display(),
+            folder.repositories.len(),
+        ))
     } else if selected_worktree_has_no_shell(app) {
         // A worktree with no shell: there is no pane to capture, and the
         // generic hint below would send the user hunting for a child row
@@ -1612,7 +1677,24 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
             } else {
                 "show hidden"
             };
-            return vec![(h(word, "Enter"), HiddenFold), (h("help", "?"), Help)];
+            return vec![(h(word, "Enter"), Fold), (h("help", "?"), Help)];
+        }
+        Sel::Folder(fi, _) => {
+            let fold = if app.folded.contains(&app.sel) {
+                "open"
+            } else {
+                "fold"
+            };
+            let hide = if app.is_folder_hidden(fi) {
+                "unhide"
+            } else {
+                "hide"
+            };
+            return vec![
+                (h(fold, "Enter"), Fold),
+                (h(hide, "."), ToggleHidden),
+                (h("help", "?"), Help),
+            ];
         }
         // `a` starts (or re-enters) the repository's inline shell; `d`
         // closes it, and only appears once there is one to close.
@@ -1979,10 +2061,11 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                 &["y"],
                 &[
                     "copy path",
-                    "repository or worktree",
+                    "folder, repository or worktree",
                     "tmux buffer + clipboard",
                 ],
             ),
+            (&["`"], &["folder view", "flat list or folders"]),
         ],
     ),
     (
@@ -2016,7 +2099,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             ),
             (
                 &["."],
-                &["hide repository", "Enter on the hidden row shows them"],
+                &[
+                    "hide repository or folder",
+                    "Enter on the hidden row shows them",
+                ],
             ),
             (
                 &["v"],
@@ -3716,7 +3802,7 @@ mod tests {
         let mut app = seeded_app();
         // Tall enough for the whole palette: reflowed for the strip it is
         // a long column, and this test is about the words, not the fold.
-        let text = help_text(&mut app, 120, 80);
+        let text = help_text(&mut app, 120, 90);
         for header in ["navigate", "repositories", "worktrees", "shells", "global"] {
             assert!(text.contains(header), "group header {header:?} missing");
         }
@@ -3890,7 +3976,7 @@ mod tests {
         // For every bar entry, the action's word appears in the help
         // overlay (bar: "worktree w" vs help: "new worktree", etc.).
         let mut app = seeded_app();
-        let text = help_text(&mut app, 120, 80);
+        let text = help_text(&mut app, 120, 90);
         let mut app2 = seeded_app();
         // Diverged both ways, or the bar leaves `pull` and `push` out.
         app2.divergence.insert(
@@ -6085,5 +6171,51 @@ mod tests {
             })
             .count();
         assert_eq!(non_empty, expected);
+    }
+
+    /// The folder view draws one row per node, nested two columns per
+    /// folder, and the same folder on each side of the hidden row.
+    #[test]
+    fn the_folder_view_draws_one_indented_row_per_node() {
+        let mut app = seeded_app();
+        for (name, path) in [("x", "/tmp/old_/x"), ("y", "/tmp/old_/y")] {
+            app.state.repositories.push(crate::state::Repository {
+                name: name.into(),
+                path: path.into(),
+                missing: false,
+                shell: None,
+                worktrees: vec![],
+            });
+        }
+        app.state.hidden.insert("/tmp/old_/y".into());
+        app.state.folder_view = true;
+        app.hidden_open = true;
+        app.build_tree_flags();
+        app.sel = Sel::Hidden;
+        let expected = app.visible_nodes_len_for_test();
+        let (w, h) = (120u16, 40u16);
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let tw = tree_width((w, h)).unwrap();
+        let rows: Vec<String> = (1..h - 2)
+            .map(|y| {
+                (1..tw - 1)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .filter(|r| !r.trim().is_empty())
+            .collect();
+        assert_eq!(rows.len(), expected, "{rows:#?}");
+        let at = |name: &str| {
+            rows.iter()
+                .filter(|r| r.contains(name))
+                .map(|r| r.find(name).unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(at("old_/").len(), 2, "one folder row per side: {rows:#?}");
+        let folder = at("old_/")[0];
+        assert!(at(" x")[0] > folder, "x sits under its folder: {rows:#?}");
     }
 }

@@ -31,7 +31,9 @@ stats per directory, done live.
   Discovery still lists it; it is only drawn there, starts collapsed and is
   not fetched at startup. The hidden set lives in the state file, keyed by
   path: a new or renamed folder is visible, a deleted one is dropped. When you
-  start inside a repository, its own hide flag is ignored.
+  start inside a repository, its own hide flag is ignored. In the folder
+  view (`` ` ``) `.` on a folder hides it, by path too: a repository that
+  appears in it later starts hidden.
 - **Missing repositories**: a repository whose path stops being a git repo
   while the dashboard runs shows `(missing)` dimmed after `r` and
   re-activates when the path is a repo again. The next start does not list

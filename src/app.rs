@@ -92,21 +92,25 @@ impl Toast {
 }
 
 /// A node in the repositories/worktrees/shells tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Sel {
     Repository(usize),
     Worktree(usize, usize),
     Shell(usize, usize, usize),
     /// The row the hidden repositories fold into.
     Hidden,
+    /// A folder of the folder view, by index into [`App::folders`]. A
+    /// folder holding shown and hidden repositories has a row on both sides
+    /// of the hidden row; the flag says which one (`true`: under it).
+    Folder(usize, bool),
 }
 
 impl Sel {
-    /// The repository a row belongs to; `None` on the hidden row.
+    /// The repository a row belongs to; `None` on the hidden and folder rows.
     pub fn repo(self) -> Option<usize> {
         match self {
             Sel::Repository(ri) | Sel::Worktree(ri, _) | Sel::Shell(ri, ..) => Some(ri),
-            Sel::Hidden => None,
+            Sel::Hidden | Sel::Folder(..) => None,
         }
     }
 }
@@ -594,8 +598,8 @@ pub enum BarAction {
     Lazygit,
     /// Hide or unhide the selected repository (`.`).
     ToggleHidden,
-    /// Unfold or fold the hidden row (`Enter`).
-    HiddenFold,
+    /// Unfold or fold the hidden row or a folder row (`Enter`).
+    Fold,
     /// Run the `/` pattern being typed (`Enter`).
     SearchRun,
     /// Leave the `/` prompt, or drop the committed pattern (`Esc`).
@@ -728,6 +732,11 @@ pub struct App {
     pub wt_expanded: Vec<Vec<bool>>,
     /// The hidden row is unfolded: its repositories are listed under it.
     pub hidden_open: bool,
+    /// The folders between the scope and its repositories, rebuilt with the
+    /// tree flags. Drawn only in the folder view.
+    pub folders: crate::folders::Folders,
+    /// Folder rows folded with `h`; every other one is open.
+    pub folded: std::collections::HashSet<Sel>,
     pub mode: Mode,
     pub panes: HashMap<String, PaneInfo>,
     /// Spawn commands owed to shells that are not ready to be typed into
@@ -940,6 +949,8 @@ impl App {
             repo_expanded: Vec::new(),
             wt_expanded: Vec::new(),
             hidden_open: false,
+            folders: Default::default(),
+            folded: Default::default(),
             mode: Mode::Normal,
             panes: HashMap::new(),
             pending_launches: Vec::new(),
@@ -1568,6 +1579,7 @@ impl App {
         // scopes with a wild number of repos, not a cost guard: the
         // `git worktree list` each unfolded repository owes is queued and
         // drained in the background (see `boot_discovery_from`).
+        self.rebuild_folders();
         let vis: Vec<usize> = self
             .visible_repositories()
             .into_iter()
@@ -1590,6 +1602,24 @@ impl App {
         // Keep the loaded flag parallel to repositories.
         self.worktrees_loaded
             .resize(self.state.repositories.len(), false);
+    }
+
+    /// Group the in-scope repositories by folder, for the folder view and
+    /// for folder hides. The root is the scope; before boot set one (tests)
+    /// it is the deepest directory holding every repository.
+    fn rebuild_folders(&mut self) {
+        let vis = self.visible_repositories();
+        let repos: Vec<(usize, &std::path::Path)> = vis
+            .iter()
+            .map(|&ri| (ri, self.state.repositories[ri].path.as_path()))
+            .collect();
+        let root = if self.scope_root.as_os_str() != "." {
+            self.scope_root.clone()
+        } else {
+            crate::folders::common_root(repos.iter().map(|(_, p)| *p))
+        };
+        self.folders = crate::folders::Folders::build(&root, &repos, self.state.repositories.len());
+        self.folded.clear();
     }
 
     /// Indices of the repositories currently in scope (path inside
@@ -1619,12 +1649,39 @@ impl App {
                 .is_some_and(|r| self.scope_root.starts_with(&r.path))
     }
 
+    /// Hidden on its own, or by a hidden folder above it.
     pub(crate) fn is_hidden(&self, ri: usize) -> bool {
-        self.state
-            .repositories
-            .get(ri)
-            .is_some_and(|r| self.state.hidden.contains(&r.path))
-            && !self.is_scope_repo(ri)
+        self.state.repositories.get(ri).is_some_and(|r| {
+            crate::folders::is_hidden(
+                &r.path,
+                &self.folders.root,
+                &self.state.hidden,
+                &self.state.hidden_folders,
+            )
+        }) && !self.is_scope_repo(ri)
+    }
+
+    /// A folder shows as hidden when every repository below it is.
+    pub(crate) fn is_folder_hidden(&self, fi: usize) -> bool {
+        self.folders
+            .folders
+            .get(fi)
+            .is_some_and(|f| f.repositories.iter().all(|&ri| self.is_hidden(ri)))
+    }
+
+    /// The repositories below a folder row, on its side of the hidden row.
+    pub(crate) fn folder_repositories(&self, fi: usize, hidden: bool) -> Vec<usize> {
+        self.folders
+            .folders
+            .get(fi)
+            .map(|f| {
+                f.repositories
+                    .iter()
+                    .copied()
+                    .filter(|&ri| self.is_hidden(ri) == hidden)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Hidden repositories in scope, in tree order.
@@ -1635,32 +1692,136 @@ impl App {
             .collect()
     }
 
-    /// The tree's top-level rows: the shown repositories, then the hidden
-    /// row and, while it is unfolded, the hidden repositories under it.
-    pub(crate) fn top_rows(&self) -> Vec<Sel> {
+    /// The tree's rows above worktree level, each with its folder depth: the
+    /// shown repositories, then the hidden row and, while it is unfolded,
+    /// the hidden repositories under it. In the folder view each side is
+    /// grouped by folder.
+    pub(crate) fn top_rows(&self) -> Vec<(Sel, usize)> {
         let (hidden, shown): (Vec<usize>, Vec<usize>) = self
             .visible_repositories()
             .into_iter()
             .partition(|&ri| self.is_hidden(ri));
-        let mut rows: Vec<Sel> = shown.into_iter().map(Sel::Repository).collect();
+        let mut rows = Vec::new();
+        let side = |rows: &mut Vec<(Sel, usize)>, ris: &[usize], is_hidden: bool| {
+            if self.state.folder_view {
+                let mut on = vec![false; self.state.repositories.len()];
+                for &ri in ris {
+                    on[ri] = true;
+                }
+                self.folder_rows(None, is_hidden, 0, &on, rows);
+            } else {
+                rows.extend(ris.iter().map(|&ri| (Sel::Repository(ri), 0)));
+            }
+        };
+        side(&mut rows, &shown, false);
         if !hidden.is_empty() {
-            rows.push(Sel::Hidden);
+            rows.push((Sel::Hidden, 0));
             if self.hidden_open {
-                rows.extend(hidden.into_iter().map(Sel::Repository));
+                side(&mut rows, &hidden, true);
             }
         }
         rows
+    }
+
+    /// The rows under `parent` (`None`: the root) for the repositories `on`
+    /// marks: its repositories first, then its folders, each folder followed
+    /// by its own rows unless it is folded. A folder with none of them has
+    /// no row.
+    fn folder_rows(
+        &self,
+        parent: Option<usize>,
+        hidden: bool,
+        depth: usize,
+        on: &[bool],
+        out: &mut Vec<(Sel, usize)>,
+    ) {
+        for (ri, _) in on.iter().enumerate().filter(|(_, on)| **on) {
+            if self.folders.parent_of.get(ri).copied().flatten() == parent {
+                out.push((Sel::Repository(ri), depth));
+            }
+        }
+        for fi in self.folders.children_of(parent) {
+            let any = self.folders.folders[fi]
+                .repositories
+                .iter()
+                .any(|&ri| on.get(ri).copied().unwrap_or(false));
+            if !any {
+                continue;
+            }
+            let sel = Sel::Folder(fi, hidden);
+            out.push((sel, depth));
+            if !self.folded.contains(&sel) {
+                self.folder_rows(Some(fi), hidden, depth + 1, on, out);
+            }
+        }
+    }
+
+    /// The row `h` climbs to from a folded repository or folder row: its
+    /// folder, or the hidden row from the top of the hidden side.
+    fn row_above(&self, sel: Sel) -> Option<Sel> {
+        let (folder, hidden) = match sel {
+            Sel::Repository(ri) => (
+                self.folders.parent_of.get(ri).copied().flatten(),
+                self.is_hidden(ri),
+            ),
+            Sel::Folder(fi, hidden) => (self.folders.folders.get(fi)?.parent, hidden),
+            _ => return None,
+        };
+        match folder {
+            Some(fi) if self.state.folder_view => Some(Sel::Folder(fi, hidden)),
+            _ => hidden.then_some(Sel::Hidden),
+        }
     }
 
     /// Repositories with a row on screen.
     fn listed_repositories(&self) -> Vec<usize> {
         self.top_rows()
             .into_iter()
-            .filter_map(|r| match r {
+            .filter_map(|(r, _)| match r {
                 Sel::Repository(ri) => Some(ri),
                 _ => None,
             })
             .collect()
+    }
+
+    /// `` ` ``: switch between the flat list and the folder view. Saved, so
+    /// the next start opens in the same view.
+    fn toggle_folder_view(&mut self) {
+        self.state.folder_view = !self.state.folder_view;
+        match self.sel {
+            // The flat list has no folder rows: land on the folder's first
+            // repository.
+            Sel::Folder(fi, hidden) => {
+                if let Some(&ri) = self.folder_repositories(fi, hidden).first() {
+                    self.sel = Sel::Repository(ri);
+                }
+            }
+            // A repository in a folded folder would have no row.
+            sel => {
+                if let Some(ri) = sel.repo() {
+                    self.reveal(ri);
+                }
+            }
+        }
+        self.clamp_sel();
+        self.notify(if self.state.folder_view {
+            "Folder view"
+        } else {
+            "Flat view"
+        });
+        if let Err(e) = self.save_state() {
+            self.fail(&e);
+        }
+    }
+
+    /// Unfold the folders above a repository.
+    fn reveal(&mut self, ri: usize) {
+        let hidden = self.is_hidden(ri);
+        let mut up = self.folders.parent_of.get(ri).copied().flatten();
+        while let Some(fi) = up {
+            self.folded.remove(&Sel::Folder(fi, hidden));
+            up = self.folders.folders.get(fi).and_then(|f| f.parent);
+        }
     }
 
     /// `.`: fold the selected repository into the hidden row, or bring it
@@ -1671,6 +1832,7 @@ impl App {
         }
         let ri = match self.sel {
             Sel::Repository(ri) => ri,
+            Sel::Folder(fi, _) => return self.toggle_folder_hidden(fi),
             Sel::Hidden => return self.notify("Select a hidden repository to unhide it"),
             _ => return self.notify("Only repositories hide — select the repository row"),
         };
@@ -1699,28 +1861,81 @@ impl App {
         ));
     }
 
-    /// Hide or unhide `ris`. The cursor stays on its row while it is still
-    /// listed and otherwise moves to the next one.
-    fn set_hidden(&mut self, ris: &[usize], hide: bool) {
-        let before = self.visible_nodes();
-        let at = before.iter().position(|n| *n == self.sel).unwrap_or(0);
-        for &ri in ris {
-            let Some(path) = self.state.repositories.get(ri).map(|r| r.path.clone()) else {
-                continue;
-            };
+    /// `.` on a folder row: hide the folder — every repository below it,
+    /// including ones that appear later — or show it again.
+    fn toggle_folder_hidden(&mut self, fi: usize) {
+        let Some(folder) = self.folders.folders.get(fi).cloned() else {
+            return;
+        };
+        let hide = !self.is_folder_hidden(fi);
+        self.rehide(|app| {
             if hide {
-                self.state.hidden.insert(path);
-                if let Some(e) = self.repo_expanded.get_mut(ri) {
-                    *e = false;
+                app.state.hidden_folders.insert(folder.path.clone());
+                for &ri in &folder.repositories {
+                    if let Some(e) = app.repo_expanded.get_mut(ri) {
+                        *e = false;
+                    }
                 }
             } else {
-                self.state.hidden.remove(&path);
+                app.unhide_path(&folder.path);
             }
-        }
+        });
+    }
+
+    /// Hide or unhide `ris`.
+    fn set_hidden(&mut self, ris: &[usize], hide: bool) {
+        self.rehide(|app| {
+            for &ri in ris {
+                let Some(path) = app.state.repositories.get(ri).map(|r| r.path.clone()) else {
+                    continue;
+                };
+                if hide {
+                    app.state.hidden.insert(path);
+                    if let Some(e) = app.repo_expanded.get_mut(ri) {
+                        *e = false;
+                    }
+                } else {
+                    app.unhide_path(&path);
+                }
+            }
+        });
+    }
+
+    /// Show a repository or folder path again, whatever hid it.
+    fn unhide_path(&mut self, target: &std::path::Path) {
+        let paths: Vec<PathBuf> = self
+            .visible_repositories()
+            .into_iter()
+            .map(|ri| self.state.repositories[ri].path.clone())
+            .collect();
+        let repos: Vec<&std::path::Path> = paths.iter().map(PathBuf::as_path).collect();
+        crate::folders::unhide(
+            target,
+            &self.folders.root,
+            &repos,
+            &mut self.state.hidden,
+            &mut self.state.hidden_folders,
+        );
+    }
+
+    /// Apply a change to the hidden sets and save it. The cursor stays on
+    /// its row while it is still listed — a folder row follows its folder to
+    /// the other side of the hidden row — and otherwise moves to the next
+    /// one.
+    fn rehide(&mut self, change: impl FnOnce(&mut Self)) {
+        let before = self.visible_nodes();
+        let at = before.iter().position(|n| *n == self.sel).unwrap_or(0);
+        change(self);
         if self.hidden_repositories().is_empty() {
             self.hidden_open = false;
         }
         let after = self.visible_nodes();
+        if let Sel::Folder(fi, hidden) = self.sel
+            && !after.contains(&self.sel)
+            && after.contains(&Sel::Folder(fi, !hidden))
+        {
+            self.sel = Sel::Folder(fi, !hidden);
+        }
         if !after.contains(&self.sel) {
             self.sel = before[at..]
                 .iter()
@@ -1812,7 +2027,7 @@ impl App {
     /// All visible tree nodes in display order (scope-filtered).
     fn visible_nodes(&self) -> Vec<Sel> {
         let mut v = Vec::new();
-        for top in self.top_rows() {
+        for (top, _) in self.top_rows() {
             v.push(top);
             let Sel::Repository(ri) = top else {
                 continue;
@@ -1912,6 +2127,11 @@ impl App {
             }
             Sel::Shell(ri, wi, si) => self.dock_shell(ri, wi, si),
             Sel::Hidden => self.hidden_open = !self.hidden_open,
+            sel @ Sel::Folder(..) => {
+                if !self.folded.remove(&sel) {
+                    self.folded.insert(sel);
+                }
+            }
         }
     }
 
@@ -1922,11 +2142,19 @@ impl App {
                     && *e
                 {
                     *e = false;
-                } else if self.is_hidden(ri) {
-                    self.sel = Sel::Hidden;
+                } else if let Some(up) = self.row_above(self.sel) {
+                    self.sel = up;
                 }
             }
             Sel::Hidden => self.hidden_open = false,
+            sel @ Sel::Folder(..) => {
+                // Already folded: the insert changes nothing, so climb.
+                if !self.folded.insert(sel)
+                    && let Some(up) = self.row_above(sel)
+                {
+                    self.sel = up;
+                }
+            }
             Sel::Worktree(ri, wi) => {
                 let fexp = self
                     .wt_expanded
@@ -1979,7 +2207,7 @@ impl App {
             match *node {
                 Sel::Worktree(ri, wi) => marks.worktrees.push((ri, wi)),
                 Sel::Shell(ri, wi, si) => marks.shells.push((ri, wi, si)),
-                Sel::Repository(_) | Sel::Hidden => {}
+                Sel::Repository(_) | Sel::Hidden | Sel::Folder(..) => {}
             }
         }
         let wts = marks.worktrees.clone();
@@ -1988,7 +2216,7 @@ impl App {
     }
 
     fn start_visual(&mut self) {
-        if self.sel == Sel::Hidden {
+        if matches!(self.sel, Sel::Hidden | Sel::Folder(..)) {
             self.notify("Select a repository, worktree or shell to start a selection");
         } else {
             self.visual = Some(self.sel);
@@ -2126,7 +2354,7 @@ impl App {
     fn selected_dir(&self) -> Option<PathBuf> {
         let repo = |ri: usize| self.state.repositories.get(ri);
         match self.sel {
-            Sel::Hidden => None,
+            Sel::Hidden | Sel::Folder(..) => None,
             Sel::Repository(ri) => repo(ri).map(|r| r.path.clone()),
             Sel::Worktree(ri, wi) | Sel::Shell(ri, wi, _) => repo(ri)
                 .and_then(|r| r.worktrees.get(wi))
@@ -3747,7 +3975,7 @@ impl App {
     /// agent-command prompt.
     pub fn add_shell_choices(&self) -> Vec<ShellChoice> {
         let (ri, wi) = match self.sel {
-            Sel::Hidden => return Vec::new(),
+            Sel::Hidden | Sel::Folder(..) => return Vec::new(),
             Sel::Repository(ri) => (ri, None),
             Sel::Worktree(ri, wi) | Sel::Shell(ri, wi, _) => (ri, Some(wi)),
         };
@@ -3821,7 +4049,7 @@ impl App {
     pub(crate) fn open_new_worktree(&mut self) {
         let ri = match self.sel {
             Sel::Repository(ri) | Sel::Worktree(ri, _) => ri,
-            Sel::Shell(..) | Sel::Hidden => {
+            Sel::Shell(..) | Sel::Hidden | Sel::Folder(..) => {
                 self.notify("Select a repository to add a worktree");
                 return;
             }
@@ -4474,6 +4702,9 @@ impl App {
 
     /// The name a row is searched by — what the tree prints for it.
     pub(crate) fn search_label(&self, node: Sel) -> Option<String> {
+        if let Sel::Folder(fi, _) = node {
+            return self.folders.folders.get(fi).map(|f| f.label.clone());
+        }
         let repo = self.state.repositories.get(node.repo()?)?;
         match node {
             Sel::Repository(_) => Some(repo.name.clone()),
@@ -4483,7 +4714,7 @@ impl App {
                 .get(wi)
                 .and_then(|w| w.shells.get(si))
                 .map(|s| s.label()),
-            Sel::Hidden => None,
+            Sel::Hidden | Sel::Folder(..) => None,
         }
     }
 
@@ -4566,8 +4797,12 @@ impl App {
     /// `y`: the selected row's path into the tmux buffer and the clipboard.
     /// Shell rows give their worktree's path — the directory they run in.
     fn yank_path(&mut self) {
-        let path = self.sel.repo().and_then(|ri| {
-            let repo = self.state.repositories.get(ri)?;
+        let folder = match self.sel {
+            Sel::Folder(fi, _) => self.folders.folders.get(fi).map(|f| f.path.clone()),
+            _ => None,
+        };
+        let path = folder.or_else(|| {
+            let repo = self.state.repositories.get(self.sel.repo()?)?;
             match self.sel {
                 Sel::Worktree(_, wi) | Sel::Shell(_, wi, _) => {
                     repo.worktrees.get(wi).map(|w| w.path.clone())
@@ -4576,7 +4811,7 @@ impl App {
             }
         });
         let Some(path) = path else {
-            return self.notify("Select a repository, worktree or shell to copy its path");
+            return self.notify("Select a folder, repository, worktree or shell to copy its path");
         };
         let path = path.to_string_lossy().into_owned();
         let res = match self.tmux.as_ref() {
@@ -4631,6 +4866,7 @@ impl App {
             }
             KeyCode::Char('f') => self.fetch_selected(),
             KeyCode::Char('.') => self.toggle_hidden(),
+            KeyCode::Char('`') => self.toggle_folder_view(),
             KeyCode::Char('R') => self.reset_layout(),
             KeyCode::Char('?') => self.open_help(),
             _ => {}
@@ -5440,7 +5676,7 @@ impl App {
             }
             BarAction::Lazygit => self.open_lazygit(),
             BarAction::ToggleHidden => self.toggle_hidden(),
-            BarAction::HiddenFold => self.expand_or_attach(),
+            BarAction::Fold => self.expand_or_attach(),
             BarAction::Todo => self.open_repo_todo(),
             BarAction::TodoBack => self.close_todo(),
             BarAction::TodoEdit => self.edit_todo_externally(),
@@ -11037,5 +11273,161 @@ mod tests {
         app.poll_fetches();
         assert!(app.fetch_seen.contains(Path::new("/tmp/p0")));
         assert!(!app.fetch_seen.contains(Path::new("/tmp/p1")));
+    }
+
+    // ------------------------------------------------------- folder view
+
+    /// `/s/repoA`, `/s/repoB`, `/s/old_/repoA`, `/s/old_/repoB`, scoped to
+    /// `/s`.
+    fn app_with_folders(folder_view: bool) -> App {
+        let mut app = app_with(tmux_nowhere());
+        for path in ["/s/repoA", "/s/repoB", "/s/old_/repoA", "/s/old_/repoB"] {
+            app.state.repositories.push(Repository {
+                name: Path::new(path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into(),
+                path: path.into(),
+                missing: false,
+                shell: None,
+                worktrees: vec![],
+            });
+        }
+        app.scope_root = "/s".into();
+        app.state.folder_view = folder_view;
+        app.build_tree_flags();
+        app.clamp_sel();
+        app
+    }
+
+    #[test]
+    fn the_folder_view_nests_repositories_under_their_folder() {
+        let app = app_with_folders(true);
+        assert_eq!(
+            app.top_rows(),
+            vec![
+                (Sel::Repository(0), 0),
+                (Sel::Repository(1), 0),
+                (Sel::Folder(0, false), 0),
+                (Sel::Repository(2), 1),
+                (Sel::Repository(3), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hidden_folder_hides_its_repositories_in_both_views_and_later_ones_too() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_folders(true);
+            app.sel = Sel::Folder(0, false);
+            press(&mut app, '.');
+            assert!(app.state.hidden_folders.contains(Path::new("/s/old_")));
+            assert_eq!(
+                app.visible_nodes(),
+                vec![Sel::Repository(0), Sel::Repository(1), Sel::Hidden]
+            );
+
+            press(&mut app, '`');
+            assert!(!app.state.folder_view);
+            assert_eq!(app.hidden_repositories(), vec![2, 3]);
+
+            app.state.repositories.push(Repository {
+                name: "repoC".into(),
+                path: "/s/old_/repoC".into(),
+                missing: false,
+                shell: None,
+                worktrees: vec![],
+            });
+            app.build_tree_flags();
+            assert!(
+                app.is_hidden(4),
+                "a repository new in the folder starts hidden"
+            );
+        });
+    }
+
+    #[test]
+    fn unhiding_one_repository_of_a_hidden_folder_keeps_the_others_hidden() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_folders(false);
+            app.state.hidden_folders.insert("/s/old_".into());
+            app.hidden_open = true;
+            app.sel = Sel::Repository(2);
+            press(&mut app, '.');
+            assert!(app.state.hidden_folders.is_empty());
+            assert_eq!(
+                app.state.hidden.iter().collect::<Vec<_>>(),
+                vec![Path::new("/s/old_/repoB")]
+            );
+            assert_eq!(
+                app.sel,
+                Sel::Repository(2),
+                "the unhidden row keeps the cursor"
+            );
+        });
+    }
+
+    #[test]
+    fn a_folder_whose_repositories_are_all_hidden_shows_hidden_and_unhides_them() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_folders(true);
+            app.state.hidden.insert("/s/old_/repoA".into());
+            app.state.hidden.insert("/s/old_/repoB".into());
+            assert!(app.is_folder_hidden(0));
+            app.hidden_open = true;
+            app.sel = Sel::Folder(0, true);
+            press(&mut app, '.');
+            assert!(app.state.hidden.is_empty());
+            assert_eq!(
+                app.sel,
+                Sel::Folder(0, false),
+                "the cursor follows the folder"
+            );
+        });
+    }
+
+    #[test]
+    fn h_climbs_to_the_folder_then_folds_it_and_enter_opens_it() {
+        let mut app = app_with_folders(true);
+        app.sel = Sel::Repository(3);
+        press(&mut app, 'h');
+        assert_eq!(
+            app.sel,
+            Sel::Repository(3),
+            "the first h folds the repository"
+        );
+        press(&mut app, 'h');
+        assert_eq!(app.sel, Sel::Folder(0, false));
+        press(&mut app, 'h');
+        assert_eq!(
+            app.visible_nodes(),
+            vec![
+                Sel::Repository(0),
+                Sel::Repository(1),
+                Sel::Folder(0, false)
+            ]
+        );
+        press(&mut app, 'h');
+        assert_eq!(
+            app.sel,
+            Sel::Folder(0, false),
+            "a top folder has nowhere to climb"
+        );
+        app.on_key(key(KeyCode::Enter, false));
+        assert_eq!(app.visible_nodes().len(), 5);
+    }
+
+    #[test]
+    fn leaving_the_folder_view_on_a_folder_lands_on_its_first_repository() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_folders(true);
+            app.sel = Sel::Folder(0, false);
+            press(&mut app, '`');
+            assert_eq!(app.sel, Sel::Repository(2));
+            assert!(!State::load().unwrap().folder_view, "the view is saved");
+            press(&mut app, '`');
+            assert!(State::load().unwrap().folder_view);
+        });
     }
 }

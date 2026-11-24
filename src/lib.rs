@@ -13,6 +13,7 @@ pub mod config;
 pub mod discovery;
 pub mod dock;
 pub mod error;
+pub mod folders;
 pub mod git;
 pub mod hooks;
 pub mod logging;

@@ -36,7 +36,8 @@ the same commit as the change.
   keys with no migration path; v4 keeps it.)
 - **`state.json` holds only what nothing else records** (schema v5): per
   worktree path, the name typed in the popup, `created_at`, the fork point
-  (`base_commit`) and the agent picked. Everything else is rebuilt, because
+  (`base_commit`) and the agent picked; plus the hidden repository and
+  folder paths and the view flag. Everything else is rebuilt, because
   any copy goes stale the moment its source changes:
   - repositories (name, path) from the scope scan and `[[repositories]]`;
   - base branch and agent from config on every use (`Config::base_branch_at`,
@@ -138,6 +139,19 @@ the same commit as the change.
   directories drop at load. The repository the scope sits inside ignores
   the flag. Hidden repositories skip the startup fetch and the divergence
   poll while folded.
+- **Folder hides are stored, folder state is derived** (`src/folders.rs`).
+  `state.json` keeps `hidden` (repositories) and `hidden_folders`; a
+  repository is hidden when it or a folder above it (below the scope) is in
+  them, and a folder shows hidden when all its repositories are. Storing the
+  derived case would make "hid every repository" indistinguishable from "hid
+  the folder", and only the second should take repositories that appear
+  later. Unhiding inside a hidden folder rewrites the folder hide into hides
+  of the siblings along the path, so the model never needs a third
+  "shown despite its folder" set.
+- **The folder view is a layout, not a second model.** Folders are rebuilt
+  from the in-scope repository paths with the tree flags; a folder without
+  repositories cannot have a row, and single-child chains merge. The view
+  flag (`folder_view`) is global in `state.json`, not per scope.
 
 ## Worktrees and deletion
 

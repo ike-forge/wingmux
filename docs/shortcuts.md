@@ -26,6 +26,7 @@ overlays) → active overlay → text input → focused panel → global binding
 | `Home` / `End` | first / last item | accessibility: same as `g`/`G` |
 | `/` | search the visible rows by name; the cursor follows the first match after it as you type. `Enter` keeps the pattern, `Esc` (or `Backspace` on an empty prompt) puts the cursor back | vim search; smartcase |
 | `n` / `N` | next / previous match of the kept pattern, wrapping with a toast | vim `n`/`N` |
+| `` ` `` | switch between the flat list and the folder view; kept across restarts | LazyGit `` ` `` = toggle file tree view |
 
 A search, not a filter: every row stays on screen, the matched text is shown
 reversed, and `n`/`N` move through the matches. The prompt is the
@@ -150,6 +151,29 @@ is the scope. Hidden repositories are not fetched at startup, start
 collapsed, and do not count toward the 30-repository unfold limit. The set
 is kept in the state file by path, so a renamed or new folder shows up, and
 a deleted one is dropped silently.
+
+### Folder view
+
+`` ` `` groups the repositories by the folders between the scope and them.
+Folders without repositories have no row; a folder whose only child is a
+folder is merged with it (`a/b/c`). Repositories come before folders at each
+level. Hides are shared with the flat list.
+
+| Key | Meaning | Rule satisfied |
+|---|---|---|
+| `Enter` / `l` on a folder | fold / open it | "open / drill into" |
+| `h` on a folder | fold it; on a folded one, jump to its parent folder | vim `h` = collapse, then parent |
+| `h` on a collapsed repository | jump to its folder | vim `h` = parent |
+| `.` on a folder | hide it: every repository in it, and every one that appears in it later. On a folder showing hidden, unhide it | the same key as on a repository |
+| `y` on a folder | copy its path | vim yank |
+
+A folder shows hidden when every repository in it is hidden, whether by the
+folder or one by one; only the explicit choices are stored. A folder holding
+both shown and hidden repositories has a row on each side of the hidden row.
+Unhiding a repository inside a hidden folder replaces the folder hide with
+hides of everything beside it, folders as folders: only that repository comes
+back. Unhiding a folder keeps the hides of its own repositories, unless they
+are all of them. `v` is refused on a folder row.
 
 `H` was considered and rejected: a shifted key here is the stronger form of
 its lowercase key (`t`/`T`, `r`/`R`, `p`/`P`), and `h` is collapse.
