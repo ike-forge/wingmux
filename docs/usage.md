@@ -37,7 +37,8 @@ clicking outside an overlay dismisses it.
 **Docking**: the pane beside the tree is the agent's own tmux pane, swapped
 in — not a rendering of it. Moving the cursor onto a shell docks it without
 taking your keyboard along, so the next `j` is still a `j`; `Enter` puts the
-cursor *in* the pane. From there everything is tmux's own binding and
+cursor *in* the pane. A new worktree is entered for you once its agent
+launches, unless you pressed a key or clicked in the meantime. From there everything is tmux's own binding and
 deliberately unbound here: moving between the panes (`<prefix> + ←` / `→` /
 `o` / `;`), scrolling and searching the scrollback, selecting and copying,
 zooming (`<prefix> + z`) and resizing. None of the agent's own keys —
