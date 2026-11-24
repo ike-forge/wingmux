@@ -733,6 +733,10 @@ pub struct App {
     /// Spawn commands owed to shells that are not ready to be typed into
     /// yet, drained by every poll. See [`PendingLaunch`].
     pending_launches: Vec<PendingLaunch>,
+    /// The pane of a worktree just created, owed the keyboard once its
+    /// agent is launched. Any key, click or focus loss in between cancels
+    /// it: a user who moved on keeps the tree.
+    focus_on_launch: Option<String>,
     pub captures: HashMap<String, String>,
     /// How far the preview is parked above the live tail, in lines. `0` is
     /// the live tail — the only state the preview had before it scrolled.
@@ -943,6 +947,7 @@ impl App {
             mode: Mode::Normal,
             panes: HashMap::new(),
             pending_launches: Vec::new(),
+            focus_on_launch: None,
             captures: HashMap::new(),
             preview_scroll: 0,
             preview_buf: None,
@@ -2618,6 +2623,7 @@ impl App {
         self.queue_launch(&w.pane_id, spawn_cmd);
         tmux.stamp_command(&w.pane_id, &command);
         tmux.stamp_repo_path(&w.pane_id, &repo.path);
+        let pane_id = w.pane_id.clone();
 
         let wt = Worktree {
             name: name.to_string(),
@@ -2652,6 +2658,7 @@ impl App {
         self.save_state()?;
         self.poll_worktree_state(true);
         self.request_fetch(ri);
+        self.focus_on_launch = Some(pane_id);
         self.notify(format!("worktree '{}' created", name));
         Ok(())
     }
@@ -3957,7 +3964,25 @@ impl App {
             if let Err(e) = tmux.send_keys(&p.pane_id, &p.command, true) {
                 log::warn!("cannot start '{}' in {}: {e}", p.command, p.pane_id);
                 self.notify_err(format!("cannot start agent: {e}"));
+                continue;
             }
+            self.focus_launched(&p.pane_id);
+        }
+    }
+
+    /// Hand the keyboard to a new worktree's agent the moment it is
+    /// launched, if the user has been waiting for it. Focusing at creation
+    /// would put keys into a shell that has no prompt yet.
+    fn focus_launched(&mut self, pane: &str) {
+        if self.focus_on_launch.as_deref() != Some(pane) {
+            return;
+        }
+        self.focus_on_launch = None;
+        let idle = self.focused
+            && matches!(self.mode, Mode::Normal)
+            && self.selected_shell_pane().as_deref() == Some(pane);
+        if idle && let Err(e) = self.dock_pane(pane, true) {
+            log::warn!("cannot focus new agent {pane}: {e}");
         }
     }
 
@@ -5798,6 +5823,16 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<
 /// the path the loop takes: reading first and matching after is what keeps
 /// a mouse event from being consumed by the key branch and lost.
 fn dispatch_event(app: &mut App, ev: Event) {
+    // Any sign of life before the new agent launches keeps the keyboard
+    // in the tree. The key that submits the popup re-arms it after this.
+    let touched = match &ev {
+        Event::Key(_) | Event::FocusLost => true,
+        Event::Mouse(m) => !matches!(m.kind, MouseEventKind::Moved),
+        _ => false,
+    };
+    if touched {
+        app.focus_on_launch = None;
+    }
     match ev {
         Event::Key(key) => app.on_key(key),
         Event::Mouse(m) => app.on_mouse(m),
@@ -8123,6 +8158,29 @@ mod tests {
             // `Enter`, by contrast, is exactly a request to be put in it.
             app.dock_shell(0, 0, 0);
             assert!(tmux.pane_active(&pane).unwrap(), "Enter focuses the agent");
+        });
+    }
+
+    /// A new worktree's agent takes the keyboard once launched, unless the
+    /// user did something in the tree while it started.
+    #[test]
+    fn a_launched_agent_takes_the_keyboard_only_from_an_idle_user() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_w, pane) = seed_repository_with_shell(&tmux, &mut app);
+            let dash = tmux.inside.as_ref().unwrap().pane_id.clone();
+            look_at(&mut app, Sel::Worktree(0, 0));
+
+            app.focus_on_launch = Some(pane.clone());
+            dispatch_event(&mut app, Event::Key(key(KeyCode::Char('j'), false)));
+            app.focus_launched(&pane);
+            assert!(tmux.pane_active(&dash).unwrap(), "a key keeps the tree");
+
+            app.focus_on_launch = Some(pane.clone());
+            app.focus_launched(&pane);
+            assert!(tmux.pane_active(&pane).unwrap(), "a waiting user is moved");
+            assert_eq!(app.focus_on_launch, None, "once");
         });
     }
 

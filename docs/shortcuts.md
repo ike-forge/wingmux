@@ -371,6 +371,7 @@ and quitting sends it home before the slot is taken down.
 | `Enter` on the shell that is already docked | just move the focus back into it — no second swap | idempotent action key |
 | `Enter` on a shell another dashboard holds | takes it, with no confirm — the bar reads `take` rather than `dock` | rare case, and the answer is always yes |
 | moving the cursor onto a shell | docks it too, **without** taking the cursor with it | the selection is the subject; looking at a row shows the row |
+| creating a worktree (`w`) | enters its shell once the agent launches, unless a key, click or focus loss came first | a user waiting on the agent wants to type to it; one who moved on keeps the tree |
 
 **Dock on look.** The docked pane follows the tree cursor: land on a shell
 and its real pane is beside you, with the keyboard still in the tree so the
