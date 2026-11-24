@@ -148,7 +148,7 @@ agent that needs you cannot drop out of sight.
 `.` is refused on worktree and shell rows (only repositories hide) and on the
 repository the dashboard was started inside, whose hide flag is ignored: it
 is the scope. Hidden repositories are not fetched at startup, start
-collapsed, and do not count toward the 30-repository unfold limit. The set
+collapsed, and do not count toward the 80-row unfold limit. The set
 is kept in the state file by path, so a renamed or new folder shows up, and
 a deleted one is dropped silently.
 

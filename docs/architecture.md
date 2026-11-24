@@ -89,7 +89,7 @@ the same commit as the change.
   scan is the list. When you
   start INSIDE a git repo, that repo is the scope and its row always shows,
   so the user can see where they are. Everything unfolds by default up to
-  `UNFOLD_CAP = 30` repositories in scope (see "The tree"). There is no
+  `UNFOLD_CAP = 80` repository and worktree rows (see "The tree"). There is no
   startup scan prompt and no `discovered.json` cache: finding `.git` entries
   is a few stats per dir, done live at boot — no stale cache to trust, no
   prompt to dismiss, even at hundreds of folders. The expensive part —
@@ -809,8 +809,12 @@ duplication docking exists to end.
   the event loop drains one per iteration (`drain_pending_worktrees`), so the
   tree paints immediately and fills in over the next frames. No threads — the
   loop is single-threaded and one `git worktree list` per frame is invisible.
-  `UNFOLD_CAP = 30` survives purely as a readability backstop: past it the
-  tree is longer than any terminal and folding is the better default.
+  `UNFOLD_CAP = 80` survives purely as a readability backstop: past it the
+  tree is longer than any terminal and folding is the better default. It
+  counts rows, repositories plus their worktrees, since 40 repositories
+  with five worktrees each is a longer tree than 60 with none. Worktrees
+  are not loaded before the decision, so it counts `.git/worktrees/`
+  entries: one directory read per repository, no git process.
 - **A one-shell worktree is folded, not collapsed**: the nominal case is one
   worktree, one agent, so a worktree with a single shell gets no child row at
   all — its own row carries the shell's status and acts as that shell (`Enter`

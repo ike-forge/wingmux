@@ -39,6 +39,15 @@ pub fn scan(root: &Path, max_depth: usize, skip_dirs: &[String]) -> Vec<std::pat
     out
 }
 
+/// Linked worktrees of the repository at `repo`, counted from
+/// `.git/worktrees/` without running git. Stale entries git has not pruned
+/// yet count too; close enough for a fold decision.
+pub fn linked_worktree_count(repo: &Path) -> usize {
+    std::fs::read_dir(repo.join(".git").join("worktrees"))
+        .map(|rd| rd.flatten().filter(|e| e.path().is_dir()).count())
+        .unwrap_or(0)
+}
+
 fn walk(
     dir: &Path,
     depth: usize,
@@ -116,6 +125,17 @@ mod tests {
             "target".into(),
             ".wingmux-worktrees".into(),
         ]
+    }
+
+    #[test]
+    fn linked_worktrees_are_counted_from_the_git_dir() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = make_repo(root.path(), "repo");
+        assert_eq!(linked_worktree_count(&repo), 0);
+        fs::create_dir_all(repo.join(".git/worktrees/a")).unwrap();
+        fs::create_dir_all(repo.join(".git/worktrees/b")).unwrap();
+        assert_eq!(linked_worktree_count(&repo), 2);
+        assert_eq!(linked_worktree_count(&root.path().join("nope")), 0);
     }
 
     #[test]

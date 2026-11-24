@@ -51,9 +51,10 @@ const EDITOR_WINDOW: &str = "todo";
 /// a backstop so a runaway paste cannot grow the buffer without bound.
 const TEXTBUF_MAX_BYTES: usize = 1_000_000;
 
-/// Repositories unfold by default up to this many in scope. Past it the tree
-/// is longer than any terminal and folding is the readable default.
-const UNFOLD_CAP: usize = 30;
+/// The tree unfolds by default while repository plus worktree rows stay at
+/// or under this. Past it the tree is longer than any terminal and folding
+/// is the readable default.
+const UNFOLD_CAP: usize = 80;
 
 /// The first command of a freshly spawned shell, waiting for the shell to
 /// be ready for it.
@@ -1560,7 +1561,19 @@ impl App {
             .into_iter()
             .filter(|&ri| !self.is_hidden(ri))
             .collect();
-        let expand = vis.len() <= UNFOLD_CAP;
+        // Worktrees of a folded repository are not loaded yet, so the
+        // on-disk count stands in for them.
+        let rows: usize = vis
+            .iter()
+            .map(|&ri| {
+                let repo = &self.state.repositories[ri];
+                1 + repo
+                    .worktrees
+                    .len()
+                    .max(crate::discovery::linked_worktree_count(&repo.path))
+            })
+            .sum();
+        let expand = rows <= UNFOLD_CAP;
         self.repo_expanded = self
             .state
             .repositories
@@ -6343,40 +6356,74 @@ mod tests {
         });
     }
 
-    /// Everything unfolds by default up to the cap: >30 repositories stay
-    /// collapsed (the tree would be unreadable and every row costs a
-    /// `git worktree list`), ≤30 expand.
+    /// The cap counts repository and worktree rows, not repositories.
     #[test]
-    fn many_repositories_collapse_by_default_few_expand() {
+    fn the_tree_folds_once_repository_and_worktree_rows_pass_the_cap() {
+        fn app_with_rows(repos: usize, worktrees_each: usize) -> App {
+            let mut app = app_with(tmux_nowhere());
+            app.scope_root = PathBuf::from("/");
+            for i in 0..repos {
+                app.state.repositories.push(Repository {
+                    name: format!("p{i}"),
+                    path: PathBuf::from(format!("/tmp/p{i}")),
+                    missing: false,
+                    shell: None,
+                    worktrees: (0..worktrees_each)
+                        .map(|w| Worktree {
+                            name: format!("w{w}"),
+                            branch: format!("w{w}"),
+                            path: PathBuf::from(format!("/tmp/p{i}/w{w}")),
+                            created_at: String::new(),
+                            base_commit: None,
+                            agent_command: None,
+                            shells: vec![],
+                        })
+                        .collect(),
+                });
+            }
+            app.build_tree_flags();
+            app
+        }
+        let at_cap = app_with_rows(UNFOLD_CAP, 0);
+        assert!(at_cap.repo_expanded.iter().all(|e| *e));
+        let over = app_with_rows(UNFOLD_CAP + 1, 0);
+        assert!(over.repo_expanded.iter().all(|e| !*e));
+        // 20 repositories × (1 + 4 worktrees) = 100 rows
+        let heavy = app_with_rows(20, 4);
+        assert!(heavy.repo_expanded.iter().all(|e| !*e));
+    }
+
+    /// A folded repository's worktrees are not loaded; the cap counts them
+    /// from disk.
+    #[test]
+    fn unloaded_worktrees_count_toward_the_cap() {
+        let root = tempfile::TempDir::new().unwrap();
         let mut app = app_with(tmux_nowhere());
-        app.scope_root = PathBuf::from("/");
-        for i in 0..31 {
+        app.scope_root = root.path().to_path_buf();
+        for i in 0..UNFOLD_CAP / 2 {
+            let path = root.path().join(format!("p{i}"));
+            std::fs::create_dir_all(path.join(".git/worktrees/a")).unwrap();
             app.state.repositories.push(Repository {
                 name: format!("p{i}"),
-                path: PathBuf::from(format!("/tmp/p{i}")),
+                path,
                 missing: false,
                 shell: None,
                 worktrees: vec![],
             });
         }
         app.build_tree_flags();
-        // 31 repositories → collapsed
-        assert!(app.repo_expanded.iter().all(|e| !*e));
-
-        let mut few = app_with(tmux_nowhere());
-        few.scope_root = PathBuf::from("/");
-        for i in 0..30 {
-            few.state.repositories.push(Repository {
-                name: format!("p{i}"),
-                path: PathBuf::from(format!("/tmp/p{i}")),
-                missing: false,
-                shell: None,
-                worktrees: vec![],
-            });
-        }
-        few.build_tree_flags();
-        // 30 repositories → expanded
-        assert!(few.repo_expanded.iter().all(|e| *e));
+        assert!(app.repo_expanded.iter().all(|e| *e), "exactly at the cap");
+        let path = root.path().join("extra");
+        std::fs::create_dir_all(&path).unwrap();
+        app.state.repositories.push(Repository {
+            name: "extra".into(),
+            path,
+            missing: false,
+            shell: None,
+            worktrees: vec![],
+        });
+        app.build_tree_flags();
+        assert!(app.repo_expanded.iter().all(|e| !*e), "one row over");
     }
 
     /// Worktrees unfold by default too — a folded worktree hides the very
@@ -6642,7 +6689,7 @@ mod tests {
                     ..Default::default()
                 });
                 app.build_tree_flags();
-                app.repo_expanded[0] = false; // collapsed, as >30 repos or `h` leaves it
+                app.repo_expanded[0] = false; // collapsed, as a tree over the cap or `h` leaves it
 
                 app.create_worktree(0, "feature-x", "").unwrap();
 
