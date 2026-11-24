@@ -1012,7 +1012,6 @@ impl App {
     /// Load state, reconcile against reality, bind the back keys.
     pub fn startup(&mut self) -> Result<()> {
         self.state = State::load()?;
-        self.merge_config_repositories()?;
         // Interactive boot: auto-import the cwd's repo (with its worktrees
         // as worktrees) or, when the cwd is not a repo, arm the startup
         // scan prompt.
@@ -1409,35 +1408,6 @@ impl App {
 
     fn save_state(&mut self) -> Result<()> {
         self.state.save()?;
-        Ok(())
-    }
-
-    /// Import repositories declared in config.toml that aren't in state yet.
-    fn merge_config_repositories(&mut self) -> Result<()> {
-        let mut imported = 0;
-        let paths: Vec<PathBuf> = self
-            .cfg
-            .usable_repositories()
-            .into_iter()
-            .map(|p| PathBuf::from(&p.path))
-            .collect();
-        for path in paths {
-            if self.state.repositories.iter().any(|x| x.path == path) {
-                continue;
-            }
-            if !Git.is_repo(&path) {
-                log::warn!(
-                    "config repository {} is not a git repo, skipping",
-                    path.display()
-                );
-                continue;
-            }
-            self.add_repository(path);
-            imported += 1;
-        }
-        if imported > 0 {
-            log::info!("imported {imported} repositories from config");
-        }
         Ok(())
     }
 

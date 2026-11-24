@@ -39,7 +39,7 @@ the same commit as the change.
   (`base_commit`) and the agent picked; plus the hidden repository and
   folder paths and the view flag. Everything else is rebuilt, because
   any copy goes stale the moment its source changes:
-  - repositories (name, path) from the scope scan and `[[repositories]]`;
+  - repositories (name, path) from the scope scan;
   - base branch and agent from config on every use (`Config::base_branch_at`,
     `Config::agent_at`), resolved by git where a real branch is needed;
   - worktrees from `git worktree list`, joined with their record by path
@@ -121,7 +121,10 @@ the same commit as the change.
   an explicit repository list, and they cost two of the scarce top-level keys
   plus two of the four statusbar slots on a repository row. What remains
   covers the cases: the scope is discovered at startup, and a repo outside it
-  goes under `[[repositories]]` in `config.toml`. The deliberate loss: a repo
+  is reached by starting in a folder that holds it. `[[repositories]]` no
+  longer imports anything: an imported repo outside the scope never got a
+  row, so the entry only cost a `git` call. It keeps its per-repository
+  overrides. The deliberate loss: a repo
   created WHILE Wingmux runs no longer appears without a restart — `r`
   refreshes tmux state, not the repo list. Folding a rescan into `r` was
   considered and left out: `r` means "reconcile what I am showing against

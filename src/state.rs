@@ -3,10 +3,10 @@
 //! `$XDG_STATE_HOME/wingmux/state.json` holds only facts no other system
 //! keeps: per worktree path, the name typed in the popup, when it was created,
 //! the fork point and the agent picked; the repository and folder paths
-//! hidden with `.`; and whether the tree is drawn as folders. Everything else is rebuilt — repositories
-//! from the scan and `[[repositories]]`, their base branch and agent from config
-//! and git, worktrees from `git worktree list`, and shells from `list-panes` on
-//! every poll ([`State::sync_shells`]).
+//! hidden with `.`; and whether the tree is drawn as folders. Everything else
+//! is rebuilt — repositories from the scan, their base branch and agent from
+//! config and git, worktrees from `git worktree list`, and shells from
+//! `list-panes` on every poll ([`State::sync_shells`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};

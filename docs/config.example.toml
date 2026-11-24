@@ -209,9 +209,9 @@
 #waiting = ["❯", "›", "codex>", "> $"]
 #failed = ["Error", "error:", "✖"]
 
-# Repositories declared by hand — the way to list a repo that discovery does not
-# find (outside the scope). Discovered repositories live in state.json instead.
-# There is no default list; the block below is an example only.
+# Per-repository overrides for repositories discovery finds in the scope.
+# Entries outside the scope are not listed. There is no default list; the
+# block below is an example only.
 # [[repositories]]
 # path = "/absolute/path/to/repo"
 # base_branch = "main"       # optional: override [worktrees].base_branch

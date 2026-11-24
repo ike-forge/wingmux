@@ -66,7 +66,7 @@ working = ["Working", "Reading", "⠋", "▌"]
 waiting = ["❯", "codex>"]
 failed = ["Error:", "✖"]
 
-[[repositories]]             # pre-declared repositories are imported at startup
+[[repositories]]             # per-repository overrides; the repository must be in the scope
 path = "/home/you/work/repo-b"
 agent = "codex"              # optional: preset name
 agent_command = "codex exec --yolo"  # optional: inline override
@@ -119,7 +119,8 @@ everything else is kept. Unknown keys are reported, not fatal (an older
 binary runs a newer config). Every drop is shown once, at startup, in a
 **diagnostics overlay** (`Esc`/`q` dismisses, `j`/`k` scrolls) and logged.
 
-Repositories are not stored: each start scans the scope and merges in
-config `[[repositories]]` entries. A repository's base branch and agent are
+Repositories are not stored: each start scans the scope.
+`[[repositories]]` only overrides settings of a repository the scan finds;
+it adds none. A repository's base branch and agent are
 read from config whenever they are used, so a config edit applies at the
 next start without touching any state.

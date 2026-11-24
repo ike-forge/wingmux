@@ -23,9 +23,9 @@ stats per directory, done live.
   directory stats, not 200 git calls.
 - **Discovery runs at startup**, not on a key. A repo created while
   Wingmux is running appears the next time you start it in that scope; `r`
-  refreshes tmux state (windows, panes, worktrees), not the repo list. To add
-  a repository that is not in the scope, declare it under `[[repositories]]`
-  in `config.toml`.
+  refreshes tmux state (windows, panes, worktrees), not the repo list. A
+  repository outside the scope is reached by starting Wingmux in a folder
+  that holds it; `[[repositories]]` overrides settings, it adds no rows.
 - **Hidden repositories**: `.` folds a repository into the `N hidden` row at
   the bottom of the tree (see [shortcuts](shortcuts.md#hidden-repositories)).
   Discovery still lists it; it is only drawn there, starts collapsed and is
