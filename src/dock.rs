@@ -191,9 +191,9 @@ pub fn park_command(note: &str) -> String {
     )
 }
 
-/// What the slot runs while lazygit borrows it: `command`, then signal
+/// What the slot runs while a tool borrows it: `command`, then signal
 /// `channel` and go back to being a sleeping slot.
-pub fn lazygit_command(command: &str, channel: &str) -> String {
+pub fn borrow_command(command: &str, channel: &str) -> String {
     format!(
         "{command}; tmux wait-for -S {}; {}",
         sh_quote(channel),

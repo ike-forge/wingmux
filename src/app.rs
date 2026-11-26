@@ -121,8 +121,32 @@ impl Sel {
 /// Held only for the length of one poll: `@wm_docked` on the agent pane is
 /// the single source of truth, because it is the only thing two instances
 /// that know nothing of each other can both see.
-/// lazygit running in the slot, and the `wait-for` client its exit signals.
-struct Lazygit {
+/// A program run in the slot in place of the docked agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tool {
+    Lazygit,
+    Editor,
+}
+
+impl Tool {
+    pub fn name(self) -> &'static str {
+        match self {
+            Tool::Lazygit => "lazygit",
+            Tool::Editor => "editor",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Tool::Lazygit => "ctrl-g",
+            Tool::Editor => "ctrl-e",
+        }
+    }
+}
+
+/// A tool running in the slot, and the `wait-for` client its exit signals.
+struct Borrowed {
+    tool: Tool,
     waiter: std::process::Child,
     pane: String,
 }
@@ -597,6 +621,8 @@ pub enum BarAction {
     PreviewLive,
     /// Open lazygit in the slot on the selected repository or worktree.
     Lazygit,
+    /// Open the editor in the slot on the selected repository or worktree.
+    Editor,
     /// Hide or unhide the selected repository (`.`).
     ToggleHidden,
     /// Unfold or fold the hidden row or a folder row (`Enter`).
@@ -722,8 +748,10 @@ pub struct App {
     pub focused: bool,
     /// Configured lazygit command is on PATH. Checked once; the bar asks every frame.
     pub lazygit_found: bool,
-    /// lazygit borrowing the slot; the agent docks back when it quits.
-    lazygit: Option<Lazygit>,
+    /// The editor command `ctrl-e` runs: `editor`, else `vim`. Resolved once.
+    pub editor_cmd: Option<String>,
+    /// A tool borrowing the slot; the agent docks back when it quits.
+    borrowed: Option<Borrowed>,
     pub state: State,
     pub sel: Sel,
     /// Repositories whose `git worktree list` is still owed, drained one per
@@ -929,6 +957,18 @@ pub struct BaseHint {
 /// sequences (the preview renders them) while the status patterns match
 /// plain text — a coloured "Thinking…" must classify like an uncoloured one,
 /// so the escapes are stripped here.
+fn first_word(command: &str) -> &str {
+    command.split_whitespace().next().unwrap_or("")
+}
+
+/// `configured` when it is on PATH, else `vim`.
+fn resolve_editor(configured: &str) -> Option<String> {
+    [configured, "vim"]
+        .into_iter()
+        .find(|c| crate::util::command_exists(c))
+        .map(str::to_string)
+}
+
 fn recent_tail(capture: &str) -> String {
     let plain = crate::ansi::strip(capture);
     let mut lines: Vec<&str> = plain.lines().collect();
@@ -943,7 +983,8 @@ impl App {
     pub fn new(cfg: Config, theme: Theme, tmux: Option<Tmux>) -> App {
         App {
             lazygit_found: crate::util::command_exists(&cfg.lazygit),
-            lazygit: None,
+            editor_cmd: resolve_editor(&cfg.editor),
+            borrowed: None,
             cfg,
             theme,
             tmux,
@@ -1387,7 +1428,7 @@ impl App {
         // other before anything is killed, or quitting would take the
         // agent down with the dashboard.
         self.undock_current();
-        self.end_lazygit();
+        self.end_tool();
         let Some(pane) = self.slot.take() else {
             return;
         };
@@ -2350,26 +2391,47 @@ impl App {
         }
     }
 
-    /// lazygit holds the slot: the panel is neither the dock nor the preview.
-    pub fn lazygit_open(&self) -> bool {
-        self.lazygit.is_some()
+    /// A tool holds the slot: the panel is neither the dock nor the preview.
+    pub fn tool_open(&self) -> bool {
+        self.borrowed.is_some()
     }
 
-    /// `ctrl-g`: lazygit in the slot on the selected row's directory.
+    fn tool_command(&self, tool: Tool) -> Option<String> {
+        match tool {
+            Tool::Lazygit => self.lazygit_found.then(|| self.cfg.lazygit.clone()),
+            Tool::Editor => self.editor_cmd.clone(),
+        }
+    }
+
+    /// `ctrl-g` / `ctrl-e`: the tool in the slot on the selected row's directory.
     ///
     /// Not a `display-popup`: an overlay takes every key before tmux's key
     /// tables, so the prefix is dead while it is open.
-    fn open_lazygit(&mut self) {
-        if !self.lazygit_found {
-            let cmd = self.cfg.lazygit.split_whitespace().next().unwrap_or("");
-            self.notify_err(format!("{cmd} is not installed — ctrl-g needs it"));
+    fn open_tool(&mut self, tool: Tool) {
+        let Some(command) = self.tool_command(tool) else {
+            let missing = match tool {
+                Tool::Lazygit => first_word(&self.cfg.lazygit).to_string(),
+                Tool::Editor => match first_word(&self.cfg.editor) {
+                    "vim" => "vim".to_string(),
+                    cmd => format!("{cmd} (nor vim)"),
+                },
+            };
+            self.notify_err(format!(
+                "{missing} is not installed — {} needs it",
+                tool.key()
+            ));
             return;
-        }
-        if let Some(lg) = &self.lazygit {
+        };
+        if let Some(b) = &self.borrowed {
+            if b.tool != tool {
+                let msg = format!("{} holds the panel; quit it first", b.tool.name());
+                self.notify_err(msg);
+                return;
+            }
             if let Ok(tmux) = self.require_tmux()
-                && let Err(e) = tmux.select_pane(&lg.pane)
+                && let Err(e) = tmux.select_pane(&b.pane)
             {
-                log::warn!("cannot focus lazygit in {}: {e}", lg.pane);
+                log::warn!("cannot focus {} in {}: {e}", tool.name(), b.pane);
             }
             return;
         }
@@ -2377,12 +2439,12 @@ impl App {
             self.notify("Select a repository or worktree first");
             return;
         };
-        if let Err(e) = self.start_lazygit(&dir) {
-            self.notify_err(format!("lazygit: {e}"));
+        if let Err(e) = self.start_tool(tool, &command, &dir) {
+            self.notify_err(format!("{}: {e}", tool.name()));
         }
     }
 
-    fn start_lazygit(&mut self, dir: &Path) -> Result<()> {
+    fn start_tool(&mut self, tool: Tool, command: &str, dir: &Path) -> Result<()> {
         let tmux = self.require_tmux()?;
         let own = tmux
             .inside
@@ -2391,9 +2453,9 @@ impl App {
             .ok_or_else(|| Error::Tmux("the dashboard is not in a tmux pane".into()))?;
         self.undock_current();
         let slot = self.ensure_slot()?;
-        let channel = format!("wingmux-lazygit-{}", own.trim_start_matches('%'));
+        let channel = format!("wingmux-{}-{}", tool.name(), own.trim_start_matches('%'));
         let mut waiter = tmux.spawn_wait_for(&channel)?;
-        let command = crate::dock::lazygit_command(&self.cfg.lazygit, &channel);
+        let command = crate::dock::borrow_command(command, &channel);
         if let Err(e) = tmux
             .respawn_pane(&slot, dir, &command)
             .and_then(|()| tmux.select_pane(&slot))
@@ -2402,25 +2464,29 @@ impl App {
             let _ = waiter.wait();
             return Err(e);
         }
-        self.lazygit = Some(Lazygit { waiter, pane: slot });
+        self.borrowed = Some(Borrowed {
+            tool,
+            waiter,
+            pane: slot,
+        });
         Ok(())
     }
 
     /// On quit, focus the tree and let the selection dock again; a slot
     /// killed by hand ends it too.
-    fn reap_lazygit(&mut self) {
-        let Some(lg) = self.lazygit.as_mut() else {
+    fn reap_tool(&mut self) {
+        let Some(b) = self.borrowed.as_mut() else {
             return;
         };
-        let done = match lg.waiter.try_wait() {
+        let done = match b.waiter.try_wait() {
             Ok(None) => false,
             Ok(Some(_)) => true,
             Err(e) => {
-                log::warn!("lazygit waiter: {e}");
+                log::warn!("{} waiter: {e}", b.tool.name());
                 true
             }
         };
-        let pane = lg.pane.clone();
+        let pane = b.pane.clone();
         let tmux = self.require_tmux().ok();
         let gone = !done
             && tmux
@@ -2430,7 +2496,7 @@ impl App {
         if !done && !gone {
             return;
         }
-        self.end_lazygit();
+        self.end_tool();
         if let Some(tmux) = &tmux
             && let Some(own) = &tmux.inside
             && let Err(e) = tmux.select_pane(&own.pane_id)
@@ -2441,11 +2507,11 @@ impl App {
         self.refresh();
     }
 
-    /// Forget lazygit and stop its waiter.
-    fn end_lazygit(&mut self) {
-        if let Some(mut lg) = self.lazygit.take() {
-            let _ = lg.waiter.kill();
-            let _ = lg.waiter.wait();
+    /// Forget the tool and stop its waiter.
+    fn end_tool(&mut self) {
+        if let Some(mut b) = self.borrowed.take() {
+            let _ = b.waiter.kill();
+            let _ = b.waiter.wait();
         }
     }
 
@@ -3150,13 +3216,13 @@ impl App {
     ///   poll-driven reconcile can, and swapping a pane out from under
     ///   someone mid-sentence is the worst bug this design can produce.
     pub fn auto_dock(&mut self, input_pending: bool) {
-        if input_pending || !matches!(self.mode, Mode::Normal) || self.lazygit.is_some() {
+        if input_pending || !matches!(self.mode, Mode::Normal) || self.borrowed.is_some() {
             return;
         }
         let want = self
             .selected_shell_pane()
             .filter(|p| self.leased_by(p).is_none());
-        // Nothing wanted, nothing docked, but a slot left over (lazygit
+        // Nothing wanted, nothing docked, but a slot left over (a tool
         // quit on a shell-less row) still has to go.
         if want == self.docked && (want.is_some() || self.slot.is_none()) {
             return;
@@ -3197,10 +3263,11 @@ impl App {
     /// what `Enter` means, and what following the selection must not do.
     fn dock_pane(&mut self, pane: &str, focus: bool) -> Result<()> {
         let tmux = self.require_tmux()?;
-        if self.lazygit.is_some() {
-            return Err(Error::State(
-                "lazygit holds the panel; quit it first".into(),
-            ));
+        if let Some(b) = &self.borrowed {
+            return Err(Error::State(format!(
+                "{} holds the panel; quit it first",
+                b.tool.name()
+            )));
         }
         // Already ours: `Enter` on the docked shell is "put me back in it",
         // not a second swap.
@@ -4205,7 +4272,7 @@ impl App {
         // dashboard span-polled — spawning a `capture-pane` per shell per
         // frame, and retrying a failing dock ~90 times a second.
         self.last_poll = Instant::now();
-        self.reap_lazygit();
+        self.reap_tool();
         // Independent of tmux (and of its own cadence) — the tree draws
         // the dirty flag whether or not a session exists.
         self.poll_worktree_state(false);
@@ -4368,7 +4435,14 @@ impl App {
                 // Consumed in every mode so `g` never reaches a text field
                 // or the first-item motion.
                 if matches!(self.mode, Mode::Normal) && self.visual.is_none() {
-                    self.open_lazygit();
+                    self.open_tool(Tool::Lazygit);
+                }
+                true
+            }
+            // In the pad `ctrl-e` is its own editor key.
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) && !in_todo => {
+                if matches!(self.mode, Mode::Normal) && self.visual.is_none() {
+                    self.open_tool(Tool::Editor);
                 }
                 true
             }
@@ -5682,7 +5756,8 @@ impl App {
                     self.dock_shell(ri, wi, si);
                 }
             }
-            BarAction::Lazygit => self.open_lazygit(),
+            BarAction::Lazygit => self.open_tool(Tool::Lazygit),
+            BarAction::Editor => self.open_tool(Tool::Editor),
             BarAction::ToggleHidden => self.toggle_hidden(),
             BarAction::Fold => self.expand_or_attach(),
             BarAction::Todo => self.open_repo_todo(),
@@ -7227,7 +7302,7 @@ mod tests {
                 toast.error && toast.text.contains("not installed"),
                 "{toast:?}"
             );
-            assert!(app.lazygit.is_none());
+            assert!(app.borrowed.is_none());
         });
     }
 
@@ -7240,6 +7315,79 @@ mod tests {
             app.sel = Sel::Worktree(0, 0);
             app.on_key(key(KeyCode::Char('g'), true));
             assert_eq!(app.sel, Sel::Worktree(0, 0));
+        });
+    }
+
+    /// Without nvim or vim, `ctrl-e` says so instead of doing nothing.
+    #[test]
+    fn ctrl_e_without_an_editor_says_so() {
+        crate::util::testutil::with_fresh_xdg(|| {
+            let mut app = app_with_shell();
+            app.editor_cmd = None;
+            app.on_key(key(KeyCode::Char('e'), true));
+            let toast = app.toast().expect("a notice");
+            assert!(
+                toast.error && toast.text.contains("nvim (nor vim) is not installed"),
+                "{toast:?}"
+            );
+            assert!(app.borrowed.is_none());
+        });
+    }
+
+    /// A configured editor missing from PATH falls back to vim.
+    #[test]
+    fn editor_falls_back_to_vim() {
+        assert_eq!(resolve_editor("sh"), Some("sh".into()));
+        let fallback = resolve_editor("wingmux-no-such-editor");
+        let vim = crate::util::command_exists("vim");
+        assert_eq!(fallback.is_some(), vim);
+    }
+
+    /// One tool at a time: `ctrl-e` while lazygit holds the slot refuses.
+    #[test]
+    fn editor_waits_for_lazygit() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            seed_repository_with_shell(&tmux, &mut app);
+            app.lazygit_found = true;
+            app.cfg.lazygit = "sleep 5".into();
+            app.editor_cmd = Some("sleep 5".into());
+            look_at(&mut app, Sel::Worktree(0, 0));
+
+            app.on_key(key(KeyCode::Char('g'), true));
+            assert!(app.tool_open(), "{:?}", app.message);
+            app.on_key(key(KeyCode::Char('e'), true));
+            let toast = app.toast().expect("a notice");
+            assert!(toast.text.contains("lazygit holds the panel"), "{toast:?}");
+            assert_eq!(app.borrowed.as_ref().map(|b| b.tool), Some(Tool::Lazygit));
+            app.drop_slot();
+        });
+    }
+
+    /// The editor borrows the slot like lazygit and hands it back on exit.
+    #[test]
+    fn editor_borrows_the_slot_and_hands_it_back() {
+        with_tmux_server(|sock, _tmux| {
+            let tmux = tmux_inside(sock);
+            let mut app = app_with(tmux.clone());
+            let (_w, pane) = seed_repository_with_shell(&tmux, &mut app);
+            app.editor_cmd = Some("sleep 1".into());
+            app.viewport = (120, 40);
+            look_at(&mut app, Sel::Worktree(0, 0));
+            app.auto_dock(false);
+
+            app.on_key(key(KeyCode::Char('e'), true));
+            assert!(app.tool_open(), "{:?}", app.message);
+            assert_eq!(app.docked, None, "the agent went home");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while app.tool_open() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(100));
+                app.reap_tool();
+            }
+            assert!(!app.tool_open(), "the exit was noticed");
+            app.auto_dock(false);
+            assert_eq!(app.docked.as_deref(), Some(pane.as_str()), "agent back");
         });
     }
 
@@ -7259,7 +7407,7 @@ mod tests {
             assert_eq!(app.docked.as_deref(), Some(pane.as_str()));
 
             app.on_key(key(KeyCode::Char('g'), true));
-            assert!(app.lazygit_open(), "{:?}", app.message);
+            assert!(app.tool_open(), "{:?}", app.message);
             assert_eq!(app.docked, None, "the agent went home");
             let slot = app.slot.clone().expect("lazygit runs in the slot");
             assert!(tmux.pane_active(&slot).unwrap(), "and has the keyboard");
@@ -7268,11 +7416,11 @@ mod tests {
             assert!(matches!(crate::ui::tier(&app), crate::ui::Tier::TreeOnly));
 
             let deadline = Instant::now() + Duration::from_secs(5);
-            while app.lazygit_open() && Instant::now() < deadline {
+            while app.tool_open() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(100));
-                app.reap_lazygit();
+                app.reap_tool();
             }
-            assert!(!app.lazygit_open(), "the exit was noticed");
+            assert!(!app.tool_open(), "the exit was noticed");
             let own = tmux.inside.as_ref().unwrap().pane_id.clone();
             assert!(tmux.pane_active(&own).unwrap(), "the tree has the keyboard");
             app.auto_dock(false);
@@ -7295,13 +7443,13 @@ mod tests {
             look_at(&mut app, Sel::Worktree(0, 0));
 
             app.on_key(key(KeyCode::Char('g'), true));
-            assert!(app.lazygit_open(), "{:?}", app.message);
+            assert!(app.tool_open(), "{:?}", app.message);
             let deadline = Instant::now() + Duration::from_secs(5);
-            while app.lazygit_open() && Instant::now() < deadline {
+            while app.tool_open() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(100));
-                app.reap_lazygit();
+                app.reap_tool();
             }
-            assert!(!app.lazygit_open(), "the exit was noticed");
+            assert!(!app.tool_open(), "the exit was noticed");
             app.auto_dock(false);
             assert_eq!(app.slot, None, "the slot is gone");
             assert_eq!(app.find_slot(&tmux), None, "in tmux too");

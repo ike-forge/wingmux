@@ -39,6 +39,10 @@
 # worktree's directory. The agent docks back when it exits.
 #lazygit = "lazygit"
 
+# Editor ctrl-e runs beside the tree, the same way. Falls back to vim when
+# not on PATH.
+#editor = "nvim"
+
 [preview]
 # How much of the agent's own colouring the preview panel shows. The pane is
 # captured with its escape sequences, so by default you see exactly what the

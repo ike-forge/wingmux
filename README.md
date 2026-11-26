@@ -97,6 +97,7 @@ merge/PR automation. Only worktree teardown is automated.
 | `.` | hide / unhide a repository, or a folder in the folder view (`Enter` on the `N hidden` row lists them) |
 | `` ` `` | switch between the flat list and the folder view |
 | `ctrl-g` | lazygit beside the tree on the selected repository or worktree |
+| `ctrl-e` | nvim (or vim) beside the tree, same directory |
 | `ctrl-t` | switch theme |
 | `?` | help |
 | `q` | quit |
@@ -114,6 +115,7 @@ commented. A few you may want:
 ```toml
 theme = "catppuccin-mocha"   # ctrl-t switches live
 lazygit = "lazygit"          # ctrl-g command
+editor = "nvim"              # ctrl-e command; vim when not on PATH
 poll_interval_ms = 500
 
 [defaults]

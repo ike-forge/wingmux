@@ -15,6 +15,7 @@ theme = "catppuccin-mocha"  # 7 built-ins; ctrl-t switches live (saved to state)
 poll_interval_ms = 500       # status/preview refresh
 confirm_on_delete = true
 lazygit = "lazygit"          # what ctrl-g runs beside the tree; hidden from the bar when not on PATH
+editor = "nvim"              # what ctrl-e runs, the same way; vim when not on PATH, hidden when neither is
 
 [preview]
 colors = "full"              # pane colours as-is; "foreground" drops backgrounds, "none" = plain text

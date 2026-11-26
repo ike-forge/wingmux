@@ -49,6 +49,7 @@ subtracted), recomputed every frame from the stored viewport.
 | `r` | refresh — reconcile state against tmux reality | LazyGit/Docker `r` = refresh |
 | `R` | reset the layout — dashboard strip, agent windows and holders back to their default proportions | shifted pair of `r`: the same subject (put reality back in step), the heavier repair on the shifted key. `r` stays refresh because that is the tradition's binding |
 | `ctrl-g` | lazygit in the panel beside the tree (in place of the docked agent) on the selected repository (main checkout) or worktree; shell rows use their worktree. Pressed again it focuses lazygit; on quit the agent docks back and the tree reconciles | ctrl layer, because `g` is first-item. Bar entry only when `lazygit` is on PATH; help shows it muted otherwise and the key says it is missing. Not a popup: tmux overlays swallow the prefix |
+| `ctrl-e` | the editor (`editor`, default `nvim`; `vim` when that is not on PATH) in the same panel, the same way: same directory, pressed again it focuses the editor, on quit the agent docks back. One tool holds the panel at a time; the other's key says so | ctrl layer, and the pad's `ctrl-e` = editor too, so the chord means one thing. Bar entry only when an editor is on PATH; help shows it muted otherwise |
 | `ctrl-t` | live theme picker (preview on move, Enter keeps, Esc restores) | ctrl layer; picker lists built-ins first |
 | `y` | copy the selected row's path — the repository's, or the worktree's (shell rows too) — with `tmux set-buffer -w`: the tmux buffer, and the terminal clipboard where tmux forwards it (3.2+, `set-clipboard` not `off`) | vim yank |
 | `?` | open the grouped help overlay (the palette) | palette key; `?` is never rebound |
@@ -475,10 +476,9 @@ An inert key is a decision, not an omission.
   would mean emulating the agent's terminal, which is the exact thing
   docking exists to stop doing.
 - `:` — no command language; every action already has a key.
-- `e` — still unbound: `ctrl-e` opens `$EDITOR` on a todo pad, and only
-  inside the pad, where a bare `e` is text. A plain `e` on the tree would
-  have to mean editing *something* the cursor is on, and no row has an
-  answer to that yet.
+- `e` — still unbound: the editor is `ctrl-e`, the chord the todo pad
+  already uses for its own editor, where a bare `e` is text. One chord for
+  both keeps the meaning from depending on which panel has focus.
 - `c`, `b`, `E`, `C`, ... — reserved for future actions
   (edit/rename, toggle, etc.); nothing is bound to a letter that has no
   action, so the one-key-one-action table stays unambiguous.

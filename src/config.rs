@@ -40,8 +40,10 @@ pub struct Config {
     pub theme: String,
     pub poll_interval_ms: u64,
     pub confirm_on_delete: bool,
-    /// What `ctrl-g` runs in a popup.
+    /// What `ctrl-g` runs in the slot.
     pub lazygit: String,
+    /// What `ctrl-e` runs in the slot; `vim` when not on PATH.
+    pub editor: String,
     pub preview: PreviewConfig,
     pub worktrees: WorktreeConfig,
     pub discovery: DiscoveryConfig,
@@ -535,6 +537,7 @@ impl Default for Config {
             poll_interval_ms: 500,
             confirm_on_delete: true,
             lazygit: "lazygit".into(),
+            editor: "nvim".into(),
             preview: PreviewConfig::default(),
             worktrees: WorktreeConfig {
                 root: String::new(),
@@ -753,6 +756,7 @@ const TOP_KEYS: &[&str] = &[
     "poll_interval_ms",
     "confirm_on_delete",
     "lazygit",
+    "editor",
     "preview",
     "tmux",
     "worktrees",
@@ -1035,6 +1039,7 @@ impl Config {
         line("poll_interval_ms", self.poll_interval_ms.to_string());
         line("confirm_on_delete", self.confirm_on_delete.to_string());
         line("lazygit", format!("\"{}\"", self.lazygit));
+        line("editor", format!("\"{}\"", self.editor));
         line(
             "preview.colors",
             format!("\"{}\"", self.preview.colors.as_str()),
@@ -1580,6 +1585,7 @@ fn deserialize_lenient(
         diags,
     );
     cfg.lazygit = take_str(merged, "lazygit", &cfg.lazygit, layer_paths, sources, diags);
+    cfg.editor = take_str(merged, "editor", &cfg.editor, layer_paths, sources, diags);
 
     // sections — each field salvaged individually (one bad binding does not
     // drop the whole [tmux] block).
