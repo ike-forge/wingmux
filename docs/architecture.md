@@ -1443,6 +1443,10 @@ duplication docking exists to end.
   `ctrl-g` again focuses it. `g` is first-item, so the chord lives in the ctrl
   layer. Availability is checked once against `$PATH`: absent, the bar omits
   the entry and help shows it muted.
+- **`ctrl-e` runs the editor through the same slot borrow** (`Tool` in
+  `app.rs`): `editor`, or `vim` when it is not on PATH. One tool at a time,
+  since both want the slot; the other tool's key refuses rather than
+  replacing an editor with unsaved buffers.
 - **`ctrl-t` is a live theme picker**: it previews as the cursor moves (the
   whole screen repaints via the same load path), Enter keeps, Esc restores the
   theme it opened with. Built-ins list first (stable order), then user themes.

@@ -91,7 +91,7 @@ pub(crate) fn tree_width(viewport: (u16, u16)) -> Option<u16> {
 pub(crate) fn tier(app: &App) -> Tier {
     let tier = tier_impl(app.viewport.0, app.viewport.1);
     match tier {
-        Tier::Wide | Tier::Split if app.docked.is_some() || app.lazygit_open() => Tier::TreeOnly,
+        Tier::Wide | Tier::Split if app.docked.is_some() || app.tool_open() => Tier::TreeOnly,
         _ => tier,
     }
 }
@@ -1753,9 +1753,14 @@ pub(crate) fn bar_entries(app: &App) -> Vec<(Hint, BarAction)> {
     // `help` (which stays last, where the eye has learned to find it).
     let before_help = entries.len().saturating_sub(1);
     entries.insert(before_help, (h("todo", "t"), Todo));
-    // Absent lazygit: the bar omits the entry; help lists it muted.
+    // An absent tool: the bar omits the entry; help lists it muted.
+    let mut at = before_help + 1;
     if app.lazygit_found {
-        entries.insert(before_help + 1, (h("lazygit", "ctrl-g"), Lazygit));
+        entries.insert(at, (h("lazygit", "ctrl-g"), Lazygit));
+        at += 1;
+    }
+    if app.editor_cmd.is_some() {
+        entries.insert(at, (h("editor", "ctrl-e"), Editor));
     }
     // `Enter` on a shell another dashboard holds does something different
     // enough to deserve a different word: it takes the pane off them.
@@ -2182,6 +2187,10 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
                     "beside the tree on the selected repository or worktree",
                 ],
             ),
+            (
+                &["ctrl-e"],
+                &["editor", "nvim (or vim) beside the tree, same directory"],
+            ),
             (&["ctrl-t"], &["change theme", "live picker"]),
             (&["?"], &["this help", "palette"]),
             (&["q", "Esc"], &["quit"]),
@@ -2211,14 +2220,19 @@ fn help_lines(app: &App, width: usize) -> Vec<Line<'_>> {
                 .join(s);
             let mut row = help_row(theme, width, desc, &key_str, s);
             // Muted but listed, for discoverability.
-            if *keys == ["ctrl-g"] && !app.lazygit_found {
+            let missing = match *keys {
+                ["ctrl-g"] => !app.lazygit_found,
+                ["ctrl-e"] => app.editor_cmd.is_none(),
+                _ => false,
+            };
+            if missing {
                 for l in &mut row {
                     for span in &mut l.spans {
                         span.style = fg(theme.dim);
                     }
                 }
                 row.push(Line::from(Span::styled(
-                    format!("    not installed{s}ctrl-g will say so"),
+                    format!("    not installed{s}{} will say so", keys[0]),
                     fg(theme.dim),
                 )));
             }
@@ -4002,6 +4016,7 @@ mod tests {
                 "live" => assert!(text.contains("live tail"), "bar 'live Esc' ↔ help"),
                 "todo" => assert!(text.contains("todo pad"), "bar 'todo t' ↔ help"),
                 "lazygit" => assert!(text.contains("lazygit"), "bar 'lazygit ctrl-g' ↔ help"),
+                "editor" => assert!(text.contains("nvim (or vim)"), "bar 'editor ctrl-e' ↔ help"),
                 "push" => assert!(text.contains("git push"), "bar 'push P' ↔ help"),
                 "pull" => assert!(text.contains("git pull"), "bar 'pull p' ↔ help"),
                 "next" | "prev" => assert!(text.contains("next / prev match")),
@@ -4078,6 +4093,9 @@ mod tests {
     fn statusbar_wraps_instead_of_losing_its_tail() {
         let mut app = seeded_app_with_shell();
         app.sel = crate::app::Sel::Shell(0, 0, 0);
+        // Two rows hold one tool entry at this width, not both.
+        app.lazygit_found = true;
+        app.editor_cmd = None;
         let (w, h) = (46u16, 20u16);
         let backend = ratatui::backend::TestBackend::new(w, h);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -5464,6 +5482,30 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let text = buffer_text(&terminal);
         assert!(text.contains("too small"), "tiny frame refuses the modal");
+    }
+
+    /// `ctrl-e` is on the bar only when an editor resolved; the help lists
+    /// it either way, muted when absent.
+    #[test]
+    fn editor_entry_follows_availability() {
+        let mut app = seeded_app();
+        app.editor_cmd = Some("vim".into());
+        assert!(
+            bar_entries(&app)
+                .iter()
+                .any(|(_, a)| *a == BarAction::Editor)
+        );
+        let on = help_line_count(&app);
+        app.editor_cmd = None;
+        assert!(
+            !bar_entries(&app)
+                .iter()
+                .any(|(_, a)| *a == BarAction::Editor)
+        );
+        assert!(
+            help_line_count(&app) > on,
+            "the muted help row carries a reason line"
+        );
     }
 
     /// `ctrl-g` is on the bar only when lazygit is installed; the help lists
